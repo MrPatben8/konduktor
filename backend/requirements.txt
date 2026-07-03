@@ -1,0 +1,8 @@
+# Unpinned lower bounds so pip picks versions with prebuilt Python 3.14 wheels
+# (older pins force a from-source pydantic-core build that needs Rust).
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pydantic>=2.11
+# Traktor Pro 4 (NML v20) support requires the GitHub master (v4.0.0),
+# NOT the stale PyPI release (3.1.0), which cannot parse v4 files.
+traktor-nml-utils @ git+https://github.com/MrPatben8/traktor-nml-utils.git

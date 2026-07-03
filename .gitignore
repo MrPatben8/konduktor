@@ -1,0 +1,36 @@
+# ---- Python (backend) ----
+backend/.venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Node (frontend) ----
+node_modules/
+frontend/dist/
+frontend/dist-ssr/
+*.local
+
+# ---- Traktor data ----
+# The collection is personal, large, and irreplaceable — don't commit it.
+# Remove this if you deliberately want to version a sample .nml.
+*.nml
+# Backups Konduktor will create before any write (Phase 3+).
+*.nml.bak
+*.nml.backup
+backups/
+
+# ---- Editor / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# ---- Logs / env ----
+*.log
+.env
+.env.*

@@ -1,0 +1,81 @@
+"""API response models (Pydantic)."""
+from __future__ import annotations
+
+from pydantic import BaseModel
+
+
+class Track(BaseModel):
+    """A single track, flattened from a Traktor collection ENTRY."""
+
+    id: str  # primary key: "<VOLUME><DIR><FILE>", used to join playlist entries
+    artist: str | None = None
+    title: str | None = None
+    album: str | None = None
+    genre: str | None = None
+    label: str | None = None
+    remixer: str | None = None
+    producer: str | None = None
+    comment: str | None = None
+    bpm: float | None = None
+    key: str | None = None  # Traktor display key, e.g. "10m"
+    rating: int = 0  # 0-5 stars (derived from RANKING/51)
+    playcount: int | None = None
+    length: int | None = None  # seconds
+    bitrate: int | None = None
+    import_date: str | None = None
+    last_played: str | None = None
+    release_date: str | None = None
+    filepath: str | None = None  # human-readable OS path
+    cue_count: int = 0
+    hotcue_count: int = 0
+    has_grid: bool = False
+
+
+class TrackPage(BaseModel):
+    total: int  # total matching the filter (before pagination)
+    offset: int
+    limit: int
+    items: list[Track]
+
+
+class GenreCount(BaseModel):
+    name: str
+    count: int
+
+
+class Facets(BaseModel):
+    """Distinct values available for building filter UI."""
+
+    genres: list[GenreCount]
+    keys: list[GenreCount]
+    bpm_min: float | None
+    bpm_max: float | None
+    total_tracks: int
+
+
+class Stats(BaseModel):
+    total_tracks: int
+    total_playlists: int
+    rated: int
+    unrated: int
+    missing_key: int
+    missing_genre: int
+    missing_bpm: int
+    no_cues: int
+    rating_breakdown: dict[int, int]  # stars -> count
+    bpm_histogram: list[dict]  # [{bucket: "120-130", count: n}]
+    top_genres: list[GenreCount]
+
+
+class PlaylistNode(BaseModel):
+    """A node in the playlist tree — either a FOLDER or a PLAYLIST/SMARTLIST."""
+
+    id: str  # stable synthetic id ("pl-<n>" / "fld-<n>")
+    name: str
+    type: str  # "FOLDER" | "PLAYLIST" | "SMARTLIST"
+    uuid: str | None = None
+    count: int = 0  # track count (for playlists)
+    children: list["PlaylistNode"] = []
+
+
+PlaylistNode.model_rebuild()
