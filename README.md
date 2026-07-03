@@ -60,7 +60,14 @@ cd frontend && npm run dev
 The Vite dev server proxies `/api` to the backend on port 8000, so both must be
 running. API docs (Swagger UI): **http://localhost:8000/docs**.
 
-To point at a different collection file:
+## Choosing your collection
+
+On launch, Konduktor asks you to pick a `collection.nml` — browse to it in the
+in-app file picker (or paste a full path). You can switch collections any time
+via the file name shown in the bottom-right status bar.
+
+To skip the picker and auto-load a file on startup (handy for development), set
+`KONDUKTOR_NML`:
 
 ```bash
 KONDUKTOR_NML=/path/to/collection.nml uvicorn konduktor.main:app --port 8000
@@ -83,7 +90,8 @@ UI. Click **Save to Traktor** to write them to `collection.nml`.
 > it would clobber your changes otherwise.
 
 **Safety guarantees:**
-- Every save writes a timestamped `.bak` backup first.
+- Every save writes a timestamped `.bak` backup first, into a `backups/` folder
+  next to your collection.
 - Saves are *surgical* — only the `<PLAYLISTS>` section is rewritten; the track
   `COLLECTION` stays byte-for-byte identical.
 - To try it against a copy, point `KONDUKTOR_NML` at one.

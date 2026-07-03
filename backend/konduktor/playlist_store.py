@@ -240,11 +240,15 @@ class PlaylistStore:
             return backup
 
     def _backup(self) -> Path:
+        # Backups live in a `backups/` folder next to the collection, not beside
+        # the file itself (keeps the collection's directory clean).
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
-        backup = self.nml_path.with_name(f"{self.nml_path.name}.{stamp}.bak")
+        backup_dir = self.nml_path.parent / "backups"
+        backup_dir.mkdir(exist_ok=True)
+        backup = backup_dir / f"{self.nml_path.name}.{stamp}.bak"
         n = 1
         while backup.exists():
-            backup = self.nml_path.with_name(f"{self.nml_path.name}.{stamp}-{n}.bak")
+            backup = backup_dir / f"{self.nml_path.name}.{stamp}-{n}.bak"
             n += 1
         shutil.copy2(self.nml_path, backup)
         return backup

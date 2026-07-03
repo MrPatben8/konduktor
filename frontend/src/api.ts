@@ -101,6 +101,26 @@ export interface EditState {
   nml_path: string
 }
 
+export interface CollectionStatus {
+  loaded: boolean
+  path: string | null
+  tracks: number | null
+  playlists: number | null
+}
+
+export interface FsEntry {
+  name: string
+  path: string
+}
+
+export interface FsListing {
+  path: string
+  parent: string | null
+  home: string
+  dirs: FsEntry[]
+  files: FsEntry[]
+}
+
 export interface SaveResult {
   saved: boolean
   backup: string | null
@@ -142,6 +162,13 @@ function qs(params: Record<string, unknown>): string {
 }
 
 export const api = {
+  // ---- collection selection ----
+  collection: () => getJSON<CollectionStatus>('/api/collection'),
+  openCollection: (path: string) =>
+    send<CollectionStatus>('POST', '/api/collection/open', { path }),
+  listDir: (path?: string) =>
+    getJSON<FsListing>(`/api/fs/list${path ? `?path=${encodeURIComponent(path)}` : ''}`),
+
   stats: () => getJSON<Stats>('/api/stats'),
   facets: () => getJSON<Facets>('/api/facets'),
   playlists: () => getJSON<PlaylistNode[]>('/api/playlists'),

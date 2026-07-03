@@ -20,7 +20,11 @@ Two independent apps that talk over HTTP:
     into `Track` objects, indexes them by primary key, and builds the playlist
     tree. All query logic (filter/sort/facets/stats) lives here.
   - `schemas.py` — Pydantic response models.
-  - `main.py` — FastAPI routes (all under `/api`).
+  - `main.py` — FastAPI routes (all under `/api`). Holds an `AppState` with the
+    currently-loaded collection; it starts **unloaded** and the collection is
+    chosen at runtime via `POST /api/collection/open` (data routes 409 until
+    then). `GET /api/fs/list` powers the in-app file browser. Setting
+    `KONDUKTOR_NML` auto-loads on startup (dev/tests).
 - **`frontend/`** — React + TypeScript + Vite. A dark, virtualized track
   explorer. Entry: [frontend/src/App.tsx](frontend/src/App.tsx).
   - `api.ts` — typed client + all API types (keep in sync with backend
@@ -111,7 +115,8 @@ frontend at `http://localhost:5173`.
   model** in memory (create/rename/delete/set-entries). On `save()` it renders
   the model, extracts only the freshly rendered `<PLAYLISTS>…</PLAYLISTS>` span,
   and splices it into the original file bytes — COLLECTION stays byte-identical,
-  and a timestamped `.bak` is written first.
+  and a timestamped `.bak` is written first (into a `backups/` folder next to
+  the collection).
 - **Minimal-diff is load-bearing — do NOT re-serialize with lxml.** lxml
   reformats the whole PLAYLISTS section (~2500 changed lines). The render MUST
   use the library's pipeline: `XmlSerializer().render(nml)` →

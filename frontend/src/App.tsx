@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { SortingState } from '@tanstack/react-table'
 import { api, type Track } from './api'
 import { Sidebar, type Source } from './components/Sidebar'
@@ -9,6 +9,7 @@ import { PlaylistEditor } from './components/PlaylistEditor'
 import { SelectionBar } from './components/SelectionBar'
 import { StatusBar } from './components/StatusBar'
 import { Toast, type ToastMsg } from './components/Toast'
+import { CollectionPicker } from './components/CollectionPicker'
 
 function applyFilters(tracks: Track[], f: Filters): Track[] {
   const q = f.search.trim().toLowerCase()
@@ -31,26 +32,34 @@ function applyFilters(tracks: Track[], f: Filters): Track[] {
 }
 
 export default function App() {
+  const qc = useQueryClient()
   const [source, setSource] = useState<Source>({ kind: 'all' })
   const [filters, setFilters] = useState<Filters>(emptyFilters)
   const [sorting, setSorting] = useState<SortingState>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [toast, setToast] = useState<ToastMsg | null>(null)
+  const [forcePicker, setForcePicker] = useState(false)
 
   const notify = useCallback((kind: ToastMsg['kind'], text: string) => {
     setToast({ id: Date.now(), kind, text })
   }, [])
   const onError = useCallback((msg: string) => notify('error', msg), [notify])
 
+  const collection = useQuery({ queryKey: ['collection'], queryFn: api.collection })
+  const loaded = collection.data?.loaded ?? false
+
+  // NOTE: all hooks must run on every render (Rules of Hooks). Data queries are
+  // gated with `enabled: loaded` so they don't fire before a collection is open;
+  // the loading/picker early-returns live AFTER every hook below.
   const allTracks = useQuery({
     queryKey: ['tracks', 'all'],
     queryFn: () => api.tracks({ limit: 20000, sort: 'artist' }),
-    enabled: source.kind === 'all',
+    enabled: loaded && source.kind === 'all',
   })
   const playlistTracks = useQuery({
     queryKey: ['playlist', source.kind === 'playlist' ? source.id : null],
     queryFn: () => api.playlistTracks((source as { id: string }).id),
-    enabled: source.kind === 'playlist',
+    enabled: loaded && source.kind === 'playlist',
   })
 
   const isAll = source.kind === 'all'
@@ -61,6 +70,32 @@ export default function App() {
     tracks,
     filters,
   ])
+
+  const handleOpened = () => {
+    setForcePicker(false)
+    setSource({ kind: 'all' })
+    setSelected(new Set())
+    setFilters(emptyFilters)
+    setSorting([])
+    qc.invalidateQueries() // refetch everything for the newly-opened collection
+  }
+
+  if (collection.isLoading) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-ink-950 text-muted">
+        Loading…
+      </div>
+    )
+  }
+
+  if (!loaded || forcePicker) {
+    return (
+      <CollectionPicker
+        onOpened={handleOpened}
+        onCancel={loaded ? () => setForcePicker(false) : undefined}
+      />
+    )
+  }
 
   const selectSource = (s: Source) => {
     setSource(s)
@@ -143,6 +178,8 @@ export default function App() {
           total={tracks.length}
           sourceName={isAll ? 'All Tracks' : source.name}
           loading={loading}
+          collectionName={collection.data?.path?.split('/').pop() ?? null}
+          onChangeCollection={() => setForcePicker(true)}
         />
       </main>
     </div>

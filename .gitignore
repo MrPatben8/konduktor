@@ -21,6 +21,7 @@ frontend/dist-ssr/
 # Backups Konduktor will create before any write (Phase 3+).
 *.nml.bak
 *.nml.backup
+*.nml.*.bak
 backups/
 
 # ---- Editor / OS ----

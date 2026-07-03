@@ -106,3 +106,30 @@ class SaveResult(BaseModel):
 class EditState(BaseModel):
     dirty: bool  # unsaved in-memory playlist changes exist
     nml_path: str
+
+
+# ---- collection selection ----
+
+
+class CollectionStatus(BaseModel):
+    loaded: bool
+    path: str | None = None
+    tracks: int | None = None
+    playlists: int | None = None
+
+
+class OpenCollection(BaseModel):
+    path: str
+
+
+class FsEntry(BaseModel):
+    name: str
+    path: str
+
+
+class FsListing(BaseModel):
+    path: str
+    parent: str | None  # None when at filesystem root
+    home: str
+    dirs: list[FsEntry]
+    files: list[FsEntry]  # .nml files only
