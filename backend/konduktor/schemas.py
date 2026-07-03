@@ -79,3 +79,30 @@ class PlaylistNode(BaseModel):
 
 
 PlaylistNode.model_rebuild()
+
+
+# ---- write request bodies ----
+
+
+class CreatePlaylist(BaseModel):
+    name: str
+    parent_id: str | None = None  # folder id ("fld:..."); None = root
+
+
+class RenamePlaylist(BaseModel):
+    name: str
+
+
+class SetEntries(BaseModel):
+    track_ids: list[str]  # ordered; full desired contents of the playlist
+
+
+class SaveResult(BaseModel):
+    saved: bool
+    backup: str | None = None
+    playlists: int
+
+
+class EditState(BaseModel):
+    dirty: bool  # unsaved in-memory playlist changes exist
+    nml_path: str

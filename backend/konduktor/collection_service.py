@@ -48,6 +48,7 @@ class CollectionService:
         self._lock = threading.Lock()
         self.tracks: list[Track] = []
         self.by_key: dict[str, Track] = {}
+        self.stem_keys: set[str] = set()
         self._playlist_entries: dict[str, list[str]] = {}  # id -> ordered primary keys
         self._tree: list[PlaylistNode] = []
         self._playlist_count = 0
@@ -59,6 +60,13 @@ class CollectionService:
             collection = TraktorCollection(path=self.nml_path)
             self.tracks = [self._to_track(e) for e in collection.nml.collection.entry]
             self.by_key = {t.id: t for t in self.tracks}
+            # Tracks with stems use PRIMARYKEY TYPE="STEM" in playlists (verified
+            # 945/945 against the real collection); all others use "TRACK".
+            self.stem_keys = {
+                _primary_key(e.location)
+                for e in collection.nml.collection.entry
+                if e.location and getattr(e, "stems", None) is not None
+            }
             self._playlist_entries = {}
             self._playlist_count = 0
             counter = {"n": 0}
@@ -228,7 +236,16 @@ class CollectionService:
             total_tracks=len(self.tracks),
         )
 
-    def stats(self) -> Stats:
+    def entries_for(self, track_ids: list[str]) -> list[tuple[str, str]]:
+        """Map track ids to (key, PRIMARYKEY-type) pairs for playlist writing.
+        Unknown ids are skipped (can't reference a track not in the collection)."""
+        out = []
+        for tid in track_ids:
+            if tid in self.by_key:
+                out.append((tid, "STEM" if tid in self.stem_keys else "TRACK"))
+        return out
+
+    def stats(self, playlist_count: int | None = None) -> Stats:
         rating_breakdown = {i: 0 for i in range(6)}
         genres: dict[str, int] = {}
         bpm_buckets: dict[str, int] = {}
@@ -259,7 +276,7 @@ class CollectionService:
         top = sorted(genres.items(), key=lambda x: -x[1])[:10]
         return Stats(
             total_tracks=total,
-            total_playlists=self._playlist_count,
+            total_playlists=self._playlist_count if playlist_count is None else playlist_count,
             rated=rated,
             unrated=total - rated,
             missing_key=missing_key,

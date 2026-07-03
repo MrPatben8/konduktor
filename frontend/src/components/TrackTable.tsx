@@ -96,15 +96,21 @@ const columns = [
   }),
 ]
 
+interface Selection {
+  selected: Set<string>
+  onToggle: (id: string) => void
+  onToggleAll: () => void
+  allSelected: boolean
+}
+
 interface Props {
   tracks: Track[]
   sorting: SortingState
   onSortingChange: (s: SortingState) => void
-  // Playlists have a meaningful order; disable default sort to preserve it.
-  ordered?: boolean
+  selection?: Selection
 }
 
-export function TrackTable({ tracks, sorting, onSortingChange }: Props) {
+export function TrackTable({ tracks, sorting, onSortingChange, selection }: Props) {
   const table = useReactTable({
     data: tracks,
     columns,
@@ -137,7 +143,19 @@ export function TrackTable({ tracks, sorting, onSortingChange }: Props) {
       <div style={{ width: totalWidth, minWidth: '100%' }}>
         {/* Header */}
         <div className="sticky top-0 z-10 flex border-b border-line bg-ink-850">
-          <span className="w-10 shrink-0" />
+          {selection ? (
+            <span className="flex w-10 shrink-0 items-center justify-center">
+              <input
+                type="checkbox"
+                checked={selection.allSelected}
+                onChange={selection.onToggleAll}
+                className="accent-accent"
+                title="Select all"
+              />
+            </span>
+          ) : (
+            <span className="w-10 shrink-0" />
+          )}
           {table.getHeaderGroups()[0].headers.map((header) => {
             const sorted = header.column.getIsSorted()
             return (
@@ -160,10 +178,13 @@ export function TrackTable({ tracks, sorting, onSortingChange }: Props) {
         <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
           {virtualRows.map((vr) => {
             const row = rows[vr.index]
+            const isSelected = selection?.selected.has(row.original.id) ?? false
             return (
               <div
                 key={row.id}
-                className="absolute left-0 flex items-center border-b border-ink-850 text-sm hover:bg-ink-850"
+                className={`absolute left-0 flex items-center border-b border-ink-850 text-sm ${
+                  isSelected ? 'bg-accent-soft/50' : 'hover:bg-ink-850'
+                }`}
                 style={{
                   top: 0,
                   transform: `translateY(${vr.start}px)`,
@@ -171,9 +192,20 @@ export function TrackTable({ tracks, sorting, onSortingChange }: Props) {
                   width: '100%',
                 }}
               >
-                <span className="w-10 shrink-0 pr-2 text-right text-xs tabular-nums text-faint">
-                  {vr.index + 1}
-                </span>
+                {selection ? (
+                  <span className="flex w-10 shrink-0 items-center justify-center">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => selection.onToggle(row.original.id)}
+                      className="accent-accent"
+                    />
+                  </span>
+                ) : (
+                  <span className="w-10 shrink-0 pr-2 text-right text-xs tabular-nums text-faint">
+                    {vr.index + 1}
+                  </span>
+                )}
                 {row.getVisibleCells().map((cell) => (
                   <div
                     key={cell.id}

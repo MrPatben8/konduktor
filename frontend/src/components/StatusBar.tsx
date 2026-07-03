@@ -23,7 +23,7 @@ export function StatusBar({ showing, total, sourceName, loading }: Props) {
           )}
         </span>
       )}
-      <span className="ml-auto text-faint">konduktor · phase 2</span>
+      <span className="ml-auto text-faint">konduktor · phase 3</span>
     </div>
   )
 }

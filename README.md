@@ -70,8 +70,23 @@ KONDUKTOR_NML=/path/to/collection.nml uvicorn konduktor.main:app --port 8000
 
 - ✅ **Phase 1** — backend core + read-only API
 - ✅ **Phase 2** — track explorer UI (grid, search, filters, playlist browsing)
-- ⬜ **Phase 3** — playlist editing / creation, with backup-first safe saves
+- ✅ **Phase 3** — playlist editing/creation (drag-reorder, add/remove, rename,
+  delete) with surgical, backup-first saves
 - ⬜ **Phase 4** — polish + optional Tauri desktop packaging
 
-**Safety:** the app never writes to your `.nml`. Writing arrives in Phase 3 and
-will always back up first.
+## Editing & saving (Phase 3)
+
+Playlist edits (create/rename/delete, add/remove, drag-reorder) are live in the
+UI. Click **Save to Traktor** to write them to `collection.nml`.
+
+> **Close Traktor before saving** — it overwrites `collection.nml` on exit, so
+> it would clobber your changes otherwise.
+
+**Safety guarantees:**
+- Every save writes a timestamped `.bak` backup first.
+- Saves are *surgical* — only the `<PLAYLISTS>` section is rewritten; the track
+  `COLLECTION` stays byte-for-byte identical.
+- To try it against a copy, point `KONDUKTOR_NML` at one.
+
+The backend test `backend/test_phase3.py` exercises the full write path against
+a temp copy and asserts these guarantees.

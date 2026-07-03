@@ -47,9 +47,17 @@ npm run dev          # dev server (proxies /api -> :8000)
 npm run build        # tsc -b && vite build — run this to typecheck
 ```
 
-There is no test suite yet. Validate the backend with the Swagger UI at
-`http://localhost:8000/docs`; validate the frontend by loading
-`http://localhost:5173`.
+**Tests:** `cd backend && ./run_tests.sh` (runs against a temp copy of the real
+collection). **ALWAYS run this before changing anything in the save /
+serialization path.** It enforces:
+- `test_save_fidelity.py` — a no-op save is byte-identical, and an edit changes
+  only the edited playlist's block (this is the guard that catches serialization
+  regressions like the lxml reformatting bug).
+- `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
+  Traktor-valid, backup-first, COLLECTION byte-identical, original untouched.
+
+Also validate the backend interactively at `http://localhost:8000/docs` and the
+frontend at `http://localhost:5173`.
 
 ## Critical gotchas — read these
 
@@ -94,5 +102,29 @@ There is no test suite yet. Validate the backend with the Swagger UI at
 
 - ✅ Phase 1 — backend core + read-only API
 - ✅ Phase 2 — track explorer UI
-- ⬜ Phase 3 — playlist editing/creation + safe (backup-first, surgical) saves
+- ✅ Phase 3 — playlist editing/creation + safe (backup-first, surgical) saves
 - ⬜ Phase 4 — polish + optional Tauri desktop packaging
+
+## Phase 3 write path (playlists)
+
+- `playlist_store.py` (`PlaylistStore`) edits the **traktor-nml-utils dataclass
+  model** in memory (create/rename/delete/set-entries). On `save()` it renders
+  the model, extracts only the freshly rendered `<PLAYLISTS>…</PLAYLISTS>` span,
+  and splices it into the original file bytes — COLLECTION stays byte-identical,
+  and a timestamped `.bak` is written first.
+- **Minimal-diff is load-bearing — do NOT re-serialize with lxml.** lxml
+  reformats the whole PLAYLISTS section (~2500 changed lines). The render MUST
+  use the library's pipeline: `XmlSerializer().render(nml)` →
+  `restore_traktor_float_format(s, nml)` → `format_traktor_layout(s)` (both
+  imported from `traktor_nml_utils`). That reproduces Traktor's exact layout, so
+  unedited playlists stay byte-identical and only edited entries diff (verified:
+  a 13-track reorder changes exactly 24 lines).
+- Playlists are keyed by their stable `UUID`; folders by synthetic path id
+  (`fld:<name>/<name>`). PRIMARYKEY `TYPE` is `STEM` if the track has a STEMS
+  child (`CollectionService.stem_keys`, resolved via `entries_for`), else
+  `TRACK`.
+- `POST /api/save` always writes (backup-first); no write gate. Endpoints:
+  `POST/PATCH/DELETE /api/playlists[...]`, `PUT .../entries` (replace),
+  `POST .../add` (append), `POST /api/save`.
+- Test: `backend/test_phase3.py` (runs against a temp copy; asserts surgical +
+  backup + Traktor-valid). Run: `python test_phase3.py` in the backend venv.
