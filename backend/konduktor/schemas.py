@@ -130,7 +130,19 @@ class CuePoint(BaseModel):
 class TrackCues(BaseModel):
     bpm: float | None = None  # beatgrid BPM (from the grid marker; falls back to tempo)
     grid_anchor: float | None = None  # seconds — first grid marker (beat 1 of the grid)
+    locked: bool = False  # Traktor LOCK flag
     cues: list[CuePoint] = []  # cue/loop markers (grid markers excluded)
+
+
+class GridEdit(BaseModel):
+    track_id: str
+    bpm: float | None = None  # set the beatgrid tempo
+    anchor: float | None = None  # set the grid marker (beat 1) position, in seconds
+
+
+class SetLock(BaseModel):
+    track_id: str
+    locked: bool
 
 
 class SetHotcue(BaseModel):

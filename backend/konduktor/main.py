@@ -25,6 +25,7 @@ from .schemas import (
     FileTagOutcome,
     FsEntry,
     FsListing,
+    GridEdit,
     OpenCollection,
     PlaylistNode,
     RenamePlaylist,
@@ -32,6 +33,7 @@ from .schemas import (
     SetEntries,
     SetHotcue,
     SetHotcueType,
+    SetLock,
     Stats,
     Track,
     TrackCues,
@@ -355,7 +357,9 @@ def _build_track_cues(entry) -> TrackCues:
             )
         )
     bpm = grid_bpm if grid_bpm is not None else (entry.tempo.bpm if entry.tempo else None)
-    return TrackCues(bpm=bpm, grid_anchor=grid_anchor, cues=cues)
+    return TrackCues(
+        bpm=bpm, grid_anchor=grid_anchor, locked=bool(entry.lock), cues=cues
+    )
 
 
 def _cues_for(track_id: str) -> TrackCues:
@@ -410,6 +414,36 @@ def delete_hotcue(track_id: str, slot: int) -> TrackCues:
     except PlaylistError as ex:
         raise HTTPException(400, str(ex))
     return _sync_cue_edit(track_id)
+
+
+@app.patch("/api/tracks/grid", response_model=TrackCues)
+def edit_grid(body: GridEdit) -> TrackCues:
+    """Set the beatgrid BPM and/or move the grid marker (beat 1)."""
+    try:
+        require_store().set_grid(body.track_id, body.bpm, body.anchor)
+    except PlaylistError as ex:
+        raise HTTPException(400, str(ex))
+    return _sync_cue_edit(body.track_id)
+
+
+@app.delete("/api/tracks/grid", response_model=TrackCues)
+def remove_grid(track_id: str) -> TrackCues:
+    """Delete the track's grid marker(s)."""
+    try:
+        require_store().delete_grid(track_id)
+    except PlaylistError as ex:
+        raise HTTPException(400, str(ex))
+    return _sync_cue_edit(track_id)
+
+
+@app.patch("/api/tracks/lock", response_model=TrackCues)
+def edit_lock(body: SetLock) -> TrackCues:
+    """Toggle Traktor's LOCK flag on a track."""
+    try:
+        require_store().set_lock(body.track_id, body.locked)
+    except PlaylistError as ex:
+        raise HTTPException(400, str(ex))
+    return _sync_cue_edit(body.track_id)
 
 
 @app.put("/api/tracks/art")

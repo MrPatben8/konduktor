@@ -109,6 +109,7 @@ export interface CuePoint {
 export interface TrackCues {
   bpm: number | null
   grid_anchor: number | null // seconds
+  locked: boolean
   cues: CuePoint[]
 }
 
@@ -233,6 +234,12 @@ export const api = {
       'DELETE',
       `/api/tracks/hotcue?track_id=${encodeURIComponent(trackId)}&slot=${slot}`,
     ),
+  setGrid: (trackId: string, patch: { bpm?: number; anchor?: number }) =>
+    send<TrackCues>('PATCH', '/api/tracks/grid', { track_id: trackId, ...patch }),
+  deleteGrid: (trackId: string) =>
+    send<TrackCues>('DELETE', `/api/tracks/grid?track_id=${encodeURIComponent(trackId)}`),
+  setLock: (trackId: string, locked: boolean) =>
+    send<TrackCues>('PATCH', '/api/tracks/lock', { track_id: trackId, locked }),
   uploadArt: async (trackId: string, file: File) => {
     const fd = new FormData()
     fd.append('track_id', trackId)

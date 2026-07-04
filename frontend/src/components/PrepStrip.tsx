@@ -4,6 +4,7 @@ import { api, type Track, type TrackCues } from '../api'
 import { analyzeWaveform, type WaveColumn } from '../lib/waveform'
 import { ScratchEngine } from '../lib/scratchEngine'
 import { PlaybackEngine } from '../lib/playbackEngine'
+import { GridControls } from './GridControls'
 import { HotcueBar } from './HotcueBar'
 import { LoopControls } from './LoopControls'
 import { MainWaveform } from './MainWaveform'
@@ -55,8 +56,10 @@ export function PrepStrip({ track, onError }: Props) {
   const [loopActive, setLoopActive] = useState(false)
   const [activeBeats, setActiveBeats] = useState<number | null>(null)
   const loopInRef = useRef<number | null>(null) // armed manual loop-in point
+  const originalGridRef = useRef<{ bpm: number | null; anchor: number | null } | null>(null)
 
-  const audioCtxRef = useRef<AudioContext | null>(null)
+  const audioCtxRef = useRef<AudioContext | null>(null) // playback
+  const scratchCtxRef = useRef<AudioContext | null>(null) // scratch (kept separate!)
   const playbackRef = useRef<PlaybackEngine | null>(null)
   const scratchRef = useRef<ScratchEngine | null>(null)
   const wasPlayingRef = useRef(false)
@@ -72,6 +75,18 @@ export function PrepStrip({ track, onError }: Props) {
     }
     void audioCtxRef.current.resume()
     return audioCtxRef.current
+  }
+
+  // The scratch engine gets its OWN AudioContext: a ScriptProcessorNode is
+  // unreliable sharing a context with the playback source node (it goes silent
+  // once a source has played), so we keep them fully separate.
+  const getScratchCtx = (): AudioContext => {
+    if (!scratchCtxRef.current) {
+      scratchCtxRef.current = new (window.AudioContext ??
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)()
+    }
+    void scratchCtxRef.current.resume()
+    return scratchCtxRef.current
   }
 
   // Reset transport + loop state when the loaded track changes.
@@ -91,6 +106,7 @@ export function PrepStrip({ track, onError }: Props) {
   // Analyse once per track; the decoded buffer feeds both the playback and
   // scratch engines (no re-decode) and both waveform views share the columns.
   useEffect(() => {
+    scratchRef.current?.dispose()
     scratchRef.current = null
     if (!trackId) {
       setCols(null)
@@ -105,10 +121,11 @@ export function PrepStrip({ track, onError }: Props) {
         if (cancelled) return
         setCols(res.cols)
         setWaveStatus('ready')
+        const ctx = getCtx()
         const sc = new ScratchEngine()
         sc.load(res.buffer)
+        sc.attach(getScratchCtx()) // own context; warm up so the first scratch isn't silent
         scratchRef.current = sc
-        const ctx = getCtx()
         if (!playbackRef.current) {
           playbackRef.current = new PlaybackEngine()
           playbackRef.current.setOnEnded(() => setPlaying(false))
@@ -136,7 +153,10 @@ export function PrepStrip({ track, onError }: Props) {
     api
       .trackCues(trackId)
       .then((d) => {
-        if (!cancelled) setCueData(d)
+        if (cancelled) return
+        setCueData(d)
+        // Remember the loaded grid values for "Reset".
+        originalGridRef.current = { bpm: d.bpm, anchor: d.grid_anchor }
       })
       .catch(() => {
         if (!cancelled) setCueData(null)
@@ -233,7 +253,7 @@ export function PrepStrip({ track, onError }: Props) {
       setPlaying(false)
     }
     if (sc && sc.loaded) {
-      sc.begin(getCtx(), current)
+      sc.begin(getScratchCtx(), current)
       engagedRef.current = true
       runScratchRaf()
     }
@@ -393,6 +413,48 @@ export function PrepStrip({ track, onError }: Props) {
     }
   }
 
+  // ---- beatgrid ---------------------------------------------------------
+  const gridBpm = cueData?.bpm ?? null
+  const gridAnchor = cueData?.grid_anchor ?? null
+
+  const editGrid = async (patch: { bpm?: number; anchor?: number }) => {
+    if (!track) return
+    try {
+      applyCueEdit(await api.setGrid(track.id, patch))
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+  const setBpm = (bpm: number) => editGrid({ bpm })
+  const halveBpm = () => gridBpm && editGrid({ bpm: gridBpm / 2 })
+  const doubleBpm = () => gridBpm && editGrid({ bpm: gridBpm * 2 })
+  const nudgeGrid = (deltaMs: number) => {
+    if (gridAnchor == null) return
+    editGrid({ anchor: Math.max(0, gridAnchor + deltaMs / 1000) })
+  }
+  const setGridHere = () => editGrid({ anchor: playbackRef.current?.getPosition() ?? current })
+  const resetGrid = () => {
+    const o = originalGridRef.current
+    if (!o) return
+    editGrid({ bpm: o.bpm ?? undefined, anchor: o.anchor ?? undefined })
+  }
+  const toggleLock = async () => {
+    if (!track) return
+    try {
+      applyCueEdit(await api.setLock(track.id, !cueData?.locked))
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+  const deleteGrid = async () => {
+    if (!track) return
+    try {
+      applyCueEdit(await api.deleteGrid(track.id))
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+
   const selectedCue = selectedSlot != null ? hotcueAt(selectedSlot) : null
   const showWaves = track && cols && waveStatus === 'ready'
   const activeLoop = loopActive && loopRegion ? loopRegion : null
@@ -400,7 +462,7 @@ export function PrepStrip({ track, onError }: Props) {
   return (
     <div className="flex h-72 shrink-0 items-stretch gap-px border-b border-line bg-ink-950">
       {/* Controls */}
-      <div className="flex w-72 shrink-0 flex-col justify-between bg-ink-900 px-4 py-3">
+      <div className="flex w-72 shrink-0 flex-col gap-3 bg-ink-900 px-4 py-3">
         <div className="min-w-0">
           {track ? (
             <>
@@ -416,7 +478,23 @@ export function PrepStrip({ track, onError }: Props) {
           )}
         </div>
 
-        <div className="flex items-center gap-3">
+        {track && (
+          <GridControls
+            bpm={gridBpm}
+            locked={cueData?.locked ?? false}
+            hasGrid={gridAnchor != null}
+            onSetBpm={setBpm}
+            onHalve={halveBpm}
+            onDouble={doubleBpm}
+            onNudge={nudgeGrid}
+            onSetHere={setGridHere}
+            onReset={resetGrid}
+            onToggleLock={toggleLock}
+            onDeleteGrid={deleteGrid}
+          />
+        )}
+
+        <div className="mt-auto flex items-center gap-3">
           <button
             onClick={toggle}
             disabled={!ready}

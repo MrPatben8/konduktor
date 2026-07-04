@@ -7,11 +7,12 @@
 // On release the engine coasts: it keeps the drag velocity and eases it toward a
 // target speed with friction (momentum/flywheel feel) — to a stop if playback was
 // paused, or up to normal speed if it was playing. When it settles, `finished`
-// flips true and the caller hands the position back to the <audio> element.
+// flips true and the caller hands the position back to the playback engine.
 //
-// Uses a ScriptProcessorNode: deprecated but universally supported and runs on
-// the main thread, so `position`/`finished` are directly readable for visual
-// sync. Moving to an AudioWorklet is the natural hardening step later.
+// The ScriptProcessorNode is created ONCE (via attach) and kept alive, sitting in
+// an 'idle' mode that outputs silence between scratches. Creating it fresh per
+// scratch caused a start-up delay where a short drag was silent until the node
+// began firing; a warmed-up persistent node produces sound immediately.
 
 const BUFFER_SIZE = 512
 const GLIDE = 400 // samples: how tightly position chases the target while dragging
@@ -19,7 +20,7 @@ const RATE_CAP = 12 // max samples advanced per output sample (pitch ceiling)
 const INERTIA_FRICTION = 0.9998 // per-sample easing toward the target velocity (~0.4s spin-down)
 const SETTLE_EPS = 0.02 // |velocity - target| below this → settled
 
-type Mode = 'drag' | 'inertia' | 'done'
+type Mode = 'idle' | 'drag' | 'inertia' | 'done'
 
 export class ScratchEngine {
   private channels: Float32Array[] = []
@@ -31,12 +32,15 @@ export class ScratchEngine {
   private target = 0 // drag target, in source samples
   private velocity = 0 // source samples advanced per output sample
   private targetVelocity = 0 // inertia goal
-  private mode: Mode = 'drag'
+  private mode: Mode = 'idle'
 
   load(buffer: AudioBuffer): void {
+    // COPY the PCM — do NOT hold getChannelData() views. When the playback engine
+    // plays this same AudioBuffer, the browser (Firefox) "acquires the content"
+    // and detaches those views to zero-length, which would silence the scratch.
     this.channels = []
     for (let c = 0; c < buffer.numberOfChannels; c++) {
-      this.channels.push(buffer.getChannelData(c))
+      this.channels.push(new Float32Array(buffer.getChannelData(c)))
     }
     this.length = buffer.length
     this.sr = buffer.sampleRate
@@ -54,20 +58,25 @@ export class ScratchEngine {
     return this.position / this.sr
   }
 
-  /** Enter scratch mode at the given position (creates the audio node if needed). */
-  begin(ctx: AudioContext, positionSec: number): void {
-    if (!this.loaded) return
+  /** Create the (persistent, idle) audio node once. Safe to call repeatedly. */
+  attach(ctx: AudioContext): void {
     this.ctxRate = ctx.sampleRate
-    this.position = positionSec * this.sr
-    this.target = this.position
-    this.velocity = 0
-    this.mode = 'drag'
     if (!this.node) {
       const node = ctx.createScriptProcessor(BUFFER_SIZE, 0, 2)
       node.onaudioprocess = (e) => this.render(e)
       node.connect(ctx.destination)
       this.node = node
     }
+  }
+
+  /** Enter scratch mode at the given position (node is already running). */
+  begin(ctx: AudioContext, positionSec: number): void {
+    if (!this.loaded) return
+    this.attach(ctx)
+    this.position = positionSec * this.sr
+    this.target = this.position
+    this.velocity = 0
+    this.mode = 'drag'
   }
 
   /** Re-grab while the platter is still coasting: resume dragging from here. */
@@ -87,14 +96,19 @@ export class ScratchEngine {
     this.mode = 'inertia'
   }
 
-  /** Tear down the audio node; returns the final position (seconds). */
+  /** Leave scratch mode; the node stays alive (idle). Returns final position (s). */
   end(): number {
+    this.mode = 'idle'
+    return this.position / this.sr
+  }
+
+  /** Tear down the node (on track change / unmount). */
+  dispose(): void {
     if (this.node) {
       this.node.disconnect()
       this.node.onaudioprocess = null
       this.node = null
     }
-    return this.position / this.sr
   }
 
   private sample(outs: Float32Array[], i: number, chN: number): void {
@@ -138,6 +152,7 @@ export class ScratchEngine {
           this.mode = 'done'
         }
       } else {
+        // idle / done → silent (node stays alive and firing).
         this.silence(outs, i, chN)
         continue
       }

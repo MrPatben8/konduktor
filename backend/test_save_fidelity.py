@@ -226,5 +226,71 @@ with tempfile.TemporaryDirectory() as d:
     store2.save()
     check("create+delete round-trips to the original bytes", work.read_bytes() == original)
 
+# ---- Invariant E: a beatgrid edit is fully localized -------------------
+print("== E. grid/bpm edit touches only that track's ENTRY ==")
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    original = work.read_bytes()
+
+    store = PlaylistStore(work)
+    # first entry that has both a tempo and a grid marker
+    entry = next(
+        e
+        for e in store._nml.collection.entry
+        if e.tempo and store._grid_marker(e) is not None
+    )
+    loc = entry.location
+    track_id = f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}"
+    orig_bpm = entry.tempo.bpm
+
+    store.set_grid(track_id, bpm=orig_bpm / 2, anchor_sec=1.5)
+    store.save()
+    edited = work.read_bytes()
+
+    check("file actually changed", original != edited)
+
+    def entry_span(data: bytes, file_name: str):
+        marker = f'FILE="{file_name}"'.encode()
+        i = data.find(marker)
+        start = data.rfind(b"<ENTRY ", 0, i)
+        end = data.find(b"</ENTRY>", i) + len(b"</ENTRY>")
+        return start, end
+
+    os_, oe = entry_span(original, loc.file)
+    es_, ee = entry_span(edited, loc.file)
+    check(
+        "everything outside the edited track's ENTRY is byte-identical",
+        original[:os_] + b"@@" + original[oe:] == edited[:es_] + b"@@" + edited[ee:],
+    )
+
+    from traktor_nml_utils import TraktorCollection
+
+    reparsed = TraktorCollection(path=work)
+    e0 = next(
+        e
+        for e in reparsed.nml.collection.entry
+        if e.location
+        and f"{e.location.volume or ''}{e.location.dir or ''}{e.location.file or ''}" == track_id
+    )
+    m = store._grid_marker(e0)
+    check("tempo BPM halved + persisted", abs(e0.tempo.bpm - orig_bpm / 2) < 1e-3)
+    check("grid marker BPM matches tempo", m is not None and abs(m.grid.bpm - orig_bpm / 2) < 1e-3)
+    check("grid anchor moved to 1.5s (1500 ms)", m is not None and abs(m.start - 1500.0) < 1)
+
+    # Reverting BPM + anchor to the original values round-trips to the file.
+    orig_anchor_ms = store._grid_marker(
+        next(
+            e
+            for e in TraktorCollection(path=REAL).nml.collection.entry
+            if e.location
+            and f"{e.location.volume or ''}{e.location.dir or ''}{e.location.file or ''}" == track_id
+        )
+    ).start
+    store2 = PlaylistStore(work)
+    store2.set_grid(track_id, bpm=orig_bpm, anchor_sec=orig_anchor_ms / 1000.0)
+    store2.save()
+    check("revert BPM + anchor round-trips to original bytes", work.read_bytes() == original)
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

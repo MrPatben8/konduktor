@@ -33,11 +33,13 @@ from traktor_nml_utils.models.collection import (
     Albumtype,
     CueV2Type,
     Entrytype,
+    GridType,
     Infotype,
     Nodetype,
     Playlisttype,
     Primarykeytype,
     Subnodestype,
+    Tempotype,
 )
 from xsdata.formats.dataclass.serializers import XmlSerializer
 
@@ -334,6 +336,69 @@ class PlaylistStore:
         with self._lock:
             entry = self._entry_or_raise(track_id)
             entry.cue_v2 = [c for c in (entry.cue_v2 or []) if c.hotcue != slot]
+            self.dirty = True
+
+    # ---- beatgrid -----------------------------------------------------
+    @staticmethod
+    def _grid_marker(entry: Entrytype) -> CueV2Type | None:
+        return next(
+            (c for c in (entry.cue_v2 or []) if getattr(c, "grid", None) is not None), None
+        )
+
+    def set_grid(
+        self, track_id: str, bpm: float | None = None, anchor_sec: float | None = None
+    ) -> None:
+        """Set the beatgrid tempo (TEMPO + grid marker BPM) and/or move the grid
+        marker (beat 1). Creates a grid marker if the track has none."""
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            marker = self._grid_marker(entry)
+            if bpm is not None:
+                if bpm <= 0:
+                    raise PlaylistError(f"BPM must be positive: {bpm}")
+                if entry.tempo is None:
+                    entry.tempo = Tempotype(bpm=bpm, bpm_quality=100.0)
+                else:
+                    entry.tempo.bpm = bpm
+                if marker is not None and marker.grid is not None:
+                    marker.grid.bpm = bpm
+            if anchor_sec is not None:
+                start_ms = max(0.0, anchor_sec * 1000.0)
+                if marker is not None:
+                    marker.start = start_ms
+                else:
+                    grid_bpm = bpm if bpm is not None else (entry.tempo.bpm if entry.tempo else None)
+                    if grid_bpm is None:
+                        raise PlaylistError("No BPM available to create a beatgrid")
+                    if entry.cue_v2 is None:
+                        entry.cue_v2 = []
+                    entry.cue_v2.append(
+                        CueV2Type(
+                            name="AutoGrid",
+                            displ_order=0,
+                            type=4,
+                            start=start_ms,
+                            len=0.0,
+                            repeats=-1,
+                            hotcue=-1,
+                            color=None,
+                            grid=GridType(bpm=grid_bpm),
+                        )
+                    )
+            self.dirty = True
+
+    def delete_grid(self, track_id: str) -> None:
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            entry.cue_v2 = [
+                c for c in (entry.cue_v2 or []) if getattr(c, "grid", None) is None
+            ]
+            self.dirty = True
+
+    def set_lock(self, track_id: str, locked: bool) -> None:
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            entry.lock = 1 if locked else None
             self.dirty = True
 
     # ---- cover art -----------------------------------------------------
