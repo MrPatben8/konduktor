@@ -115,6 +115,24 @@ export default function App() {
   }, [])
   const onError = useCallback((msg: string) => notify('error', msg), [notify])
 
+  // Inline single-field edit from a double-clicked table cell.
+  const editField = useCallback(
+    (track: Track, field: keyof Track, value: string | number) => {
+      api
+        .editTrack(track.id, { [field]: value })
+        .then(() => {
+          qc.invalidateQueries({ queryKey: ['tracks'] })
+          qc.invalidateQueries({ queryKey: ['playlist'] })
+          qc.invalidateQueries({ queryKey: ['state'] })
+          qc.invalidateQueries({ queryKey: ['facets'] })
+          qc.invalidateQueries({ queryKey: ['stats'] })
+          notify('success', `Updated ${String(field)} — Save to write to Traktor`)
+        })
+        .catch((e) => onError((e as Error).message))
+    },
+    [qc, notify, onError],
+  )
+
   const collection = useQuery({ queryKey: ['collection'], queryFn: api.collection })
   const loaded = collection.data?.loaded ?? false
 
@@ -254,6 +272,7 @@ export default function App() {
                 }}
                 onRowContextMenu={(track, x, y) => setMenu({ track, x, y })}
                 onPlay={playTrack}
+                onEditField={editField}
                 activeTrackId={prepTrack?.id ?? null}
                 columnVisibility={columnVisibility}
                 columnOrder={columnOrder}

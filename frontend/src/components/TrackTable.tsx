@@ -48,6 +48,7 @@ interface Props {
   selection?: Selection
   onRowContextMenu?: (track: Track, x: number, y: number) => void
   onPlay?: (track: Track) => void
+  onEditField?: (track: Track, field: keyof Track, value: string | number) => void
   activeTrackId?: string | null
 }
 
@@ -106,12 +107,14 @@ export function TrackTable({
   selection,
   onRowContextMenu,
   onPlay,
+  onEditField,
   activeTrackId,
 }: Props) {
   const table = useReactTable({
     data: tracks,
     columns: TRACK_COLUMNS,
     state: { sorting, columnVisibility, columnOrder, columnSizing },
+    meta: { onEditField },
     onSortingChange: (updater) =>
       onSortingChange(typeof updater === 'function' ? updater(sorting) : updater),
     onColumnSizingChange: (updater) =>

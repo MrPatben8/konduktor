@@ -2,24 +2,98 @@
 // their default widths/visibility/order, and the (id,label) list the "Columns"
 // menu renders. Both TrackTable and the Toolbar menu read from here so they stay
 // in sync. Column layout (visibility, order, sizing) is persisted to userprefs.
-import { createColumnHelper, type ColumnDef, type VisibilityState } from '@tanstack/react-table'
+//
+// Safe metadata fields are inline-editable: double-click a cell value to edit it
+// (the right-click "Edit Tags" dialog remains for multi-field edits). Editing is
+// wired through the table's `meta.onEditField` (see the module augmentation).
+import { useState, type ReactNode } from 'react'
+import {
+  createColumnHelper,
+  type CellContext,
+  type ColumnDef,
+  type RowData,
+  type VisibilityState,
+} from '@tanstack/react-table'
 import type { Track } from '../api'
 import { formatBpm, formatDuration, keyColor } from './format'
 import { RatingStars } from '../components/RatingStars'
 
-const col = createColumnHelper<Track>()
-
-function dash(v: string | null | undefined) {
-  const s = v?.toString().trim()
-  return s ? <span className="truncate text-muted">{s}</span> : <span className="text-faint">—</span>
+declare module '@tanstack/react-table' {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  interface TableMeta<TData extends RowData> {
+    onEditField?: (track: Track, field: keyof Track, value: string | number) => void
+  }
 }
 
-// Traktor dates arrive as "YYYY/M/D" strings; show them compactly (or raw).
-function formatDate(v: string | null): string {
-  if (!v) return '—'
-  const m = v.match(/(\d{4})\/(\d{1,2})\/(\d{1,2})/)
-  if (!m) return v
-  return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`
+const col = createColumnHelper<Track>()
+
+// Double-click-to-edit text cell. Shows `display` (or the raw value) until the
+// user double-clicks, then an input; commits on Enter/blur, cancels on Escape.
+function InlineEdit({
+  value,
+  display,
+  onCommit,
+  className = 'w-full min-w-0 truncate text-muted',
+}: {
+  value: string | null
+  display?: ReactNode
+  onCommit: (v: string) => void
+  className?: string
+}) {
+  const [editing, setEditing] = useState(false)
+  const [val, setVal] = useState('')
+
+  if (editing) {
+    const commit = () => {
+      setEditing(false)
+      if (val !== (value ?? '')) onCommit(val)
+    }
+    return (
+      <input
+        autoFocus
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            commit()
+          } else if (e.key === 'Escape') {
+            e.preventDefault()
+            setEditing(false)
+          }
+          e.stopPropagation()
+        }}
+        onClick={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+        className="w-full min-w-0 rounded bg-ink-800 px-1 py-0.5 text-sm text-text outline-none ring-1 ring-accent"
+      />
+    )
+  }
+  return (
+    <div
+      onDoubleClick={(e) => {
+        e.stopPropagation()
+        setVal(value ?? '')
+        setEditing(true)
+      }}
+      className={className}
+      title="Double-click to edit"
+    >
+      {display ?? (value?.trim() ? value : <span className="text-faint">—</span>)}
+    </div>
+  )
+}
+
+// Cell renderer factory for a plain editable text field.
+function editable(field: keyof Track, className?: string) {
+  return (c: CellContext<Track, unknown>) => (
+    <InlineEdit
+      value={c.getValue() as string | null}
+      className={className}
+      onCommit={(v) => c.table.options.meta?.onEditField?.(c.row.original, field, v)}
+    />
+  )
 }
 
 export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
@@ -27,22 +101,34 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
     id: 'title',
     header: 'Title',
     size: 300,
-    cell: (c) => (
-      <div className="min-w-0">
-        <div className="truncate font-medium text-text">
-          {c.getValue() || <span className="text-faint">Untitled</span>}
+    cell: (c) => {
+      const r = c.row.original
+      const edit = c.table.options.meta?.onEditField
+      const title = c.getValue() as string | null
+      return (
+        <div className="min-w-0">
+          <InlineEdit
+            value={title}
+            display={title || <span className="text-faint">Untitled</span>}
+            className="w-full min-w-0 truncate font-medium text-text"
+            onCommit={(v) => edit?.(r, 'title', v)}
+          />
+          <InlineEdit
+            value={r.artist}
+            className="w-full min-w-0 truncate text-xs text-muted"
+            onCommit={(v) => edit?.(r, 'artist', v)}
+          />
         </div>
-        <div className="truncate text-xs text-muted">{c.row.original.artist}</div>
-      </div>
-    ),
+      )
+    },
   }),
-  col.accessor('album', { id: 'album', header: 'Album', size: 180, cell: (c) => dash(c.getValue()) }),
-  col.accessor('genre', { id: 'genre', header: 'Genre', size: 140, cell: (c) => dash(c.getValue()) }),
-  col.accessor('label', { id: 'label', header: 'Label', size: 140, cell: (c) => dash(c.getValue()) }),
-  col.accessor('remixer', { id: 'remixer', header: 'Remixer', size: 140, cell: (c) => dash(c.getValue()) }),
-  col.accessor('producer', { id: 'producer', header: 'Producer', size: 140, cell: (c) => dash(c.getValue()) }),
-  col.accessor('mix', { id: 'mix', header: 'Mix', size: 120, cell: (c) => dash(c.getValue()) }),
-  col.accessor('comment', { id: 'comment', header: 'Comment', size: 200, cell: (c) => dash(c.getValue()) }),
+  col.accessor('album', { id: 'album', header: 'Album', size: 180, cell: editable('album') }),
+  col.accessor('genre', { id: 'genre', header: 'Genre', size: 140, cell: editable('genre') }),
+  col.accessor('label', { id: 'label', header: 'Label', size: 140, cell: editable('label') }),
+  col.accessor('remixer', { id: 'remixer', header: 'Remixer', size: 140, cell: editable('remixer') }),
+  col.accessor('producer', { id: 'producer', header: 'Producer', size: 140, cell: editable('producer') }),
+  col.accessor('mix', { id: 'mix', header: 'Mix', size: 120, cell: editable('mix') }),
+  col.accessor('comment', { id: 'comment', header: 'Comment', size: 200, cell: editable('comment') }),
   col.accessor('bpm', {
     id: 'bpm',
     header: 'BPM',
@@ -70,7 +156,12 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
     id: 'rating',
     header: 'Rating',
     size: 92,
-    cell: (c) => <RatingStars value={c.getValue()} />,
+    cell: (c) => (
+      <RatingStars
+        value={c.getValue() as number}
+        onChange={(v) => c.table.options.meta?.onEditField?.(c.row.original, 'rating', v)}
+      />
+    ),
   }),
   col.accessor('length', {
     id: 'length',
@@ -128,9 +219,23 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
     id: 'release_date',
     header: 'Released',
     size: 104,
-    cell: (c) => <span className="tabular-nums text-muted">{formatDate(c.getValue())}</span>,
+    cell: (c) => (
+      <InlineEdit
+        value={c.getValue() as string | null}
+        display={<span className="tabular-nums text-muted">{formatDate(c.getValue() as string | null)}</span>}
+        onCommit={(v) => c.table.options.meta?.onEditField?.(c.row.original, 'release_date', v)}
+      />
+    ),
   }),
 ]
+
+// Traktor dates arrive as "YYYY/M/D" strings; show them compactly (or raw).
+function formatDate(v: string | null): string {
+  if (!v) return '—'
+  const m = v.match(/(\d{4})\/(\d{1,2})\/(\d{1,2})/)
+  if (!m) return v
+  return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`
+}
 
 /** (id, label) pairs for the Columns menu, in the canonical definition order. */
 export const COLUMN_MENU: { id: string; label: string }[] = TRACK_COLUMNS.map((c) => ({
