@@ -24,16 +24,19 @@ interface Props {
   uuid: string
   tracks: Track[]
   onError: (msg: string) => void
+  onRowContextMenu?: (track: Track, x: number, y: number) => void
 }
 
 function Row({
   track,
   index,
   onRemove,
+  onContextMenu,
 }: {
   track: Track
   index: number
   onRemove: (id: string) => void
+  onContextMenu?: (track: Track, x: number, y: number) => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: track.id })
@@ -45,6 +48,11 @@ function Row({
       className={`flex items-center border-b border-ink-850 text-sm ${
         isDragging ? 'z-10 bg-ink-800 shadow-lg' : 'hover:bg-ink-850'
       }`}
+      onContextMenu={(e) => {
+        if (!onContextMenu) return
+        e.preventDefault()
+        onContextMenu(track, e.clientX, e.clientY)
+      }}
     >
       <button
         {...attributes}
@@ -90,7 +98,7 @@ function Row({
   )
 }
 
-export function PlaylistEditor({ uuid, tracks, onError }: Props) {
+export function PlaylistEditor({ uuid, tracks, onError, onRowContextMenu }: Props) {
   const qc = useQueryClient()
   const [items, setItems] = useState<Track[]>(tracks)
 
@@ -157,7 +165,13 @@ export function PlaylistEditor({ uuid, tracks, onError }: Props) {
       >
         <SortableContext items={items.map((t) => t.id)} strategy={verticalListSortingStrategy}>
           {items.map((t, i) => (
-            <Row key={t.id} track={t} index={i} onRemove={remove} />
+            <Row
+              key={t.id}
+              track={t}
+              index={i}
+              onRemove={remove}
+              onContextMenu={onRowContextMenu}
+            />
           ))}
         </SortableContext>
       </DndContext>

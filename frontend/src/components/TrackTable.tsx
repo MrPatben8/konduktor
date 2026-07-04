@@ -108,9 +108,10 @@ interface Props {
   sorting: SortingState
   onSortingChange: (s: SortingState) => void
   selection?: Selection
+  onRowContextMenu?: (track: Track, x: number, y: number) => void
 }
 
-export function TrackTable({ tracks, sorting, onSortingChange, selection }: Props) {
+export function TrackTable({ tracks, sorting, onSortingChange, selection, onRowContextMenu }: Props) {
   const table = useReactTable({
     data: tracks,
     columns,
@@ -190,6 +191,11 @@ export function TrackTable({ tracks, sorting, onSortingChange, selection }: Prop
                   transform: `translateY(${vr.start}px)`,
                   height: vr.size,
                   width: '100%',
+                }}
+                onContextMenu={(e) => {
+                  if (!onRowContextMenu) return
+                  e.preventDefault()
+                  onRowContextMenu(row.original, e.clientX, e.clientY)
                 }}
               >
                 {selection ? (

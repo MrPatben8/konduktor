@@ -15,6 +15,7 @@ class Track(BaseModel):
     label: str | None = None
     remixer: str | None = None
     producer: str | None = None
+    mix: str | None = None
     comment: str | None = None
     bpm: float | None = None
     key: str | None = None  # Traktor display key, e.g. "10m"
@@ -97,10 +98,24 @@ class SetEntries(BaseModel):
     track_ids: list[str]  # ordered; full desired contents of the playlist
 
 
+class EditTrack(BaseModel):
+    track_id: str
+    fields: dict[str, str | int | None]
+
+
+class FileTagOutcome(BaseModel):
+    track_id: str
+    file: str
+    ok: bool
+    status: str
+    detail: str = ""
+
+
 class SaveResult(BaseModel):
     saved: bool
     backup: str | None = None
     playlists: int
+    file_tags: list[FileTagOutcome] = []
 
 
 class EditState(BaseModel):

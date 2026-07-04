@@ -10,6 +10,8 @@ import { SelectionBar } from './components/SelectionBar'
 import { StatusBar } from './components/StatusBar'
 import { Toast, type ToastMsg } from './components/Toast'
 import { CollectionPicker } from './components/CollectionPicker'
+import { ContextMenu } from './components/ContextMenu'
+import { EditTagsDialog } from './components/EditTagsDialog'
 
 function applyFilters(tracks: Track[], f: Filters): Track[] {
   const q = f.search.trim().toLowerCase()
@@ -39,6 +41,8 @@ export default function App() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [toast, setToast] = useState<ToastMsg | null>(null)
   const [forcePicker, setForcePicker] = useState(false)
+  const [menu, setMenu] = useState<{ track: Track; x: number; y: number } | null>(null)
+  const [editing, setEditing] = useState<Track | null>(null)
 
   const notify = useCallback((kind: ToastMsg['kind'], text: string) => {
     setToast({ id: Date.now(), kind, text })
@@ -117,6 +121,22 @@ export default function App() {
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-ink-950">
       <Toast toast={toast} onClose={() => setToast(null)} />
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={[{ label: 'Edit Tags…', onClick: () => setEditing(menu.track) }]}
+          onClose={() => setMenu(null)}
+        />
+      )}
+      {editing && (
+        <EditTagsDialog
+          track={editing}
+          onClose={() => setEditing(null)}
+          onApplied={(msg) => notify('success', msg)}
+          onError={onError}
+        />
+      )}
       <Sidebar source={source} onSelect={selectSource} onError={onError} />
 
       <main className="relative flex min-w-0 flex-1 flex-col">
@@ -152,6 +172,7 @@ export default function App() {
                   onToggleAll: toggleAll,
                   allSelected: selected.size > 0 && selected.size === filtered.length,
                 }}
+                onRowContextMenu={(track, x, y) => setMenu({ track, x, y })}
               />
             )
           ) : (
@@ -159,6 +180,7 @@ export default function App() {
               uuid={(source as { id: string }).id}
               tracks={tracks}
               onError={onError}
+              onRowContextMenu={(track, x, y) => setMenu({ track, x, y })}
             />
           )}
 

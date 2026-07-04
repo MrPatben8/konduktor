@@ -129,5 +129,51 @@ with tempfile.TemporaryDirectory() as d:
     n = diff_count(original[os_:oe], edited[es_:ee])
     print(f"    edited-block changed lines: {n} (reordered {len(keys)} entries)")
 
+# ---- Invariant C: a track-metadata edit is fully localized -------------
+print("== C. track metadata edit touches only that track's ENTRY ==")
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    original = work.read_bytes()
+
+    store = PlaylistStore(work)
+    # pick the first track that has a resolvable primary key
+    entry = store._nml.collection.entry[0]
+    loc = entry.location
+    track_id = f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}"
+
+    store.set_track_metadata(track_id, {"genre": "KONDUKTOR-FIDELITY-TEST", "rating": 4})
+    store.save()
+    edited = work.read_bytes()
+
+    check("file actually changed", original != edited)
+
+    # The edited ENTRY's <INFO> block is where the change lands. Blank out the
+    # whole entry span in both and require the remainder to be byte-identical.
+    def entry_span(data: bytes, file_name: str):
+        marker = f'FILE="{file_name}"'.encode()
+        i = data.find(marker)
+        start = data.rfind(b"<ENTRY ", 0, i)
+        end = data.find(b"</ENTRY>", i) + len(b"</ENTRY>")
+        return start, end
+
+    os_, oe = entry_span(original, loc.file)
+    es_, ee = entry_span(edited, loc.file)
+    check(
+        "everything outside the edited track's ENTRY is byte-identical",
+        original[:os_] + b"@@" + original[oe:] == edited[:es_] + b"@@" + edited[ee:],
+    )
+    n = diff_count(original[os_:oe], edited[es_:ee])
+    check("edited ENTRY diff is tiny (<= 6 tag-lines)", n <= 6, f"got {n}")
+    print(f"    edited-ENTRY changed tag-lines: {n}")
+
+    # Re-parses and the edit persisted.
+    from traktor_nml_utils import TraktorCollection
+
+    reparsed = TraktorCollection(path=work)
+    e0 = reparsed.nml.collection.entry[0]
+    check("re-parses + genre persisted", e0.info.genre == "KONDUKTOR-FIDELITY-TEST")
+    check("rating persisted (4 stars => RANKING 204)", e0.info.ranking == 204)
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

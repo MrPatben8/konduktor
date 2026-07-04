@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from .collection_service import CollectionService
@@ -18,7 +18,9 @@ from .schemas import (
     CollectionStatus,
     CreatePlaylist,
     EditState,
+    EditTrack,
     Facets,
+    FileTagOutcome,
     FsEntry,
     FsListing,
     OpenCollection,
@@ -272,10 +274,55 @@ def add_entries(playlist_uuid: str, body: SetEntries) -> dict:
     return {"status": "added", "id": playlist_uuid, "added": len(added), "count": len(entries)}
 
 
+@app.patch("/api/tracks")
+def edit_track(body: EditTrack) -> dict:
+    """Edit a single track's safe metadata fields (in-memory; persisted on save)."""
+    store = require_store()
+    try:
+        store.set_track_metadata(body.track_id, body.fields)
+    except PlaylistError as ex:
+        raise HTTPException(404, str(ex))
+    # Keep the read projection in sync so the edit shows immediately.
+    entry = store.model_entry(body.track_id)
+    if entry is not None:
+        require_service().replace_track(body.track_id, entry)
+    return {"status": "updated", "id": body.track_id}
+
+
+@app.get("/api/tracks/art")
+def track_art(track_id: str) -> Response:
+    """Stream a track's embedded cover art (staged replacement if unsaved)."""
+    art = require_store().cover_art(track_id)
+    if art is None:
+        raise HTTPException(404, "No cover art")
+    data, mime = art
+    return Response(content=data, media_type=mime, headers={"Cache-Control": "no-store"})
+
+
+@app.put("/api/tracks/art")
+async def set_track_art(track_id: str = Form(...), file: UploadFile = File(...)) -> dict:
+    """Stage replacement cover art for a track (written to the file on save)."""
+    store = require_store()
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty image")
+    mime = file.content_type or "image/jpeg"
+    try:
+        store.set_track_art(track_id, data, mime)
+    except PlaylistError as ex:
+        raise HTTPException(404, str(ex))
+    return {"status": "staged", "id": track_id, "bytes": len(data)}
+
+
 @app.post("/api/save", response_model=SaveResult)
 def save() -> SaveResult:
     store = require_store()
     if not store.dirty:
         return SaveResult(saved=False, backup=None, playlists=store.count_playlists())
-    backup = store.save()
-    return SaveResult(saved=True, backup=str(backup), playlists=store.count_playlists())
+    outcome = store.save()
+    return SaveResult(
+        saved=True,
+        backup=str(outcome.backup),
+        playlists=store.count_playlists(),
+        file_tags=[FileTagOutcome(**r.__dict__) for r in outcome.tag_results],
+    )

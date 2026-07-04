@@ -9,6 +9,7 @@ export interface Track {
   label: string | null
   remixer: string | null
   producer: string | null
+  mix: string | null
   comment: string | null
   bpm: number | null
   key: string | null
@@ -196,4 +197,15 @@ export const api = {
       { track_ids: trackIds },
     ),
   save: () => send<SaveResult>('POST', '/api/save'),
+  editTrack: (trackId: string, fields: Record<string, string | number | null>) =>
+    send<{ status: string }>('PATCH', '/api/tracks', { track_id: trackId, fields }),
+  artUrl: (trackId: string) => `/api/tracks/art?track_id=${encodeURIComponent(trackId)}`,
+  uploadArt: async (trackId: string, file: File) => {
+    const fd = new FormData()
+    fd.append('track_id', trackId)
+    fd.append('file', file)
+    const res = await fetch('/api/tracks/art', { method: 'PUT', body: fd })
+    if (!res.ok) throw new Error(`Cover upload failed (${res.status})`)
+    return res.json()
+  },
 }

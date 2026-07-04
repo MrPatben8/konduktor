@@ -90,6 +90,7 @@ class CollectionService:
             label=info.label if info else None,
             remixer=info.remixer if info else None,
             producer=info.producer if info else None,
+            mix=info.mix if info else None,
             comment=info.comment if info else None,
             bpm=e.tempo.bpm if e.tempo else None,
             key=info.key if info else None,
@@ -235,6 +236,18 @@ class CollectionService:
             bpm_max=max(bpms) if bpms else None,
             total_tracks=len(self.tracks),
         )
+
+    def replace_track(self, track_id: str, entry) -> None:
+        """Refresh the read projection for one track from its (edited) model
+        entry, mutating the existing Track object in place so both `tracks` and
+        `by_key` reflect it. Bridges the store (edit model) and this read model
+        until they're consolidated."""
+        old = self.by_key.get(track_id)
+        if old is None:
+            return
+        new = self._to_track(entry)
+        for field in type(new).model_fields:
+            setattr(old, field, getattr(new, field))
 
     def entries_for(self, track_ids: list[str]) -> list[tuple[str, str]]:
         """Map track ids to (key, PRIMARYKEY-type) pairs for playlist writing.

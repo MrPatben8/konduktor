@@ -17,11 +17,11 @@ Playlists are identified by their stable UUID; folders by a synthetic path id
 """
 from __future__ import annotations
 
-import re
 import shutil
 import threading
 import time
 import uuid as uuidlib
+from dataclasses import dataclass
 from pathlib import Path
 
 from traktor_nml_utils import (
@@ -30,7 +30,9 @@ from traktor_nml_utils import (
     restore_traktor_float_format,
 )
 from traktor_nml_utils.models.collection import (
+    Albumtype,
     Entrytype,
+    Infotype,
     Nodetype,
     Playlisttype,
     Primarykeytype,
@@ -40,12 +42,24 @@ from xsdata.formats.dataclass.serializers import XmlSerializer
 
 from .schemas import PlaylistNode
 
-_PLAYLISTS_OPEN = re.compile(rb"<PLAYLISTS[ >]")
-_PLAYLISTS_CLOSE = re.compile(rb"</PLAYLISTS>")
-
 
 class PlaylistError(Exception):
     pass
+
+
+@dataclass
+class FileTagResult:
+    track_id: str
+    file: str
+    ok: bool
+    status: str  # "written" | "file-not-found" | "unsupported-format" | "error"
+    detail: str = ""
+
+
+@dataclass
+class SaveOutcome:
+    backup: Path
+    tag_results: list[FileTagResult]
 
 
 class PlaylistStore:
@@ -57,14 +71,20 @@ class PlaylistStore:
 
     # ---- load ----------------------------------------------------------
     def _load(self) -> None:
-        self._raw = self.nml_path.read_bytes()
-        mo = _PLAYLISTS_OPEN.search(self._raw)
-        mc = _PLAYLISTS_CLOSE.search(self._raw)
-        if not mo or not mc:
-            raise PlaylistError("Could not locate <PLAYLISTS> section in NML")
-        self._span = (mo.start(), mc.end())
         self._collection = TraktorCollection(path=self.nml_path)
         self._nml = self._collection.nml
+        # Index collection entries by their Traktor primary key (volume+dir+file)
+        # so track-metadata edits can find their ENTRY in O(1).
+        self._entry_by_key: dict[str, Entrytype] = {}
+        for e in self._nml.collection.entry:
+            loc = e.location
+            if loc:
+                key = f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}"
+                self._entry_by_key[key] = e
+        # track_id -> set of field names edited this session (drives file-tag sync)
+        self._track_edits: dict[str, set[str]] = {}
+        # track_id -> (image_bytes, mime) of staged replacement cover art
+        self._track_art: dict[str, tuple[bytes, str]] = {}
         self.dirty = False
 
     def _root(self) -> Nodetype:
@@ -209,35 +229,132 @@ class PlaylistStore:
             pl.entries = len(pl.entry)
             self.dirty = True
 
+    # ---- track metadata editing ---------------------------------------
+    # Safe, free-text-ish fields only. Deliberately NOT editable here: file path
+    # (it's the primary key), bpm/key (audio/grid territory), and read-only info
+    # like bitrate/playcount.
+    _INFO_FIELDS = {"genre", "label", "remixer", "producer", "comment", "mix", "release_date"}
+    EDITABLE_FIELDS = {"title", "artist", "album", "rating"} | _INFO_FIELDS
+
+    def set_track_metadata(self, track_id: str, fields: dict) -> None:
+        with self._lock:
+            entry = self._entry_by_key.get(track_id)
+            if entry is None:
+                raise PlaylistError(f"Track not found: {track_id}")
+            if entry.info is None:
+                entry.info = Infotype()
+            for k, v in fields.items():
+                if k in ("title", "artist"):
+                    setattr(entry, k, v or None)
+                elif k == "album":
+                    if entry.album is None:
+                        entry.album = Albumtype()
+                    entry.album.title = v or None
+                elif k in self._INFO_FIELDS:
+                    setattr(entry.info, k, v or None)
+                elif k == "rating":
+                    stars = max(0, min(5, int(v))) if v is not None else 0
+                    # Traktor RANKING = stars * 51; unrated has no RANKING attr.
+                    entry.info.ranking = stars * 51 or None
+                else:
+                    continue  # unknown / read-only fields are ignored
+                self._track_edits.setdefault(track_id, set()).add(k)
+            self.dirty = True
+
+    def model_entry(self, track_id: str) -> Entrytype | None:
+        with self._lock:
+            return self._entry_by_key.get(track_id)
+
+    # ---- cover art -----------------------------------------------------
+    def set_track_art(self, track_id: str, data: bytes, mime: str) -> None:
+        with self._lock:
+            if track_id not in self._entry_by_key:
+                raise PlaylistError(f"Track not found: {track_id}")
+            self._track_art[track_id] = (data, mime)
+            self.dirty = True
+
+    def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
+        """Staged replacement if present, else the file's current embedded art."""
+        from . import file_tags
+
+        with self._lock:
+            if track_id in self._track_art:
+                return self._track_art[track_id]
+            entry = self._entry_by_key.get(track_id)
+            if entry is None or entry.location is None:
+                return None
+            loc = entry.location
+            return file_tags.read_cover(file_tags.resolve_path(loc.volume, loc.dir, loc.file))
+
+    def _entry_field_value(self, entry: Entrytype, field: str):
+        """Read a single editable field's current value from the model, in the
+        shape file_tags expects (rating as 0–5 stars)."""
+        if field == "title":
+            return entry.title
+        if field == "artist":
+            return entry.artist
+        if field == "album":
+            return entry.album.title if entry.album else None
+        if field == "rating":
+            r = entry.info.ranking if entry.info else None
+            return round(r / 51) if r else 0
+        return getattr(entry.info, field, None) if entry.info else None
+
     def count_playlists(self) -> int:
         with self._lock:
             return sum(1 for n in self._iter_nodes(self._root()) if n.playlist is not None)
 
     # ---- persistence ---------------------------------------------------
-    def save(self) -> Path:
+    def save(self) -> "SaveOutcome":
         with self._lock:
             backup = self._backup()
-            # Render the full model exactly as the library's save() does — the
-            # two post-processing steps restore Traktor's precise layout (expanded
-            # empty tags, 6-decimal floats, newlines), so unedited playlists come
-            # out byte-for-byte identical and only edited ones diff.
-            serialized = XmlSerializer().render(self._nml)
-            serialized = restore_traktor_float_format(serialized, self._nml)
-            serialized = format_traktor_layout(serialized)
-            rendered = serialized.encode("utf-8")
-            ro = _PLAYLISTS_OPEN.search(rendered)
-            rc = _PLAYLISTS_CLOSE.search(rendered)
-            if not ro or not rc:
-                raise PlaylistError("Rendered output missing PLAYLISTS section")
-            new_pl = rendered[ro.start() : rc.end()]
-
-            s, e = self._span
-            new_data = self._raw[:s] + new_pl + self._raw[e:]
+            new_data = self._render()
             tmp = self.nml_path.with_suffix(self.nml_path.suffix + ".tmp")
             tmp.write_bytes(new_data)
             tmp.replace(self.nml_path)
-            self._load()
-            return backup
+            # Best-effort: sync the edited fields into each edited track's file.
+            tag_results = self._sync_file_tags()
+            self._load()  # clears dirty + _track_edits
+            return SaveOutcome(backup=backup, tag_results=tag_results)
+
+    def _sync_file_tags(self) -> list["FileTagResult"]:
+        from . import file_tags
+
+        results: list[FileTagResult] = []
+        # Union of tracks with edited fields and/or replaced art.
+        for track_id in self._track_edits.keys() | self._track_art.keys():
+            entry = self._entry_by_key.get(track_id)
+            if entry is None or entry.location is None:
+                continue
+            loc = entry.location
+            path = file_tags.resolve_path(loc.volume, loc.dir, loc.file)
+            r = None
+            if track_id in self._track_edits:
+                meta = {f: self._entry_field_value(entry, f) for f in self._track_edits[track_id]}
+                r = file_tags.write_tags(path, meta)
+            if track_id in self._track_art:
+                data, mime = self._track_art[track_id]
+                r = file_tags.write_cover(path, data, mime)
+            if r is not None:
+                results.append(
+                    FileTagResult(
+                        track_id=track_id, file=str(path), ok=r.ok, status=r.status, detail=r.detail
+                    )
+                )
+        return results
+
+    def _render(self) -> bytes:
+        """Render the whole model exactly as the library's save() does.
+
+        The two post-processing steps restore Traktor's precise layout (expanded
+        empty tags, 6-decimal floats, newlines), so a no-op render reproduces the
+        file byte-for-byte and only the objects we actually edited (playlists
+        AND/OR track entries) diff. Verified by backend/test_save_fidelity.py.
+        """
+        s = XmlSerializer().render(self._nml)
+        s = restore_traktor_float_format(s, self._nml)
+        s = format_traktor_layout(s)
+        return s.encode("utf-8")
 
     def _backup(self) -> Path:
         # Backups live in a `backups/` folder next to the collection, not beside

@@ -3,6 +3,8 @@
 fastapi>=0.115
 uvicorn[standard]>=0.34
 pydantic>=2.11
+mutagen>=1.47  # embedded audio-file tag read/write (ID3/MP4/FLAC/AIFF)
+python-multipart>=0.0.9  # multipart form parsing for cover-art upload
 # Traktor Pro 4 (NML v20) support requires the GitHub master (v4.0.0),
 # NOT the stale PyPI release (3.1.0), which cannot parse v4 files.
 traktor-nml-utils @ git+https://github.com/MrPatben8/traktor-nml-utils.git
