@@ -266,11 +266,12 @@ class PlaylistStore:
         with self._lock:
             return self._entry_by_key.get(track_id)
 
-    # ---- hotcues (beatgrid-independent point markers) -----------------
-    # Only self-contained point types are editable here: 0 cue, 1 fade-in,
-    # 2 fade-out, 3 load. Loops (need a length) and grid markers (redefine the
-    # beatgrid) are deliberately excluded. Cues are NML-only (not synced to files).
-    POINT_CUE_TYPES = {0, 1, 2, 3}
+    # ---- hotcues ------------------------------------------------------
+    # Creatable/editable types: 0 cue, 1 fade-in, 2 fade-out, 3 load, 5 loop.
+    # A loop (type 5) carries a length; the point types don't. Grid markers
+    # (type 4, redefine the beatgrid) are excluded. Cues are NML-only.
+    POINT_CUE_TYPES = {0, 1, 2, 3}  # types the dropdown can switch between
+    CREATABLE_TYPES = {0, 1, 2, 3, 5}
 
     def _entry_or_raise(self, track_id: str) -> Entrytype:
         entry = self._entry_by_key.get(track_id)
@@ -278,21 +279,27 @@ class PlaylistStore:
             raise PlaylistError(f"Track not found: {track_id}")
         return entry
 
-    def set_hotcue(self, track_id: str, slot: int, start_sec: float, cue_type: int) -> None:
-        """Create (or reposition + retype) the hotcue in `slot` at `start_sec`."""
+    def set_hotcue(
+        self, track_id: str, slot: int, start_sec: float, cue_type: int, length_sec: float = 0.0
+    ) -> None:
+        """Create (or reposition + retype) the hotcue in `slot` at `start_sec`.
+
+        `length_sec` > 0 makes it a loop (used with cue_type 5)."""
         if not 0 <= slot <= 7:
             raise PlaylistError(f"Invalid hotcue slot: {slot}")
-        if cue_type not in self.POINT_CUE_TYPES:
+        if cue_type not in self.CREATABLE_TYPES:
             raise PlaylistError(f"Unsupported cue type: {cue_type}")
         with self._lock:
             entry = self._entry_or_raise(track_id)
-            start_ms = max(0.0, start_sec * 1000.0)  # Traktor stores START in ms
+            start_ms = max(0.0, start_sec * 1000.0)  # Traktor stores START/LEN in ms
+            len_ms = max(0.0, length_sec * 1000.0)
             existing = next(
                 (c for c in (entry.cue_v2 or []) if c.hotcue == slot), None
             )
             if existing is not None:
                 existing.start = start_ms
                 existing.type = cue_type
+                existing.len = len_ms
             else:
                 if entry.cue_v2 is None:
                     entry.cue_v2 = []
@@ -302,7 +309,7 @@ class PlaylistStore:
                         displ_order=0,
                         type=cue_type,
                         start=start_ms,
-                        len=0.0,
+                        len=len_ms,
                         repeats=-1,
                         hotcue=slot,
                         color=None,

@@ -137,7 +137,8 @@ class SetHotcue(BaseModel):
     track_id: str
     slot: int  # 0–7
     start: float  # seconds
-    type: int  # 0 cue, 1 fade-in, 2 fade-out, 3 load
+    type: int  # 0 cue, 1 fade-in, 2 fade-out, 3 load, 5 loop
+    length: float = 0.0  # seconds (>0 for a loop hotcue)
 
 
 class SetHotcueType(BaseModel):

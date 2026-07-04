@@ -384,7 +384,9 @@ def _sync_cue_edit(track_id: str) -> TrackCues:
 def create_hotcue(body: SetHotcue) -> TrackCues:
     """Create (or reposition + retype) the hotcue in a slot at a position."""
     try:
-        require_store().set_hotcue(body.track_id, body.slot, body.start, body.type)
+        require_store().set_hotcue(
+            body.track_id, body.slot, body.start, body.type, body.length
+        )
     except PlaylistError as ex:
         raise HTTPException(400, str(ex))
     return _sync_cue_edit(body.track_id)

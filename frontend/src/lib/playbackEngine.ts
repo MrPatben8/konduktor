@@ -125,8 +125,19 @@ export class PlaybackEngine {
     }
   }
 
+  // Snapshot the true buffer position into (startOffset, startedAt) so the
+  // position model stays correct after the loop params change. Must be called
+  // BEFORE mutating loopOn/loopStart/loopEnd (it reads the current/old params).
+  private reanchor(): void {
+    if (this._playing && this.ctx) {
+      this.startOffset = this.getPosition()
+      this.startedAt = this.ctx.currentTime
+    }
+  }
+
   /** Set the loop region and whether it's active. Bounds apply live if playing. */
   setLoop(start: number, end: number, enabled: boolean): void {
+    this.reanchor() // capture the real position under the OLD loop state first
     this.loopStart = start
     this.loopEnd = end
     this.loopOn = enabled
@@ -139,10 +150,10 @@ export class PlaybackEngine {
         this.source.loop = false
       }
     }
-    // If the playhead is already past the loop, jump into it so it engages now.
-    if (enabled && this._playing) {
-      const pos = this.getPosition()
-      if (pos >= end) this.seek(start)
+    // If the playhead is already at/past the loop end, jump into it (the live
+    // node won't loop back on its own from beyond loopEnd).
+    if (enabled && end > start && this.startOffset >= end) {
+      this.seek(start)
     }
   }
 

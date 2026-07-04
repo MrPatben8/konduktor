@@ -28,6 +28,8 @@ const CUE_TYPES: { value: number; label: string }[] = [
   { value: 2, label: 'Fade-Out' },
   { value: 3, label: 'Load' },
 ]
+const LOOP_TYPE = 5
+const LOOP_SIZES = [1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32]
 
 /**
  * The DJ-style "prep strip" across the top of the window: transport controls on
@@ -178,6 +180,16 @@ export function PrepStrip({ track, onError }: Props) {
     setCurrent(t)
   }
 
+  // User-driven seek from the waveforms: navigating away drops the active loop
+  // (otherwise it would just pull playback back into the loop region).
+  const seekManual = (t: number) => {
+    if (loopActive) {
+      playbackRef.current?.setLoopEnabled(false)
+      setLoopActive(false)
+    }
+    seek(t)
+  }
+
   // ---- scratch ----------------------------------------------------------
   const finalizeScratch = () => {
     cancelAnimationFrame(scratchRafRef.current)
@@ -269,7 +281,16 @@ export function PrepStrip({ track, onError }: Props) {
     const eng = playbackRef.current
     const bpm = cueData?.bpm ?? null
     if (!eng || !eng.ready || !bpm || bpm <= 0) return
-    const start = snapTime(eng.getPosition())
+    // Pressing the size of the loop that's already playing disables it.
+    if (loopActive && activeBeats === beats) {
+      eng.setLoopEnabled(false)
+      setLoopActive(false)
+      setCurrent(eng.getPosition())
+      return
+    }
+    // Resizing an active loop keeps its start locked; only a fresh loop starts
+    // at the current playhead.
+    const start = loopActive && loopRegion ? loopRegion.start : snapTime(eng.getPosition())
     engagLoop(start, start + beats * (60 / bpm), beats)
   }
 
@@ -306,17 +327,47 @@ export function PrepStrip({ track, onError }: Props) {
     qc.invalidateQueries({ queryKey: ['playlist'] })
   }
 
+  // Map a loop length (seconds) back to a preset beat count for the size
+  // highlight, snapping to the nearest preset when it's close (float tolerance).
+  const beatsForLength = (length: number): number | null => {
+    const bpm = cueData?.bpm ?? null
+    if (!bpm || bpm <= 0) return null
+    const beats = length / (60 / bpm)
+    let best: number | null = null
+    let bestDiff = Infinity
+    for (const s of LOOP_SIZES) {
+      const diff = Math.abs(s - beats)
+      if (diff < bestDiff) {
+        bestDiff = diff
+        best = s
+      }
+    }
+    return best != null && bestDiff <= beats * 0.05 ? best : null
+  }
+
   const onSlotClick = async (slot: number) => {
     if (!track) return
     const cue = hotcueAt(slot)
     if (cue) {
-      seek(cue.start)
+      // A loop hotcue jumps to its start AND re-engages a loop of its length.
+      if (cue.type === LOOP_TYPE && cue.length > 0) {
+        seek(cue.start)
+        engagLoop(cue.start, cue.start + cue.length, beatsForLength(cue.length))
+      } else {
+        seek(cue.start)
+      }
       setSelectedSlot(slot)
       return
     }
     try {
-      const t = snapTime(playbackRef.current?.getPosition() ?? current)
-      applyCueEdit(await api.createHotcue(track.id, slot, t, 0))
+      // Setting a hotcue while a loop is active stores it as a loop hotcue.
+      if (loopActive && loopRegion) {
+        const len = loopRegion.end - loopRegion.start
+        applyCueEdit(await api.createHotcue(track.id, slot, loopRegion.start, LOOP_TYPE, len))
+      } else {
+        const t = snapTime(playbackRef.current?.getPosition() ?? current)
+        applyCueEdit(await api.createHotcue(track.id, slot, t, 0))
+      }
       setSelectedSlot(slot)
     } catch (e) {
       onError?.((e as Error).message)
@@ -402,7 +453,7 @@ export function PrepStrip({ track, onError }: Props) {
                   bpm={cueData?.bpm ?? null}
                   gridAnchor={cueData?.grid_anchor ?? null}
                   loop={activeLoop}
-                  onSeek={seek}
+                  onSeek={seekManual}
                   onScratchStart={onScratchStart}
                   onScratchMove={onScratchMove}
                   onScratchEnd={onScratchEnd}
@@ -421,7 +472,7 @@ export function PrepStrip({ track, onError }: Props) {
                   duration={duration}
                   cues={cueData?.cues ?? []}
                   loop={activeLoop}
-                  onSeek={seek}
+                  onSeek={seekManual}
                 />
               )}
             </div>
@@ -451,19 +502,23 @@ export function PrepStrip({ track, onError }: Props) {
                 {selectedCue ? `Hotcue ${(selectedSlot ?? 0) + 1}` : 'No hotcue selected'}
               </span>
               <div className="flex-1" />
-              <select
-                value={selectedCue ? selectedCue.type : ''}
-                disabled={!selectedCue}
-                onChange={(e) => changeSelectedType(Number(e.target.value))}
-                className="rounded border border-line bg-ink-850 px-2 py-0.5 text-text outline-none focus:border-accent disabled:opacity-40"
-              >
-                {!selectedCue && <option value="">—</option>}
-                {CUE_TYPES.map((t) => (
-                  <option key={t.value} value={t.value}>
-                    {t.label}
-                  </option>
-                ))}
-              </select>
+              {selectedCue && selectedCue.type === LOOP_TYPE ? (
+                <span className="rounded border border-line px-2 py-0.5 text-mint">Loop</span>
+              ) : (
+                <select
+                  value={selectedCue ? selectedCue.type : ''}
+                  disabled={!selectedCue}
+                  onChange={(e) => changeSelectedType(Number(e.target.value))}
+                  className="rounded border border-line bg-ink-850 px-2 py-0.5 text-text outline-none focus:border-accent disabled:opacity-40"
+                >
+                  {!selectedCue && <option value="">—</option>}
+                  {CUE_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              )}
               <button
                 onClick={deleteSelected}
                 disabled={!selectedCue}

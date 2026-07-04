@@ -218,8 +218,14 @@ export const api = {
   audioUrl: (trackId: string) => `/api/tracks/audio?track_id=${encodeURIComponent(trackId)}`,
   trackCues: (trackId: string) =>
     getJSON<TrackCues>(`/api/tracks/cues?track_id=${encodeURIComponent(trackId)}`),
-  createHotcue: (trackId: string, slot: number, start: number, type: number) =>
-    send<TrackCues>('POST', '/api/tracks/hotcue', { track_id: trackId, slot, start, type }),
+  createHotcue: (trackId: string, slot: number, start: number, type: number, length = 0) =>
+    send<TrackCues>('POST', '/api/tracks/hotcue', {
+      track_id: trackId,
+      slot,
+      start,
+      type,
+      length,
+    }),
   setHotcueType: (trackId: string, slot: number, type: number) =>
     send<TrackCues>('PATCH', '/api/tracks/hotcue', { track_id: trackId, slot, type }),
   deleteHotcue: (trackId: string, slot: number) =>
