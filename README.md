@@ -1,29 +1,53 @@
 # Konduktor
 
-A library-management and track-preparation tool for **Native Instruments
-Traktor** (Pro 4 / NML v20), built on top of
-[`traktor-nml-utils`](https://github.com/MrPatben8/traktor-nml-utils).
+**A fast, modern home for your Traktor collection.**
 
-- **backend/** — FastAPI service that parses `collection.nml` and serves it as a
-  query API (tracks, stats, facets, playlists). Read-only in the current phase.
-- **frontend/** — React + TypeScript (Vite) track explorer: a polished, dark,
-  virtualized grid with search, filtering, sorting, and playlist browsing.
+Konduktor is a lightweight desktop-style app for DJs who run **Native
+Instruments Traktor** (Pro 4 / NML v20). It opens your existing
+`collection.nml`, gives you a beautiful dark library to explore, and lets you
+build playlists and prep tracks — without launching the whole heavyweight
+Traktor app just to tidy up your tags or drop a few cue points.
 
-## Quick start
+Your collection stays exactly where it is. Konduktor reads and writes the same
+file Traktor uses, so everything you do shows up next time you open Traktor.
 
-After the one-time setup below, start everything with a single command:
+---
 
-```bash
-./dev.sh
-```
+## Why you'll like it
 
-Then open **http://localhost:5173**. Press `Ctrl-C` to stop both servers.
+- **Instant, searchable library.** Your whole collection loads into a snappy,
+  virtualized grid. Search, filter by genre / key / BPM / rating, and sort by
+  any column — all instant, no waiting.
+- **Make it yours.** Show only the columns you care about, drag them into the
+  order you like, and resize them to fit. Your layout is remembered.
+- **Edit tags without the ceremony.** Double-click any field to fix a title or
+  genre on the spot, click the stars to rate a track, or right-click for a full
+  tag + cover-art editor. Great for quick one-off fixes.
+- **Playlists, the easy way.** Create, rename, and delete playlists, then
+  drag-and-drop to reorder or add tracks.
+- **A real prep deck.** Load any track into the deck at the top and:
+  - play it with a **frequency-colored waveform** (Traktor-style Spectrum look),
+    scrolling under a fixed playhead with zoom in/out
+  - scratch it by dragging the waveform
+  - see and adjust the **beatgrid** and BPM
+  - set, jump to, and delete **hotcues** (with a color-coded 8-slot bar)
+  - build **loops** in fixed beat sizes, tied into the hotcue system
+  - use keyboard shortcuts: **Space** to play/pause, **1–8** to fire hotcues,
+    **Shift+1–8** to clear them
+- **Your data is safe.** Every save makes a timestamped backup first, and only
+  ever touches the parts you changed — the rest of the file stays byte-for-byte
+  identical.
 
-## One-time setup
+---
 
-You only need to do this once (installs backend and frontend dependencies).
+## Getting started
 
-**Backend** (Python 3.11+):
+Konduktor runs as two small local servers (a Python backend and a web
+frontend). One-time setup, then a single command to launch.
+
+### 1. Install (once)
+
+**Backend** — needs Python 3.11+:
 
 ```bash
 cd backend
@@ -32,7 +56,7 @@ pip install -r requirements.txt
 cd ..
 ```
 
-**Frontend** (Node 18+):
+**Frontend** — needs Node 18+:
 
 ```bash
 cd frontend
@@ -40,61 +64,47 @@ npm install
 cd ..
 ```
 
-## Running the servers manually
-
-`./dev.sh` runs both for you, but you can also start them in separate terminals:
-
-**Backend** (terminal 1) — FastAPI on port 8000:
+### 2. Launch
 
 ```bash
-cd backend && source .venv/bin/activate
-uvicorn konduktor.main:app --reload --port 8000
+./dev.sh
 ```
 
-**Frontend** (terminal 2) — Vite on port 5173:
+Then open **http://localhost:5173** in your browser. Press `Ctrl-C` to stop.
 
-```bash
-cd frontend && npm run dev
-```
+### 3. Open your collection
 
-The Vite dev server proxies `/api` to the backend on port 8000, so both must be
-running. API docs (Swagger UI): **http://localhost:8000/docs**.
+On launch, Konduktor offers to:
 
-## Choosing your collection
+- **Automatically** open the collection from your latest installed Traktor,
+- reopen the **last collection** you used, or
+- **browse** for a `collection.nml` yourself.
 
-On launch, Konduktor asks you to pick a `collection.nml` — browse to it in the
-in-app file picker (or paste a full path). You can switch collections any time
-via the file name shown in the bottom-right status bar.
+That's it — you're in.
 
-To skip the picker and auto-load a file on startup (handy for development), set
-`KONDUKTOR_NML`:
+---
 
-```bash
-KONDUKTOR_NML=/path/to/collection.nml uvicorn konduktor.main:app --port 8000
-```
+## Saving back to Traktor
 
-## Status
+Playlist edits, tag changes, and prep tweaks all apply live in the app. When
+you're happy, hit **Save to Traktor** to write them to `collection.nml`.
 
-- ✅ **Phase 1** — backend core + read-only API
-- ✅ **Phase 2** — track explorer UI (grid, search, filters, playlist browsing)
-- ✅ **Phase 3** — playlist editing/creation (drag-reorder, add/remove, rename,
-  delete) with surgical, backup-first saves
-- ⬜ **Phase 4** — polish + optional Tauri desktop packaging
+> ⚠️ **Close Traktor before saving.** Traktor rewrites `collection.nml` when it
+> quits, so if it's open it will overwrite your changes. Konduktor always writes
+> a backup first (into a `backups/` folder next to your collection), but closing
+> Traktor first is the safe habit.
 
-## Editing & saving (Phase 3)
+Want to experiment risk-free? Point Konduktor at a *copy* of your collection and
+play around.
 
-Playlist edits (create/rename/delete, add/remove, drag-reorder) are live in the
-UI. Click **Save to Traktor** to write them to `collection.nml`.
+---
 
-> **Close Traktor before saving** — it overwrites `collection.nml` on exit, so
-> it would clobber your changes otherwise.
+## Good to know
 
-**Safety guarantees:**
-- Every save writes a timestamped `.bak` backup first, into a `backups/` folder
-  next to your collection.
-- Saves are *surgical* — only the `<PLAYLISTS>` section is rewritten; the track
-  `COLLECTION` stays byte-for-byte identical.
-- To try it against a copy, point `KONDUKTOR_NML` at one.
-
-The backend test `backend/test_phase3.py` exercises the full write path against
-a temp copy and asserts these guarantees.
+- Konduktor is built on [`traktor-nml-utils`](https://github.com/MrPatben8/traktor-nml-utils)
+  and speaks Traktor's real file format — no import/export, no separate database.
+- It's a web app today, with an eye toward a packaged desktop build (Tauri) and
+  a mobile version down the road.
+- Under the hood: **FastAPI** (Python) backend + **React / TypeScript / Vite**
+  frontend. Curious about internals or contributing? See
+  [CLAUDE.md](CLAUDE.md) for the architecture and conventions.
