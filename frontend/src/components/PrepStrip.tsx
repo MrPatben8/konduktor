@@ -463,6 +463,45 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
     }
   }
 
+  const deleteHotcueSlot = async (slot: number) => {
+    if (!track || !hotcueAt(slot)) return // nothing to remove in an empty slot
+    try {
+      applyCueEdit(await api.deleteHotcue(track.id, slot))
+      if (selectedSlot === slot) setSelectedSlot(null)
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+
+  // ---- keyboard shortcuts ----------------------------------------------
+  // Space → play/pause; 1–8 → the matching hotcue slot; Shift+1–8 → delete it.
+  // Digits are read from e.code (layout-/Shift-independent) and a ref holds the
+  // latest handlers so the listener attaches once and never goes stale.
+  const shortcutsRef = useRef({ toggle, onSlotClick, deleteHotcueSlot })
+  shortcutsRef.current = { toggle, onSlotClick, deleteHotcueSlot }
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Ignore while typing in a field or with a non-Shift modifier held.
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.code === 'Space') {
+        e.preventDefault()
+        shortcutsRef.current.toggle()
+        return
+      }
+      const digit = e.code.match(/^(?:Digit|Numpad)([1-8])$/)
+      if (digit) {
+        e.preventDefault()
+        const slot = Number(digit[1]) - 1
+        if (e.shiftKey) void shortcutsRef.current.deleteHotcueSlot(slot)
+        else void shortcutsRef.current.onSlotClick(slot)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   // ---- beatgrid ---------------------------------------------------------
   const gridBpm = cueData?.bpm ?? null
   const gridAnchor = cueData?.grid_anchor ?? null
