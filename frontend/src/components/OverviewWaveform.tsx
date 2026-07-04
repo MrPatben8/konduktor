@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { CuePoint } from '../api'
-import { drawCues, drawLoop } from '../lib/cues'
+import { drawCuePoint, drawCues, drawLoop } from '../lib/cues'
 import { paintWave, type WaveColumn } from '../lib/waveform'
 
 interface Props {
@@ -8,6 +8,7 @@ interface Props {
   currentTime: number
   duration: number
   cues: CuePoint[]
+  cuePoint: number | null
   loop: { start: number; end: number } | null
   onSeek: (t: number) => void
 }
@@ -17,13 +18,22 @@ interface Props {
  * offscreen canvas) with a moving playhead + dimmed played region. Click to
  * seek anywhere in the track.
  */
-export function OverviewWaveform({ cols, currentTime, duration, cues, loop, onSeek }: Props) {
+export function OverviewWaveform({
+  cols,
+  currentTime,
+  duration,
+  cues,
+  cuePoint,
+  loop,
+  onSeek,
+}: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const cacheRef = useRef<HTMLCanvasElement | null>(null)
   const timeRef = useRef(0)
   const durRef = useRef(0)
   const cuesRef = useRef<CuePoint[]>(cues)
+  const cuePointRef = useRef<number | null>(cuePoint)
   const loopRef = useRef(loop)
 
   const renderCache = useCallback(() => {
@@ -60,9 +70,15 @@ export function OverviewWaveform({ cols, currentTime, duration, cues, loop, onSe
       if (lp) drawLoop(ctx, (lp.start / dur) * w, (lp.end / dur) * w, h, dpr)
       // Cue markers (no beatgrid/labels in the overview).
       drawCues(ctx, cuesRef.current, w, h, dpr, (t) => (t / dur) * w, false)
+      const cp = cuePointRef.current
+      if (cp != null) drawCuePoint(ctx, Math.round((cp / dur) * w), h, dpr)
       const pw = Math.max(2, Math.round(2 * dpr))
-      ctx.fillStyle = '#e6e9ef'
-      ctx.fillRect(px - Math.floor(pw / 2), 0, pw, h)
+      const px0 = px - Math.floor(pw / 2)
+      const po = Math.max(1, Math.round(dpr))
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'
+      ctx.fillRect(px0 - po, 0, pw + po * 2, h)
+      ctx.fillStyle = '#ff3b30'
+      ctx.fillRect(px0, 0, pw, h)
     }
   }, [])
 
@@ -97,12 +113,13 @@ export function OverviewWaveform({ cols, currentTime, duration, cues, loop, onSe
     draw()
   }, [currentTime, duration, draw])
 
-  // Redraw when the cue set or loop changes.
+  // Redraw when the cue set, cue point, or loop changes.
   useEffect(() => {
     cuesRef.current = cues
+    cuePointRef.current = cuePoint
     loopRef.current = loop
     draw()
-  }, [cues, loop, draw])
+  }, [cues, cuePoint, loop, draw])
 
   const seek = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!duration) return

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CuePoint } from '../api'
-import { drawBeatgrid, drawCues, drawLoop } from '../lib/cues'
+import { drawBeatgrid, drawCuePoint, drawCues, drawLoop } from '../lib/cues'
 import { paintWave, type WaveColumn } from '../lib/waveform'
 
 interface Props {
@@ -8,6 +8,7 @@ interface Props {
   currentTime: number
   duration: number
   cues: CuePoint[]
+  cuePoint: number | null
   bpm: number | null
   gridAnchor: number | null
   loop: { start: number; end: number } | null
@@ -34,6 +35,7 @@ export function MainWaveform({
   currentTime,
   duration,
   cues,
+  cuePoint,
   bpm,
   gridAnchor,
   loop,
@@ -83,12 +85,37 @@ export function MainWaveform({
       if (cues.length) {
         drawCues(ctx, cues, w, h, dpr, timeToX, true)
       }
+      if (cuePoint != null && cuePoint >= startSec && cuePoint <= endSec) {
+        drawCuePoint(ctx, Math.round(timeToX(cuePoint)), h, dpr)
+      }
     }
 
-    // Fixed centre playhead.
-    const pw = Math.max(2, Math.round(2 * dpr))
-    ctx.fillStyle = '#e6e9ef'
-    ctx.fillRect(Math.floor(w / 2) - Math.floor(pw / 2), 0, pw, h)
+    // Fixed centre playhead — red core with a translucent black outline so it
+    // separates from the waveform, plus inward-pointing triangle caps top and
+    // bottom that anchor the eye in the quiet margins.
+    const core = Math.max(2, Math.round(2 * dpr))
+    const edge = Math.max(1, Math.round(dpr))
+    const cx = Math.floor(w / 2)
+    const px = cx - Math.floor(core / 2)
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'
+    ctx.fillRect(px - edge, 0, core + edge * 2, h)
+    ctx.fillStyle = '#ff3b30'
+    ctx.fillRect(px, 0, core, h)
+
+    const cap = Math.round(6 * dpr)
+    ctx.fillStyle = '#ff3b30'
+    ctx.beginPath()
+    ctx.moveTo(cx - cap, 0)
+    ctx.lineTo(cx + cap, 0)
+    ctx.lineTo(cx, cap)
+    ctx.closePath()
+    ctx.fill()
+    ctx.beginPath()
+    ctx.moveTo(cx - cap, h)
+    ctx.lineTo(cx + cap, h)
+    ctx.lineTo(cx, h - cap)
+    ctx.closePath()
+    ctx.fill()
   }
 
   const drawRef = useRef(draw)

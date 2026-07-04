@@ -3,12 +3,15 @@
 // The audio is downmixed to mono and split into three frequency bands with
 // native BiquadFilters (via OfflineAudioContext — fast, off the main thread).
 // Per output column we keep each band's RMS energy plus the amplitude peak.
-// Colour = balance of the three bands (bass→red, mids→green, highs→blue);
-// height = amplitude. This mirrors how Traktor's Spectrum waveform reads.
+// Each band is mapped to a target colour on Traktor's warm→cool ramp
+// (bass→orange, mids→violet, highs→cyan) and the three are blended by energy;
+// height = amplitude. Traktor's palette has NO green — mapping bands straight
+// to R/G/B (the naive approach) produces yellows/greens it never shows, so we
+// blend named palette colours instead. Tune the three constants below.
 
 export interface WaveColumn {
   peak: number // 0..1 amplitude (column height)
-  r: number // 0..1 colour channels (already contrast-boosted)
+  r: number // 0..1 final blended colour (already contrast-boosted)
   g: number
   b: number
 }
@@ -19,6 +22,11 @@ const LOW_HZ = 250
 const MID_HZ = 1200
 const MID_Q = 0.6
 const HIGH_HZ = 5000
+
+// Target colour per band on Traktor's ramp (0..1 RGB). Blended by band energy.
+const LOW_COL = [1.0, 0.30, 0.15] // bass → orange-red
+const MID_COL = [0.65, 0.18, 0.95] // mids → violet / magenta
+const HIGH_COL = [0.15, 0.65, 1.0] // highs → cyan-blue
 
 /**
  * Paint a slice of the analysed columns across a canvas: source columns in the
@@ -167,12 +175,19 @@ export async function analyzeWaveform(url: string, buckets?: number): Promise<Wa
     // tied to loudness — amplitude is shown by height, like Traktor). Gamma
     // sharpens the separation between bands.
     const mx = Math.max(l, m, h, 1e-9)
-    cols[b] = {
-      peak: peak[b] / maxPeak,
-      r: Math.pow(l / mx, 1.3),
-      g: Math.pow(m / mx, 1.3),
-      b: Math.pow(h / mx, 1.3),
-    }
+    const wl = Math.pow(l / mx, 1.3)
+    const wm = Math.pow(m / mx, 1.3)
+    const wh = Math.pow(h / mx, 1.3)
+    // Blend the three band palette colours by weight, then normalise to the
+    // brightest channel so the colour stays vivid (height carries loudness).
+    let cr = wl * LOW_COL[0] + wm * MID_COL[0] + wh * HIGH_COL[0]
+    let cg = wl * LOW_COL[1] + wm * MID_COL[1] + wh * HIGH_COL[1]
+    let cb = wl * LOW_COL[2] + wm * MID_COL[2] + wh * HIGH_COL[2]
+    const cmax = Math.max(cr, cg, cb, 1e-9)
+    cr /= cmax
+    cg /= cmax
+    cb /= cmax
+    cols[b] = { peak: peak[b] / maxPeak, r: cr, g: cg, b: cb }
   }
   return { cols, buffer: audio }
 }

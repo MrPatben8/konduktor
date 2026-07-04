@@ -184,14 +184,7 @@ export function Sidebar({ source, onSelect, onError }: Props) {
 
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-line bg-ink-900">
-      <div className="flex items-center gap-2 px-4 py-4">
-        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-sm font-bold text-ink-950">
-          K
-        </div>
-        <div className="text-[15px] font-semibold tracking-tight">konduktor</div>
-      </div>
-
-      <div className="px-2">
+      <div className="px-2 pt-3">
         <button
           onClick={() => onSelect({ kind: 'all' })}
           className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors ${

@@ -45,6 +45,12 @@ export default function App() {
   const [menu, setMenu] = useState<{ track: Track; x: number; y: number } | null>(null)
   const [editing, setEditing] = useState<Track | null>(null)
   const [prepTrack, setPrepTrack] = useState<Track | null>(null)
+  const [playRequest, setPlayRequest] = useState(0) // bump → deck loads & auto-plays
+
+  const playTrack = useCallback((t: Track) => {
+    setPrepTrack(t)
+    setPlayRequest((n) => n + 1)
+  }, [])
 
   const notify = useCallback((kind: ToastMsg['kind'], text: string) => {
     setToast({ id: Date.now(), kind, text })
@@ -144,7 +150,7 @@ export default function App() {
       )}
 
       {/* Prep strip spans the top of the window; the library sits below it. */}
-      <PrepStrip track={prepTrack} onError={onError} />
+      <PrepStrip track={prepTrack} playRequest={playRequest} onError={onError} />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <Sidebar source={source} onSelect={selectSource} onError={onError} />
@@ -183,6 +189,8 @@ export default function App() {
                   allSelected: selected.size > 0 && selected.size === filtered.length,
                 }}
                 onRowContextMenu={(track, x, y) => setMenu({ track, x, y })}
+                onPlay={playTrack}
+                activeTrackId={prepTrack?.id ?? null}
               />
             )
           ) : (

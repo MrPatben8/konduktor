@@ -13,9 +13,13 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from . import prefs
 from .collection_service import CollectionService
+from .discovery import describe, detect_collections
 from .playlist_store import PlaylistError, PlaylistStore
 from .schemas import (
+    CollectionCandidate,
+    CollectionOptions,
     CollectionStatus,
     CreatePlaylist,
     CuePoint,
@@ -121,7 +125,21 @@ def open_collection(body: OpenCollection) -> CollectionStatus:
         raise HTTPException(400, f"Not a valid Traktor collection: {ex}")
     except Exception as ex:  # noqa: BLE001
         raise HTTPException(400, f"Could not parse as a Traktor collection: {ex}")
+    prefs.set_last_collection(str(path))
     return collection_status()
+
+
+@app.get("/api/collection/options", response_model=CollectionOptions)
+def collection_options() -> CollectionOptions:
+    """Startup shortcuts for the picker: the best auto-detected Traktor
+    collection and the last one opened (may no longer exist → exists=False)."""
+    detected = detect_collections()
+    auto = CollectionCandidate(**detected[0]) if detected else None
+    recent = None
+    last = prefs.get_last_collection()
+    if last:
+        recent = CollectionCandidate(**describe(Path(last)))
+    return CollectionOptions(auto=auto, recent=recent)
 
 
 @app.get("/api/fs/list", response_model=FsListing)

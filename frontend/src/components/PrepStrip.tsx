@@ -13,6 +13,8 @@ import { OverviewWaveform } from './OverviewWaveform'
 interface Props {
   /** The track currently loaded into the prep deck, if any. */
   track: Track | null
+  /** Bumped by the library's per-row play button to load + auto-play. */
+  playRequest?: number
   onError?: (msg: string) => void
 }
 
@@ -39,7 +41,7 @@ const LOOP_SIZES = [1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32]
  * Web Audio PlaybackEngine (seamless loops); the same decoded buffer feeds the
  * scratch engine and both waveform views.
  */
-export function PrepStrip({ track, onError }: Props) {
+export function PrepStrip({ track, playRequest = 0, onError }: Props) {
   const qc = useQueryClient()
   const [playing, setPlaying] = useState(false)
   const [current, setCurrent] = useState(0)
@@ -50,6 +52,7 @@ export function PrepStrip({ track, onError }: Props) {
   const [cueData, setCueData] = useState<TrackCues | null>(null)
   const [snap, setSnap] = useState(true)
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null)
+  const [cuePoint, setCuePoint] = useState(0) // floating "CUE" point (frontend-only)
 
   // Loop state (transient — persisted only when saved as a hotcue later).
   const [loopRegion, setLoopRegion] = useState<{ start: number; end: number } | null>(null)
@@ -65,6 +68,8 @@ export function PrepStrip({ track, onError }: Props) {
   const wasPlayingRef = useRef(false)
   const scratchRafRef = useRef(0)
   const engagedRef = useRef(false) // scratch engine is dragging or coasting
+  const pendingPlayRef = useRef(false) // a play was requested; start once ready
+  const loadedIdRef = useRef<string | null>(null) // trackId whose buffer is loaded
 
   const trackId = track?.id ?? null
 
@@ -100,6 +105,7 @@ export function PrepStrip({ track, onError }: Props) {
     setLoopRegion(null)
     setLoopActive(false)
     setActiveBeats(null)
+    setCuePoint(0)
     loopInRef.current = null
   }, [trackId])
 
@@ -133,6 +139,13 @@ export function PrepStrip({ track, onError }: Props) {
         playbackRef.current.load(ctx, res.buffer)
         setDuration(res.buffer.duration)
         setReady(true)
+        loadedIdRef.current = trackId
+        // A play was requested (library row button) → start now that it's ready.
+        if (pendingPlayRef.current) {
+          pendingPlayRef.current = false
+          playbackRef.current.play()
+          setPlaying(true)
+        }
       })
       .catch(() => {
         if (!cancelled) setWaveStatus('error')
@@ -179,6 +192,43 @@ export function PrepStrip({ track, onError }: Props) {
     }
     setCurrent(eng.getPosition())
   }
+
+  // CUE (Traktor/CDJ-style): while playing, jump back to the cue point and
+  // pause; while paused and away from the cue, drop the cue at the playhead;
+  // while paused and already at the cue, play from it.
+  const handleCue = () => {
+    const eng = playbackRef.current
+    if (!eng || !eng.ready) return
+    getCtx()
+    if (eng.playing) {
+      eng.pause()
+      eng.seek(cuePoint)
+      setPlaying(false)
+      setCurrent(cuePoint)
+    } else if (Math.abs(current - cuePoint) > 0.03) {
+      setCuePoint(current)
+    } else {
+      eng.play()
+      setPlaying(true)
+    }
+  }
+
+  // A library row's play button bumps `playRequest`: load (if needed) + play.
+  // If the requested track is already loaded and ready, start immediately;
+  // otherwise flag it and the analysis effect starts playback once ready.
+  useEffect(() => {
+    if (playRequest === 0) return
+    pendingPlayRef.current = true
+    const eng = playbackRef.current
+    if (loadedIdRef.current === trackId && eng?.ready) {
+      pendingPlayRef.current = false
+      getCtx()
+      eng.play()
+      setPlaying(true)
+      setCurrent(eng.getPosition())
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playRequest])
 
   // Follow the Web Audio clock while playing (high-res → smooth playhead).
   useEffect(() => {
@@ -494,16 +544,38 @@ export function PrepStrip({ track, onError }: Props) {
           />
         )}
 
-        <div className="mt-auto flex items-center gap-3">
+        <div className="mt-auto flex items-center gap-2">
+          <button
+            onClick={handleCue}
+            disabled={!ready}
+            className="flex h-11 items-center justify-center rounded-xl border border-line bg-ink-850 px-4 text-sm font-bold tracking-wide text-gold transition-colors hover:border-gold disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line"
+            title="Cue — set the cue point (paused) or jump back to it (playing)"
+          >
+            CUE
+          </button>
           <button
             onClick={toggle}
             disabled={!ready}
-            className="flex h-9 w-9 items-center justify-center rounded-full border border-line bg-ink-850 text-text hover:border-accent disabled:opacity-40 disabled:hover:border-line"
+            className={
+              'flex h-11 w-11 items-center justify-center rounded-xl transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 ' +
+              (playing
+                ? 'bg-mint text-ink-950 shadow-lg shadow-mint/20 hover:brightness-110'
+                : 'border border-line bg-ink-850 text-text hover:border-accent disabled:hover:border-line')
+            }
             title={playing ? 'Pause' : 'Play'}
           >
-            {playing ? '❚❚' : '▶'}
+            {playing ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                <rect x="6" y="5" width="4" height="14" rx="1" />
+                <rect x="14" y="5" width="4" height="14" rx="1" />
+              </svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                <path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.29-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z" />
+              </svg>
+            )}
           </button>
-          <div className="tabular-nums text-xs text-faint">
+          <div className="tabular-nums text-lg font-medium text-muted">
             {fmt(current)} / {fmt(duration)}
           </div>
         </div>
@@ -528,6 +600,7 @@ export function PrepStrip({ track, onError }: Props) {
                   currentTime={current}
                   duration={duration}
                   cues={cueData?.cues ?? []}
+                  cuePoint={cuePoint}
                   bpm={cueData?.bpm ?? null}
                   gridAnchor={cueData?.grid_anchor ?? null}
                   loop={activeLoop}
@@ -549,6 +622,7 @@ export function PrepStrip({ track, onError }: Props) {
                   currentTime={current}
                   duration={duration}
                   cues={cueData?.cues ?? []}
+                  cuePoint={cuePoint}
                   loop={activeLoop}
                   onSeek={seekManual}
                 />

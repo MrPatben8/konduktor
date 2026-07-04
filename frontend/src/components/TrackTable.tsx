@@ -109,9 +109,19 @@ interface Props {
   onSortingChange: (s: SortingState) => void
   selection?: Selection
   onRowContextMenu?: (track: Track, x: number, y: number) => void
+  onPlay?: (track: Track) => void
+  activeTrackId?: string | null
 }
 
-export function TrackTable({ tracks, sorting, onSortingChange, selection, onRowContextMenu }: Props) {
+export function TrackTable({
+  tracks,
+  sorting,
+  onSortingChange,
+  selection,
+  onRowContextMenu,
+  onPlay,
+  activeTrackId,
+}: Props) {
   const table = useReactTable({
     data: tracks,
     columns,
@@ -157,6 +167,7 @@ export function TrackTable({ tracks, sorting, onSortingChange, selection, onRowC
           ) : (
             <span className="w-10 shrink-0" />
           )}
+          {onPlay && <span className="w-9 shrink-0" />}
           {table.getHeaderGroups()[0].headers.map((header) => {
             const sorted = header.column.getIsSorted()
             return (
@@ -180,10 +191,11 @@ export function TrackTable({ tracks, sorting, onSortingChange, selection, onRowC
           {virtualRows.map((vr) => {
             const row = rows[vr.index]
             const isSelected = selection?.selected.has(row.original.id) ?? false
+            const isActive = activeTrackId === row.original.id
             return (
               <div
                 key={row.id}
-                className={`absolute left-0 flex items-center border-b border-ink-850 text-sm ${
+                className={`group absolute left-0 flex items-center border-b border-ink-850 text-sm ${
                   isSelected ? 'bg-accent-soft/50' : 'hover:bg-ink-850'
                 }`}
                 style={{
@@ -210,6 +222,26 @@ export function TrackTable({ tracks, sorting, onSortingChange, selection, onRowC
                 ) : (
                   <span className="w-10 shrink-0 pr-2 text-right text-xs tabular-nums text-faint">
                     {vr.index + 1}
+                  </span>
+                )}
+                {onPlay && (
+                  <span className="flex w-9 shrink-0 items-center justify-center">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onPlay(row.original)
+                      }}
+                      className={`flex h-6 w-6 items-center justify-center rounded-full transition-colors hover:bg-accent hover:text-ink-950 ${
+                        isActive
+                          ? 'text-accent opacity-100'
+                          : 'text-faint opacity-0 group-hover:opacity-100'
+                      }`}
+                      title="Play in deck"
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                        <path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.29-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z" />
+                      </svg>
+                    </button>
                   </span>
                 )}
                 {row.getVisibleCells().map((cell) => (

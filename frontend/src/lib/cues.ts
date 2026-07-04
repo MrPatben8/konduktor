@@ -86,6 +86,33 @@ export function drawCues(
   }
 }
 
+/**
+ * Draw the floating "CUE" point: a gold vertical line with a dark outline and a
+ * solid downward triangle tab at the top, distinct from numbered hotcue flags,
+ * the white beatgrid, and the red playhead.
+ */
+export function drawCuePoint(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  h: number,
+  dpr: number,
+): void {
+  const lw = Math.max(2, Math.round(2 * dpr))
+  const half = Math.floor(lw / 2)
+  const outline = Math.max(1, Math.round(dpr))
+  const tab = Math.round(8 * dpr)
+  ctx.fillStyle = 'rgba(0,0,0,0.6)'
+  ctx.fillRect(x - half - outline, 0, lw + outline * 2, h)
+  ctx.fillStyle = '#ffb020'
+  ctx.fillRect(x - half, 0, lw, h)
+  ctx.beginPath()
+  ctx.moveTo(x - tab, 0)
+  ctx.lineTo(x + tab, 0)
+  ctx.lineTo(x, tab)
+  ctx.closePath()
+  ctx.fill()
+}
+
 /** Draw the active loop region: a translucent green band with bright edges. */
 export function drawLoop(
   ctx: CanvasRenderingContext2D,

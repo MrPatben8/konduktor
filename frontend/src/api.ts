@@ -125,6 +125,19 @@ export interface CollectionStatus {
   playlists: number | null
 }
 
+export interface CollectionCandidate {
+  path: string
+  label: string
+  version: string | null
+  modified: number | null // epoch seconds
+  exists: boolean
+}
+
+export interface CollectionOptions {
+  auto: CollectionCandidate | null // best auto-detected (latest Traktor version)
+  recent: CollectionCandidate | null // last opened (may no longer exist)
+}
+
 export interface FsEntry {
   name: string
   path: string
@@ -183,6 +196,7 @@ export const api = {
   collection: () => getJSON<CollectionStatus>('/api/collection'),
   openCollection: (path: string) =>
     send<CollectionStatus>('POST', '/api/collection/open', { path }),
+  collectionOptions: () => getJSON<CollectionOptions>('/api/collection/options'),
   listDir: (path?: string) =>
     getJSON<FsListing>(`/api/fs/list${path ? `?path=${encodeURIComponent(path)}` : ''}`),
 

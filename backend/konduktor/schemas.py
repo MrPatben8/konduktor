@@ -178,6 +178,19 @@ class OpenCollection(BaseModel):
     path: str
 
 
+class CollectionCandidate(BaseModel):
+    path: str
+    label: str  # folder name, e.g. "Traktor 4.5.0"
+    version: str | None = None  # "4.5.0"
+    modified: float | None = None  # collection.nml mtime, epoch seconds
+    exists: bool = True
+
+
+class CollectionOptions(BaseModel):
+    auto: CollectionCandidate | None = None  # best auto-detected (latest version)
+    recent: CollectionCandidate | None = None  # last opened (from userprefs)
+
+
 class FsEntry(BaseModel):
     name: str
     path: str

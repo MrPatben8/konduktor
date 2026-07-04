@@ -35,3 +35,6 @@ Thumbs.db
 *.log
 .env
 .env.*
+
+# Local user preferences (not shared)
+backend/userprefs.json
