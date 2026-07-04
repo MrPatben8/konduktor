@@ -122,6 +122,9 @@ export function drawBeatgrid(
   const span = endSec - startSec
   const beatPx = (beat / span) * w
   const showBeats = beatPx >= 6 * dpr
+  const outline = Math.max(1, Math.round(dpr))
+  const beatW = Math.max(1, Math.round(dpr))
+  const barW = Math.max(2, Math.round(2 * dpr))
   let k = Math.ceil((startSec - gridAnchor) / beat)
   for (;;) {
     const bt = gridAnchor + k * beat
@@ -131,7 +134,11 @@ export function drawBeatgrid(
     if (bt < startSec) continue
     if (!downbeat && !showBeats) continue
     const x = Math.round(((bt - startSec) / span) * w)
-    ctx.fillStyle = downbeat ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.2)'
-    ctx.fillRect(x, 0, downbeat ? Math.max(1, Math.round(dpr)) : 1, h)
+    const lw = downbeat ? barW : beatW
+    // Dark outline so the line reads on any waveform colour, then a bright line.
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'
+    ctx.fillRect(x - Math.floor(lw / 2) - outline, 0, lw + outline * 2, h)
+    ctx.fillStyle = downbeat ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.65)'
+    ctx.fillRect(x - Math.floor(lw / 2), 0, lw, h)
   }
 }
