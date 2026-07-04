@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { api, type Track, type TrackCues } from '../api'
 import { analyzeWaveform, type WaveColumn } from '../lib/waveform'
 import { ScratchEngine } from '../lib/scratchEngine'
+import { PlaybackEngine } from '../lib/playbackEngine'
+import { HotcueBar } from './HotcueBar'
+import { LoopControls } from './LoopControls'
 import { MainWaveform } from './MainWaveform'
 import { OverviewWaveform } from './OverviewWaveform'
 
@@ -18,45 +22,74 @@ function fmt(secs: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
+const CUE_TYPES: { value: number; label: string }[] = [
+  { value: 0, label: 'Cue' },
+  { value: 1, label: 'Fade-In' },
+  { value: 2, label: 'Fade-Out' },
+  { value: 3, label: 'Load' },
+]
+
 /**
  * The DJ-style "prep strip" across the top of the window: transport controls on
  * the left, waveforms on the right (a scrolling zoomable main view above a
- * whole-track overview). Playback is driven by a single hidden <audio> element
- * streamed from the backend (range-enabled, so seeking works). The frequency-
- * coloured waveform is analysed once here and shared by both views.
+ * whole-track overview), plus loop + hotcue controls. Playback runs through the
+ * Web Audio PlaybackEngine (seamless loops); the same decoded buffer feeds the
+ * scratch engine and both waveform views.
  */
 export function PrepStrip({ track, onError }: Props) {
-  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const qc = useQueryClient()
   const [playing, setPlaying] = useState(false)
   const [current, setCurrent] = useState(0)
   const [duration, setDuration] = useState(0)
-  const [loadError, setLoadError] = useState(false)
+  const [ready, setReady] = useState(false)
   const [cols, setCols] = useState<WaveColumn[] | null>(null)
   const [waveStatus, setWaveStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [cueData, setCueData] = useState<TrackCues | null>(null)
+  const [snap, setSnap] = useState(true)
+  const [selectedSlot, setSelectedSlot] = useState<number | null>(null)
 
-  // Scratch engine (Web Audio) — holds the decoded buffer for the loaded track.
+  // Loop state (transient — persisted only when saved as a hotcue later).
+  const [loopRegion, setLoopRegion] = useState<{ start: number; end: number } | null>(null)
+  const [loopActive, setLoopActive] = useState(false)
+  const [activeBeats, setActiveBeats] = useState<number | null>(null)
+  const loopInRef = useRef<number | null>(null) // armed manual loop-in point
+
   const audioCtxRef = useRef<AudioContext | null>(null)
-  const engineRef = useRef<ScratchEngine | null>(null)
+  const playbackRef = useRef<PlaybackEngine | null>(null)
+  const scratchRef = useRef<ScratchEngine | null>(null)
   const wasPlayingRef = useRef(false)
   const scratchRafRef = useRef(0)
-  const engagedRef = useRef(false) // engine is dragging or coasting
+  const engagedRef = useRef(false) // scratch engine is dragging or coasting
 
   const trackId = track?.id ?? null
 
-  // When the loaded track changes, reset transport state. The <audio> src is
-  // bound declaratively below, so changing trackId swaps the source.
+  const getCtx = (): AudioContext => {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new (window.AudioContext ??
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)()
+    }
+    void audioCtxRef.current.resume()
+    return audioCtxRef.current
+  }
+
+  // Reset transport + loop state when the loaded track changes.
   useEffect(() => {
+    playbackRef.current?.pause()
     setPlaying(false)
     setCurrent(0)
     setDuration(0)
-    setLoadError(false)
+    setReady(false)
+    setSelectedSlot(null)
+    setLoopRegion(null)
+    setLoopActive(false)
+    setActiveBeats(null)
+    loopInRef.current = null
   }, [trackId])
 
-  // Analyse the waveform once per track; both waveform views share the result,
-  // and the decoded buffer is handed to the scratch engine (no second decode).
+  // Analyse once per track; the decoded buffer feeds both the playback and
+  // scratch engines (no re-decode) and both waveform views share the columns.
   useEffect(() => {
-    engineRef.current = null
+    scratchRef.current = null
     if (!trackId) {
       setCols(null)
       setWaveStatus('loading')
@@ -70,9 +103,17 @@ export function PrepStrip({ track, onError }: Props) {
         if (cancelled) return
         setCols(res.cols)
         setWaveStatus('ready')
-        const eng = new ScratchEngine()
-        eng.load(res.buffer)
-        engineRef.current = eng
+        const sc = new ScratchEngine()
+        sc.load(res.buffer)
+        scratchRef.current = sc
+        const ctx = getCtx()
+        if (!playbackRef.current) {
+          playbackRef.current = new PlaybackEngine()
+          playbackRef.current.setOnEnded(() => setPlaying(false))
+        }
+        playbackRef.current.load(ctx, res.buffer)
+        setDuration(res.buffer.duration)
+        setReady(true)
       })
       .catch(() => {
         if (!cancelled) setWaveStatus('error')
@@ -104,84 +145,61 @@ export function PrepStrip({ track, onError }: Props) {
   }, [trackId])
 
   const toggle = () => {
-    const el = audioRef.current
-    if (!el || !track) return
-    if (el.paused) {
-      el.play().catch(() => {
-        setLoadError(true)
-        setPlaying(false)
-      })
+    const eng = playbackRef.current
+    if (!eng || !eng.ready) return
+    getCtx() // ensure the context resumes on this user gesture
+    if (eng.playing) {
+      eng.pause()
+      setPlaying(false)
     } else {
-      el.pause()
+      eng.play()
+      setPlaying(true)
     }
+    setCurrent(eng.getPosition())
   }
 
-  // Smoothly advance the playhead while playing. HTMLAudioElement.currentTime
-  // only updates in coarse steps (tens of ms), which looks choppy when zoomed in,
-  // so we interpolate with the wall clock between the media clock's ticks and
-  // re-anchor whenever it actually advances.
+  // Follow the Web Audio clock while playing (high-res → smooth playhead).
   useEffect(() => {
     if (!playing) return
     let raf = 0
-    let lastRaw = -1
-    let anchorAudio = 0
-    let anchorPerf = 0
     const tick = () => {
-      const el = audioRef.current
-      if (el) {
-        const raw = el.currentTime
-        if (raw !== lastRaw) {
-          lastRaw = raw
-          anchorAudio = raw
-          anchorPerf = performance.now()
-        }
-        const est = anchorAudio + (performance.now() - anchorPerf) / 1000
-        setCurrent(duration ? Math.min(est, duration) : est)
-      }
+      const eng = playbackRef.current
+      if (eng) setCurrent(eng.getPosition())
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [playing, duration])
+  }, [playing])
 
   const seek = (t: number) => {
-    const el = audioRef.current
-    if (!el) return
-    el.currentTime = t
+    const eng = playbackRef.current
+    if (!eng) return
+    eng.seek(t)
     setCurrent(t)
   }
 
-  // ---- scratch (Web Audio) ----------------------------------------------
-  const getCtx = (): AudioContext => {
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new (window.AudioContext ??
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)()
-    }
-    void audioCtxRef.current.resume()
-    return audioCtxRef.current
-  }
-
-  // Once the platter has coasted to a stop (or up to normal speed), hand the
-  // position back to the <audio> element and resume if it had been playing.
+  // ---- scratch ----------------------------------------------------------
   const finalizeScratch = () => {
     cancelAnimationFrame(scratchRafRef.current)
     engagedRef.current = false
-    const eng = engineRef.current
-    if (!eng) return
-    const finalSec = eng.end()
-    const el = audioRef.current
-    if (el) el.currentTime = finalSec
+    const sc = scratchRef.current
+    if (!sc) return
+    const finalSec = sc.end()
+    const pb = playbackRef.current
+    if (pb) pb.seek(finalSec)
     setCurrent(finalSec)
-    if (wasPlayingRef.current && el) void el.play().catch(() => {})
+    if (wasPlayingRef.current && pb) {
+      pb.play()
+      setPlaying(true)
+    }
   }
 
-  // Follow the engine's actual position each frame; finalize when it settles.
   const runScratchRaf = () => {
     cancelAnimationFrame(scratchRafRef.current)
-    const eng = engineRef.current!
+    const sc = scratchRef.current!
     const tick = () => {
-      setCurrent(eng.getPositionSec())
-      if (eng.finished) {
+      setCurrent(sc.getPositionSec())
+      if (sc.finished) {
         finalizeScratch()
         return
       }
@@ -191,43 +209,145 @@ export function PrepStrip({ track, onError }: Props) {
   }
 
   const onScratchStart = () => {
-    const eng = engineRef.current
-    // Re-grab while still coasting: keep the current position, resume dragging.
-    if (engagedRef.current && eng) {
-      eng.regrab()
+    const sc = scratchRef.current
+    if (engagedRef.current && sc) {
+      sc.regrab() // re-grab while coasting
       return
     }
-    const el = audioRef.current
-    wasPlayingRef.current = !!el && !el.paused
-    if (el && !el.paused) el.pause()
-    if (eng && eng.loaded) {
-      eng.begin(getCtx(), current)
+    const pb = playbackRef.current
+    wasPlayingRef.current = !!pb && pb.playing
+    if (pb && pb.playing) {
+      pb.pause()
+      setPlaying(false)
+    }
+    if (sc && sc.loaded) {
+      sc.begin(getCtx(), current)
       engagedRef.current = true
       runScratchRaf()
     }
   }
 
   const onScratchMove = (t: number) => {
-    if (engagedRef.current) engineRef.current!.setTargetSec(t)
-    else setCurrent(t) // no decoded buffer yet → silent visual scrub
+    if (engagedRef.current) scratchRef.current!.setTargetSec(t)
+    else setCurrent(t)
   }
 
   const onScratchEnd = (t: number) => {
     if (engagedRef.current) {
-      // Coast; runScratchRaf finalizes once the platter settles.
-      engineRef.current!.release(wasPlayingRef.current)
+      scratchRef.current!.release(wasPlayingRef.current)
     } else {
-      const el = audioRef.current
-      if (el) el.currentTime = t
-      setCurrent(t)
-      if (wasPlayingRef.current && el) void el.play().catch(() => {})
+      seek(t)
+      if (wasPlayingRef.current) {
+        playbackRef.current?.play()
+        setPlaying(true)
+      }
     }
   }
 
-  const showWaves = track && !loadError && cols && waveStatus === 'ready'
+  // ---- loops ------------------------------------------------------------
+  // Snap a time to the nearest beat when Snap is on (needs a beatgrid).
+  const snapTime = (t: number) => {
+    const bpm = cueData?.bpm ?? null
+    const anchor = cueData?.grid_anchor ?? null
+    if (!snap || !bpm || bpm <= 0 || anchor == null) return Math.max(0, t)
+    const beat = 60 / bpm
+    return Math.max(0, anchor + Math.round((t - anchor) / beat) * beat)
+  }
+
+  const engagLoop = (start: number, end: number, beats: number | null) => {
+    const eng = playbackRef.current
+    if (!eng) return
+    eng.setLoop(start, end, true)
+    setLoopRegion({ start, end })
+    setLoopActive(true)
+    setActiveBeats(beats)
+    loopInRef.current = null
+    setCurrent(eng.getPosition())
+  }
+
+  const setBeatLoop = (beats: number) => {
+    const eng = playbackRef.current
+    const bpm = cueData?.bpm ?? null
+    if (!eng || !eng.ready || !bpm || bpm <= 0) return
+    const start = snapTime(eng.getPosition())
+    engagLoop(start, start + beats * (60 / bpm), beats)
+  }
+
+  const loopIn = () => {
+    const eng = playbackRef.current
+    if (!eng || !eng.ready) return
+    loopInRef.current = snapTime(eng.getPosition())
+  }
+
+  const loopOut = () => {
+    const eng = playbackRef.current
+    if (!eng || !eng.ready || loopInRef.current == null) return
+    const end = snapTime(eng.getPosition())
+    if (end <= loopInRef.current) return
+    engagLoop(loopInRef.current, end, null)
+  }
+
+  const toggleLoop = () => {
+    const eng = playbackRef.current
+    if (!eng || !loopRegion) return
+    const next = !loopActive
+    eng.setLoopEnabled(next)
+    setLoopActive(next)
+    setCurrent(eng.getPosition())
+  }
+
+  // ---- hotcues ----------------------------------------------------------
+  const hotcueAt = (slot: number) => cueData?.cues.find((c) => c.hotcue === slot) ?? null
+
+  const applyCueEdit = (fresh: TrackCues) => {
+    setCueData(fresh)
+    qc.invalidateQueries({ queryKey: ['state'] })
+    qc.invalidateQueries({ queryKey: ['tracks'] })
+    qc.invalidateQueries({ queryKey: ['playlist'] })
+  }
+
+  const onSlotClick = async (slot: number) => {
+    if (!track) return
+    const cue = hotcueAt(slot)
+    if (cue) {
+      seek(cue.start)
+      setSelectedSlot(slot)
+      return
+    }
+    try {
+      const t = snapTime(playbackRef.current?.getPosition() ?? current)
+      applyCueEdit(await api.createHotcue(track.id, slot, t, 0))
+      setSelectedSlot(slot)
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+
+  const changeSelectedType = async (type: number) => {
+    if (!track || selectedSlot == null) return
+    try {
+      applyCueEdit(await api.setHotcueType(track.id, selectedSlot, type))
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+
+  const deleteSelected = async () => {
+    if (!track || selectedSlot == null) return
+    try {
+      applyCueEdit(await api.deleteHotcue(track.id, selectedSlot))
+      setSelectedSlot(null)
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+
+  const selectedCue = selectedSlot != null ? hotcueAt(selectedSlot) : null
+  const showWaves = track && cols && waveStatus === 'ready'
+  const activeLoop = loopActive && loopRegion ? loopRegion : null
 
   return (
-    <div className="flex h-52 shrink-0 items-stretch gap-px border-b border-line bg-ink-950">
+    <div className="flex h-72 shrink-0 items-stretch gap-px border-b border-line bg-ink-950">
       {/* Controls */}
       <div className="flex w-72 shrink-0 flex-col justify-between bg-ink-900 px-4 py-3">
         <div className="min-w-0">
@@ -248,7 +368,7 @@ export function PrepStrip({ track, onError }: Props) {
         <div className="flex items-center gap-3">
           <button
             onClick={toggle}
-            disabled={!track || loadError}
+            disabled={!ready}
             className="flex h-9 w-9 items-center justify-center rounded-full border border-line bg-ink-850 text-text hover:border-accent disabled:opacity-40 disabled:hover:border-line"
             title={playing ? 'Pause' : 'Play'}
           >
@@ -260,15 +380,15 @@ export function PrepStrip({ track, onError }: Props) {
         </div>
       </div>
 
-      {/* Waveforms: scrolling main view above a whole-track overview. */}
+      {/* Waveforms + loop/hotcue controls. */}
       <div className="relative flex min-w-0 flex-1 flex-col bg-ink-900">
         {!track ? (
           <div className="flex flex-1 items-center justify-center text-xs text-faint">
             Load a track to prep it
           </div>
-        ) : loadError ? (
+        ) : waveStatus === 'error' ? (
           <div className="flex flex-1 items-center justify-center text-xs text-pink">
-            Could not load audio — file may be missing or unsupported by the browser.
+            Could not load audio — file may be missing or an unsupported format.
           </div>
         ) : (
           <>
@@ -281,6 +401,7 @@ export function PrepStrip({ track, onError }: Props) {
                   cues={cueData?.cues ?? []}
                   bpm={cueData?.bpm ?? null}
                   gridAnchor={cueData?.grid_anchor ?? null}
+                  loop={activeLoop}
                   onSeek={seek}
                   onScratchStart={onScratchStart}
                   onScratchMove={onScratchMove}
@@ -288,7 +409,7 @@ export function PrepStrip({ track, onError }: Props) {
                 />
               ) : (
                 <div className="flex h-full items-center justify-center text-xs text-faint">
-                  {waveStatus === 'error' ? 'Waveform unavailable' : 'Analysing waveform…'}
+                  Analysing waveform…
                 </div>
               )}
             </div>
@@ -299,29 +420,62 @@ export function PrepStrip({ track, onError }: Props) {
                   currentTime={current}
                   duration={duration}
                   cues={cueData?.cues ?? []}
+                  loop={activeLoop}
                   onSeek={seek}
                 />
               )}
             </div>
+
+            <LoopControls
+              bpm={cueData?.bpm ?? null}
+              active={loopActive}
+              activeBeats={activeBeats}
+              canToggle={loopRegion != null}
+              snap={snap}
+              onToggleSnap={() => setSnap((s) => !s)}
+              onSetLoop={setBeatLoop}
+              onLoopIn={loopIn}
+              onLoopOut={loopOut}
+              onToggleActive={toggleLoop}
+            />
+
+            <HotcueBar
+              cues={cueData?.cues ?? []}
+              selectedSlot={selectedSlot}
+              onSlotClick={onSlotClick}
+            />
+
+            {/* Selected-hotcue editing: type + delete. */}
+            <div className="flex h-8 shrink-0 items-center gap-2 border-t border-line bg-ink-900 px-3 text-xs">
+              <span className="text-faint">
+                {selectedCue ? `Hotcue ${(selectedSlot ?? 0) + 1}` : 'No hotcue selected'}
+              </span>
+              <div className="flex-1" />
+              <select
+                value={selectedCue ? selectedCue.type : ''}
+                disabled={!selectedCue}
+                onChange={(e) => changeSelectedType(Number(e.target.value))}
+                className="rounded border border-line bg-ink-850 px-2 py-0.5 text-text outline-none focus:border-accent disabled:opacity-40"
+              >
+                {!selectedCue && <option value="">—</option>}
+                {CUE_TYPES.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={deleteSelected}
+                disabled={!selectedCue}
+                title="Delete selected hotcue"
+                className="rounded border border-line px-2 py-0.5 text-muted hover:border-pink hover:text-pink disabled:opacity-40 disabled:hover:border-line disabled:hover:text-muted"
+              >
+                🗑
+              </button>
+            </div>
           </>
         )}
       </div>
-
-      {track && (
-        <audio
-          ref={audioRef}
-          src={api.audioUrl(track.id)}
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
-          onEnded={() => setPlaying(false)}
-          onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime)}
-          onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
-          onError={() => {
-            setLoadError(true)
-            onError?.('Could not load audio for this track')
-          }}
-        />
-      )}
     </div>
   )
 }

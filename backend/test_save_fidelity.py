@@ -175,5 +175,56 @@ with tempfile.TemporaryDirectory() as d:
     check("re-parses + genre persisted", e0.info.genre == "KONDUKTOR-FIDELITY-TEST")
     check("rating persisted (4 stars => RANKING 204)", e0.info.ranking == 204)
 
+# ---- Invariant D: a hotcue edit is fully localized ---------------------
+print("== D. hotcue create touches only that track's ENTRY ==")
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    original = work.read_bytes()
+
+    store = PlaylistStore(work)
+    entry = store._nml.collection.entry[0]
+    loc = entry.location
+    track_id = f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}"
+
+    # Use a free slot so we exercise the create path (not overwrite an existing).
+    used = {c.hotcue for c in (entry.cue_v2 or []) if c.hotcue is not None}
+    slot = next(s for s in range(8) if s not in used)
+    store.set_hotcue(track_id, slot, 42.5, 0)
+    store.save()
+    edited = work.read_bytes()
+
+    check("file actually changed", original != edited)
+
+    def entry_span(data: bytes, file_name: str):
+        marker = f'FILE="{file_name}"'.encode()
+        i = data.find(marker)
+        start = data.rfind(b"<ENTRY ", 0, i)
+        end = data.find(b"</ENTRY>", i) + len(b"</ENTRY>")
+        return start, end
+
+    os_, oe = entry_span(original, loc.file)
+    es_, ee = entry_span(edited, loc.file)
+    check(
+        "everything outside the edited track's ENTRY is byte-identical",
+        original[:os_] + b"@@" + original[oe:] == edited[:es_] + b"@@" + edited[ee:],
+    )
+    n = diff_count(original[os_:oe], edited[es_:ee])
+    check("edited ENTRY diff is tiny (<= 3 tag-lines)", n <= 3, f"got {n}")
+
+    from traktor_nml_utils import TraktorCollection
+
+    reparsed = TraktorCollection(path=work)
+    e0 = reparsed.nml.collection.entry[0]
+    new_cue = next((c for c in (e0.cue_v2 or []) if c.hotcue == slot), None)
+    check("re-parses + hotcue persisted", new_cue is not None)
+    check("hotcue START stored in ms", new_cue is not None and abs(new_cue.start - 42500.0) < 1)
+
+    # Create then delete must round-trip back to a byte-identical file.
+    store2 = PlaylistStore(work)  # reload the edited file
+    store2.delete_hotcue(track_id, slot)
+    store2.save()
+    check("create+delete round-trips to the original bytes", work.read_bytes() == original)
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

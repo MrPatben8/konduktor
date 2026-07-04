@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CuePoint } from '../api'
-import { drawBeatgrid, drawCues } from '../lib/cues'
+import { drawBeatgrid, drawCues, drawLoop } from '../lib/cues'
 import { paintWave, type WaveColumn } from '../lib/waveform'
 
 interface Props {
@@ -10,6 +10,7 @@ interface Props {
   cues: CuePoint[]
   bpm: number | null
   gridAnchor: number | null
+  loop: { start: number; end: number } | null
   onSeek: (t: number) => void
   onScratchStart: () => void
   onScratchMove: (t: number) => void
@@ -35,6 +36,7 @@ export function MainWaveform({
   cues,
   bpm,
   gridAnchor,
+  loop,
   onSeek,
   onScratchStart,
   onScratchMove,
@@ -70,12 +72,15 @@ export function MainWaveform({
       const endSec = currentTime + half
       paintWave(ctx, cols, w, h, startSec / duration, endSec / duration)
 
-      // Beatgrid, then cue markers (extrapolated across the visible window).
+      const timeToX = (t: number) => ((t - startSec) / secPerView) * w
+      // Loop band (under the grid/cues), then beatgrid, then cue markers.
+      if (loop) {
+        drawLoop(ctx, timeToX(loop.start), timeToX(loop.end), h, dpr)
+      }
       if (bpm && gridAnchor != null) {
         drawBeatgrid(ctx, bpm, gridAnchor, startSec, endSec, w, h, dpr)
       }
       if (cues.length) {
-        const timeToX = (t: number) => ((t - startSec) / secPerView) * w
         drawCues(ctx, cues, w, h, dpr, timeToX, true)
       }
     }

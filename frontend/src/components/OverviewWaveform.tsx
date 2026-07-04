@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { CuePoint } from '../api'
-import { drawCues } from '../lib/cues'
+import { drawCues, drawLoop } from '../lib/cues'
 import { paintWave, type WaveColumn } from '../lib/waveform'
 
 interface Props {
@@ -8,6 +8,7 @@ interface Props {
   currentTime: number
   duration: number
   cues: CuePoint[]
+  loop: { start: number; end: number } | null
   onSeek: (t: number) => void
 }
 
@@ -16,13 +17,14 @@ interface Props {
  * offscreen canvas) with a moving playhead + dimmed played region. Click to
  * seek anywhere in the track.
  */
-export function OverviewWaveform({ cols, currentTime, duration, cues, onSeek }: Props) {
+export function OverviewWaveform({ cols, currentTime, duration, cues, loop, onSeek }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const cacheRef = useRef<HTMLCanvasElement | null>(null)
   const timeRef = useRef(0)
   const durRef = useRef(0)
   const cuesRef = useRef<CuePoint[]>(cues)
+  const loopRef = useRef(loop)
 
   const renderCache = useCallback(() => {
     const canvas = canvasRef.current
@@ -53,8 +55,10 @@ export function OverviewWaveform({ cols, currentTime, duration, cues, onSeek }: 
       const px = Math.round((timeRef.current / dur) * w)
       ctx.fillStyle = 'rgba(10,11,15,0.55)'
       ctx.fillRect(0, 0, px, h)
-      // Cue markers (no beatgrid/labels in the overview).
       const dpr = window.devicePixelRatio || 1
+      const lp = loopRef.current
+      if (lp) drawLoop(ctx, (lp.start / dur) * w, (lp.end / dur) * w, h, dpr)
+      // Cue markers (no beatgrid/labels in the overview).
       drawCues(ctx, cuesRef.current, w, h, dpr, (t) => (t / dur) * w, false)
       const pw = Math.max(2, Math.round(2 * dpr))
       ctx.fillStyle = '#e6e9ef'
@@ -93,11 +97,12 @@ export function OverviewWaveform({ cols, currentTime, duration, cues, onSeek }: 
     draw()
   }, [currentTime, duration, draw])
 
-  // Redraw when the cue set changes (new track).
+  // Redraw when the cue set or loop changes.
   useEffect(() => {
     cuesRef.current = cues
+    loopRef.current = loop
     draw()
-  }, [cues, draw])
+  }, [cues, loop, draw])
 
   const seek = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!duration) return

@@ -133,6 +133,19 @@ class TrackCues(BaseModel):
     cues: list[CuePoint] = []  # cue/loop markers (grid markers excluded)
 
 
+class SetHotcue(BaseModel):
+    track_id: str
+    slot: int  # 0–7
+    start: float  # seconds
+    type: int  # 0 cue, 1 fade-in, 2 fade-out, 3 load
+
+
+class SetHotcueType(BaseModel):
+    track_id: str
+    slot: int
+    type: int
+
+
 class EditState(BaseModel):
     dirty: bool  # unsaved in-memory playlist changes exist
     nml_path: str

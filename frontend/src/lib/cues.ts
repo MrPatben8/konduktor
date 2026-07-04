@@ -1,18 +1,18 @@
 import type { CuePoint } from '../api'
 
-// Default marker colours by Traktor cue type, used when a cue has no explicit
-// colour of its own.
+// Marker colour by Traktor cue type. Type is authoritative here (the NML's
+// stored per-cue colour is intentionally ignored) so each type reads consistently.
 const TYPE_COLORS: Record<number, string> = {
-  0: '#4f8cff', // cue — accent blue
-  1: '#34d399', // fade-in — mint
-  2: '#34d399', // fade-out — mint
-  3: '#ffb020', // load — gold
-  5: '#f472b6', // loop — pink
+  0: '#3b82f6', // cue — blue
+  1: '#ff8c2f', // fade-in — orange
+  2: '#ff8c2f', // fade-out — orange
+  3: '#ffd60a', // load — yellow
+  5: '#22c55e', // loop — green
 }
+const OTHER_COLOR = '#8b93a3' // gray
 
 export function cueColor(cue: CuePoint): string {
-  if (cue.color && /^#[0-9a-f]{6}$/i.test(cue.color)) return cue.color
-  return TYPE_COLORS[cue.type] ?? '#8b93a3'
+  return TYPE_COLORS[cue.type] ?? OTHER_COLOR
 }
 
 function withAlpha(hex: string, a: number): string {
@@ -20,6 +20,14 @@ function withAlpha(hex: string, a: number): string {
   const g = parseInt(hex.slice(3, 5), 16)
   const b = parseInt(hex.slice(5, 7), 16)
   return `rgba(${r},${g},${b},${a})`
+}
+
+// Black or white text, whichever reads better on the given marker colour.
+export function contrastText(hex: string): string {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return 0.299 * r + 0.587 * g + 0.114 * b > 140 ? '#0a0b0f' : '#ffffff'
 }
 
 /**
@@ -37,7 +45,10 @@ export function drawCues(
   labels: boolean,
 ): void {
   const lineW = Math.max(2, Math.round(2 * dpr))
-  const flag = Math.round(13 * dpr)
+  const outline = Math.max(1, Math.round(dpr))
+  const flagW = Math.round(12 * dpr)
+  const flagH = Math.round(14 * dpr)
+  const half = Math.floor(lineW / 2)
   for (const cue of cues) {
     const color = cueColor(cue)
     const x = Math.round(timeToX(cue.start))
@@ -46,24 +57,49 @@ export function drawCues(
     if (cue.length > 0) {
       const x2 = Math.round(timeToX(cue.start + cue.length))
       if (x2 > 0 && x < w) {
-        ctx.fillStyle = withAlpha(color, 0.18)
+        ctx.fillStyle = withAlpha(color, 0.2)
         ctx.fillRect(x, 0, Math.max(1, x2 - x), h)
       }
     }
 
-    if (x < -flag || x > w + flag) continue
-    ctx.fillStyle = color
-    ctx.fillRect(x - Math.floor(lineW / 2), 0, lineW, h)
+    if (x < -flagW || x > w + flagW) continue
 
-    if (labels && cue.hotcue >= 0) {
+    // Dark outline behind the line so it reads on any waveform colour.
+    ctx.fillStyle = 'rgba(0,0,0,0.7)'
+    ctx.fillRect(x - half - outline, 0, lineW + outline * 2, h)
+    ctx.fillStyle = color
+    ctx.fillRect(x - half, 0, lineW, h)
+
+    if (labels) {
+      // A flag tab at the top for every cue (outlined), with the hotcue number.
+      ctx.fillStyle = 'rgba(0,0,0,0.7)'
+      ctx.fillRect(x - half - outline, 0, flagW + outline * 2, flagH + outline * 2)
       ctx.fillStyle = color
-      ctx.fillRect(x, 0, flag, flag)
-      ctx.fillStyle = '#0a0b0f'
-      ctx.font = `${Math.round(9 * dpr)}px system-ui, sans-serif`
-      ctx.textBaseline = 'top'
-      ctx.fillText(String(cue.hotcue + 1), x + Math.round(3 * dpr), Math.round(2 * dpr))
+      ctx.fillRect(x - half, 0, flagW, flagH)
+      if (cue.hotcue >= 0) {
+        ctx.fillStyle = contrastText(color)
+        ctx.font = `bold ${Math.round(10 * dpr)}px system-ui, sans-serif`
+        ctx.textBaseline = 'top'
+        ctx.fillText(String(cue.hotcue + 1), x - half + Math.round(2 * dpr), Math.round(2 * dpr))
+      }
     }
   }
+}
+
+/** Draw the active loop region: a translucent green band with bright edges. */
+export function drawLoop(
+  ctx: CanvasRenderingContext2D,
+  startX: number,
+  endX: number,
+  h: number,
+  dpr: number,
+): void {
+  const edge = Math.max(1, Math.round(2 * dpr))
+  ctx.fillStyle = 'rgba(34,197,94,0.18)'
+  ctx.fillRect(startX, 0, Math.max(1, endX - startX), h)
+  ctx.fillStyle = 'rgba(34,197,94,0.95)'
+  ctx.fillRect(startX, 0, edge, h)
+  ctx.fillRect(endX - edge, 0, edge, h)
 }
 
 /**

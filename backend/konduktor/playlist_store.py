@@ -31,6 +31,7 @@ from traktor_nml_utils import (
 )
 from traktor_nml_utils.models.collection import (
     Albumtype,
+    CueV2Type,
     Entrytype,
     Infotype,
     Nodetype,
@@ -264,6 +265,69 @@ class PlaylistStore:
     def model_entry(self, track_id: str) -> Entrytype | None:
         with self._lock:
             return self._entry_by_key.get(track_id)
+
+    # ---- hotcues (beatgrid-independent point markers) -----------------
+    # Only self-contained point types are editable here: 0 cue, 1 fade-in,
+    # 2 fade-out, 3 load. Loops (need a length) and grid markers (redefine the
+    # beatgrid) are deliberately excluded. Cues are NML-only (not synced to files).
+    POINT_CUE_TYPES = {0, 1, 2, 3}
+
+    def _entry_or_raise(self, track_id: str) -> Entrytype:
+        entry = self._entry_by_key.get(track_id)
+        if entry is None:
+            raise PlaylistError(f"Track not found: {track_id}")
+        return entry
+
+    def set_hotcue(self, track_id: str, slot: int, start_sec: float, cue_type: int) -> None:
+        """Create (or reposition + retype) the hotcue in `slot` at `start_sec`."""
+        if not 0 <= slot <= 7:
+            raise PlaylistError(f"Invalid hotcue slot: {slot}")
+        if cue_type not in self.POINT_CUE_TYPES:
+            raise PlaylistError(f"Unsupported cue type: {cue_type}")
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            start_ms = max(0.0, start_sec * 1000.0)  # Traktor stores START in ms
+            existing = next(
+                (c for c in (entry.cue_v2 or []) if c.hotcue == slot), None
+            )
+            if existing is not None:
+                existing.start = start_ms
+                existing.type = cue_type
+            else:
+                if entry.cue_v2 is None:
+                    entry.cue_v2 = []
+                entry.cue_v2.append(
+                    CueV2Type(
+                        name="n.n.",  # Traktor's default name for a manual cue
+                        displ_order=0,
+                        type=cue_type,
+                        start=start_ms,
+                        len=0.0,
+                        repeats=-1,
+                        hotcue=slot,
+                        color=None,
+                        grid=None,
+                    )
+                )
+            self.dirty = True
+
+    def set_hotcue_type(self, track_id: str, slot: int, cue_type: int) -> None:
+        """Change the type of the existing hotcue in `slot` (keeps its position)."""
+        if cue_type not in self.POINT_CUE_TYPES:
+            raise PlaylistError(f"Unsupported cue type: {cue_type}")
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            cue = next((c for c in (entry.cue_v2 or []) if c.hotcue == slot), None)
+            if cue is None:
+                raise PlaylistError(f"Hotcue {slot} is not set")
+            cue.type = cue_type
+            self.dirty = True
+
+    def delete_hotcue(self, track_id: str, slot: int) -> None:
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            entry.cue_v2 = [c for c in (entry.cue_v2 or []) if c.hotcue != slot]
+            self.dirty = True
 
     # ---- cover art -----------------------------------------------------
     def set_track_art(self, track_id: str, data: bytes, mime: str) -> None:

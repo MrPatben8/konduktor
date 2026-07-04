@@ -218,6 +218,15 @@ export const api = {
   audioUrl: (trackId: string) => `/api/tracks/audio?track_id=${encodeURIComponent(trackId)}`,
   trackCues: (trackId: string) =>
     getJSON<TrackCues>(`/api/tracks/cues?track_id=${encodeURIComponent(trackId)}`),
+  createHotcue: (trackId: string, slot: number, start: number, type: number) =>
+    send<TrackCues>('POST', '/api/tracks/hotcue', { track_id: trackId, slot, start, type }),
+  setHotcueType: (trackId: string, slot: number, type: number) =>
+    send<TrackCues>('PATCH', '/api/tracks/hotcue', { track_id: trackId, slot, type }),
+  deleteHotcue: (trackId: string, slot: number) =>
+    send<TrackCues>(
+      'DELETE',
+      `/api/tracks/hotcue?track_id=${encodeURIComponent(trackId)}&slot=${slot}`,
+    ),
   uploadArt: async (trackId: string, file: File) => {
     const fd = new FormData()
     fd.append('track_id', trackId)

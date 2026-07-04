@@ -30,6 +30,8 @@ from .schemas import (
     RenamePlaylist,
     SaveResult,
     SetEntries,
+    SetHotcue,
+    SetHotcueType,
     Stats,
     Track,
     TrackCues,
@@ -330,12 +332,7 @@ def track_audio(track_id: str) -> FileResponse:
     return FileResponse(path, media_type=mime)
 
 
-@app.get("/api/tracks/cues", response_model=TrackCues)
-def track_cues(track_id: str) -> TrackCues:
-    """Beatgrid + cue/loop markers for a track (read-only, from the NML)."""
-    entry = require_store().model_entry(track_id)
-    if entry is None:
-        raise HTTPException(404, "Track not found")
+def _build_track_cues(entry) -> TrackCues:
     grid_anchor: float | None = None
     grid_bpm: float | None = None
     cues: list[CuePoint] = []
@@ -359,6 +356,58 @@ def track_cues(track_id: str) -> TrackCues:
         )
     bpm = grid_bpm if grid_bpm is not None else (entry.tempo.bpm if entry.tempo else None)
     return TrackCues(bpm=bpm, grid_anchor=grid_anchor, cues=cues)
+
+
+def _cues_for(track_id: str) -> TrackCues:
+    entry = require_store().model_entry(track_id)
+    if entry is None:
+        raise HTTPException(404, "Track not found")
+    return _build_track_cues(entry)
+
+
+@app.get("/api/tracks/cues", response_model=TrackCues)
+def track_cues(track_id: str) -> TrackCues:
+    """Beatgrid + cue/loop markers for a track (read-only, from the NML)."""
+    return _cues_for(track_id)
+
+
+def _sync_cue_edit(track_id: str) -> TrackCues:
+    """After a hotcue edit, refresh the read projection and return fresh cues."""
+    store = require_store()
+    entry = store.model_entry(track_id)
+    if entry is not None:
+        require_service().replace_track(track_id, entry)
+    return _build_track_cues(entry) if entry is not None else TrackCues()
+
+
+@app.post("/api/tracks/hotcue", response_model=TrackCues)
+def create_hotcue(body: SetHotcue) -> TrackCues:
+    """Create (or reposition + retype) the hotcue in a slot at a position."""
+    try:
+        require_store().set_hotcue(body.track_id, body.slot, body.start, body.type)
+    except PlaylistError as ex:
+        raise HTTPException(400, str(ex))
+    return _sync_cue_edit(body.track_id)
+
+
+@app.patch("/api/tracks/hotcue", response_model=TrackCues)
+def edit_hotcue_type(body: SetHotcueType) -> TrackCues:
+    """Change the type of an existing hotcue (keeps its position)."""
+    try:
+        require_store().set_hotcue_type(body.track_id, body.slot, body.type)
+    except PlaylistError as ex:
+        raise HTTPException(400, str(ex))
+    return _sync_cue_edit(body.track_id)
+
+
+@app.delete("/api/tracks/hotcue", response_model=TrackCues)
+def delete_hotcue(track_id: str, slot: int) -> TrackCues:
+    """Remove the hotcue in a slot."""
+    try:
+        require_store().delete_hotcue(track_id, slot)
+    except PlaylistError as ex:
+        raise HTTPException(400, str(ex))
+    return _sync_cue_edit(track_id)
 
 
 @app.put("/api/tracks/art")
