@@ -68,7 +68,13 @@ export function paintWave(
   }
 }
 
-export async function analyzeWaveform(url: string, buckets?: number): Promise<WaveColumn[]> {
+export interface WaveformAnalysis {
+  cols: WaveColumn[]
+  /** The decoded audio, retained for the scratch engine (reused, not re-decoded). */
+  buffer: AudioBuffer
+}
+
+export async function analyzeWaveform(url: string, buckets?: number): Promise<WaveformAnalysis> {
   const resp = await fetch(url)
   if (!resp.ok) throw new Error(`audio fetch failed: ${resp.status}`)
   const arr = await resp.arrayBuffer()
@@ -168,5 +174,5 @@ export async function analyzeWaveform(url: string, buckets?: number): Promise<Wa
       b: Math.pow(h / mx, 1.3),
     }
   }
-  return cols
+  return { cols, buffer: audio }
 }

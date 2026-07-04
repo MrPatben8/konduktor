@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, type Track } from '../api'
 import { analyzeWaveform, type WaveColumn } from '../lib/waveform'
+import { ScratchEngine } from '../lib/scratchEngine'
 import { MainWaveform } from './MainWaveform'
 import { OverviewWaveform } from './OverviewWaveform'
 
@@ -33,6 +34,13 @@ export function PrepStrip({ track, onError }: Props) {
   const [cols, setCols] = useState<WaveColumn[] | null>(null)
   const [waveStatus, setWaveStatus] = useState<'loading' | 'ready' | 'error'>('loading')
 
+  // Scratch engine (Web Audio) — holds the decoded buffer for the loaded track.
+  const audioCtxRef = useRef<AudioContext | null>(null)
+  const engineRef = useRef<ScratchEngine | null>(null)
+  const wasPlayingRef = useRef(false)
+  const scratchRafRef = useRef(0)
+  const engagedRef = useRef(false) // engine is dragging or coasting
+
   const trackId = track?.id ?? null
 
   // When the loaded track changes, reset transport state. The <audio> src is
@@ -44,8 +52,10 @@ export function PrepStrip({ track, onError }: Props) {
     setLoadError(false)
   }, [trackId])
 
-  // Analyse the waveform once per track; both waveform views share the result.
+  // Analyse the waveform once per track; both waveform views share the result,
+  // and the decoded buffer is handed to the scratch engine (no second decode).
   useEffect(() => {
+    engineRef.current = null
     if (!trackId) {
       setCols(null)
       setWaveStatus('loading')
@@ -55,10 +65,13 @@ export function PrepStrip({ track, onError }: Props) {
     setCols(null)
     setWaveStatus('loading')
     analyzeWaveform(api.audioUrl(trackId))
-      .then((c) => {
+      .then((res) => {
         if (cancelled) return
-        setCols(c)
+        setCols(res.cols)
         setWaveStatus('ready')
+        const eng = new ScratchEngine()
+        eng.load(res.buffer)
+        engineRef.current = eng
       })
       .catch(() => {
         if (!cancelled) setWaveStatus('error')
@@ -99,6 +112,79 @@ export function PrepStrip({ track, onError }: Props) {
     if (!el) return
     el.currentTime = t
     setCurrent(t)
+  }
+
+  // ---- scratch (Web Audio) ----------------------------------------------
+  const getCtx = (): AudioContext => {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new (window.AudioContext ??
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)()
+    }
+    void audioCtxRef.current.resume()
+    return audioCtxRef.current
+  }
+
+  // Once the platter has coasted to a stop (or up to normal speed), hand the
+  // position back to the <audio> element and resume if it had been playing.
+  const finalizeScratch = () => {
+    cancelAnimationFrame(scratchRafRef.current)
+    engagedRef.current = false
+    const eng = engineRef.current
+    if (!eng) return
+    const finalSec = eng.end()
+    const el = audioRef.current
+    if (el) el.currentTime = finalSec
+    setCurrent(finalSec)
+    if (wasPlayingRef.current && el) void el.play().catch(() => {})
+  }
+
+  // Follow the engine's actual position each frame; finalize when it settles.
+  const runScratchRaf = () => {
+    cancelAnimationFrame(scratchRafRef.current)
+    const eng = engineRef.current!
+    const tick = () => {
+      setCurrent(eng.getPositionSec())
+      if (eng.finished) {
+        finalizeScratch()
+        return
+      }
+      scratchRafRef.current = requestAnimationFrame(tick)
+    }
+    scratchRafRef.current = requestAnimationFrame(tick)
+  }
+
+  const onScratchStart = () => {
+    const eng = engineRef.current
+    // Re-grab while still coasting: keep the current position, resume dragging.
+    if (engagedRef.current && eng) {
+      eng.regrab()
+      return
+    }
+    const el = audioRef.current
+    wasPlayingRef.current = !!el && !el.paused
+    if (el && !el.paused) el.pause()
+    if (eng && eng.loaded) {
+      eng.begin(getCtx(), current)
+      engagedRef.current = true
+      runScratchRaf()
+    }
+  }
+
+  const onScratchMove = (t: number) => {
+    if (engagedRef.current) engineRef.current!.setTargetSec(t)
+    else setCurrent(t) // no decoded buffer yet → silent visual scrub
+  }
+
+  const onScratchEnd = (t: number) => {
+    if (engagedRef.current) {
+      // Coast; runScratchRaf finalizes once the platter settles.
+      engineRef.current!.release(wasPlayingRef.current)
+    } else {
+      const el = audioRef.current
+      if (el) el.currentTime = t
+      setCurrent(t)
+      if (wasPlayingRef.current && el) void el.play().catch(() => {})
+    }
   }
 
   const showWaves = track && !loadError && cols && waveStatus === 'ready'
@@ -156,6 +242,9 @@ export function PrepStrip({ track, onError }: Props) {
                   currentTime={current}
                   duration={duration}
                   onSeek={seek}
+                  onScratchStart={onScratchStart}
+                  onScratchMove={onScratchMove}
+                  onScratchEnd={onScratchEnd}
                 />
               ) : (
                 <div className="flex h-full items-center justify-center text-xs text-faint">

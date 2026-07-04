@@ -49,8 +49,9 @@ export function OverviewWaveform({ cols, currentTime, duration, onSeek }: Props)
       const px = Math.round((timeRef.current / dur) * w)
       ctx.fillStyle = 'rgba(10,11,15,0.55)'
       ctx.fillRect(0, 0, px, h)
+      const pw = Math.max(2, Math.round(2 * (window.devicePixelRatio || 1)))
       ctx.fillStyle = '#e6e9ef'
-      ctx.fillRect(px, 0, 1, h)
+      ctx.fillRect(px - Math.floor(pw / 2), 0, pw, h)
     }
   }, [])
 

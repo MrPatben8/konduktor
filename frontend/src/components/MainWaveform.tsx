@@ -6,7 +6,12 @@ interface Props {
   currentTime: number
   duration: number
   onSeek: (t: number) => void
+  onScratchStart: () => void
+  onScratchMove: (t: number) => void
+  onScratchEnd: (t: number) => void
 }
+
+const DRAG_THRESHOLD = 3 // px before a press becomes a scratch (vs a click-seek)
 
 const MIN_SEC = 2 // most zoomed-in (seconds across the view)
 const MAX_SEC = 64 // most zoomed-out
@@ -18,10 +23,24 @@ const DEFAULT_SEC = 16
  * the zoom buttons change that window width. Repaints every frame (driven by the
  * parent's rAF-updated currentTime).
  */
-export function MainWaveform({ cols, currentTime, duration, onSeek }: Props) {
+export function MainWaveform({
+  cols,
+  currentTime,
+  duration,
+  onSeek,
+  onScratchStart,
+  onScratchMove,
+  onScratchEnd,
+}: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [secPerView, setSecPerView] = useState(DEFAULT_SEC)
+  // Drag state for scratching. startTime is the playhead position at press;
+  // dragging maps horizontal movement to a time offset (right = earlier, so the
+  // waveform follows the cursor like grabbing a record).
+  const dragRef = useRef<{ startX: number; startTime: number; lastT: number; moved: boolean } | null>(
+    null,
+  )
 
   // Draw closes over the latest props/state; a ref lets the ResizeObserver call
   // the current version without re-subscribing.
@@ -45,9 +64,9 @@ export function MainWaveform({ cols, currentTime, duration, onSeek }: Props) {
     }
 
     // Fixed centre playhead.
-    const cx = Math.floor(w / 2)
+    const pw = Math.max(2, Math.round(2 * dpr))
     ctx.fillStyle = '#e6e9ef'
-    ctx.fillRect(cx, 0, Math.max(1, Math.round(dpr)), h)
+    ctx.fillRect(Math.floor(w / 2) - Math.floor(pw / 2), 0, pw, h)
   }
 
   const drawRef = useRef(draw)
@@ -66,29 +85,63 @@ export function MainWaveform({ cols, currentTime, duration, onSeek }: Props) {
     return () => ro.disconnect()
   }, [])
 
-  // Click to seek: map horizontal offset from centre to a time delta.
-  const seek = (e: React.MouseEvent<HTMLDivElement>) => {
+  // A press that doesn't move is a seek (map offset from centre to a time);
+  // a press that moves is a scratch (map movement to a target time).
+  const timeAtClientX = (clientX: number, rect: DOMRect) => {
+    const ratioFromCenter = (clientX - rect.left) / rect.width - 0.5
+    return Math.min(duration, Math.max(0, currentTime + ratioFromCenter * secPerView))
+  }
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!duration) return
+    e.currentTarget.setPointerCapture(e.pointerId)
+    dragRef.current = { startX: e.clientX, startTime: currentTime, lastT: currentTime, moved: false }
+  }
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current
+    if (!d) return
     const rect = e.currentTarget.getBoundingClientRect()
-    const ratioFromCenter = (e.clientX - rect.left) / rect.width - 0.5
-    const t = currentTime + ratioFromCenter * secPerView
-    onSeek(Math.min(duration, Math.max(0, t)))
+    const dx = e.clientX - d.startX
+    if (!d.moved && Math.abs(dx) > DRAG_THRESHOLD) {
+      d.moved = true
+      onScratchStart()
+    }
+    if (d.moved) {
+      const t = Math.min(duration, Math.max(0, d.startTime - (dx / rect.width) * secPerView))
+      d.lastT = t
+      onScratchMove(t)
+    }
+  }
+
+  const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current
+    dragRef.current = null
+    if (!d) return
+    e.currentTarget.releasePointerCapture?.(e.pointerId)
+    if (d.moved) onScratchEnd(d.lastT)
+    else onSeek(timeAtClientX(e.clientX, e.currentTarget.getBoundingClientRect()))
   }
 
   const zoomIn = () => setSecPerView((s) => Math.max(MIN_SEC, s / 2))
   const zoomOut = () => setSecPerView((s) => Math.min(MAX_SEC, s * 2))
 
   return (
-    <div ref={wrapRef} onClick={seek} className="relative h-full w-full cursor-pointer">
+    <div
+      ref={wrapRef}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      className="relative h-full w-full cursor-ew-resize select-none touch-none"
+    >
       <canvas ref={canvasRef} className="block h-full w-full" />
 
-      {/* Zoom controls (Traktor-style +/-) */}
+      {/* Zoom controls (Traktor-style +/-). stopPropagation on down so tapping a
+          button doesn't begin a scratch drag. */}
       <div className="absolute right-2 top-2 flex flex-col gap-1">
         <button
-          onClick={(e) => {
-            e.stopPropagation()
-            zoomIn()
-          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={zoomIn}
           disabled={secPerView <= MIN_SEC}
           className="flex h-6 w-6 items-center justify-center rounded border border-line bg-ink-950/70 text-sm text-text hover:border-accent disabled:opacity-30"
           title="Zoom in"
@@ -96,10 +149,8 @@ export function MainWaveform({ cols, currentTime, duration, onSeek }: Props) {
           +
         </button>
         <button
-          onClick={(e) => {
-            e.stopPropagation()
-            zoomOut()
-          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={zoomOut}
           disabled={secPerView >= MAX_SEC}
           className="flex h-6 w-6 items-center justify-center rounded border border-line bg-ink-950/70 text-sm text-text hover:border-accent disabled:opacity-30"
           title="Zoom out"
