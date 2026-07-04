@@ -105,6 +105,7 @@ class CollectionService:
             cue_count=len(cues),
             hotcue_count=hotcues,
             has_grid=has_grid,
+            is_stem=getattr(e, "stems", None) is not None,
         )
 
     def _build_tree(self, node, counter, is_root=True) -> list[PlaylistNode]:

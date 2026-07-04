@@ -24,6 +24,7 @@ export interface Track {
   cue_count: number
   hotcue_count: number
   has_grid: boolean
+  is_stem: boolean
 }
 
 export interface TrackPage {

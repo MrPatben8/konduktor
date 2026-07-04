@@ -122,6 +122,29 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
       )
     },
   }),
+  col.accessor('is_stem', {
+    id: 'type',
+    header: 'Type',
+    size: 64,
+    cell: (c) =>
+      c.getValue() ? (
+        // Stem file → stacked lines ("burger"), the usual stem glyph.
+        <span title="Stem file" className="text-accent">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-label="Stem">
+            <rect x="3" y="6" width="18" height="2.4" rx="1.2" />
+            <rect x="3" y="10.8" width="18" height="2.4" rx="1.2" />
+            <rect x="3" y="15.6" width="18" height="2.4" rx="1.2" />
+          </svg>
+        </span>
+      ) : (
+        // Normal audio track → music note.
+        <span title="Audio track" className="text-faint">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-label="Audio">
+            <path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z" />
+          </svg>
+        </span>
+      ),
+  }),
   col.accessor('album', { id: 'album', header: 'Album', size: 180, cell: editable('album') }),
   col.accessor('genre', { id: 'genre', header: 'Genre', size: 140, cell: editable('genre') }),
   col.accessor('label', { id: 'label', header: 'Label', size: 140, cell: editable('label') }),
@@ -247,7 +270,7 @@ export const DEFAULT_COLUMN_ORDER: string[] = TRACK_COLUMNS.map((c) => c.id as s
 
 // Columns shown out of the box; the rest are opt-in via the menu.
 const DEFAULT_VISIBLE = new Set([
-  'title', 'album', 'genre', 'bpm', 'key', 'rating', 'length', 'cue_count', 'playcount',
+  'title', 'type', 'album', 'genre', 'bpm', 'key', 'rating', 'length', 'cue_count', 'playcount',
 ])
 export const DEFAULT_COLUMN_VISIBILITY: VisibilityState = Object.fromEntries(
   DEFAULT_COLUMN_ORDER.map((id) => [id, DEFAULT_VISIBLE.has(id)]),

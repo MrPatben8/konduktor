@@ -30,6 +30,7 @@ class Track(BaseModel):
     cue_count: int = 0
     hotcue_count: int = 0
     has_grid: bool = False
+    is_stem: bool = False  # a Stem file (<STEMS> child) vs a normal audio track
 
 
 class TrackPage(BaseModel):
