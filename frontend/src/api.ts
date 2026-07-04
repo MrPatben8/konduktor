@@ -200,6 +200,7 @@ export const api = {
   editTrack: (trackId: string, fields: Record<string, string | number | null>) =>
     send<{ status: string }>('PATCH', '/api/tracks', { track_id: trackId, fields }),
   artUrl: (trackId: string) => `/api/tracks/art?track_id=${encodeURIComponent(trackId)}`,
+  audioUrl: (trackId: string) => `/api/tracks/audio?track_id=${encodeURIComponent(trackId)}`,
   uploadArt: async (trackId: string, file: File) => {
     const fd = new FormData()
     fd.append('track_id', trackId)

@@ -7,19 +7,27 @@ Guidance for working in this repo. Read before making changes.
 **Konduktor** — a library-management and track-preparation tool for **Native
 Instruments Traktor** (Pro 4 / NML v20), built on the `traktor-nml-utils`
 library. The user is a DJ; the goal is a polished, multiplatform web app for
-browsing the collection and editing playlists, later possibly wrapped in Tauri.
+browsing the collection, editing playlists, and preparing tracks (metadata,
+cover art; later audio/cue prep) — a lightweight alternative to heavy Traktor,
+later possibly wrapped in Tauri and given a mobile version.
 
 ## Architecture
 
 Two independent apps that talk over HTTP:
 
 - **`backend/`** — Python + FastAPI. Parses `collection.nml` via
-  `traktor-nml-utils` and serves a query API. Entry point:
+  `traktor-nml-utils` and serves a query + edit API. Entry point:
   [backend/konduktor/main.py](backend/konduktor/main.py).
-  - `collection_service.py` — loads the NML once into memory, flattens ENTRYs
-    into `Track` objects, indexes them by primary key, and builds the playlist
-    tree. All query logic (filter/sort/facets/stats) lives here.
-  - `schemas.py` — Pydantic response models.
+  - `collection_service.py` — the **read** model: loads the NML, flattens ENTRYs
+    into `Track` objects, indexes them by primary key. All query logic
+    (filter/sort/facets/stats) lives here. `replace_track()` refreshes one
+    projection after an edit (bridges the read model and the edit store).
+  - `playlist_store.py` (`PlaylistStore`) — the **edit** model: owns the parsed
+    dataclass NML and applies all edits (playlists AND track metadata AND cover
+    art), then renders + saves. See "Write path" below.
+  - `file_tags.py` — reads/writes embedded audio-file tags & cover art (mutagen)
+    and resolves Traktor `LOCATION`s to OS paths. Best-effort.
+  - `schemas.py` — Pydantic response/request models.
   - `main.py` — FastAPI routes (all under `/api`). Holds an `AppState` with the
     currently-loaded collection; it starts **unloaded** and the collection is
     chosen at runtime via `POST /api/collection/open` (data routes 409 until
@@ -29,11 +37,16 @@ Two independent apps that talk over HTTP:
   explorer. Entry: [frontend/src/App.tsx](frontend/src/App.tsx).
   - `api.ts` — typed client + all API types (keep in sync with backend
     `schemas.py`).
-  - `components/` — `Sidebar` (playlist tree), `Toolbar` (search/filters),
-    `TrackTable` (TanStack Table + Virtual grid), `StatusBar`, `RatingStars`.
+  - `components/` — `CollectionPicker` (startup file-browser gate), `Sidebar`
+    (playlist tree + create/rename/delete), `SaveBar`, `Toolbar`
+    (search/filters), `TrackTable` (TanStack Table + Virtual grid),
+    `PlaylistEditor` (dnd-kit reorder), `SelectionBar` (bulk add-to-playlist),
+    `ContextMenu` + `EditTagsDialog` (right-click → metadata + album-art edit),
+    `StatusBar`, `RatingStars`, `Toast`.
   - Data flow: the whole library is fetched once (`/api/tracks?limit=20000`);
-    filtering and sorting happen **client-side** for instant interaction.
-    Styling is Tailwind v4 with design tokens in `src/index.css`.
+    filtering and sorting happen **client-side** for instant interaction. Edits
+    apply in-memory (server holds them) and the sidebar **Save to Traktor**
+    button flushes to disk. Styling is Tailwind v4 with tokens in `src/index.css`.
 
 ## Commands
 
@@ -54,9 +67,10 @@ npm run build        # tsc -b && vite build — run this to typecheck
 **Tests:** `cd backend && ./run_tests.sh` (runs against a temp copy of the real
 collection). **ALWAYS run this before changing anything in the save /
 serialization path.** It enforces:
-- `test_save_fidelity.py` — a no-op save is byte-identical, and an edit changes
-  only the edited playlist's block (this is the guard that catches serialization
-  regressions like the lxml reformatting bug).
+- `test_save_fidelity.py` — a no-op save is byte-identical; a playlist edit
+  changes only that playlist's block; and a **track-metadata edit changes only
+  that `<ENTRY>`** (Invariant C). The guard that catches serialization
+  regressions like the lxml reformatting bug.
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched.
 
@@ -69,14 +83,15 @@ frontend at `http://localhost:5173`.
    stale and **cannot parse Traktor Pro 4 (NML v20)** files — its strict parser
    dies on the v4 `<GRID>` element inside `CUE_V2`. `requirements.txt` pins the
    GitHub `master` (v4.0.0). Do not "simplify" this to a plain PyPI pin.
-2. **Never write to the user's `collection.nml`.** It is real, irreplaceable
-   data (8,485 tracks). The app is read-only today. Phase 3 writes must operate
-   on a copy and **back up first**.
-3. **Saving is lossy.** The library's `save()` re-serializes the entire file
-   (reflows whitespace, `124.000000`→`124.0`, reorders attributes) and does
-   **not** update count attributes (e.g. `PLAYLIST ENTRIES`). For Phase 3, prefer
-   **surgical edits** to just the `PLAYLISTS` node (e.g. via lxml), recompute
-   counts, and back up — do not round-trip the whole 14 MB collection.
+2. **The collection is real, irreplaceable data — protect it.** Every save
+   writes a timestamped `.bak` first (into a `backups/` folder next to the
+   collection). When testing writes, point `KONDUKTOR_NML` at a COPY. Warn the
+   user to close Traktor before saving (it overwrites `collection.nml` on exit).
+3. **Never re-serialize with lxml.** lxml reformats the whole file (collapses
+   empty tags, drops float precision) → thousands of noise lines. The ONLY safe
+   render is the library's own pipeline (see "Write path"), which reproduces
+   Traktor's byte-exact layout so a no-op save is byte-identical and only edited
+   objects diff. `test_save_fidelity.py` enforces this.
 
 ## Data model notes
 
@@ -87,8 +102,8 @@ frontend at `http://localhost:5173`.
 - **Key** is Traktor's display key string, e.g. `"10m"` (Open Key notation).
 - **Playlist tree**: recurse `nml.playlists.node.subnodes.node`. A node's `.type`
   is `FOLDER`, `PLAYLIST`, or `SMARTLIST`. Smart playlists are rule-based and
-  have no static entry list. Synthetic ids (`pl-N`/`fld-N`/`sl-N`) are assigned
-  at load and map to entries in `CollectionService._playlist_entries`.
+  have no static entry list. `PlaylistNode.id` is the playlist's stable `UUID`;
+  folders use a synthetic path id `fld:<name>/<name>`, smart playlists `sl:<path>`.
 - Model classes use single-capital names: `Entrytype`, `Primarykeytype`,
   `CueV2Type`. `Entrytype` is shared by collection entries and playlist entries.
 
@@ -107,29 +122,44 @@ frontend at `http://localhost:5173`.
 - ✅ Phase 1 — backend core + read-only API
 - ✅ Phase 2 — track explorer UI
 - ✅ Phase 3 — playlist editing/creation + safe (backup-first, surgical) saves
-- ⬜ Phase 4 — polish + optional Tauri desktop packaging
+- ✅ Runtime collection picker (in-app file browser)
+- ✅ Track metadata editing (right-click → Edit Tags) + embedded file-tag & cover-art writing
+- ⬜ Track prep — audio playback / cue-point & loop editing (Tier 2; needs audio engine)
+- ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 
-## Phase 3 write path (playlists)
+## Write path (playlists + track metadata)
 
-- `playlist_store.py` (`PlaylistStore`) edits the **traktor-nml-utils dataclass
-  model** in memory (create/rename/delete/set-entries). On `save()` it renders
-  the model, extracts only the freshly rendered `<PLAYLISTS>…</PLAYLISTS>` span,
-  and splices it into the original file bytes — COLLECTION stays byte-identical,
-  and a timestamped `.bak` is written first (into a `backups/` folder next to
-  the collection).
-- **Minimal-diff is load-bearing — do NOT re-serialize with lxml.** lxml
-  reformats the whole PLAYLISTS section (~2500 changed lines). The render MUST
-  use the library's pipeline: `XmlSerializer().render(nml)` →
-  `restore_traktor_float_format(s, nml)` → `format_traktor_layout(s)` (both
-  imported from `traktor_nml_utils`). That reproduces Traktor's exact layout, so
-  unedited playlists stay byte-identical and only edited entries diff (verified:
-  a 13-track reorder changes exactly 24 lines).
-- Playlists are keyed by their stable `UUID`; folders by synthetic path id
+`PlaylistStore` edits the **traktor-nml-utils dataclass model** in memory and,
+on `save()`, renders the WHOLE model and writes it (backup-first, into a
+`backups/` folder next to the collection). Whole-file render is proven
+byte-identical for unedited content, so only the objects you actually changed
+diff — no COLLECTION splicing needed.
+
+- **The render MUST use the library's pipeline** (do NOT use lxml — see gotcha 3):
+  `XmlSerializer().render(nml)` → `restore_traktor_float_format(s, nml)` →
+  `format_traktor_layout(s)` (both funcs imported from `traktor_nml_utils`).
+  `_render()` in `playlist_store.py` is the single place this happens.
+- **Playlists**: keyed by stable `UUID`; folders by synthetic path id
   (`fld:<name>/<name>`). PRIMARYKEY `TYPE` is `STEM` if the track has a STEMS
-  child (`CollectionService.stem_keys`, resolved via `entries_for`), else
-  `TRACK`.
+  child (`CollectionService.stem_keys`, resolved via `entries_for`), else `TRACK`.
+- **Track metadata**: `set_track_metadata(track_id, fields)` edits only the SAFE
+  set — title, artist, album, genre, label, remixer, producer, mix,
+  release_date, comment, rating (0–5 stars → `RANKING = stars*51`). Path, BPM and
+  key are intentionally NOT editable (path = identity; BPM/key are audio/grid).
+- **Embedded file tags + cover art**: on save, for each edited track,
+  `_sync_file_tags()` writes the changed fields (and staged cover art) into the
+  audio file via `file_tags` (mutagen; ID3/MP4/FLAC/AIFF, WAV skipped) —
+  best-effort (reports `file-not-found` if the drive isn't mounted, `.nml` still
+  saves). Frame/atom-level writes preserve everything else (verified: cover art,
+  BPM, key, and Traktor STEM atoms all survive). `.nml` is the source of truth;
+  Traktor caches its own cover thumbnail so it may need a manual "Import Cover
+  Art" to show replaced art.
+- Reads come from `CollectionService`; after a metadata edit the endpoint calls
+  `service.replace_track()` so the change shows immediately (the two models
+  aren't yet consolidated).
 - `POST /api/save` always writes (backup-first); no write gate. Endpoints:
   `POST/PATCH/DELETE /api/playlists[...]`, `PUT .../entries` (replace),
-  `POST .../add` (append), `POST /api/save`.
-- Test: `backend/test_phase3.py` (runs against a temp copy; asserts surgical +
-  backup + Traktor-valid). Run: `python test_phase3.py` in the backend venv.
+  `POST .../add` (append); `PATCH /api/tracks` (metadata); `GET/PUT /api/tracks/art`
+  (cover art); `POST /api/save`.
+- Tests: `backend/run_tests.sh` → `test_save_fidelity.py` + `test_phase3.py`
+  (both run against a temp copy). Run before touching the save/serialization path.

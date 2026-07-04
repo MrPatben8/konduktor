@@ -286,6 +286,17 @@ class PlaylistStore:
             loc = entry.location
             return file_tags.read_cover(file_tags.resolve_path(loc.volume, loc.dir, loc.file))
 
+    def audio_path(self, track_id: str) -> "Path | None":
+        """Resolve a track's audio file to an OS path (for playback streaming)."""
+        from . import file_tags
+
+        with self._lock:
+            entry = self._entry_by_key.get(track_id)
+            if entry is None or entry.location is None:
+                return None
+            loc = entry.location
+            return file_tags.resolve_path(loc.volume, loc.dir, loc.file)
+
     def _entry_field_value(self, entry: Entrytype, field: str):
         """Read a single editable field's current value from the model, in the
         shape file_tags expects (rating as 0–5 stars)."""

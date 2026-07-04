@@ -12,6 +12,7 @@ import { Toast, type ToastMsg } from './components/Toast'
 import { CollectionPicker } from './components/CollectionPicker'
 import { ContextMenu } from './components/ContextMenu'
 import { EditTagsDialog } from './components/EditTagsDialog'
+import { PrepStrip } from './components/PrepStrip'
 
 function applyFilters(tracks: Track[], f: Filters): Track[] {
   const q = f.search.trim().toLowerCase()
@@ -43,6 +44,7 @@ export default function App() {
   const [forcePicker, setForcePicker] = useState(false)
   const [menu, setMenu] = useState<{ track: Track; x: number; y: number } | null>(null)
   const [editing, setEditing] = useState<Track | null>(null)
+  const [prepTrack, setPrepTrack] = useState<Track | null>(null)
 
   const notify = useCallback((kind: ToastMsg['kind'], text: string) => {
     setToast({ id: Date.now(), kind, text })
@@ -119,13 +121,16 @@ export default function App() {
     )
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-ink-950">
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-ink-950">
       <Toast toast={toast} onClose={() => setToast(null)} />
       {menu && (
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          items={[{ label: 'Edit Tags…', onClick: () => setEditing(menu.track) }]}
+          items={[
+            { label: 'Load to Deck', onClick: () => setPrepTrack(menu.track) },
+            { label: 'Edit Tags…', onClick: () => setEditing(menu.track) },
+          ]}
           onClose={() => setMenu(null)}
         />
       )}
@@ -137,9 +142,14 @@ export default function App() {
           onError={onError}
         />
       )}
-      <Sidebar source={source} onSelect={selectSource} onError={onError} />
 
-      <main className="relative flex min-w-0 flex-1 flex-col">
+      {/* Prep strip spans the top of the window; the library sits below it. */}
+      <PrepStrip track={prepTrack} onError={onError} />
+
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <Sidebar source={source} onSelect={selectSource} onError={onError} />
+
+        <main className="relative flex min-w-0 flex-1 flex-col">
         {isAll ? (
           <Toolbar filters={filters} onChange={setFilters} />
         ) : (
@@ -203,7 +213,8 @@ export default function App() {
           collectionName={collection.data?.path?.split('/').pop() ?? null}
           onChangeCollection={() => setForcePicker(true)}
         />
-      </main>
+        </main>
+      </div>
     </div>
   )
 }

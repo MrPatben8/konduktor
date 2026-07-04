@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from .collection_service import CollectionService
 from .playlist_store import PlaylistError, PlaylistStore
@@ -297,6 +298,34 @@ def track_art(track_id: str) -> Response:
         raise HTTPException(404, "No cover art")
     data, mime = art
     return Response(content=data, media_type=mime, headers={"Cache-Control": "no-store"})
+
+
+_AUDIO_MIME = {
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".mp4": "audio/mp4",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".wav": "audio/wav",
+    ".aif": "audio/aiff",
+    ".aiff": "audio/aiff",
+    ".ogg": "audio/ogg",
+}
+
+
+@app.get("/api/tracks/audio")
+def track_audio(track_id: str) -> FileResponse:
+    """Stream a track's audio file for playback (supports HTTP Range/seeking)."""
+    path = require_store().audio_path(track_id)
+    if path is None:
+        raise HTTPException(404, "Track not found")
+    if not path.exists():
+        raise HTTPException(404, f"Audio file not found: {path}")
+    # .stem.m4a and other MP4s serve as audio/mp4; browsers play the first track.
+    mime = _AUDIO_MIME.get(path.suffix.lower(), "application/octet-stream")
+    # Cacheable so the waveform's decode-fetch and the <audio> element can share
+    # the download (FileResponse adds ETag/Last-Modified for revalidation).
+    return FileResponse(path, media_type=mime)
 
 
 @app.put("/api/tracks/art")
