@@ -118,6 +118,21 @@ class SaveResult(BaseModel):
     file_tags: list[FileTagOutcome] = []
 
 
+class CuePoint(BaseModel):
+    name: str | None = None
+    type: int  # Traktor: 0 cue, 1 fade-in, 2 fade-out, 3 load, 4 grid, 5 loop
+    start: float  # seconds
+    length: float  # seconds (>0 for loops)
+    hotcue: int  # -1 if not assigned to a hotcue slot
+    color: str | None = None  # "#RRGGBB" if set
+
+
+class TrackCues(BaseModel):
+    bpm: float | None = None  # beatgrid BPM (from the grid marker; falls back to tempo)
+    grid_anchor: float | None = None  # seconds — first grid marker (beat 1 of the grid)
+    cues: list[CuePoint] = []  # cue/loop markers (grid markers excluded)
+
+
 class EditState(BaseModel):
     dirty: bool  # unsaved in-memory playlist changes exist
     nml_path: str

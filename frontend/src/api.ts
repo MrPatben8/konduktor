@@ -97,6 +97,21 @@ export interface TrackQuery {
   offset?: number
 }
 
+export interface CuePoint {
+  name: string | null
+  type: number // 0 cue, 1 fade-in, 2 fade-out, 3 load, 4 grid, 5 loop
+  start: number // seconds
+  length: number // seconds (>0 for loops)
+  hotcue: number // -1 if not a hotcue
+  color: string | null // "#RRGGBB"
+}
+
+export interface TrackCues {
+  bpm: number | null
+  grid_anchor: number | null // seconds
+  cues: CuePoint[]
+}
+
 export interface EditState {
   dirty: boolean
   nml_path: string
@@ -201,6 +216,8 @@ export const api = {
     send<{ status: string }>('PATCH', '/api/tracks', { track_id: trackId, fields }),
   artUrl: (trackId: string) => `/api/tracks/art?track_id=${encodeURIComponent(trackId)}`,
   audioUrl: (trackId: string) => `/api/tracks/audio?track_id=${encodeURIComponent(trackId)}`,
+  trackCues: (trackId: string) =>
+    getJSON<TrackCues>(`/api/tracks/cues?track_id=${encodeURIComponent(trackId)}`),
   uploadArt: async (trackId: string, file: File) => {
     const fd = new FormData()
     fd.append('track_id', trackId)

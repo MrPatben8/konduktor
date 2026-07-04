@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef } from 'react'
+import type { CuePoint } from '../api'
+import { drawCues } from '../lib/cues'
 import { paintWave, type WaveColumn } from '../lib/waveform'
 
 interface Props {
   cols: WaveColumn[]
   currentTime: number
   duration: number
+  cues: CuePoint[]
   onSeek: (t: number) => void
 }
 
@@ -13,12 +16,13 @@ interface Props {
  * offscreen canvas) with a moving playhead + dimmed played region. Click to
  * seek anywhere in the track.
  */
-export function OverviewWaveform({ cols, currentTime, duration, onSeek }: Props) {
+export function OverviewWaveform({ cols, currentTime, duration, cues, onSeek }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const cacheRef = useRef<HTMLCanvasElement | null>(null)
   const timeRef = useRef(0)
   const durRef = useRef(0)
+  const cuesRef = useRef<CuePoint[]>(cues)
 
   const renderCache = useCallback(() => {
     const canvas = canvasRef.current
@@ -49,7 +53,10 @@ export function OverviewWaveform({ cols, currentTime, duration, onSeek }: Props)
       const px = Math.round((timeRef.current / dur) * w)
       ctx.fillStyle = 'rgba(10,11,15,0.55)'
       ctx.fillRect(0, 0, px, h)
-      const pw = Math.max(2, Math.round(2 * (window.devicePixelRatio || 1)))
+      // Cue markers (no beatgrid/labels in the overview).
+      const dpr = window.devicePixelRatio || 1
+      drawCues(ctx, cuesRef.current, w, h, dpr, (t) => (t / dur) * w, false)
+      const pw = Math.max(2, Math.round(2 * dpr))
       ctx.fillStyle = '#e6e9ef'
       ctx.fillRect(px - Math.floor(pw / 2), 0, pw, h)
     }
@@ -85,6 +92,12 @@ export function OverviewWaveform({ cols, currentTime, duration, onSeek }: Props)
     durRef.current = duration
     draw()
   }, [currentTime, duration, draw])
+
+  // Redraw when the cue set changes (new track).
+  useEffect(() => {
+    cuesRef.current = cues
+    draw()
+  }, [cues, draw])
 
   const seek = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!duration) return

@@ -18,6 +18,7 @@ from .playlist_store import PlaylistError, PlaylistStore
 from .schemas import (
     CollectionStatus,
     CreatePlaylist,
+    CuePoint,
     EditState,
     EditTrack,
     Facets,
@@ -31,6 +32,7 @@ from .schemas import (
     SetEntries,
     Stats,
     Track,
+    TrackCues,
     TrackPage,
 )
 
@@ -326,6 +328,37 @@ def track_audio(track_id: str) -> FileResponse:
     # Cacheable so the waveform's decode-fetch and the <audio> element can share
     # the download (FileResponse adds ETag/Last-Modified for revalidation).
     return FileResponse(path, media_type=mime)
+
+
+@app.get("/api/tracks/cues", response_model=TrackCues)
+def track_cues(track_id: str) -> TrackCues:
+    """Beatgrid + cue/loop markers for a track (read-only, from the NML)."""
+    entry = require_store().model_entry(track_id)
+    if entry is None:
+        raise HTTPException(404, "Track not found")
+    grid_anchor: float | None = None
+    grid_bpm: float | None = None
+    cues: list[CuePoint] = []
+    for c in entry.cue_v2 or []:
+        grid = getattr(c, "grid", None)
+        start_sec = (c.start or 0.0) / 1000.0  # Traktor stores cue START in ms
+        if grid is not None:
+            if grid_anchor is None:
+                grid_anchor = start_sec
+                grid_bpm = grid.bpm
+            continue  # grid markers are represented by the beatgrid, not as cues
+        cues.append(
+            CuePoint(
+                name=c.name,
+                type=c.type if c.type is not None else 0,
+                start=start_sec,
+                length=(c.len or 0.0) / 1000.0,
+                hotcue=c.hotcue if c.hotcue is not None else -1,
+                color=c.color,
+            )
+        )
+    bpm = grid_bpm if grid_bpm is not None else (entry.tempo.bpm if entry.tempo else None)
+    return TrackCues(bpm=bpm, grid_anchor=grid_anchor, cues=cues)
 
 
 @app.put("/api/tracks/art")

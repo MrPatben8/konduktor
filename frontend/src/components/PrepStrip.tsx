@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, type Track } from '../api'
+import { api, type Track, type TrackCues } from '../api'
 import { analyzeWaveform, type WaveColumn } from '../lib/waveform'
 import { ScratchEngine } from '../lib/scratchEngine'
 import { MainWaveform } from './MainWaveform'
@@ -33,6 +33,7 @@ export function PrepStrip({ track, onError }: Props) {
   const [loadError, setLoadError] = useState(false)
   const [cols, setCols] = useState<WaveColumn[] | null>(null)
   const [waveStatus, setWaveStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [cueData, setCueData] = useState<TrackCues | null>(null)
 
   // Scratch engine (Web Audio) — holds the decoded buffer for the loaded track.
   const audioCtxRef = useRef<AudioContext | null>(null)
@@ -81,6 +82,27 @@ export function PrepStrip({ track, onError }: Props) {
     }
   }, [trackId])
 
+  // Fetch beatgrid + cue markers for the loaded track.
+  useEffect(() => {
+    if (!trackId) {
+      setCueData(null)
+      return
+    }
+    let cancelled = false
+    setCueData(null)
+    api
+      .trackCues(trackId)
+      .then((d) => {
+        if (!cancelled) setCueData(d)
+      })
+      .catch(() => {
+        if (!cancelled) setCueData(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [trackId])
+
   const toggle = () => {
     const el = audioRef.current
     if (!el || !track) return
@@ -94,18 +116,33 @@ export function PrepStrip({ track, onError }: Props) {
     }
   }
 
-  // Smoothly advance the playhead/time while playing (timeupdate is only ~4Hz).
+  // Smoothly advance the playhead while playing. HTMLAudioElement.currentTime
+  // only updates in coarse steps (tens of ms), which looks choppy when zoomed in,
+  // so we interpolate with the wall clock between the media clock's ticks and
+  // re-anchor whenever it actually advances.
   useEffect(() => {
     if (!playing) return
     let raf = 0
+    let lastRaw = -1
+    let anchorAudio = 0
+    let anchorPerf = 0
     const tick = () => {
       const el = audioRef.current
-      if (el) setCurrent(el.currentTime)
+      if (el) {
+        const raw = el.currentTime
+        if (raw !== lastRaw) {
+          lastRaw = raw
+          anchorAudio = raw
+          anchorPerf = performance.now()
+        }
+        const est = anchorAudio + (performance.now() - anchorPerf) / 1000
+        setCurrent(duration ? Math.min(est, duration) : est)
+      }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [playing])
+  }, [playing, duration])
 
   const seek = (t: number) => {
     const el = audioRef.current
@@ -241,6 +278,9 @@ export function PrepStrip({ track, onError }: Props) {
                   cols={cols}
                   currentTime={current}
                   duration={duration}
+                  cues={cueData?.cues ?? []}
+                  bpm={cueData?.bpm ?? null}
+                  gridAnchor={cueData?.grid_anchor ?? null}
                   onSeek={seek}
                   onScratchStart={onScratchStart}
                   onScratchMove={onScratchMove}
@@ -258,6 +298,7 @@ export function PrepStrip({ track, onError }: Props) {
                   cols={cols}
                   currentTime={current}
                   duration={duration}
+                  cues={cueData?.cues ?? []}
                   onSeek={seek}
                 />
               )}

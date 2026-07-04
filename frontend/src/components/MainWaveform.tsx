@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
+import type { CuePoint } from '../api'
+import { drawBeatgrid, drawCues } from '../lib/cues'
 import { paintWave, type WaveColumn } from '../lib/waveform'
 
 interface Props {
   cols: WaveColumn[]
   currentTime: number
   duration: number
+  cues: CuePoint[]
+  bpm: number | null
+  gridAnchor: number | null
   onSeek: (t: number) => void
   onScratchStart: () => void
   onScratchMove: (t: number) => void
@@ -27,6 +32,9 @@ export function MainWaveform({
   cols,
   currentTime,
   duration,
+  cues,
+  bpm,
+  gridAnchor,
   onSeek,
   onScratchStart,
   onScratchMove,
@@ -58,9 +66,18 @@ export function MainWaveform({
 
     if (cols.length && duration > 0) {
       const half = secPerView / 2
-      const startFrac = (currentTime - half) / duration
-      const endFrac = (currentTime + half) / duration
-      paintWave(ctx, cols, w, h, startFrac, endFrac)
+      const startSec = currentTime - half
+      const endSec = currentTime + half
+      paintWave(ctx, cols, w, h, startSec / duration, endSec / duration)
+
+      // Beatgrid, then cue markers (extrapolated across the visible window).
+      if (bpm && gridAnchor != null) {
+        drawBeatgrid(ctx, bpm, gridAnchor, startSec, endSec, w, h, dpr)
+      }
+      if (cues.length) {
+        const timeToX = (t: number) => ((t - startSec) / secPerView) * w
+        drawCues(ctx, cues, w, h, dpr, timeToX, true)
+      }
     }
 
     // Fixed centre playhead.
