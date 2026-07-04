@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
+import type { VisibilityState } from '@tanstack/react-table'
 import { api } from '../api'
+import { ColumnsMenu } from './ColumnsMenu'
 
 export interface Filters {
   search: string
@@ -24,12 +26,21 @@ export const emptyFilters: Filters = {
 interface Props {
   filters: Filters
   onChange: (f: Filters) => void
+  columnVisibility: VisibilityState
+  onColumnVisibilityChange: (v: VisibilityState) => void
+  onResetColumns: () => void
 }
 
 const selectCls =
   'rounded-md border border-line bg-ink-850 px-2.5 py-1.5 text-sm text-text outline-none focus:border-accent hover:border-ink-600 transition-colors'
 
-export function Toolbar({ filters, onChange }: Props) {
+export function Toolbar({
+  filters,
+  onChange,
+  columnVisibility,
+  onColumnVisibilityChange,
+  onResetColumns,
+}: Props) {
   const { data: facets } = useQuery({ queryKey: ['facets'], queryFn: api.facets })
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch })
   const active =
@@ -120,14 +131,21 @@ export function Toolbar({ filters, onChange }: Props) {
         <option value="no">No cues</option>
       </select>
 
-      {active && (
-        <button
-          onClick={() => onChange(emptyFilters)}
-          className="ml-auto rounded-md px-2.5 py-1.5 text-sm text-muted hover:bg-ink-800 hover:text-text"
-        >
-          Clear filters
-        </button>
-      )}
+      <div className="ml-auto flex items-center gap-2">
+        {active && (
+          <button
+            onClick={() => onChange(emptyFilters)}
+            className="rounded-md px-2.5 py-1.5 text-sm text-muted hover:bg-ink-800 hover:text-text"
+          >
+            Clear filters
+          </button>
+        )}
+        <ColumnsMenu
+          visibility={columnVisibility}
+          onChange={onColumnVisibilityChange}
+          onReset={onResetColumns}
+        />
+      </div>
     </div>
   )
 }

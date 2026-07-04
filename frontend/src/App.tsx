@@ -1,7 +1,11 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { SortingState } from '@tanstack/react-table'
+import type { ColumnSizingState, SortingState, VisibilityState } from '@tanstack/react-table'
 import { api, type Track } from './api'
+import {
+  DEFAULT_COLUMN_ORDER,
+  DEFAULT_COLUMN_VISIBILITY,
+} from './lib/trackColumns'
 import { Sidebar, type Source } from './components/Sidebar'
 import { Toolbar, emptyFilters, type Filters } from './components/Toolbar'
 import { TrackTable } from './components/TrackTable'
@@ -51,6 +55,60 @@ export default function App() {
     setPrepTrack(t)
     setPlayRequest((n) => n + 1)
   }, [])
+
+  // ---- configurable library columns (persisted to userprefs.json) ----
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(DEFAULT_COLUMN_VISIBILITY)
+  const [columnOrder, setColumnOrder] = useState<string[]>(DEFAULT_COLUMN_ORDER)
+  const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({})
+  const prefsQuery = useQuery({ queryKey: ['prefs'], queryFn: api.getPrefs })
+  const hydratedRef = useRef(false)
+  const saveTimer = useRef<number | null>(null)
+
+  const resetColumns = useCallback(() => {
+    setColumnVisibility(DEFAULT_COLUMN_VISIBILITY)
+    setColumnOrder(DEFAULT_COLUMN_ORDER)
+    setColumnSizing({})
+  }, [])
+
+  // Hydrate the saved layout once, tolerating partial / stale (new columns
+  // added since) data by merging against the current defaults.
+  useEffect(() => {
+    if (hydratedRef.current || !prefsQuery.data) return
+    hydratedRef.current = true
+    const cols = (prefsQuery.data as { columns?: Record<string, unknown> }).columns
+    if (!cols) return
+    if (cols.visibility) {
+      setColumnVisibility({ ...DEFAULT_COLUMN_VISIBILITY, ...(cols.visibility as VisibilityState) })
+    }
+    if (Array.isArray(cols.order) && cols.order.length) {
+      const saved = cols.order as string[]
+      const known = new Set(DEFAULT_COLUMN_ORDER)
+      setColumnOrder([
+        ...saved.filter((id) => known.has(id)),
+        ...DEFAULT_COLUMN_ORDER.filter((id) => !saved.includes(id)),
+      ])
+    }
+    if (cols.sizing && typeof cols.sizing === 'object') {
+      setColumnSizing(cols.sizing as ColumnSizingState)
+    }
+  }, [prefsQuery.data])
+
+  // Persist layout changes (debounced), but not before hydration so we never
+  // clobber saved prefs with the initial defaults.
+  useEffect(() => {
+    if (!hydratedRef.current) return
+    if (saveTimer.current) window.clearTimeout(saveTimer.current)
+    saveTimer.current = window.setTimeout(() => {
+      api
+        .patchPrefs({
+          columns: { visibility: columnVisibility, order: columnOrder, sizing: columnSizing },
+        })
+        .catch(() => {})
+    }, 500)
+    return () => {
+      if (saveTimer.current) window.clearTimeout(saveTimer.current)
+    }
+  }, [columnVisibility, columnOrder, columnSizing])
 
   const notify = useCallback((kind: ToastMsg['kind'], text: string) => {
     setToast({ id: Date.now(), kind, text })
@@ -157,7 +215,13 @@ export default function App() {
 
         <main className="relative flex min-w-0 flex-1 flex-col">
         {isAll ? (
-          <Toolbar filters={filters} onChange={setFilters} />
+          <Toolbar
+            filters={filters}
+            onChange={setFilters}
+            columnVisibility={columnVisibility}
+            onColumnVisibilityChange={setColumnVisibility}
+            onResetColumns={resetColumns}
+          />
         ) : (
           <div className="flex items-center gap-3 border-b border-line bg-ink-900 px-4 py-3">
             <span className="text-[11px] text-accent">♫</span>
@@ -191,6 +255,11 @@ export default function App() {
                 onRowContextMenu={(track, x, y) => setMenu({ track, x, y })}
                 onPlay={playTrack}
                 activeTrackId={prepTrack?.id ?? null}
+                columnVisibility={columnVisibility}
+                columnOrder={columnOrder}
+                columnSizing={columnSizing}
+                onColumnOrderChange={setColumnOrder}
+                onColumnSizingChange={setColumnSizing}
               />
             )
           ) : (

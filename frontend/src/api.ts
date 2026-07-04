@@ -226,6 +226,9 @@ export const api = {
       `/api/playlists/${uuid}/add`,
       { track_ids: trackIds },
     ),
+  getPrefs: () => getJSON<Record<string, unknown>>('/api/prefs'),
+  patchPrefs: (patch: Record<string, unknown>) =>
+    send<Record<string, unknown>>('PATCH', '/api/prefs', patch),
   save: () => send<SaveResult>('POST', '/api/save'),
   editTrack: (trackId: string, fields: Record<string, string | number | null>) =>
     send<{ status: string }>('PATCH', '/api/tracks', { track_id: trackId, fields }),

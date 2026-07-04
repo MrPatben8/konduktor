@@ -28,6 +28,15 @@ def save_prefs(prefs: dict) -> None:
         pass  # non-fatal — prefs are a convenience, not a requirement
 
 
+def update_prefs(patch: dict) -> dict:
+    """Shallow-merge `patch` into the stored prefs and persist. Returns the
+    full updated prefs dict."""
+    prefs = load_prefs()
+    prefs.update(patch)
+    save_prefs(prefs)
+    return prefs
+
+
 def get_last_collection() -> str | None:
     val = load_prefs().get("last_collection")
     return val if isinstance(val, str) else None

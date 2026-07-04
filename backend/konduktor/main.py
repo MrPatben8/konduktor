@@ -142,6 +142,18 @@ def collection_options() -> CollectionOptions:
     return CollectionOptions(auto=auto, recent=recent)
 
 
+@app.get("/api/prefs")
+def get_prefs() -> dict:
+    """The full persisted user-preferences blob (UI layout, last collection…)."""
+    return prefs.load_prefs()
+
+
+@app.patch("/api/prefs")
+def patch_prefs(patch: dict) -> dict:
+    """Shallow-merge the given keys into the stored prefs; returns the result."""
+    return prefs.update_prefs(patch)
+
+
 @app.get("/api/fs/list", response_model=FsListing)
 def fs_list(path: str | None = None) -> FsListing:
     """List directories and .nml files for the in-app file browser."""
