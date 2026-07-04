@@ -490,40 +490,40 @@ export function PrepStrip({ track, onError }: Props) {
               onToggleActive={toggleLoop}
             />
 
-            <HotcueBar
-              cues={cueData?.cues ?? []}
-              selectedSlot={selectedSlot}
-              onSlotClick={onSlotClick}
-            />
-
-            {/* Selected-hotcue editing: type + delete. */}
-            <div className="flex h-8 shrink-0 items-center gap-2 border-t border-line bg-ink-900 px-3 text-xs">
-              <span className="text-faint">
-                {selectedCue ? `Hotcue ${(selectedSlot ?? 0) + 1}` : 'No hotcue selected'}
+            {/* Hotcue row: label · 8 slots · type of selected cue · delete. */}
+            <div className="flex h-10 shrink-0 items-stretch gap-px border-t border-line bg-ink-950">
+              <span className="flex w-16 items-center justify-center bg-ink-900 text-[10px] font-semibold uppercase tracking-wider text-faint">
+                Cues
               </span>
-              <div className="flex-1" />
-              {selectedCue && selectedCue.type === LOOP_TYPE ? (
-                <span className="rounded border border-line px-2 py-0.5 text-mint">Loop</span>
-              ) : (
-                <select
-                  value={selectedCue ? selectedCue.type : ''}
-                  disabled={!selectedCue}
-                  onChange={(e) => changeSelectedType(Number(e.target.value))}
-                  className="rounded border border-line bg-ink-850 px-2 py-0.5 text-text outline-none focus:border-accent disabled:opacity-40"
-                >
-                  {!selectedCue && <option value="">—</option>}
-                  {CUE_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              )}
+              <HotcueBar
+                cues={cueData?.cues ?? []}
+                selectedSlot={selectedSlot}
+                onSlotClick={onSlotClick}
+              />
+              <div className="flex w-28 items-center justify-center bg-ink-900 px-1">
+                {selectedCue && selectedCue.type === LOOP_TYPE ? (
+                  <span className="text-sm font-semibold text-mint">Loop</span>
+                ) : (
+                  <select
+                    value={selectedCue ? selectedCue.type : ''}
+                    disabled={!selectedCue}
+                    onChange={(e) => changeSelectedType(Number(e.target.value))}
+                    className="w-full bg-transparent text-center text-sm font-semibold text-text outline-none disabled:opacity-40"
+                  >
+                    {!selectedCue && <option value="">—</option>}
+                    {CUE_TYPES.map((t) => (
+                      <option key={t.value} value={t.value}>
+                        {t.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
               <button
                 onClick={deleteSelected}
                 disabled={!selectedCue}
                 title="Delete selected hotcue"
-                className="rounded border border-line px-2 py-0.5 text-muted hover:border-pink hover:text-pink disabled:opacity-40 disabled:hover:border-line disabled:hover:text-muted"
+                className="flex w-12 items-center justify-center bg-ink-900 text-muted transition-colors hover:bg-ink-800 hover:text-pink disabled:opacity-30 disabled:hover:bg-ink-900 disabled:hover:text-muted"
               >
                 🗑
               </button>
