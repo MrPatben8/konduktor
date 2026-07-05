@@ -8,8 +8,7 @@ import {
 } from './lib/trackColumns'
 import { Sidebar, type Source } from './components/Sidebar'
 import { Toolbar, emptyFilters, type Filters } from './components/Toolbar'
-import { TrackTable } from './components/TrackTable'
-import { PlaylistEditor } from './components/PlaylistEditor'
+import { TrackTable, PlaylistTable } from './components/TrackTable'
 import { SelectionBar } from './components/SelectionBar'
 import { StatusBar } from './components/StatusBar'
 import { Toast, type ToastMsg } from './components/Toast'
@@ -153,11 +152,46 @@ export default function App() {
   const isAll = source.kind === 'all'
   const tracks: Track[] = isAll ? (allTracks.data?.items ?? []) : (playlistTracks.data ?? [])
   const loading = isAll ? allTracks.isLoading : playlistTracks.isLoading
-  const filtered = useMemo(() => (isAll ? applyFilters(tracks, filters) : tracks), [
-    isAll,
-    tracks,
-    filters,
-  ])
+  // Search / filters apply to both the library and playlists (the toolbar is
+  // always visible). In a playlist a filtered view disables drag-reorder — see
+  // `canReorder` below — so a partial order can't overwrite the full entry list.
+  const filtered = useMemo(() => applyFilters(tracks, filters), [tracks, filters])
+  const filtersActive =
+    filters.search !== '' ||
+    filters.genre !== '' ||
+    filters.key !== '' ||
+    filters.bpmMin !== '' ||
+    filters.bpmMax !== '' ||
+    filters.ratingMin > 0 ||
+    filters.hasCues !== 'any'
+
+  // Playlist reorder / remove: persist the new entry order via setEntries, and
+  // optimistically update the cached playlist so the list stays put after a drag
+  // (the TrackTable re-syncs to this on the next render).
+  const reorderPlaylist = useCallback(
+    (ids: string[]) => {
+      if (source.kind !== 'playlist') return
+      const id = source.id
+      qc.setQueryData<Track[]>(['playlist', id], (prev) => {
+        if (!prev) return prev
+        const byId = new Map(prev.map((t) => [t.id, t]))
+        return ids.map((i) => byId.get(i)).filter((t): t is Track => !!t)
+      })
+      api
+        .setEntries(id, ids)
+        .then(() => {
+          qc.invalidateQueries({ queryKey: ['state'] })
+          qc.invalidateQueries({ queryKey: ['playlists'] }) // refresh counts
+        })
+        .catch((e) => onError((e as Error).message))
+    },
+    [source, qc, onError],
+  )
+  const removeFromPlaylist = useCallback(
+    (trackId: string) =>
+      reorderPlaylist(tracks.filter((t) => t.id !== trackId).map((t) => t.id)),
+    [reorderPlaylist, tracks],
+  )
 
   const handleOpened = () => {
     setForcePicker(false)
@@ -232,20 +266,22 @@ export default function App() {
         <Sidebar source={source} onSelect={selectSource} onError={onError} />
 
         <main className="relative flex min-w-0 flex-1 flex-col">
-        {isAll ? (
-          <Toolbar
-            filters={filters}
-            onChange={setFilters}
-            columnVisibility={columnVisibility}
-            onColumnVisibilityChange={setColumnVisibility}
-            onResetColumns={resetColumns}
-          />
-        ) : (
-          <div className="flex items-center gap-3 border-b border-line bg-ink-900 px-4 py-3">
+        {/* Search / filters / column settings — always visible. */}
+        <Toolbar
+          filters={filters}
+          onChange={setFilters}
+          columnVisibility={columnVisibility}
+          onColumnVisibilityChange={setColumnVisibility}
+          onResetColumns={resetColumns}
+        />
+        {!isAll && (
+          <div className="flex items-center gap-3 border-b border-line bg-ink-900 px-4 py-2">
             <span className="text-[11px] text-accent">♫</span>
             <span className="font-semibold text-text">{source.name}</span>
             <span className="text-xs text-faint">
-              {tracks.length} tracks · drag ⠿ to reorder · × to remove
+              {filtersActive
+                ? `${filtered.length} of ${tracks.length} tracks · × to remove · clear the filter to reorder`
+                : `${tracks.length} tracks · drag ⠿ to reorder · × to remove`}
             </span>
           </div>
         )}
@@ -281,12 +317,33 @@ export default function App() {
                 onColumnSizingChange={setColumnSizing}
               />
             )
+          ) : tracks.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-muted">
+              <div className="text-lg">This playlist is empty</div>
+              <div className="text-sm text-faint">
+                Go to <span className="text-text">All Tracks</span>, select tracks, and add them here.
+              </div>
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-1 text-muted">
+              <div className="text-lg">No tracks match</div>
+              <div className="text-sm text-faint">Try clearing some filters.</div>
+            </div>
           ) : (
-            <PlaylistEditor
-              uuid={(source as { id: string }).id}
-              tracks={tracks}
-              onError={onError}
+            <PlaylistTable
+              tracks={filtered}
               onRowContextMenu={(track, x, y) => setMenu({ track, x, y })}
+              onPlay={playTrack}
+              onEditField={editField}
+              activeTrackId={prepTrack?.id ?? null}
+              columnVisibility={columnVisibility}
+              columnOrder={columnOrder}
+              columnSizing={columnSizing}
+              onColumnOrderChange={setColumnOrder}
+              onColumnSizingChange={setColumnSizing}
+              onReorder={reorderPlaylist}
+              onRemove={removeFromPlaylist}
+              canReorder={!filtersActive}
             />
           )}
 

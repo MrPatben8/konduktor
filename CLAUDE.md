@@ -51,8 +51,17 @@ Two independent apps that talk over HTTP:
   - `components/` — `CollectionPicker` (startup chooser: Automatic / Open last /
     Find manually — the last reveals a file browser), `Sidebar` (playlist tree +
     create/rename/delete), `SaveBar`, `Toolbar` (search/filters + `ColumnsMenu`),
-    `TrackTable` (TanStack Table + Virtual grid; per-row play button, configurable
-    columns, inline double-click editing), `PlaylistEditor` (dnd-kit reorder),
+    `TrackTable` (All Tracks — TanStack Table + **virtualized** grid; per-row play
+    button, configurable columns, inline double-click editing) and `PlaylistTable`
+    (playlists — same columns/cells/play/inline-edit via shared `HeaderRow`/
+    `RowCells`/`PlayButton`, so the two views look identical, PLUS dnd-kit
+    drag-to-reorder + a remove button, header sorting disabled so the manual order
+    stands; `canReorder` is false while a filter/search is active so a partial order
+    can't overwrite the full entry list). `PlaylistTable` is non-virtualized
+    (playlists are small) and feeds `useReactTable` a **stable** empty `sorting`
+    array (`NO_SORTING`): a controlled `state.sorting` that's a fresh `[]` each
+    render with no `onSortingChange` makes TanStack Table re-sync its internal
+    state every commit → infinite re-render loop. Keep that reference stable.
     `SelectionBar` (bulk add-to-playlist), `ContextMenu` + `EditTagsDialog`
     (right-click → multi-field metadata + album-art edit), `StatusBar`,
     `RatingStars` (read-only, or click-to-set when given `onChange`), `Toast`.
