@@ -1,0 +1,4 @@
+# Build-only dependencies (not needed to run the backend in dev).
+# Freezes the backend into a standalone sidecar binary for the desktop build.
+# See konduktor-sidecar.spec and build_sidecar.sh.
+pyinstaller>=6.16  # 6.16+ supports Python 3.14

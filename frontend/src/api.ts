@@ -158,14 +158,24 @@ export interface SaveResult {
   playlists: number
 }
 
+// API origin. In the packaged desktop app the frontend is served from
+// tauri://localhost, so it can't use relative /api paths — the Tauri shell
+// injects window.__KONDUKTOR_API__ (the sidecar's http://127.0.0.1:<port>)
+// before any app script runs. In the browser dev server it's undefined, so we
+// fall back to relative URLs and let Vite proxy /api to the backend.
+export const API_BASE: string =
+  (typeof window !== 'undefined' &&
+    (window as unknown as { __KONDUKTOR_API__?: string }).__KONDUKTOR_API__) ||
+  ''
+
 async function getJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url)
+  const res = await fetch(API_BASE + url)
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${url}`)
   return res.json() as Promise<T>
 }
 
 async function send<T>(method: string, url: string, body?: unknown): Promise<T> {
-  const res = await fetch(url, {
+  const res = await fetch(API_BASE + url, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
@@ -233,8 +243,10 @@ export const api = {
   save: () => send<SaveResult>('POST', '/api/save'),
   editTrack: (trackId: string, fields: Record<string, string | number | null>) =>
     send<{ status: string }>('PATCH', '/api/tracks', { track_id: trackId, fields }),
-  artUrl: (trackId: string) => `/api/tracks/art?track_id=${encodeURIComponent(trackId)}`,
-  audioUrl: (trackId: string) => `/api/tracks/audio?track_id=${encodeURIComponent(trackId)}`,
+  artUrl: (trackId: string) =>
+    `${API_BASE}/api/tracks/art?track_id=${encodeURIComponent(trackId)}`,
+  audioUrl: (trackId: string) =>
+    `${API_BASE}/api/tracks/audio?track_id=${encodeURIComponent(trackId)}`,
   trackCues: (trackId: string) =>
     getJSON<TrackCues>(`/api/tracks/cues?track_id=${encodeURIComponent(trackId)}`),
   createHotcue: (trackId: string, slot: number, start: number, type: number, length = 0) =>
@@ -262,7 +274,7 @@ export const api = {
     const fd = new FormData()
     fd.append('track_id', trackId)
     fd.append('file', file)
-    const res = await fetch('/api/tracks/art', { method: 'PUT', body: fd })
+    const res = await fetch(`${API_BASE}/api/tracks/art`, { method: 'PUT', body: fd })
     if (!res.ok) throw new Error(`Cover upload failed (${res.status})`)
     return res.json()
   },

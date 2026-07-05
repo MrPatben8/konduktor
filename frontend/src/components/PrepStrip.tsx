@@ -82,6 +82,22 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
     return audioCtxRef.current
   }
 
+  // Tear everything down when the strip itself unmounts (e.g. the collection
+  // picker early-returns and replaces the whole UI). Without this, the playback
+  // source keeps running in an AudioContext that's never closed, so a fresh
+  // remount plays a SECOND track on top of the orphaned one. Closing both
+  // contexts is the surefire kill; runs once, on unmount.
+  useEffect(() => {
+    return () => {
+      playbackRef.current?.pause()
+      scratchRef.current?.dispose()
+      void audioCtxRef.current?.close()
+      void scratchCtxRef.current?.close()
+      audioCtxRef.current = null
+      scratchCtxRef.current = null
+    }
+  }, [])
+
   // The scratch engine gets its OWN AudioContext: a ScriptProcessorNode is
   // unreliable sharing a context with the playback source node (it goes silent
   // once a source has played), so we keep them fully separate.

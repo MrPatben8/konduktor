@@ -64,13 +64,16 @@ npm install
 cd ..
 ```
 
-### 2. Launch
+### 2. Run it (development)
 
 ```bash
 ./dev.sh
 ```
 
-Then open **http://localhost:5173** in your browser. Press `Ctrl-C` to stop.
+This starts both servers; open **http://localhost:5173** in your browser. Press
+`Ctrl-C` to stop. This is the fastest way to try Konduktor or hack on it — the
+frontend hot-reloads as you edit. To package a real double-clickable app
+instead, see [Build a standalone app](#build-a-standalone-app-production) below.
 
 ### 3. Open your collection
 
@@ -81,6 +84,55 @@ On launch, Konduktor offers to:
 - **browse** for a `collection.nml` yourself.
 
 That's it — you're in.
+
+---
+
+## Build a standalone app (production)
+
+Prefer a real double-clickable app over running the dev servers? Konduktor
+packages into a native desktop app (via **Tauri**) that bundles the Python
+backend as a sidecar — no terminal, no servers to start by hand.
+
+### Extra prerequisites
+
+On top of the Python 3.11+ and Node 18+ from above:
+
+- **Rust** — install from <https://rustup.rs> (the app shell is Tauri/Rust).
+- **PyInstaller** — into the backend venv:
+  `pip install -r backend/requirements-build.txt`
+
+### macOS
+
+```bash
+# 1) Freeze the backend into a sidecar binary (run from the backend venv)
+cd backend && source .venv/bin/activate
+./build_sidecar.sh
+cd ..
+
+# 2) Build the app
+cd frontend
+npx tauri build
+```
+
+You'll get an installer at
+`frontend/src-tauri/target/release/bundle/dmg/Konduktor_<version>_aarch64.dmg`
+(with the `.app` beside it). Builds are currently **unsigned**, so the first
+launch needs a right-click → **Open** to get past Gatekeeper. The `.dmg` is
+Apple-Silicon (`aarch64`) only.
+
+> **Faster local builds:** `npx tauri build --debug --bundles app` skips the
+> optimizer and the `.dmg`, giving you a runnable `.app` in seconds — handy while
+> iterating.
+
+### Windows
+
+Windows can't be cross-built from macOS — the (near-identical) steps to run on a
+Windows machine are in **[BUILDING-WINDOWS.md](BUILDING-WINDOWS.md)**.
+
+### Rebuilding after changes
+
+Changed **backend** Python? Re-run `./build_sidecar.sh`, then `npx tauri build`.
+Frontend-only change? Just `npx tauri build` — it rebuilds the web app for you.
 
 ---
 
@@ -103,8 +155,10 @@ play around.
 
 - Konduktor is built on [`traktor-nml-utils`](https://github.com/MrPatben8/traktor-nml-utils)
   and speaks Traktor's real file format — no import/export, no separate database.
-- It's a web app today, with an eye toward a packaged desktop build (Tauri) and
-  a mobile version down the road.
+- Run it in your browser from source, or package it into a native desktop app
+  (macOS `.dmg` / Windows `.msi`) that bundles the backend — see
+  [Build a standalone app](#build-a-standalone-app-production). A mobile version
+  is on the horizon.
 - Under the hood: **FastAPI** (Python) backend + **React / TypeScript / Vite**
   frontend. Curious about internals or contributing? See
   [CLAUDE.md](CLAUDE.md) for the architecture and conventions.

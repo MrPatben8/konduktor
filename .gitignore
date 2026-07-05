@@ -38,3 +38,9 @@ Thumbs.db
 
 # Local user preferences (not shared)
 backend/userprefs.json
+
+# ---- Desktop build (PyInstaller sidecar) ----
+# The frozen binary + intermediate work. The spec, sidecar.py and
+# build_sidecar.sh are source and ARE tracked.
+backend/build/
+backend/dist/

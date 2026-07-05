@@ -48,7 +48,14 @@ app = FastAPI(title="Konduktor API", version="0.4.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        # Packaged desktop app: the webview's origin when Tauri loads the built
+        # frontend (macOS uses tauri://, Windows/Linux use https://tauri.localhost).
+        "tauri://localhost",
+        "https://tauri.localhost",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
