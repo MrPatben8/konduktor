@@ -5,6 +5,7 @@ interface Props {
   locked: boolean
   hasGrid: boolean
   onSetBpm: (bpm: number) => void
+  onNudgeBpm: (delta: number) => void
   onHalve: () => void
   onDouble: () => void
   onNudge: (deltaMs: number) => void
@@ -20,15 +21,17 @@ const BTN =
   'disabled:hover:border-line'
 
 /**
- * Beatgrid / tempo panel (Traktor grid-control equivalent): editable BPM, half/
- * double, tap tempo, grid-phase nudge (±1/±10 ms), set beat 1 at the playhead,
- * reset to the loaded values, lock, and delete grid.
+ * Beatgrid / tempo panel (Traktor grid-control equivalent): editable BPM, BPM
+ * nudge (fine ±0.01 / coarse ±0.25), half/double, tap tempo, grid-phase nudge
+ * (±1/±10 ms), set beat 1 at the playhead, reset to the loaded values, lock,
+ * and delete grid.
  */
 export function GridControls({
   bpm,
   locked,
   hasGrid,
   onSetBpm,
+  onNudgeBpm,
   onHalve,
   onDouble,
   onNudge,
@@ -89,6 +92,45 @@ export function GridControls({
           </button>
         )}
         <div className="text-[10px] font-semibold uppercase tracking-wider text-faint">BPM</div>
+      </div>
+
+      {/* BPM nudge — coarse ±0.25 (outer) / fine ±0.01 (inner) */}
+      <div className="flex items-center gap-1">
+        <span className="mr-0.5 text-[10px] font-semibold uppercase tracking-wider text-faint">
+          BPM
+        </span>
+        <button
+          className={BTN}
+          onClick={() => onNudgeBpm(-0.25)}
+          disabled={bpm == null}
+          title="Nudge BPM −0.25 (coarse)"
+        >
+          −.25
+        </button>
+        <button
+          className={BTN}
+          onClick={() => onNudgeBpm(-0.01)}
+          disabled={bpm == null}
+          title="Nudge BPM −0.01 (fine)"
+        >
+          −.01
+        </button>
+        <button
+          className={BTN}
+          onClick={() => onNudgeBpm(0.01)}
+          disabled={bpm == null}
+          title="Nudge BPM +0.01 (fine)"
+        >
+          +.01
+        </button>
+        <button
+          className={BTN}
+          onClick={() => onNudgeBpm(0.25)}
+          disabled={bpm == null}
+          title="Nudge BPM +0.25 (coarse)"
+        >
+          +.25
+        </button>
       </div>
 
       {/* halve / double / tap / reset */}

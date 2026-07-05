@@ -34,7 +34,8 @@ Two independent apps that talk over HTTP:
     picker's "Automatic" option; sorts newest Traktor version first.
   - `prefs.py` — tiny persisted user-prefs store in `userprefs.json` (resolved
     relative to the package so it travels with the app; gitignored). Holds the
-    last-opened collection path and the library column layout. Best-effort I/O.
+    last-opened collection path, the library column layout, and the prep deck's
+    main-waveform zoom (`mainZoomSec`). Best-effort I/O.
   - `schemas.py` — Pydantic response/request models.
   - `main.py` — FastAPI routes (all under `/api`). Holds an `AppState` with the
     currently-loaded collection; it starts **unloaded** and the collection is
@@ -56,8 +57,11 @@ Two independent apps that talk over HTTP:
     (right-click → multi-field metadata + album-art edit), `StatusBar`,
     `RatingStars` (read-only, or click-to-set when given `onChange`), `Toast`.
   - **Prep strip** (DJ deck across the top of the window): `PrepStrip` owns it —
-    transport (play/pause, CUE), two waveforms (`MainWaveform` scrolling+zoomable,
-    `OverviewWaveform` whole-track), `LoopControls`, `HotcueBar`, `GridControls`.
+    transport (play/pause, CUE), two waveforms (`MainWaveform` scrolling+zoomable
+    — its zoom is owned by `PrepStrip` so it survives track switches and persists,
+    `OverviewWaveform` whole-track), `LoopControls`, `HotcueBar`, `GridControls`
+    (BPM readout/editor, fine ±0.01 / coarse ±0.25 BPM nudge, /2·×2, tap tempo,
+    grid-phase nudge, set beat 1, lock, delete grid).
     Prep libs live in `src/lib/`: `playbackEngine.ts` (Web Audio, seamless loops),
     `scratchEngine.ts` (drag-to-scratch), `waveform.ts` (frequency-colored
     analysis + paint), `cues.ts` (draw cues/loop/beatgrid/cue-point). See "Prep
@@ -71,7 +75,9 @@ Two independent apps that talk over HTTP:
     button flushes to disk. Styling is Tailwind v4 with tokens in `src/index.css`.
     Library column layout (visibility/order/width) persists to `userprefs.json`
     via `GET`/`PATCH /api/prefs` (debounced; hydrated on launch, merged against
-    defaults so newly-added columns still appear).
+    defaults so newly-added columns still appear). The prep deck's main-waveform
+    zoom persists the same way (`mainZoomSec`, hydrated in `PrepStrip` from the
+    shared `['prefs']` query).
 
 ## Commands
 
@@ -157,7 +163,7 @@ frontend at `http://localhost:5173`.
 - ✅ Track prep — audio playback, frequency-colored scrolling waveform, scratch,
   beatgrid display + editing, cue/hotcue create/jump/delete, loops; keyboard
   shortcuts (Space = play/pause, 1–8 = hotcues, Shift+1–8 = delete). See "Prep engine".
-- ⬜ Track prep Tier 2 — cue-point fine editing / audio export polish
+- ✅ Track prep Tier 2 — cue-point fine editing / audio export polish
 - ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 
 ## Write path (playlists + track metadata + prep)

@@ -43,20 +43,28 @@ file Traktor uses, so everything you do shows up next time you open Traktor.
 ## Getting started
 
 Konduktor runs as two small local servers (a Python backend and a web
-frontend). One-time setup, then a single command to launch.
+frontend). Do the one-time setup, then start them — the same steps work on
+macOS, Linux, and Windows.
 
 ### 1. Install (once)
 
-**Backend** — needs Python 3.11+:
+**Backend** — needs Python 3.11+. Create a virtual environment and install the
+dependencies:
 
 ```bash
 cd backend
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv          # Windows: python -m venv .venv
+```
+
+Activate it, then install:
+
+```bash
+source .venv/bin/activate      # Windows (PowerShell): .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 cd ..
 ```
 
-**Frontend** — needs Node 18+:
+**Frontend** — needs Node 18+ (same on every platform):
 
 ```bash
 cd frontend
@@ -66,14 +74,28 @@ cd ..
 
 ### 2. Run it (development)
 
+Konduktor runs as two local servers (backend on `:8000`, frontend on `:5173`).
+
+**macOS / Linux** — one command starts both:
+
 ```bash
 ./dev.sh
 ```
 
-This starts both servers; open **http://localhost:5173** in your browser. Press
-`Ctrl-C` to stop. This is the fastest way to try Konduktor or hack on it — the
-frontend hot-reloads as you edit. To package a real double-clickable app
-instead, see [Build a standalone app](#build-a-standalone-app-production) below.
+**Windows** — start each server in its own terminal:
+
+```powershell
+# Terminal 1 — backend
+cd backend; .\.venv\Scripts\Activate.ps1; uvicorn konduktor.main:app --reload --port 8000
+
+# Terminal 2 — frontend
+cd frontend; npm run dev
+```
+
+Either way, open **http://localhost:5173** in your browser (`Ctrl-C` stops a
+server). This is the fastest way to try Konduktor or hack on it — the frontend
+hot-reloads as you edit. To package a real double-clickable app instead, see
+[Build a standalone app](#build-a-standalone-app-production) below.
 
 ### 3. Open your collection
 
@@ -100,38 +122,55 @@ On top of the Python 3.11+ and Node 18+ from above:
 - **Rust** — install from <https://rustup.rs> (the app shell is Tauri/Rust).
 - **PyInstaller** — into the backend venv:
   `pip install -r backend/requirements-build.txt`
+- **Windows only:** also the MSVC C++ build tools and the WebView2 runtime — see
+  [BUILDING-WINDOWS.md](BUILDING-WINDOWS.md) for the one-time toolchain setup.
 
-### macOS
+The build is a two-step recipe on both platforms: **freeze the backend into a
+sidecar binary**, then **build the app**. The only difference is which sidecar
+script you run — `.sh` on macOS/Linux, `.ps1` on Windows. Each build runs on its
+own OS (the app can't be cross-compiled).
+
+### macOS / Linux
 
 ```bash
-# 1) Freeze the backend into a sidecar binary (run from the backend venv)
-cd backend && source .venv/bin/activate
-./build_sidecar.sh
-cd ..
+# 1) Freeze the backend into a sidecar binary (from the activated backend venv)
+cd backend && source .venv/bin/activate && ./build_sidecar.sh && cd ..
 
 # 2) Build the app
-cd frontend
-npx tauri build
+cd frontend && npx tauri build
 ```
 
-You'll get an installer at
+The installer lands at
 `frontend/src-tauri/target/release/bundle/dmg/Konduktor_<version>_aarch64.dmg`
-(with the `.app` beside it). Builds are currently **unsigned**, so the first
-launch needs a right-click → **Open** to get past Gatekeeper. The `.dmg` is
-Apple-Silicon (`aarch64`) only.
-
-> **Faster local builds:** `npx tauri build --debug --bundles app` skips the
-> optimizer and the `.dmg`, giving you a runnable `.app` in seconds — handy while
-> iterating.
+(with the `.app` beside it).
 
 ### Windows
 
-Windows can't be cross-built from macOS — the (near-identical) steps to run on a
-Windows machine are in **[BUILDING-WINDOWS.md](BUILDING-WINDOWS.md)**.
+```powershell
+# 1) Freeze the backend into a sidecar binary (from the activated backend venv)
+cd backend; .\.venv\Scripts\Activate.ps1; .\build_sidecar.ps1; cd ..
+
+# 2) Build the app
+cd frontend; npx tauri build
+```
+
+The installers land in `frontend\src-tauri\target\release\bundle\` (an `.msi` and
+an NSIS `-setup.exe`). See [BUILDING-WINDOWS.md](BUILDING-WINDOWS.md) for the full
+walkthrough and Windows-specific notes.
+
+> **Note:** builds are currently **unsigned**, so the first launch is flagged by
+> the OS — on macOS right-click → **Open** to get past Gatekeeper; on Windows
+> click **More info → Run anyway** past SmartScreen. The macOS `.dmg` is
+> Apple-Silicon (`aarch64`) only.
+
+> **Faster local builds:** `npx tauri build --debug --bundles app` skips the
+> optimizer and the installer, giving you a runnable app in seconds — handy while
+> iterating.
 
 ### Rebuilding after changes
 
-Changed **backend** Python? Re-run `./build_sidecar.sh`, then `npx tauri build`.
+Changed **backend** Python? Re-run the sidecar script for your OS
+(`./build_sidecar.sh` or `.\build_sidecar.ps1`), then `npx tauri build`.
 Frontend-only change? Just `npx tauri build` — it rebuilds the web app for you.
 
 ---

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Track, type TrackCues } from '../api'
 import { analyzeWaveform, type WaveColumn } from '../lib/waveform'
 import { ScratchEngine } from '../lib/scratchEngine'
@@ -7,7 +7,7 @@ import { PlaybackEngine } from '../lib/playbackEngine'
 import { GridControls } from './GridControls'
 import { HotcueBar } from './HotcueBar'
 import { LoopControls } from './LoopControls'
-import { MainWaveform } from './MainWaveform'
+import { MainWaveform, MIN_SEC, MAX_SEC, DEFAULT_SEC } from './MainWaveform'
 import { OverviewWaveform } from './OverviewWaveform'
 
 interface Props {
@@ -53,6 +53,7 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
   const [snap, setSnap] = useState(true)
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null)
   const [cuePoint, setCuePoint] = useState(0) // floating "CUE" point (frontend-only)
+  const [secPerView, setSecPerView] = useState(DEFAULT_SEC) // main-waveform zoom (persisted)
 
   // Loop state (transient — persisted only when saved as a hotcue later).
   const [loopRegion, setLoopRegion] = useState<{ start: number; end: number } | null>(null)
@@ -72,6 +73,32 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
   const loadedIdRef = useRef<string | null>(null) // trackId whose buffer is loaded
 
   const trackId = track?.id ?? null
+
+  // Main-waveform zoom persists to userprefs.json so it survives track switches
+  // (MainWaveform unmounts during each load) and app restarts. Hydrate once from
+  // the shared ['prefs'] query, then persist changes debounced (mirrors the
+  // column-layout prefs flow in App).
+  const prefsQuery = useQuery({ queryKey: ['prefs'], queryFn: api.getPrefs })
+  const zoomHydratedRef = useRef(false)
+  const zoomSaveTimer = useRef<number | null>(null)
+  useEffect(() => {
+    if (zoomHydratedRef.current || !prefsQuery.data) return
+    zoomHydratedRef.current = true
+    const z = (prefsQuery.data as { mainZoomSec?: unknown }).mainZoomSec
+    if (typeof z === 'number' && isFinite(z)) {
+      setSecPerView(Math.min(MAX_SEC, Math.max(MIN_SEC, z)))
+    }
+  }, [prefsQuery.data])
+  useEffect(() => {
+    if (!zoomHydratedRef.current) return // don't clobber saved prefs pre-hydration
+    if (zoomSaveTimer.current) window.clearTimeout(zoomSaveTimer.current)
+    zoomSaveTimer.current = window.setTimeout(() => {
+      api.patchPrefs({ mainZoomSec: secPerView }).catch(() => {})
+    }, 500)
+    return () => {
+      if (zoomSaveTimer.current) window.clearTimeout(zoomSaveTimer.current)
+    }
+  }, [secPerView])
 
   const getCtx = (): AudioContext => {
     if (!audioCtxRef.current) {
@@ -531,6 +558,8 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
     }
   }
   const setBpm = (bpm: number) => editGrid({ bpm })
+  const nudgeBpm = (delta: number) =>
+    gridBpm && editGrid({ bpm: Math.round((gridBpm + delta) * 1000) / 1000 })
   const halveBpm = () => gridBpm && editGrid({ bpm: gridBpm / 2 })
   const doubleBpm = () => gridBpm && editGrid({ bpm: gridBpm * 2 })
   const nudgeGrid = (deltaMs: number) => {
@@ -565,7 +594,7 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
   const activeLoop = loopActive && loopRegion ? loopRegion : null
 
   return (
-    <div className="flex h-72 shrink-0 items-stretch gap-px border-b border-line bg-ink-950">
+    <div className="flex h-[21rem] shrink-0 items-stretch gap-px border-b border-line bg-ink-950">
       {/* Controls */}
       <div className="flex w-72 shrink-0 flex-col gap-3 bg-ink-900 px-4 py-3">
         <div className="min-w-0">
@@ -589,6 +618,7 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
             locked={cueData?.locked ?? false}
             hasGrid={gridAnchor != null}
             onSetBpm={setBpm}
+            onNudgeBpm={nudgeBpm}
             onHalve={halveBpm}
             onDouble={doubleBpm}
             onNudge={nudgeGrid}
@@ -659,6 +689,8 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
                   bpm={cueData?.bpm ?? null}
                   gridAnchor={cueData?.grid_anchor ?? null}
                   loop={activeLoop}
+                  secPerView={secPerView}
+                  onZoomChange={setSecPerView}
                   onSeek={seekManual}
                   onScratchStart={onScratchStart}
                   onScratchMove={onScratchMove}

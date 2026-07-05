@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import type { CuePoint } from '../api'
 import { drawBeatgrid, drawCuePoint, drawCues, drawLoop } from '../lib/cues'
 import { paintWave, type WaveColumn } from '../lib/waveform'
@@ -12,6 +12,10 @@ interface Props {
   bpm: number | null
   gridAnchor: number | null
   loop: { start: number; end: number } | null
+  /** Seconds across the view — the zoom level, owned by the parent so it
+      survives track switches and persists to prefs. */
+  secPerView: number
+  onZoomChange: (secPerView: number) => void
   onSeek: (t: number) => void
   onScratchStart: () => void
   onScratchMove: (t: number) => void
@@ -20,9 +24,9 @@ interface Props {
 
 const DRAG_THRESHOLD = 3 // px before a press becomes a scratch (vs a click-seek)
 
-const MIN_SEC = 2 // most zoomed-in (seconds across the view)
-const MAX_SEC = 64 // most zoomed-out
-const DEFAULT_SEC = 16
+export const MIN_SEC = 2 // most zoomed-in (seconds across the view)
+export const MAX_SEC = 64 // most zoomed-out
+export const DEFAULT_SEC = 16
 
 /**
  * Traktor-style scrolling main waveform: the playhead is fixed at the centre and
@@ -39,6 +43,8 @@ export function MainWaveform({
   bpm,
   gridAnchor,
   loop,
+  secPerView,
+  onZoomChange,
   onSeek,
   onScratchStart,
   onScratchMove,
@@ -46,7 +52,6 @@ export function MainWaveform({
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const [secPerView, setSecPerView] = useState(DEFAULT_SEC)
   // Drag state for scratching. startTime is the playhead position at press;
   // dragging maps horizontal movement to a time offset (right = earlier, so the
   // waveform follows the cursor like grabbing a record).
@@ -172,8 +177,8 @@ export function MainWaveform({
     else onSeek(timeAtClientX(e.clientX, e.currentTarget.getBoundingClientRect()))
   }
 
-  const zoomIn = () => setSecPerView((s) => Math.max(MIN_SEC, s / 2))
-  const zoomOut = () => setSecPerView((s) => Math.min(MAX_SEC, s * 2))
+  const zoomIn = () => onZoomChange(Math.max(MIN_SEC, secPerView / 2))
+  const zoomOut = () => onZoomChange(Math.min(MAX_SEC, secPerView * 2))
 
   return (
     <div
