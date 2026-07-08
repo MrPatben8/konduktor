@@ -13,6 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from . import __version__
 from . import auto_hotcues as ah
 from . import prefs
 from .collection_service import CollectionService
@@ -53,7 +54,7 @@ from .schemas import (
     TrackPage,
 )
 
-app = FastAPI(title="Konduktor API", version="0.4.0")
+app = FastAPI(title="Konduktor API", version=__version__)
 
 app.add_middleware(
     CORSMiddleware,
