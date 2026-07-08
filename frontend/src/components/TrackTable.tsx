@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type MutableRefObject } from 'react'
 import {
   flexRender,
   getCoreRowModel,
@@ -119,12 +119,21 @@ function RowCells({ row }: { row: Row<Track> }) {
 }
 
 /** One draggable + resizable header cell. `sortable` is false in playlists,
- *  where the manual order stands (the header still reorders/resizes columns). */
-function SortableHeader({ header }: { header: Header<Track, unknown> }) {
+ *  where the manual order stands (the header still reorders/resizes columns).
+ *  `draggedRef` is set true for the duration of a reorder so the stray `click`
+ *  the browser fires after a drag doesn't also toggle the sort. */
+function SortableHeader({
+  header,
+  draggedRef,
+}: {
+  header: Header<Track, unknown>
+  draggedRef: MutableRefObject<boolean>
+}) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: header.column.id,
   })
   const sorted = header.column.getIsSorted()
+  const toggleSort = header.column.getToggleSortingHandler()
   return (
     <div
       ref={setNodeRef}
@@ -140,7 +149,12 @@ function SortableHeader({ header }: { header: Header<Track, unknown> }) {
       <button
         {...attributes}
         {...listeners}
-        onClick={header.column.getToggleSortingHandler()}
+        onClick={(e) => {
+          // A reorder-drag ends with a stray click on the header — ignore it so
+          // dragging a column doesn't also flip its sort direction.
+          if (draggedRef.current) return
+          toggleSort?.(e)
+        }}
         className="flex flex-1 cursor-grab items-center gap-1 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-muted hover:text-text active:cursor-grabbing"
       >
         {flexRender(header.column.columnDef.header, header.getContext())}
@@ -180,12 +194,24 @@ function HeaderRow({
   hasPlay: boolean
   selection?: Selection
 }) {
+  // True while (and just after) a column is being reordered, so the trailing
+  // click a drag emits is swallowed instead of toggling the sort.
+  const draggedRef = useRef(false)
   return (
     <DndContext
       sensors={sensors}
       collisionDetection={closestCenter}
       modifiers={[restrictToHorizontalAxis]}
-      onDragEnd={onColumnDragEnd}
+      onDragStart={() => {
+        draggedRef.current = true
+      }}
+      onDragEnd={(e) => {
+        onColumnDragEnd(e)
+        // Clear on the next tick — after the synchronous post-drag click fires.
+        setTimeout(() => {
+          draggedRef.current = false
+        }, 0)
+      }}
     >
       <div className="sticky top-0 z-10 flex border-b border-line bg-ink-850">
         {lead && <span className="w-8 shrink-0" />}
@@ -208,7 +234,7 @@ function HeaderRow({
           strategy={horizontalListSortingStrategy}
         >
           {headers.map((header) => (
-            <SortableHeader key={header.id} header={header} />
+            <SortableHeader key={header.id} header={header} draggedRef={draggedRef} />
           ))}
         </SortableContext>
         {trail && <span className="w-10 shrink-0" />}
@@ -259,7 +285,7 @@ export function TrackTable({
   })
   const virtualRows = virtualizer.getVirtualItems()
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }))
   const headers = table.getHeaderGroups()[0].headers
   const hasPlay = !!onPlay
   const leadWidth = 40 + (hasPlay ? 36 : 0)
@@ -446,7 +472,7 @@ export function PlaylistTable({
   })
 
   const rows = table.getRowModel().rows
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }))
   const headers = table.getHeaderGroups()[0].headers
   const hasPlay = !!onPlay
   const leadWidth = 32 + 40 + (hasPlay ? 36 : 0)
