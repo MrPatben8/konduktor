@@ -89,15 +89,30 @@ jobs:
         working-directory: frontend
         run: npx tauri build
 
-      - name: Upload installers
+      # Stage the single installer per OS into a flat folder. Uploading one
+      # directory (not multiple bundle subpaths) keeps the artifact root at
+      # ./installer, so the zip holds the bare file — no nested dmg/ or nsis/
+      # folder. We ship the DMG on macOS and the NSIS -setup.exe on Windows
+      # (the .msi is intentionally left out).
+      - name: Stage installer (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p installer
+          cp frontend/src-tauri/target/release/bundle/dmg/*.dmg installer/
+
+      - name: Stage installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force installer | Out-Null
+          Copy-Item frontend/src-tauri/target/release/bundle/nsis/*-setup.exe installer/
+
+      - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: konduktor-${{ runner.os }}
           if-no-files-found: error
-          path: |
-            frontend/src-tauri/target/release/bundle/dmg/*.dmg
-            frontend/src-tauri/target/release/bundle/msi/*.msi
-            frontend/src-tauri/target/release/bundle/nsis/*-setup.exe
+          path: installer/*
 
   # Gather both platforms' installers and publish them as a single new Release.
   # Runs once, after both builds succeed, so the two matrix jobs never race to
