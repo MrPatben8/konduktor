@@ -4,7 +4,8 @@ import { contrastText, cueColor } from '../lib/cues'
 interface Props {
   cues: CuePoint[]
   selectedSlot: number | null
-  onSlotClick: (slot: number) => void
+  onSlotPress: (slot: number) => void
+  onSlotRelease: (slot: number) => void
 }
 
 const SLOTS = [0, 1, 2, 3, 4, 5, 6, 7] // Traktor hotcue slots → labelled 1–8
@@ -12,10 +13,12 @@ const SLOTS = [0, 1, 2, 3, 4, 5, 6, 7] // Traktor hotcue slots → labelled 1–
 /**
  * The 8 hotcue slots, colour-coded by cue type when assigned (gray when empty).
  * Rendered as a flex-1 group inside the hotcue row; the parent supplies the row
- * chrome and the trailing edit controls. Clicking a slot delegates to the parent
- * (create when empty, jump/trigger when assigned).
+ * chrome and the trailing edit controls. Slots respond to press AND release
+ * (pointer capture, so a release outside the button still fires) so the parent
+ * can implement momentary "cue preview" (play while held). Press creates when
+ * empty and jumps/triggers when assigned; release ends any preview.
  */
-export function HotcueBar({ cues, selectedSlot, onSlotClick }: Props) {
+export function HotcueBar({ cues, selectedSlot, onSlotPress, onSlotRelease }: Props) {
   return (
     <div className="flex flex-1 items-stretch gap-px">
       {SLOTS.map((slot) => {
@@ -25,7 +28,15 @@ export function HotcueBar({ cues, selectedSlot, onSlotClick }: Props) {
         return (
           <button
             key={slot}
-            onClick={() => onSlotClick(slot)}
+            onPointerDown={(e) => {
+              e.preventDefault()
+              // Capture so the matching release fires even if the pointer drifts
+              // off the button before it's let go.
+              e.currentTarget.setPointerCapture(e.pointerId)
+              onSlotPress(slot)
+            }}
+            onPointerUp={() => onSlotRelease(slot)}
+            onPointerCancel={() => onSlotRelease(slot)}
             title={
               cue
                 ? cue.name && cue.name !== 'n.n.'

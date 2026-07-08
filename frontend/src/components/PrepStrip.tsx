@@ -71,6 +71,10 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
   const engagedRef = useRef(false) // scratch engine is dragging or coasting
   const pendingPlayRef = useRef(false) // a play was requested; start once ready
   const loadedIdRef = useRef<string | null>(null) // trackId whose buffer is loaded
+  // Active momentary "cue preview": a hotcue OR the CUE button held while paused
+  // plays from its point and stops on release, unless `latched` (play pressed
+  // during the hold). `id` identifies the holder so its release matches.
+  const previewRef = useRef<{ id: string; start: number; latched: boolean } | null>(null)
 
   const trackId = track?.id ?? null
 
@@ -150,6 +154,7 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
     setActiveBeats(null)
     setCuePoint(0)
     loopInRef.current = null
+    previewRef.current = null
   }, [trackId])
 
   // Analyse once per track; the decoded buffer feeds both the playback and
@@ -226,6 +231,18 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
     const eng = playbackRef.current
     if (!eng || !eng.ready) return
     getCtx() // ensure the context resumes on this user gesture
+    // Play pressed during a momentary cue preview → latch playback on so it
+    // keeps going after the hotcue button is released.
+    const pv = previewRef.current
+    if (pv && !pv.latched) {
+      pv.latched = true
+      if (!eng.playing) {
+        eng.play()
+        setPlaying(true)
+      }
+      setCurrent(eng.getPosition())
+      return
+    }
     if (eng.playing) {
       eng.pause()
       setPlaying(false)
@@ -236,10 +253,36 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
     setCurrent(eng.getPosition())
   }
 
+  // Start a momentary "cue preview" from `start` for holder `id`: play now, and
+  // remember to stop + return on release (see endPreview) unless it's latched.
+  const beginPreview = (id: string, start: number) => {
+    const eng = playbackRef.current
+    if (!eng || !eng.ready) return
+    previewRef.current = { id, start, latched: false }
+    eng.play()
+    setPlaying(true)
+  }
+
+  // End holder `id`'s momentary preview: stop and return to the point — unless a
+  // play press latched it during the hold, in which case playback continues.
+  const endPreview = (id: string) => {
+    const pv = previewRef.current
+    if (!pv || pv.id !== id) return
+    previewRef.current = null
+    if (pv.latched) return
+    const eng = playbackRef.current
+    if (!eng) return
+    eng.pause()
+    eng.seek(pv.start)
+    setPlaying(false)
+    setCurrent(pv.start)
+  }
+
   // CUE (Traktor/CDJ-style): while playing, jump back to the cue point and
   // pause; while paused and away from the cue, drop the cue at the playhead;
-  // while paused and already at the cue, play from it.
-  const handleCue = () => {
+  // while paused and already at the cue, play from it for as long as the button
+  // is held (momentary preview — mirrors the hotcue buttons).
+  const onCuePress = () => {
     const eng = playbackRef.current
     if (!eng || !eng.ready) return
     getCtx()
@@ -249,12 +292,17 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
       setPlaying(false)
       setCurrent(cuePoint)
     } else if (Math.abs(current - cuePoint) > 0.03) {
-      setCuePoint(current)
+      // Drop the cue at the (snapped) playhead and park on it, so the next press
+      // is "at the cue" and previews rather than re-setting.
+      const t = snapTime(current)
+      setCuePoint(t)
+      eng.seek(t)
+      setCurrent(t)
     } else {
-      eng.play()
-      setPlaying(true)
+      beginPreview('cue', cuePoint)
     }
   }
+  const onCueRelease = () => endPreview('cue')
 
   // A library row's play button bumps `playRequest`: load (if needed) + play.
   // If the requested track is already loaded and ready, start immediately;
@@ -458,34 +506,47 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
     return best != null && bestDiff <= beats * 0.05 ? best : null
   }
 
-  const onSlotClick = async (slot: number) => {
+  // Hotcue slot pressed (mouse/touch down, or key down). Empty slots create a
+  // hotcue; assigned slots jump to their point. When jumping while PAUSED we
+  // also begin a momentary "cue preview" — play from the point for as long as
+  // the button is held (released in onSlotRelease). While already playing, a
+  // press just jumps, as before.
+  const onSlotPress = async (slot: number) => {
     if (!track) return
     const cue = hotcueAt(slot)
-    if (cue) {
-      // A loop hotcue jumps to its start AND re-engages a loop of its length.
-      if (cue.type === LOOP_TYPE && cue.length > 0) {
-        seek(cue.start)
-        engagLoop(cue.start, cue.start + cue.length, beatsForLength(cue.length))
-      } else {
-        seek(cue.start)
+    if (!cue) {
+      try {
+        // Setting a hotcue while a loop is active stores it as a loop hotcue.
+        if (loopActive && loopRegion) {
+          const len = loopRegion.end - loopRegion.start
+          applyCueEdit(await api.createHotcue(track.id, slot, loopRegion.start, LOOP_TYPE, len))
+        } else {
+          const t = snapTime(playbackRef.current?.getPosition() ?? current)
+          applyCueEdit(await api.createHotcue(track.id, slot, t, 0))
+        }
+        setSelectedSlot(slot)
+      } catch (e) {
+        onError?.((e as Error).message)
       }
-      setSelectedSlot(slot)
       return
     }
-    try {
-      // Setting a hotcue while a loop is active stores it as a loop hotcue.
-      if (loopActive && loopRegion) {
-        const len = loopRegion.end - loopRegion.start
-        applyCueEdit(await api.createHotcue(track.id, slot, loopRegion.start, LOOP_TYPE, len))
-      } else {
-        const t = snapTime(playbackRef.current?.getPosition() ?? current)
-        applyCueEdit(await api.createHotcue(track.id, slot, t, 0))
-      }
-      setSelectedSlot(slot)
-    } catch (e) {
-      onError?.((e as Error).message)
+    setSelectedSlot(slot)
+    const eng = playbackRef.current
+    if (!eng || !eng.ready) return
+    getCtx()
+    // A loop hotcue jumps to its start AND re-engages a loop of its length.
+    if (cue.type === LOOP_TYPE && cue.length > 0) {
+      seek(cue.start)
+      engagLoop(cue.start, cue.start + cue.length, beatsForLength(cue.length))
+    } else {
+      seek(cue.start)
     }
+    // Paused at press → momentary preview: play while held.
+    if (!eng.playing) beginPreview(`hc:${slot}`, cue.start)
   }
+
+  // Hotcue slot released (mouse/touch up, or key up). Ends its momentary preview.
+  const onSlotRelease = (slot: number) => endPreview(`hc:${slot}`)
 
   const changeSelectedType = async (type: number) => {
     if (!track || selectedSlot == null) return
@@ -520,17 +581,37 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
   // Space → play/pause; 1–8 → the matching hotcue slot; Shift+1–8 → delete it.
   // Digits are read from e.code (layout-/Shift-independent) and a ref holds the
   // latest handlers so the listener attaches once and never goes stale.
-  const shortcutsRef = useRef({ toggle, onSlotClick, deleteHotcueSlot })
-  shortcutsRef.current = { toggle, onSlotClick, deleteHotcueSlot }
+  const shortcutsRef = useRef({
+    toggle,
+    onSlotPress,
+    onSlotRelease,
+    deleteHotcueSlot,
+    onCuePress,
+    onCueRelease,
+  })
+  shortcutsRef.current = {
+    toggle,
+    onSlotPress,
+    onSlotRelease,
+    deleteHotcueSlot,
+    onCuePress,
+    onCueRelease,
+  }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // Ignore while typing in a field or with a non-Shift modifier held.
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
       if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.repeat) return // held key auto-repeats — treat as one press+hold
       if (e.code === 'Space') {
         e.preventDefault()
         shortcutsRef.current.toggle()
+        return
+      }
+      if (e.code === 'KeyC') {
+        e.preventDefault()
+        shortcutsRef.current.onCuePress()
         return
       }
       const digit = e.code.match(/^(?:Digit|Numpad)([1-8])$/)
@@ -538,11 +619,21 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
         e.preventDefault()
         const slot = Number(digit[1]) - 1
         if (e.shiftKey) void shortcutsRef.current.deleteHotcueSlot(slot)
-        else void shortcutsRef.current.onSlotClick(slot)
+        else void shortcutsRef.current.onSlotPress(slot)
       }
     }
+    // keyup ends a held hotcue's momentary preview (release).
+    const onKeyRelease = (e: KeyboardEvent) => {
+      if (e.code === 'KeyC') shortcutsRef.current.onCueRelease()
+      const digit = e.code.match(/^(?:Digit|Numpad)([1-8])$/)
+      if (digit) shortcutsRef.current.onSlotRelease(Number(digit[1]) - 1)
+    }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('keyup', onKeyRelease)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keyup', onKeyRelease)
+    }
   }, [])
 
   // ---- beatgrid ---------------------------------------------------------
@@ -631,10 +722,16 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
 
         <div className="mt-auto flex items-center gap-2">
           <button
-            onClick={handleCue}
+            onPointerDown={(e) => {
+              e.preventDefault()
+              e.currentTarget.setPointerCapture(e.pointerId)
+              onCuePress()
+            }}
+            onPointerUp={onCueRelease}
+            onPointerCancel={onCueRelease}
             disabled={!ready}
             className="flex h-11 items-center justify-center rounded-xl border border-line bg-ink-850 px-4 text-sm font-bold tracking-wide text-gold transition-colors hover:border-gold disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line"
-            title="Cue — set the cue point (paused) or jump back to it (playing)"
+            title="Cue — set the cue point (paused), hold to preview from it, or jump back to it (playing)"
           >
             CUE
           </button>
@@ -737,7 +834,8 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
               <HotcueBar
                 cues={cueData?.cues ?? []}
                 selectedSlot={selectedSlot}
-                onSlotClick={onSlotClick}
+                onSlotPress={onSlotPress}
+                onSlotRelease={onSlotRelease}
               />
               <div className="flex w-28 items-center justify-center bg-ink-900 px-1">
                 {selectedCue && selectedCue.type === LOOP_TYPE ? (
