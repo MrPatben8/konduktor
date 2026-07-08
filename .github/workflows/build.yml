@@ -1,8 +1,8 @@
 name: Build desktop apps
 
 # Compiles the Konduktor desktop app (Tauri + frozen Python sidecar) for macOS
-# and Windows on every push to main. Installers are uploaded as run artifacts
-# (Actions → this run → Artifacts). Also runnable on demand from the Actions tab.
+# and Windows on every push to main, then publishes both installers as a new
+# GitHub Release under an auto-incrementing tag. Also runnable on demand.
 on:
   push:
     branches: [main]
@@ -98,3 +98,36 @@ jobs:
             frontend/src-tauri/target/release/bundle/dmg/*.dmg
             frontend/src-tauri/target/release/bundle/msi/*.msi
             frontend/src-tauri/target/release/bundle/nsis/*-setup.exe
+
+  # Gather both platforms' installers and publish them as a single new Release.
+  # Runs once, after both builds succeed, so the two matrix jobs never race to
+  # create the same tag/release.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # required to create the tag + release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # App version from tauri.conf.json (e.g. 0.1.0); the run number keeps each
+      # tag unique → tag like v0.1.0-build.42.
+      - name: Resolve version
+        id: version
+        run: echo "version=$(jq -r .version frontend/src-tauri/tauri.conf.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Download installers from both builds
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts   # → artifacts/konduktor-macOS/…, artifacts/konduktor-Windows/…
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}-build.${{ github.run_number }}
+          name: Konduktor v${{ steps.version.outputs.version }} (build ${{ github.run_number }})
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true   # auto changelog from commits/PRs since last release
+          fail_on_unmatched_files: true
+          files: artifacts/**/*
