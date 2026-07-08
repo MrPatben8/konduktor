@@ -37,6 +37,35 @@ def update_prefs(patch: dict) -> dict:
     return prefs
 
 
+def get_path_mapping(collection_path: str) -> dict | None:
+    """The saved ``{from, to}`` OS-path remapping for a collection, or None.
+
+    Keyed by the collection's current OS path (the mapping is per-machine data,
+    so the local path is a natural, machine-specific key)."""
+    mappings = load_prefs().get("path_mappings")
+    if isinstance(mappings, dict):
+        m = mappings.get(collection_path)
+        if isinstance(m, dict):
+            return {"from": m.get("from") or "", "to": m.get("to") or ""}
+    return None
+
+
+def set_path_mapping(
+    collection_path: str, from_prefix: str | None, to_prefix: str | None
+) -> None:
+    """Persist (or, when either prefix is blank, clear) a collection's mapping."""
+    prefs = load_prefs()
+    mappings = prefs.get("path_mappings")
+    if not isinstance(mappings, dict):
+        mappings = {}
+    if from_prefix and to_prefix:
+        mappings[collection_path] = {"from": from_prefix, "to": to_prefix}
+    else:
+        mappings.pop(collection_path, None)
+    prefs["path_mappings"] = mappings
+    save_prefs(prefs)
+
+
 def get_last_collection() -> str | None:
     val = load_prefs().get("last_collection")
     return val if isinstance(val, str) else None

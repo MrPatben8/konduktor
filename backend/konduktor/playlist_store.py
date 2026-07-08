@@ -43,6 +43,7 @@ from traktor_nml_utils.models.collection import (
 )
 from xsdata.formats.dataclass.serializers import XmlSerializer
 
+from .path_mapping import PathMapping
 from .schemas import PlaylistNode
 
 
@@ -70,6 +71,8 @@ class PlaylistStore:
         self.nml_path = Path(nml_path)
         self._lock = threading.RLock()
         self.dirty = False
+        # Active OS-path prefix remapping (empty = identity). Survives _load().
+        self._path_mapping = PathMapping()
         self._load()
 
     # ---- load ----------------------------------------------------------
@@ -440,6 +443,30 @@ class PlaylistStore:
             self._track_art[track_id] = (data, mime)
             self.dirty = True
 
+    def set_path_mapping(self, mapping: PathMapping) -> None:
+        """Set the active OS-path prefix remapping (applied at resolve time)."""
+        with self._lock:
+            self._path_mapping = mapping
+
+    def _resolve(self, loc) -> "Path | None":
+        """Resolve a LOCATION to an OS path, applying the active path mapping.
+
+        The single FS chokepoint: LOCATION -> `resolve_path` -> prefix remap.
+        Falls back to the un-remapped path when the remapped target doesn't
+        exist, so a misconfigured mapping never makes a present file unreachable.
+        """
+        from . import file_tags
+
+        if loc is None:
+            return None
+        base = file_tags.resolve_path(loc.volume, loc.dir, loc.file)
+        if self._path_mapping.empty:
+            return base
+        remapped = self._path_mapping.apply(base)
+        if remapped == base:
+            return base
+        return remapped if remapped.exists() else base
+
     def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
         """Staged replacement if present, else the file's current embedded art."""
         from . import file_tags
@@ -450,19 +477,116 @@ class PlaylistStore:
             entry = self._entry_by_key.get(track_id)
             if entry is None or entry.location is None:
                 return None
-            loc = entry.location
-            return file_tags.read_cover(file_tags.resolve_path(loc.volume, loc.dir, loc.file))
+            path = self._resolve(entry.location)
+            return file_tags.read_cover(path) if path else None
 
     def audio_path(self, track_id: str) -> "Path | None":
         """Resolve a track's audio file to an OS path (for playback streaming)."""
-        from . import file_tags
-
         with self._lock:
             entry = self._entry_by_key.get(track_id)
             if entry is None or entry.location is None:
                 return None
-            loc = entry.location
-            return file_tags.resolve_path(loc.volume, loc.dir, loc.file)
+            return self._resolve(entry.location)
+
+    def path_prefix_suggestions(self) -> dict:
+        """Auto-suggest ``from`` prefixes by resolving every track's LOCATION and
+        finding the common directory prefix per volume. Returns a ``primary``
+        (the largest group's prefix) plus per-group prefixes ranked by track
+        count, so the editor can prefill and offer alternatives."""
+        from collections import defaultdict
+
+        from . import file_tags
+        from .path_mapping import common_dir_prefix
+
+        with self._lock:
+            groups: dict[str, list[str]] = defaultdict(list)
+            for e in self._nml.collection.entry:
+                loc = e.location
+                if not loc:
+                    continue
+                groups[loc.volume or ""].append(
+                    str(file_tags.resolve_path(loc.volume, loc.dir, loc.file))
+                )
+            ranked = sorted(
+                (
+                    {"prefix": common_dir_prefix(paths), "count": len(paths)}
+                    for paths in groups.values()
+                ),
+                key=lambda g: g["count"],
+                reverse=True,
+            )
+            ranked = [g for g in ranked if g["prefix"]]
+            return {"primary": ranked[0]["prefix"] if ranked else "", "groups": ranked[:5]}
+
+    def remap_preview(self, mapping: PathMapping) -> dict:
+        """How a mapping would affect the collection, without changing anything:
+        total tracks, how many match ``from``, and how many exist at ``to``
+        (plus a few samples). Powers the mapping editor's validation line."""
+        from . import file_tags
+
+        with self._lock:
+            total = matched = existing = 0
+            samples: list[dict] = []
+            for e in self._nml.collection.entry:
+                loc = e.location
+                if not loc:
+                    continue
+                total += 1
+                base = file_tags.resolve_path(loc.volume, loc.dir, loc.file)
+                if mapping.matches(base):
+                    matched += 1
+                    target = mapping.apply(base)
+                    ok = target.exists()
+                    if ok:
+                        existing += 1
+                    if len(samples) < 5:
+                        samples.append({"from": str(base), "to": str(target), "exists": ok})
+            return {"total": total, "matched": matched, "existing": existing, "samples": samples}
+
+    def remap_locations(self, mapping: PathMapping) -> int:
+        """Permanently rewrite matching track LOCATIONs to the mapping's ``to``
+        prefix — a deliberate library move (write-back).
+
+        Because ``track_id`` IS the LOCATION key (``volume+dir+file``), every
+        playlist ``PRIMARYKEY`` that referenced a moved track is rewritten too,
+        so playlists keep pointing at their tracks. Non-matching entries are
+        untouched. Returns the number of tracks rewritten; the caller saves.
+        """
+        from . import file_tags
+        from .path_mapping import os_path_to_location
+
+        if mapping.empty:
+            return 0
+        with self._lock:
+            key_remap: dict[str, str] = {}
+            for e in self._nml.collection.entry:
+                loc = e.location
+                if not loc:
+                    continue
+                base = file_tags.resolve_path(loc.volume, loc.dir, loc.file)
+                if not mapping.matches(base):
+                    continue
+                target = mapping.apply(base)
+                volume, dir_, file = os_path_to_location(target)
+                old_key = f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}"
+                new_key = f"{volume or ''}{dir_ or ''}{file or ''}"
+                if old_key == new_key:
+                    continue  # no-op (e.g. from == to); leave byte-identical
+                loc.volume, loc.dir, loc.file = volume, dir_, file
+                key_remap[old_key] = new_key
+            if not key_remap:
+                return 0
+            # Rewrite playlist entry primary keys that referenced moved tracks.
+            for node in self._iter_nodes(self._root()):
+                pl = node.playlist
+                if pl is None or not pl.entry:
+                    continue
+                for entry in pl.entry:
+                    pk = entry.primarykey
+                    if pk and pk.key in key_remap:
+                        pk.key = key_remap[pk.key]
+            self.dirty = True
+            return len(key_remap)
 
     def _entry_field_value(self, entry: Entrytype, field: str):
         """Read a single editable field's current value from the model, in the
@@ -504,8 +628,9 @@ class PlaylistStore:
             entry = self._entry_by_key.get(track_id)
             if entry is None or entry.location is None:
                 continue
-            loc = entry.location
-            path = file_tags.resolve_path(loc.volume, loc.dir, loc.file)
+            path = self._resolve(entry.location)
+            if path is None:
+                continue
             r = None
             if track_id in self._track_edits:
                 meta = {f: self._entry_field_value(entry, f) for f in self._track_edits[track_id]}

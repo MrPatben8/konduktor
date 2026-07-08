@@ -17,6 +17,7 @@ from . import auto_hotcues as ah
 from . import prefs
 from .collection_service import CollectionService
 from .discovery import describe, detect_collections
+from .path_mapping import PathMapping
 from .playlist_store import PlaylistError, PlaylistStore
 from .schemas import (
     AutoGridRequest,
@@ -35,7 +36,11 @@ from .schemas import (
     FsListing,
     GridEdit,
     OpenCollection,
+    PathMappingInfo,
     PlaylistNode,
+    PrefixSuggestions,
+    RemapPreview,
+    RemapResult,
     RenamePlaylist,
     SaveResult,
     SetEntries,
@@ -82,6 +87,11 @@ class AppState:
         # only commit to the new collection if BOTH succeed.
         service = CollectionService(path)
         store = PlaylistStore(path)
+        # Apply this collection's saved OS-path remapping (per-machine, keyed by
+        # the collection's local path) so runtime translation is live on open.
+        saved = prefs.get_path_mapping(str(path))
+        if saved:
+            store.set_path_mapping(PathMapping.make(saved["from"], saved["to"]))
         self.path, self.service, self.store = path, service, store
 
 
@@ -151,6 +161,66 @@ def collection_options() -> CollectionOptions:
     if last:
         recent = CollectionCandidate(**describe(Path(last)))
     return CollectionOptions(auto=auto, recent=recent)
+
+
+@app.get("/api/collection/path-mapping", response_model=PathMappingInfo)
+def get_path_mapping() -> PathMappingInfo:
+    """The current collection's saved OS-path remapping (blank if none)."""
+    require_store()
+    saved = prefs.get_path_mapping(str(STATE.path))
+    if saved:
+        return PathMappingInfo.model_validate({"from": saved["from"], "to": saved["to"]})
+    return PathMappingInfo()
+
+
+@app.put("/api/collection/path-mapping", response_model=PathMappingInfo)
+def put_path_mapping(body: PathMappingInfo) -> PathMappingInfo:
+    """Set (or, with blank prefixes, clear) the current collection's remapping.
+    Persists to userprefs AND updates the live store so playback/analysis
+    re-resolve immediately — no reopen needed. Never touches the .nml."""
+    store = require_store()
+    mapping = PathMapping.make(body.from_, body.to)
+    prefs.set_path_mapping(
+        str(STATE.path), mapping.from_prefix or None, mapping.to_prefix or None
+    )
+    store.set_path_mapping(mapping)
+    return PathMappingInfo.model_validate(
+        {"from": mapping.from_prefix, "to": mapping.to_prefix}
+    )
+
+
+@app.get("/api/collection/path-mapping/suggest", response_model=PrefixSuggestions)
+def suggest_path_prefix() -> PrefixSuggestions:
+    """Auto-detected `from` prefix candidates (common directory per volume),
+    so the editor can prefill the stored prefix."""
+    store = require_store()
+    return PrefixSuggestions.model_validate(store.path_prefix_suggestions())
+
+
+@app.get("/api/collection/path-mapping/preview", response_model=RemapPreview)
+def preview_path_mapping(
+    from_: str = Query("", alias="from"), to: str = Query("")
+) -> RemapPreview:
+    """Validate a candidate mapping before saving/committing: how many tracks
+    match `from` and how many exist at `to`."""
+    store = require_store()
+    return RemapPreview.model_validate(store.remap_preview(PathMapping.make(from_, to)))
+
+
+@app.post("/api/collection/remap-paths", response_model=RemapResult)
+def remap_paths(body: PathMappingInfo) -> RemapResult:
+    """Write-back: permanently rewrite matching track LOCATIONs (and the
+    playlist references that join to them) to the `to` prefix, then save
+    (backup-first). Destructive and OS-specific — the UI warns accordingly."""
+    store = require_store()
+    mapping = PathMapping.make(body.from_, body.to)
+    if mapping.empty:
+        raise HTTPException(400, "Both a `from` and `to` prefix are required")
+    count = store.remap_locations(mapping)
+    if count == 0:
+        return RemapResult(rewritten=0, backup=None)
+    outcome = store.save()
+    return RemapResult(rewritten=count, backup=str(outcome.backup))
 
 
 @app.get("/api/prefs")

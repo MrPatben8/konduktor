@@ -386,5 +386,131 @@ check("boundary colliding with an existing hotcue is dropped", 60.0 not in [s["s
 # No free slots => nothing placed.
 check("no free slots => empty result", ah.select_hotcues(raw, bpm=BPM, anchor=ANCHOR, duration=DUR, free_slots=[], existing_times=[], max_cues=8) == [])
 
+# ---- Invariant H: path write-back is localized + round-trips -----------
+print("== H. remap_locations rewrites LOCATIONs (+ playlist keys), localized, round-trips ==")
+from collections import Counter  # noqa: E402
+
+from konduktor.file_tags import resolve_path  # noqa: E402
+from konduktor.path_mapping import PathMapping, os_path_to_location  # noqa: E402
+from traktor_nml_utils import TraktorCollection  # noqa: E402
+
+
+def _key(loc):
+    return f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}"
+
+
+def _entry_span_by_file(data: bytes, file_name: str):
+    marker = f'FILE="{file_name}"'.encode()
+    i = data.find(marker)
+    start = data.rfind(b"<ENTRY ", 0, i)
+    end = data.find(b"</ENTRY>", i) + len(b"</ENTRY>")
+    return start, end
+
+
+# H1: a track NOT in any playlist -> only its own <ENTRY> changes; revert round-trips.
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    original = work.read_bytes()
+
+    store = PlaylistStore(work)
+    pl_keys = {
+        k
+        for n in store._iter_nodes(store._root())
+        if n.playlist
+        for k in store._entry_keys_of(n.playlist)
+    }
+    file_counts = Counter(
+        e.location.file for e in store._nml.collection.entry if e.location and e.location.file
+    )
+    target = next(
+        e
+        for e in store._nml.collection.entry
+        if e.location
+        and _key(e.location) not in pl_keys
+        and file_counts[e.location.file] == 1  # unique filename → clean span masking
+    )
+    loc = target.location
+    old_file = loc.file
+    from_prefix = str(resolve_path(loc.volume, loc.dir, loc.file))
+    to_prefix = "/Volumes/KONDUKTOR_TEST_H1/remapped__unique__one.mp3"
+
+    n = store.remap_locations(PathMapping.make(from_prefix, to_prefix))
+    store.save()
+    edited = work.read_bytes()
+
+    check("H1: exactly one track rewritten", n == 1, f"got {n}")
+    check("H1: file actually changed", original != edited)
+
+    os_, oe = _entry_span_by_file(original, old_file)
+    es_, ee = _entry_span_by_file(edited, "remapped__unique__one.mp3")
+    check(
+        "H1: everything outside the moved ENTRY is byte-identical",
+        original[:os_] + b"@@" + original[oe:] == edited[:es_] + b"@@" + edited[ee:],
+    )
+
+    reparsed = TraktorCollection(path=work)
+    moved = next(
+        e
+        for e in reparsed.nml.collection.entry
+        if e.location and e.location.file == "remapped__unique__one.mp3"
+    )
+    check("H1: moved ENTRY has the new VOLUME", moved.location.volume == "KONDUKTOR_TEST_H1")
+
+    # Reverting (to -> from) round-trips to the original bytes exactly.
+    store2 = PlaylistStore(work)
+    store2.remap_locations(PathMapping.make(to_prefix, from_prefix))
+    store2.save()
+    check("H1: revert round-trips to original bytes", work.read_bytes() == original)
+
+# H2: a track that IS in a playlist -> its PRIMARYKEY is rewritten too.
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+
+    store = PlaylistStore(work)
+    # A collection entry whose key appears in at least one playlist.
+    pl_keys = {
+        k
+        for node in store._iter_nodes(store._root())
+        if node.playlist
+        for k in store._entry_keys_of(node.playlist)
+    }
+    target = next(
+        e for e in store._nml.collection.entry if e.location and _key(e.location) in pl_keys
+    )
+    loc = target.location
+    old_key = _key(loc)
+    from_prefix = str(resolve_path(loc.volume, loc.dir, loc.file))
+    to_prefix = "/Volumes/KONDUKTOR_TEST_H2/remapped__playlist__one.mp3"
+    new_key = "".join(os_path_to_location(Path(to_prefix)))
+
+    n = store.remap_locations(PathMapping.make(from_prefix, to_prefix))
+    store.save()
+
+    check("H2: at least one track rewritten", n >= 1)
+
+    reparsed = TraktorCollection(path=work)
+    moved = next(
+        (
+            e
+            for e in reparsed.nml.collection.entry
+            if e.location and e.location.file == "remapped__playlist__one.mp3"
+        ),
+        None,
+    )
+    check("H2: collection ENTRY location rewritten", moved is not None)
+
+    store3 = PlaylistStore(work)
+    all_pl_keys = {
+        k
+        for node in store3._iter_nodes(store3._root())
+        if node.playlist
+        for k in store3._entry_keys_of(node.playlist)
+    }
+    check("H2: old playlist PRIMARYKEY gone", old_key not in all_pl_keys)
+    check("H2: new playlist PRIMARYKEY present", new_key in all_pl_keys)
+
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

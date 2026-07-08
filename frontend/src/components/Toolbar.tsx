@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { VisibilityState } from '@tanstack/react-table'
 import { api } from '../api'
 import { ColumnsMenu } from './ColumnsMenu'
+import { SettingsMenu } from './SettingsMenu'
 
 export interface Filters {
   search: string
@@ -29,6 +30,7 @@ interface Props {
   columnVisibility: VisibilityState
   onColumnVisibilityChange: (v: VisibilityState) => void
   onResetColumns: () => void
+  onOpenPathMapping: () => void
 }
 
 const selectCls =
@@ -40,6 +42,7 @@ export function Toolbar({
   columnVisibility,
   onColumnVisibilityChange,
   onResetColumns,
+  onOpenPathMapping,
 }: Props) {
   const { data: facets } = useQuery({ queryKey: ['facets'], queryFn: api.facets })
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch })
@@ -145,6 +148,7 @@ export function Toolbar({
           onChange={onColumnVisibilityChange}
           onReset={onResetColumns}
         />
+        <SettingsMenu onOpenPathMapping={onOpenPathMapping} />
       </div>
     </div>
   )

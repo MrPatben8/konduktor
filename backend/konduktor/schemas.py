@@ -1,7 +1,7 @@
 """API response models (Pydantic)."""
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Track(BaseModel):
@@ -221,3 +221,45 @@ class FsListing(BaseModel):
     home: str
     dirs: list[FsEntry]
     files: list[FsEntry]  # .nml files only
+
+
+# ---- path remapping ----
+# `from` is a Python keyword, so the field is `from_` with a `from` alias
+# (populate_by_name lets it be set either way; responses serialize as "from").
+
+
+class PathMappingInfo(BaseModel):
+    """A per-collection OS-path prefix remapping (blank prefixes = no mapping)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+    from_: str = Field(default="", alias="from")
+    to: str = ""
+
+
+class RemapSample(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    from_: str = Field(alias="from")
+    to: str
+    exists: bool
+
+
+class RemapPreview(BaseModel):
+    total: int  # tracks with a resolvable location
+    matched: int  # how many match the `from` prefix
+    existing: int  # of matched, how many exist at the `to` target
+    samples: list[RemapSample] = []
+
+
+class RemapResult(BaseModel):
+    rewritten: int  # tracks whose LOCATION was rewritten
+    backup: str | None = None  # path of the .bak written before the rewrite
+
+
+class PrefixGroup(BaseModel):
+    prefix: str  # common directory prefix of a group of tracks
+    count: int  # tracks sharing it
+
+
+class PrefixSuggestions(BaseModel):
+    primary: str  # best guess for the `from` prefix (largest group)
+    groups: list[PrefixGroup] = []  # alternatives, ranked by count

@@ -158,6 +158,34 @@ export interface SaveResult {
   playlists: number
 }
 
+export interface PathMapping {
+  from: string
+  to: string
+}
+
+export interface RemapSample {
+  from: string
+  to: string
+  exists: boolean
+}
+
+export interface RemapPreview {
+  total: number
+  matched: number
+  existing: number
+  samples: RemapSample[]
+}
+
+export interface RemapResult {
+  rewritten: number
+  backup: string | null
+}
+
+export interface PrefixSuggestions {
+  primary: string
+  groups: { prefix: string; count: number }[]
+}
+
 // API origin. In the packaged desktop app the frontend is served from
 // tauri://localhost, so it can't use relative /api paths — the Tauri shell
 // injects window.__KONDUKTOR_API__ (the sidecar's http://127.0.0.1:<port>)
@@ -210,6 +238,20 @@ export const api = {
   collectionOptions: () => getJSON<CollectionOptions>('/api/collection/options'),
   listDir: (path?: string) =>
     getJSON<FsListing>(`/api/fs/list${path ? `?path=${encodeURIComponent(path)}` : ''}`),
+
+  // ---- path remapping (per-collection OS-path prefix translation) ----
+  getPathMapping: () => getJSON<PathMapping>('/api/collection/path-mapping'),
+  suggestPrefix: () =>
+    getJSON<PrefixSuggestions>('/api/collection/path-mapping/suggest'),
+  putPathMapping: (m: PathMapping) =>
+    send<PathMapping>('PUT', '/api/collection/path-mapping', m),
+  previewRemap: (from: string, to: string) =>
+    getJSON<RemapPreview>(
+      `/api/collection/path-mapping/preview?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    ),
+  // Write-back: permanently rewrite matching LOCATIONs in the .nml (backup-first).
+  remapPaths: (from: string, to: string) =>
+    send<RemapResult>('POST', '/api/collection/remap-paths', { from, to }),
 
   stats: () => getJSON<Stats>('/api/stats'),
   facets: () => getJSON<Facets>('/api/facets'),

@@ -15,6 +15,7 @@ import { Toast, type ToastMsg } from './components/Toast'
 import { CollectionPicker } from './components/CollectionPicker'
 import { ContextMenu } from './components/ContextMenu'
 import { EditTagsDialog } from './components/EditTagsDialog'
+import { PathMappingDialog } from './components/PathMappingDialog'
 import { PrepStrip } from './components/PrepStrip'
 
 function applyFilters(tracks: Track[], f: Filters): Track[] {
@@ -47,6 +48,7 @@ export default function App() {
   const [forcePicker, setForcePicker] = useState(false)
   const [menu, setMenu] = useState<{ track: Track; x: number; y: number } | null>(null)
   const [editing, setEditing] = useState<Track | null>(null)
+  const [showPaths, setShowPaths] = useState(false)
   const [prepTrack, setPrepTrack] = useState<Track | null>(null)
   const [playRequest, setPlayRequest] = useState(0) // bump → deck loads & auto-plays
 
@@ -258,6 +260,13 @@ export default function App() {
           onError={onError}
         />
       )}
+      {showPaths && (
+        <PathMappingDialog
+          onClose={() => setShowPaths(false)}
+          onNotify={notify}
+          onError={onError}
+        />
+      )}
 
       {/* Prep strip spans the top of the window; the library sits below it. */}
       <PrepStrip track={prepTrack} playRequest={playRequest} onError={onError} onNotify={notify} />
@@ -273,6 +282,7 @@ export default function App() {
           columnVisibility={columnVisibility}
           onColumnVisibilityChange={setColumnVisibility}
           onResetColumns={resetColumns}
+          onOpenPathMapping={() => setShowPaths(true)}
         />
         {!isAll && (
           <div className="flex items-center gap-3 border-b border-line bg-ink-900 px-4 py-2">
