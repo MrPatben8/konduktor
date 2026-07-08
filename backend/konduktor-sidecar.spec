@@ -28,6 +28,11 @@ for pkg in ("uvloop", "httptools", "websockets"):
 # Imported by name, not statically discoverable.
 hiddenimports += ["multipart", "anyio"]
 
+# Bundle the canonical version file so konduktor.__version__ can read it at
+# runtime from sys._MEIPASS (frontend/package.json is the single source of the
+# app version — see konduktor/__init__.py). Path is relative to this spec.
+datas += [("../frontend/package.json", ".")]
+
 a = Analysis(
     ["sidecar.py"],
     pathex=[],

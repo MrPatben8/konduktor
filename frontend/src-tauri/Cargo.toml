@@ -1,6 +1,9 @@
 [package]
 name = "app"
-version = "0.1.0"
+# Rust crate metadata only — NOT the app version. The bundled app version comes
+# from frontend/package.json (see tauri.conf.json `"version": "../package.json"`),
+# so this value is inert for the installer/bundle and needn't be kept in sync.
+version = "0.1.1"
 description = "A Tauri App"
 authors = ["you"]
 license = ""

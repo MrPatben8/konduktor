@@ -158,6 +158,26 @@ frontend at `http://localhost:5173`.
 - Python 3.14 note: pin dependencies loosely enough to get prebuilt wheels
   (older `pydantic-core` pins force a from-source Rust build that fails).
 
+## Versioning
+
+**There is ONE source of truth for the app version: the `version` field in
+[frontend/package.json](frontend/package.json).** To release a new version, bump
+that number and nothing else — everything derives from it:
+
+- **Tauri / installers** — `tauri.conf.json` sets `"version": "../package.json"`,
+  so the `.dmg`/`.exe` names + bundle version come from `package.json`.
+- **Backend API** — `konduktor/__init__.py` `_read_version()` reads
+  `package.json` (dev: `<repo>/frontend/package.json`; frozen sidecar: bundled at
+  the PyInstaller root via `sys._MEIPASS`, added in `konduktor-sidecar.spec`).
+  `main.py` uses this for the FastAPI `version`. Falls back to `"0.0.0"` if not
+  found (cosmetic, must never crash startup).
+- **CI release** — `.github/workflows/build.yml` reads it with
+  `jq .version frontend/package.json` and tags each push
+  `v<version>-b<run_number>` (release name `Konduktor v<version>-b<run_number>`).
+  The `-b<N>` suffix keeps every push's tag/release unique.
+- **NOT a source**: `src-tauri/Cargo.toml` `version` is inert Rust crate metadata
+  (Tauri uses the config's `../package.json`); don't treat it as the app version.
+
 ## Roadmap
 
 - ✅ Phase 1 — backend core + read-only API

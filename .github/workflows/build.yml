@@ -126,11 +126,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # App version from tauri.conf.json (e.g. 0.1.0); the run number keeps each
-      # tag unique → tag like v0.1.0-build.42.
+      # App version from the single source of truth, frontend/package.json (the
+      # same value Tauri names the installers from). The run number is appended
+      # as a -b<N> suffix to keep each push's tag/release unique → e.g. v0.1.1-b42.
       - name: Resolve version
         id: version
-        run: echo "version=$(jq -r .version frontend/src-tauri/tauri.conf.json)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(jq -r .version frontend/package.json)" >> "$GITHUB_OUTPUT"
 
       - name: Download installers from both builds
         uses: actions/download-artifact@v4
@@ -140,8 +141,8 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}-build.${{ github.run_number }}
-          name: Konduktor v${{ steps.version.outputs.version }} (build ${{ github.run_number }})
+          tag_name: v${{ steps.version.outputs.version }}-b${{ github.run_number }}
+          name: Konduktor v${{ steps.version.outputs.version }}-b${{ github.run_number }}
           target_commitish: ${{ github.sha }}
           generate_release_notes: true   # auto changelog from commits/PRs since last release
           fail_on_unmatched_files: true
