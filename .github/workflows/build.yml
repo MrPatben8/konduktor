@@ -1,0 +1,100 @@
+name: Build desktop apps
+
+# Compiles the Konduktor desktop app (Tauri + frozen Python sidecar) for macOS
+# and Windows on every push to main. Installers are uploaded as run artifacts
+# (Actions → this run → Artifacts). Also runnable on demand from the Actions tab.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to main supersedes an in-flight build.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS runner is Apple Silicon (arm64). For an Intel build too, add a
+          # macos-13 entry with triple x86_64-apple-darwin.
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust (stable + ${{ matrix.triple }})
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+
+      # Cache the Rust build of the Tauri app between runs.
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontend/src-tauri
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # --- Step 1: freeze the FastAPI backend into a single-file sidecar ---
+      # build_sidecar.* stages it as
+      #   frontend/src-tauri/binaries/konduktor-sidecar-<triple>[.exe]
+      # which tauri.conf.json's externalBin bundles into the app.
+      - name: Install backend deps
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Build backend sidecar (macOS)
+        if: runner.os == 'macOS'
+        working-directory: backend
+        env:
+          PY: python           # build_sidecar.sh defaults to .venv/bin/python
+        run: |
+          chmod +x build_sidecar.sh
+          ./build_sidecar.sh
+
+      - name: Build backend sidecar (Windows)
+        if: runner.os == 'Windows'
+        working-directory: backend
+        shell: pwsh
+        run: .\build_sidecar.ps1   # falls back to `python` when no .venv
+
+      # --- Step 2: build the Tauri app (its beforeBuildCommand runs the Vite build) ---
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build Tauri app
+        working-directory: frontend
+        run: npx tauri build
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: konduktor-${{ runner.os }}
+          if-no-files-found: error
+          path: |
+            frontend/src-tauri/target/release/bundle/dmg/*.dmg
+            frontend/src-tauri/target/release/bundle/msi/*.msi
+            frontend/src-tauri/target/release/bundle/nsis/*-setup.exe
