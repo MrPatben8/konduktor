@@ -44,6 +44,7 @@ const LOOP_SIZES = [1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32]
 export function PrepStrip({ track, playRequest = 0, onError }: Props) {
   const qc = useQueryClient()
   const [playing, setPlaying] = useState(false)
+  const [previewing, setPreviewing] = useState(false) // momentary hold-to-play active
   const [current, setCurrent] = useState(0)
   const [duration, setDuration] = useState(0)
   const [ready, setReady] = useState(false)
@@ -155,6 +156,7 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
     setCuePoint(0)
     loopInRef.current = null
     previewRef.current = null
+    setPreviewing(false)
   }, [trackId])
 
   // Analyse once per track; the decoded buffer feeds both the playback and
@@ -236,6 +238,7 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
     const pv = previewRef.current
     if (pv && !pv.latched) {
       pv.latched = true
+      setPreviewing(false) // becomes normal (green) playback
       if (!eng.playing) {
         eng.play()
         setPlaying(true)
@@ -261,6 +264,7 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
     previewRef.current = { id, start, latched: false }
     eng.play()
     setPlaying(true)
+    setPreviewing(true)
   }
 
   // End holder `id`'s momentary preview: stop and return to the point — unless a
@@ -269,6 +273,7 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
     const pv = previewRef.current
     if (!pv || pv.id !== id) return
     previewRef.current = null
+    setPreviewing(false)
     if (pv.latched) return
     const eng = playbackRef.current
     if (!eng) return
@@ -740,9 +745,11 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
             disabled={!ready}
             className={
               'flex h-11 w-11 items-center justify-center rounded-xl transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 ' +
-              (playing
-                ? 'bg-mint text-ink-950 shadow-lg shadow-mint/20 hover:brightness-110'
-                : 'border border-line bg-ink-850 text-text hover:border-accent disabled:hover:border-line')
+              (previewing
+                ? 'bg-gold text-ink-950 shadow-lg shadow-gold/20 hover:brightness-110'
+                : playing
+                  ? 'bg-mint text-ink-950 shadow-lg shadow-mint/20 hover:brightness-110'
+                  : 'border border-line bg-ink-850 text-text hover:border-accent disabled:hover:border-line')
             }
             title={playing ? 'Pause' : 'Play'}
           >
