@@ -4,6 +4,7 @@ import { api, type Track, type TrackCues } from '../api'
 import { analyzeWaveform, type WaveColumn } from '../lib/waveform'
 import { ScratchEngine } from '../lib/scratchEngine'
 import { PlaybackEngine } from '../lib/playbackEngine'
+import { BeatJumpControls, BEAT_JUMP_SIZES } from './BeatJumpControls'
 import { GridControls } from './GridControls'
 import { HotcueBar } from './HotcueBar'
 import { LoopControls } from './LoopControls'
@@ -57,6 +58,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null)
   const [cuePoint, setCuePoint] = useState(0) // floating "CUE" point (frontend-only)
   const [secPerView, setSecPerView] = useState(DEFAULT_SEC) // main-waveform zoom (persisted)
+  const [jumpBeats, setJumpBeats] = useState(4) // beat-jump size in beats (persisted)
 
   // Loop state (transient — persisted only when saved as a hotcue later).
   const [loopRegion, setLoopRegion] = useState<{ start: number; end: number } | null>(null)
@@ -108,6 +110,26 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
       if (zoomSaveTimer.current) window.clearTimeout(zoomSaveTimer.current)
     }
   }, [secPerView])
+
+  // Beat-jump size persists the same way (survives track switches + restarts).
+  const jumpHydratedRef = useRef(false)
+  const jumpSaveTimer = useRef<number | null>(null)
+  useEffect(() => {
+    if (jumpHydratedRef.current || !prefsQuery.data) return
+    jumpHydratedRef.current = true
+    const b = (prefsQuery.data as { beatJumpBeats?: unknown }).beatJumpBeats
+    if (typeof b === 'number' && BEAT_JUMP_SIZES.includes(b)) setJumpBeats(b)
+  }, [prefsQuery.data])
+  useEffect(() => {
+    if (!jumpHydratedRef.current) return // don't clobber saved prefs pre-hydration
+    if (jumpSaveTimer.current) window.clearTimeout(jumpSaveTimer.current)
+    jumpSaveTimer.current = window.setTimeout(() => {
+      api.patchPrefs({ beatJumpBeats: jumpBeats }).catch(() => {})
+    }, 500)
+    return () => {
+      if (jumpSaveTimer.current) window.clearTimeout(jumpSaveTimer.current)
+    }
+  }, [jumpBeats])
 
   const getCtx = (): AudioContext => {
     if (!audioCtxRef.current) {
@@ -358,6 +380,31 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
       setLoopActive(false)
     }
     seek(t)
+  }
+
+  // ---- beat jump --------------------------------------------------------
+  // Step the jump size through BEAT_JUMP_SIZES, clamping at both ends (no wrap).
+  const stepJumpSize = (dir: -1 | 1) => {
+    setJumpBeats((b) => {
+      const i = BEAT_JUMP_SIZES.indexOf(b)
+      const next = Math.min(BEAT_JUMP_SIZES.length - 1, Math.max(0, (i < 0 ? 4 : i) + dir))
+      return BEAT_JUMP_SIZES[next]
+    })
+  }
+
+  // Move the playhead exactly `jumpBeats` beats fwd/back, preserving sub-beat
+  // phase (pure translation, no grid snap). Like seekManual, jumping escapes an
+  // active loop. seek() clamps to [0, duration], preserves play/pause state.
+  const beatJump = (dir: -1 | 1) => {
+    const eng = playbackRef.current
+    const bpm = cueData?.bpm ?? null
+    if (!eng || !bpm || bpm <= 0) return
+    if (loopActive) {
+      eng.setLoopEnabled(false)
+      setLoopActive(false)
+    }
+    eng.seek(eng.getPosition() + dir * jumpBeats * (60 / bpm))
+    setCurrent(eng.getPosition())
   }
 
   // ---- scratch ----------------------------------------------------------
@@ -627,6 +674,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     deleteHotcueSlot,
     onCuePress,
     onCueRelease,
+    beatJump,
   })
   shortcutsRef.current = {
     toggle,
@@ -635,6 +683,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     deleteHotcueSlot,
     onCuePress,
     onCueRelease,
+    beatJump,
   }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -651,6 +700,16 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
       if (e.code === 'KeyC') {
         e.preventDefault()
         shortcutsRef.current.onCuePress()
+        return
+      }
+      if (e.code === 'ArrowLeft') {
+        e.preventDefault()
+        shortcutsRef.current.beatJump(-1)
+        return
+      }
+      if (e.code === 'ArrowRight') {
+        e.preventDefault()
+        shortcutsRef.current.beatJump(1)
         return
       }
       const digit = e.code.match(/^(?:Digit|Numpad)([1-8])$/)
@@ -678,6 +737,8 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   // ---- beatgrid ---------------------------------------------------------
   const gridBpm = cueData?.bpm ?? null
   const gridAnchor = cueData?.grid_anchor ?? null
+  // Beat jump needs a tempo to size beats; disabled on ungridded tracks.
+  const canBeatJump = ready && gridBpm != null && gridBpm > 0
 
   const editGrid = async (patch: { bpm?: number; anchor?: number }) => {
     if (!track) return
@@ -737,7 +798,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   const activeLoop = loopActive && loopRegion ? loopRegion : null
 
   return (
-    <div className="flex h-[23rem] shrink-0 items-stretch gap-px border-b border-line bg-ink-950">
+    <div className="flex h-[25.5rem] shrink-0 items-stretch gap-px border-b border-line bg-ink-950">
       {/* Controls */}
       <div className="flex w-72 shrink-0 flex-col gap-3 bg-ink-900 px-4 py-3">
         <div className="min-w-0">
@@ -817,6 +878,13 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
             {fmt(current)} / {fmt(duration)}
           </div>
         </div>
+
+        <BeatJumpControls
+          beats={jumpBeats}
+          onStep={stepJumpSize}
+          onJump={beatJump}
+          disabled={!canBeatJump}
+        />
       </div>
 
       {/* Waveforms + loop/hotcue controls. */}
