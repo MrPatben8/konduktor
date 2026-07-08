@@ -152,6 +152,20 @@ class SetHotcue(BaseModel):
     start: float  # seconds
     type: int  # 0 cue, 1 fade-in, 2 fade-out, 3 load, 5 loop
     length: float = 0.0  # seconds (>0 for a loop hotcue)
+    name: str | None = None  # cue label; defaults to Traktor's "n.n." when unset
+
+
+class AutoHotcue(BaseModel):
+    slot: int  # 0–7
+    start: float  # seconds
+    name: str | None = None  # positional label (e.g. "Drop")
+    type: int = 0  # plain cue
+    length: float = 0.0  # seconds (>0 for a loop hotcue)
+
+
+class AutoHotcuesRequest(BaseModel):
+    track_id: str
+    max_cues: int | None = None  # defaults to MAX_HOTCUES (8) server-side
 
 
 class SetHotcueType(BaseModel):

@@ -292,5 +292,99 @@ with tempfile.TemporaryDirectory() as d:
     store2.save()
     check("revert BPM + anchor round-trips to original bytes", work.read_bytes() == original)
 
+# ---- Invariant F: batch place_hotcues (Auto Hotcues) -------------------
+print("== F. place_hotcues fills empty slots only, names round-trip, localized ==")
+with tempfile.TemporaryDirectory() as d:
+    from konduktor.schemas import AutoHotcue
+    from traktor_nml_utils import TraktorCollection
+
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+
+    store = PlaylistStore(work)
+    entry = store._nml.collection.entry[0]
+    loc = entry.location
+    track_id = f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}"
+
+    def entry_span(data: bytes, file_name: str):
+        marker = f'FILE="{file_name}"'.encode()
+        i = data.find(marker)
+        start = data.rfind(b"<ENTRY ", 0, i)
+        end = data.find(b"</ENTRY>", i) + len(b"</ENTRY>")
+        return start, end
+
+    # Establish a hand-placed hotcue as the baseline the batch must NOT overwrite.
+    used = {c.hotcue for c in (entry.cue_v2 or []) if c.hotcue is not None and c.hotcue >= 0}
+    hand_slot = next(s for s in range(8) if s not in used)
+    store.set_hotcue(track_id, hand_slot, 12.0, 0, name="HAND-PLACED")
+    store.save()
+    original = work.read_bytes()
+
+    # Batch: one spec targets the occupied slot (must be skipped), two fill free slots.
+    store2 = PlaylistStore(work)
+    e2 = store2._nml.collection.entry[0]
+    now_used = {c.hotcue for c in (e2.cue_v2 or []) if c.hotcue is not None and c.hotcue >= 0}
+    free = [s for s in range(8) if s not in now_used][:2]
+    specs = [AutoHotcue(slot=hand_slot, start=99.0, name="SHOULD-NOT-OVERWRITE")]
+    specs += [AutoHotcue(slot=s, start=30.0 + i * 10, name=f"Auto {i}") for i, s in enumerate(free)]
+    store2.place_hotcues(track_id, specs)
+    store2.save()
+    edited = work.read_bytes()
+
+    check("file actually changed", original != edited)
+
+    os_, oe = entry_span(original, loc.file)
+    es_, ee = entry_span(edited, loc.file)
+    check(
+        "everything outside the edited track's ENTRY is byte-identical",
+        original[:os_] + b"@@" + original[oe:] == edited[:es_] + b"@@" + edited[ee:],
+    )
+    n = diff_count(original[os_:oe], edited[es_:ee])
+    check(f"edited ENTRY diff is small (<= 6 tag-lines for {len(free)} cues)", n <= 6, f"got {n}")
+
+    reparsed = TraktorCollection(path=work)
+    e0 = reparsed.nml.collection.entry[0]
+    hand = next((c for c in (e0.cue_v2 or []) if c.hotcue == hand_slot), None)
+    check("hand-placed hotcue NOT overwritten (position)", hand is not None and abs(hand.start - 12000.0) < 1)
+    check("hand-placed hotcue NOT overwritten (name)", hand is not None and hand.name == "HAND-PLACED")
+    for i, s in enumerate(free):
+        c = next((c for c in (e0.cue_v2 or []) if c.hotcue == s), None)
+        check(f"auto hotcue slot {s} created", c is not None)
+        check(f"auto hotcue slot {s} name round-trips", c is not None and c.name == f"Auto {i}")
+        check(
+            f"auto hotcue slot {s} START in ms",
+            c is not None and abs(c.start - (30000.0 + i * 10000)) < 1,
+        )
+
+# ---- Invariant G: select_hotcues placement logic (pure, no audio) ------
+print("== G. select_hotcues: phrase-snap, empty-slots, names, existing-cue avoidance ==")
+from konduktor import auto_hotcues as ah  # noqa: E402
+
+# 128 BPM => beat 0.46875s, 16-bar phrase = 30.0s exactly; anchor 0.0.
+BPM, ANCHOR, DUR = 128.0, 0.0, 300.0
+# Raw boundaries near (but not exactly on) phrase multiples + a fragmented pair.
+raw = [(0.3, 0.2), (29.4, 0.5), (30.6, 0.55), (61.0, 0.9), (150.0, 0.3), (270.2, 0.25)]
+specs = ah.select_hotcues(
+    raw, bpm=BPM, anchor=ANCHOR, duration=DUR,
+    free_slots=[2, 3, 4, 5, 6, 7], existing_times=[], max_cues=8,
+)
+starts = [s["start"] for s in specs]
+check("snaps to 30s phrase grid", all(abs(round(t / 30.0) * 30.0 - t) < 0.01 for t in starts), str(starts))
+check("fragmented 29.4/30.6 merge to one boundary (30.0)", starts.count(30.0) == 1, str(starts))
+check("only free slots used, in ascending order", [s["slot"] for s in specs] == sorted(s["slot"] for s in specs) and set(s["slot"] for s in specs) <= {2, 3, 4, 5, 6, 7})
+check("first cue named Intro", specs and specs[0]["name"] == "Intro")
+check("last cue named Outro", specs and specs[-1]["name"] == "Outro")
+check("names are unique (ordinal de-dupe)", len({s["name"] for s in specs}) == len(specs), str([s["name"] for s in specs]))
+
+# A hotcue already sitting on the 60s phrase must not get a duplicate.
+specs2 = ah.select_hotcues(
+    raw, bpm=BPM, anchor=ANCHOR, duration=DUR,
+    free_slots=[0, 1, 2, 3, 4, 5, 6, 7], existing_times=[60.0], max_cues=8,
+)
+check("boundary colliding with an existing hotcue is dropped", 60.0 not in [s["start"] for s in specs2], str([s["start"] for s in specs2]))
+
+# No free slots => nothing placed.
+check("no free slots => empty result", ah.select_hotcues(raw, bpm=BPM, anchor=ANCHOR, duration=DUR, free_slots=[], existing_times=[], max_cues=8) == [])
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)
