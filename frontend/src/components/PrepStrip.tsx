@@ -75,6 +75,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   const pendingPlayRef = useRef(false) // a play was requested; start once ready
   const loadedIdRef = useRef<string | null>(null) // trackId whose buffer is loaded
   const [autoBusy, setAutoBusy] = useState(false)
+  const [gridBusy, setGridBusy] = useState(false)
   // Active momentary "cue preview": a hotcue OR the CUE button held while paused
   // plays from its point and stops on release, unless `latched` (play pressed
   // during the hold). `id` identifies the holder so its release matches.
@@ -717,13 +718,26 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
       onError?.((e as Error).message)
     }
   }
+  // Analyze: backend detects BPM + first beat, sets the grid anchor and hotcue 1.
+  const runAnalyzeGrid = async () => {
+    if (!track || gridBusy) return
+    setGridBusy(true)
+    try {
+      applyCueEdit(await api.autoGrid(track.id))
+      onNotify?.('success', 'Analyzed — set BPM, grid, and hotcue 1')
+    } catch (e) {
+      onError?.((e as Error).message)
+    } finally {
+      setGridBusy(false)
+    }
+  }
 
   const selectedCue = selectedSlot != null ? hotcueAt(selectedSlot) : null
   const showWaves = track && cols && waveStatus === 'ready'
   const activeLoop = loopActive && loopRegion ? loopRegion : null
 
   return (
-    <div className="flex h-[21rem] shrink-0 items-stretch gap-px border-b border-line bg-ink-950">
+    <div className="flex h-[23rem] shrink-0 items-stretch gap-px border-b border-line bg-ink-950">
       {/* Controls */}
       <div className="flex w-72 shrink-0 flex-col gap-3 bg-ink-900 px-4 py-3">
         <div className="min-w-0">
@@ -755,6 +769,8 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
             onReset={resetGrid}
             onToggleLock={toggleLock}
             onDeleteGrid={deleteGrid}
+            onAnalyze={runAnalyzeGrid}
+            analyzing={gridBusy}
           />
         )}
 

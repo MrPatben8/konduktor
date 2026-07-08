@@ -96,6 +96,24 @@ def detect_boundaries(audio_path: str, sr: int = _SR) -> tuple[list[tuple[float,
     return out, duration
 
 
+def detect_grid(audio_path: str, sr: int = _SR) -> tuple[float, float]:
+    """Detect a track's tempo and the time of its first beat.
+
+    Returns ``(bpm, first_beat_sec)`` for building a Traktor beatgrid (BPM +
+    anchor). Uses librosa beat tracking. Half/double-tempo octave errors are
+    left for the user to fix with the ×2 / ÷2 controls (per product decision).
+    """
+    import librosa
+
+    y, sr = librosa.load(audio_path, sr=sr, mono=True)
+    tempo, beats = librosa.beat.beat_track(y=y, sr=sr, trim=False)
+    bpm = float(np.ravel(tempo)[0])
+    if bpm <= 0 or len(beats) == 0:
+        raise ValueError("Could not detect a tempo/beat")
+    first_beat = float(librosa.frames_to_time(beats, sr=sr)[0])
+    return bpm, first_beat
+
+
 def select_hotcues(
     boundaries: list[tuple[float, float]],
     *,

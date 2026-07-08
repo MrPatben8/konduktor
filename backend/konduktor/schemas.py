@@ -168,6 +168,10 @@ class AutoHotcuesRequest(BaseModel):
     max_cues: int | None = None  # defaults to MAX_HOTCUES (8) server-side
 
 
+class AutoGridRequest(BaseModel):
+    track_id: str
+
+
 class SetHotcueType(BaseModel):
     track_id: str
     slot: int

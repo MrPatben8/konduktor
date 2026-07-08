@@ -13,6 +13,9 @@ interface Props {
   onReset: () => void
   onToggleLock: () => void
   onDeleteGrid: () => void
+  /** Detect BPM + first beat and build the grid (sets hotcue 1 + anchor). */
+  onAnalyze: () => void
+  analyzing: boolean
 }
 
 const BTN =
@@ -39,6 +42,8 @@ export function GridControls({
   onReset,
   onToggleLock,
   onDeleteGrid,
+  onAnalyze,
+  analyzing,
 }: Props) {
   const [editing, setEditing] = useState(false)
   const [val, setVal] = useState('')
@@ -192,6 +197,18 @@ export function GridControls({
           title="Delete beatgrid"
         >
           🗑 Grid
+        </button>
+      </div>
+
+      {/* analyze: detect BPM + first beat, set hotcue 1 + grid anchor */}
+      <div className="flex gap-1">
+        <button
+          className={BTN}
+          onClick={onAnalyze}
+          disabled={analyzing}
+          title="Detect BPM and first beat, then set the grid + hotcue 1 (fix octave with ÷2 / ×2)"
+        >
+          {analyzing ? '…' : 'Analyze'}
         </button>
       </div>
     </div>

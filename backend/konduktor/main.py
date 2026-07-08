@@ -19,6 +19,7 @@ from .collection_service import CollectionService
 from .discovery import describe, detect_collections
 from .playlist_store import PlaylistError, PlaylistStore
 from .schemas import (
+    AutoGridRequest,
     AutoHotcue,
     AutoHotcuesRequest,
     CollectionCandidate,
@@ -475,6 +476,29 @@ def auto_hotcues(body: AutoHotcuesRequest) -> TrackCues:
         return cues  # no confident structure / no free slots — leave untouched
     try:
         store.place_hotcues(body.track_id, [AutoHotcue(**s) for s in specs])
+    except PlaylistError as ex:
+        raise HTTPException(400, str(ex))
+    return _sync_cue_edit(body.track_id)
+
+
+@app.post("/api/tracks/auto-grid", response_model=TrackCues)
+def auto_grid(body: AutoGridRequest) -> TrackCues:
+    """Detect tempo + first beat and build a beatgrid: sets BPM, sets hotcue 1
+    (slot 0) to the first beat, and anchors the grid to that position. Octave
+    (half/double) errors are left for the user to fix with the ×2/÷2 controls."""
+    store = require_store()
+    if store.model_entry(body.track_id) is None:
+        raise HTTPException(404, "Track not found")
+    path = store.audio_path(body.track_id)
+    if path is None or not path.exists():
+        raise HTTPException(400, "Audio file not found (is the drive mounted?)")
+    try:
+        bpm, first_beat = ah.detect_grid(str(path))
+    except Exception as ex:  # analysis is best-effort; never 500 the UI
+        raise HTTPException(400, f"Analysis failed: {ex}")
+    try:
+        store.set_grid(body.track_id, bpm=bpm, anchor_sec=first_beat)
+        store.set_hotcue(body.track_id, 0, first_beat, 0)  # hotcue 1 = slot 0
     except PlaylistError as ex:
         raise HTTPException(400, str(ex))
     return _sync_cue_edit(body.track_id)
