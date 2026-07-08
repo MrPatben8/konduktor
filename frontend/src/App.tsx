@@ -260,7 +260,7 @@ export default function App() {
       )}
 
       {/* Prep strip spans the top of the window; the library sits below it. */}
-      <PrepStrip track={prepTrack} playRequest={playRequest} onError={onError} />
+      <PrepStrip track={prepTrack} playRequest={playRequest} onError={onError} onNotify={notify} />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <Sidebar source={source} onSelect={selectSource} onError={onError} />

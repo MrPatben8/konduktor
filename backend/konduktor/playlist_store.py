@@ -282,11 +282,18 @@ class PlaylistStore:
         return entry
 
     def set_hotcue(
-        self, track_id: str, slot: int, start_sec: float, cue_type: int, length_sec: float = 0.0
+        self,
+        track_id: str,
+        slot: int,
+        start_sec: float,
+        cue_type: int,
+        length_sec: float = 0.0,
+        name: str | None = None,
     ) -> None:
         """Create (or reposition + retype) the hotcue in `slot` at `start_sec`.
 
-        `length_sec` > 0 makes it a loop (used with cue_type 5)."""
+        `length_sec` > 0 makes it a loop (used with cue_type 5). `name` sets the
+        cue label on create; when unset it falls back to Traktor's "n.n."."""
         if not 0 <= slot <= 7:
             raise PlaylistError(f"Invalid hotcue slot: {slot}")
         if cue_type not in self.CREATABLE_TYPES:
@@ -307,7 +314,7 @@ class PlaylistStore:
                     entry.cue_v2 = []
                 entry.cue_v2.append(
                     CueV2Type(
-                        name="n.n.",  # Traktor's default name for a manual cue
+                        name=name or "n.n.",  # Traktor's default name for a manual cue
                         displ_order=0,
                         type=cue_type,
                         start=start_ms,
@@ -319,6 +326,30 @@ class PlaylistStore:
                     )
                 )
             self.dirty = True
+
+    def place_hotcues(
+        self, track_id: str, specs: list, *, overwrite: bool = False
+    ) -> None:
+        """Batch-create hotcues from `specs` (each has .slot/.start/.name and
+        optional .type/.length). With `overwrite` False (the default), slots that
+        already hold a hotcue are skipped so hand-placed cues are never clobbered.
+        Used by Auto Hotcues."""
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            occupied = {
+                c.hotcue for c in (entry.cue_v2 or []) if c.hotcue is not None and c.hotcue >= 0
+            }
+        for spec in specs:
+            if not overwrite and spec.slot in occupied:
+                continue
+            self.set_hotcue(
+                track_id,
+                spec.slot,
+                spec.start,
+                getattr(spec, "type", 0),
+                getattr(spec, "length", 0.0),
+                name=getattr(spec, "name", None),
+            )
 
     def set_hotcue_type(self, track_id: str, slot: int, cue_type: int) -> None:
         """Change the type of the existing hotcue in `slot` (keeps its position)."""

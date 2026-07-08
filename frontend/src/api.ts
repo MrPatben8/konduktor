@@ -249,14 +249,31 @@ export const api = {
     `${API_BASE}/api/tracks/audio?track_id=${encodeURIComponent(trackId)}`,
   trackCues: (trackId: string) =>
     getJSON<TrackCues>(`/api/tracks/cues?track_id=${encodeURIComponent(trackId)}`),
-  createHotcue: (trackId: string, slot: number, start: number, type: number, length = 0) =>
+  createHotcue: (
+    trackId: string,
+    slot: number,
+    start: number,
+    type: number,
+    length = 0,
+    name?: string,
+  ) =>
     send<TrackCues>('POST', '/api/tracks/hotcue', {
       track_id: trackId,
       slot,
       start,
       type,
       length,
+      name,
     }),
+  // Backend analyses the audio and places structural hotcues into empty slots.
+  autoHotcues: (trackId: string, maxCues?: number) =>
+    send<TrackCues>('POST', '/api/tracks/auto-hotcues', {
+      track_id: trackId,
+      max_cues: maxCues,
+    }),
+  // Backend detects tempo + first beat: sets BPM, hotcue 1, and grid anchor.
+  autoGrid: (trackId: string) =>
+    send<TrackCues>('POST', '/api/tracks/auto-grid', { track_id: trackId }),
   setHotcueType: (trackId: string, slot: number, type: number) =>
     send<TrackCues>('PATCH', '/api/tracks/hotcue', { track_id: trackId, slot, type }),
   deleteHotcue: (trackId: string, slot: number) =>

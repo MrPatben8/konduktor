@@ -13,11 +13,15 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from . import auto_hotcues as ah
 from . import prefs
 from .collection_service import CollectionService
 from .discovery import describe, detect_collections
 from .playlist_store import PlaylistError, PlaylistStore
 from .schemas import (
+    AutoGridRequest,
+    AutoHotcue,
+    AutoHotcuesRequest,
     CollectionCandidate,
     CollectionOptions,
     CollectionStatus,
@@ -426,8 +430,75 @@ def create_hotcue(body: SetHotcue) -> TrackCues:
     """Create (or reposition + retype) the hotcue in a slot at a position."""
     try:
         require_store().set_hotcue(
-            body.track_id, body.slot, body.start, body.type, body.length
+            body.track_id, body.slot, body.start, body.type, body.length, name=body.name
         )
+    except PlaylistError as ex:
+        raise HTTPException(400, str(ex))
+    return _sync_cue_edit(body.track_id)
+
+
+@app.post("/api/tracks/auto-hotcues", response_model=TrackCues)
+def auto_hotcues(body: AutoHotcuesRequest) -> TrackCues:
+    """Analyze the track's audio and place structural hotcues into empty slots.
+
+    Detects section boundaries (librosa Laplacian segmentation), snaps them to
+    the track's beatgrid phrases, names them positionally, and places up to
+    MAX_HOTCUES into empty slots only (never overwrites). Requires a beatgrid."""
+    store = require_store()
+    entry = store.model_entry(body.track_id)
+    if entry is None:
+        raise HTTPException(404, "Track not found")
+    cues = _build_track_cues(entry)
+    if not cues.bpm or cues.bpm <= 0 or cues.grid_anchor is None:
+        raise HTTPException(400, "Set a beatgrid before using Auto Hotcues")
+    path = store.audio_path(body.track_id)
+    if path is None or not path.exists():
+        raise HTTPException(400, "Audio file not found (is the drive mounted?)")
+
+    try:
+        boundaries, duration = ah.detect_boundaries(str(path))
+    except Exception as ex:  # analysis is best-effort; never 500 the UI
+        raise HTTPException(400, f"Analysis failed: {ex}")
+
+    occupied = {c.hotcue for c in cues.cues if c.hotcue is not None and c.hotcue >= 0}
+    free = [s for s in range(ah.MAX_HOTCUES) if s not in occupied]
+    existing_times = [c.start for c in cues.cues if c.hotcue is not None and c.hotcue >= 0]
+    specs = ah.select_hotcues(
+        boundaries,
+        bpm=cues.bpm,
+        anchor=cues.grid_anchor,
+        duration=duration,
+        free_slots=free,
+        existing_times=existing_times,
+        max_cues=body.max_cues or ah.MAX_HOTCUES,
+    )
+    if not specs:
+        return cues  # no confident structure / no free slots — leave untouched
+    try:
+        store.place_hotcues(body.track_id, [AutoHotcue(**s) for s in specs])
+    except PlaylistError as ex:
+        raise HTTPException(400, str(ex))
+    return _sync_cue_edit(body.track_id)
+
+
+@app.post("/api/tracks/auto-grid", response_model=TrackCues)
+def auto_grid(body: AutoGridRequest) -> TrackCues:
+    """Detect tempo + first beat and build a beatgrid: sets BPM, sets hotcue 1
+    (slot 0) to the first beat, and anchors the grid to that position. Octave
+    (half/double) errors are left for the user to fix with the ×2/÷2 controls."""
+    store = require_store()
+    if store.model_entry(body.track_id) is None:
+        raise HTTPException(404, "Track not found")
+    path = store.audio_path(body.track_id)
+    if path is None or not path.exists():
+        raise HTTPException(400, "Audio file not found (is the drive mounted?)")
+    try:
+        bpm, first_beat = ah.detect_grid(str(path))
+    except Exception as ex:  # analysis is best-effort; never 500 the UI
+        raise HTTPException(400, f"Analysis failed: {ex}")
+    try:
+        store.set_grid(body.track_id, bpm=bpm, anchor_sec=first_beat)
+        store.set_hotcue(body.track_id, 0, first_beat, 0)  # hotcue 1 = slot 0
     except PlaylistError as ex:
         raise HTTPException(400, str(ex))
     return _sync_cue_edit(body.track_id)

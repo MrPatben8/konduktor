@@ -16,6 +16,8 @@ interface Props {
   /** Bumped by the library's per-row play button to load + auto-play. */
   playRequest?: number
   onError?: (msg: string) => void
+  /** Neutral/success feedback (e.g. Auto Hotcues result). */
+  onNotify?: (kind: 'success' | 'error', msg: string) => void
 }
 
 function fmt(secs: number): string {
@@ -41,7 +43,7 @@ const LOOP_SIZES = [1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32]
  * Web Audio PlaybackEngine (seamless loops); the same decoded buffer feeds the
  * scratch engine and both waveform views.
  */
-export function PrepStrip({ track, playRequest = 0, onError }: Props) {
+export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) {
   const qc = useQueryClient()
   const [playing, setPlaying] = useState(false)
   const [previewing, setPreviewing] = useState(false) // momentary hold-to-play active
@@ -72,6 +74,8 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
   const engagedRef = useRef(false) // scratch engine is dragging or coasting
   const pendingPlayRef = useRef(false) // a play was requested; start once ready
   const loadedIdRef = useRef<string | null>(null) // trackId whose buffer is loaded
+  const [autoBusy, setAutoBusy] = useState(false)
+  const [gridBusy, setGridBusy] = useState(false)
   // Active momentary "cue preview": a hotcue OR the CUE button held while paused
   // plays from its point and stops on release, unless `latched` (play pressed
   // during the hold). `id` identifies the holder so its release matches.
@@ -553,6 +557,36 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
   // Hotcue slot released (mouse/touch up, or key up). Ends its momentary preview.
   const onSlotRelease = (slot: number) => endPreview(`hc:${slot}`)
 
+  // Auto Hotcues: the backend analyses the track's audio (librosa structural
+  // segmentation), snaps boundaries to the beatgrid, and fills empty slots only.
+  // Requires a beatgrid (button disabled otherwise).
+  const canAutoCue = !!(cueData?.bpm && cueData.bpm > 0 && cueData.grid_anchor != null)
+  const runAutoHotcues = async () => {
+    if (!track || !canAutoCue || autoBusy) return
+    const hotcueCount = (c: TrackCues | null) =>
+      c?.cues.filter((x) => x.hotcue >= 0).length ?? 0
+    if (hotcueCount(cueData) >= 8) {
+      onError?.('No free hotcue slots — delete some first')
+      return
+    }
+    setAutoBusy(true)
+    try {
+      const before = hotcueCount(cueData)
+      const fresh = await api.autoHotcues(track.id)
+      applyCueEdit(fresh)
+      const placed = Math.max(0, hotcueCount(fresh) - before)
+      if (placed === 0) {
+        onNotify?.('error', 'No clear structure found — no hotcues placed')
+      } else {
+        onNotify?.('success', `Placed ${placed} auto hotcue${placed === 1 ? '' : 's'}`)
+      }
+    } catch (e) {
+      onError?.((e as Error).message)
+    } finally {
+      setAutoBusy(false)
+    }
+  }
+
   const changeSelectedType = async (type: number) => {
     if (!track || selectedSlot == null) return
     try {
@@ -684,13 +718,26 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
       onError?.((e as Error).message)
     }
   }
+  // Analyze: backend detects BPM + first beat, sets the grid anchor and hotcue 1.
+  const runAnalyzeGrid = async () => {
+    if (!track || gridBusy) return
+    setGridBusy(true)
+    try {
+      applyCueEdit(await api.autoGrid(track.id))
+      onNotify?.('success', 'Analyzed — set BPM, grid, and hotcue 1')
+    } catch (e) {
+      onError?.((e as Error).message)
+    } finally {
+      setGridBusy(false)
+    }
+  }
 
   const selectedCue = selectedSlot != null ? hotcueAt(selectedSlot) : null
   const showWaves = track && cols && waveStatus === 'ready'
   const activeLoop = loopActive && loopRegion ? loopRegion : null
 
   return (
-    <div className="flex h-[21rem] shrink-0 items-stretch gap-px border-b border-line bg-ink-950">
+    <div className="flex h-[23rem] shrink-0 items-stretch gap-px border-b border-line bg-ink-950">
       {/* Controls */}
       <div className="flex w-72 shrink-0 flex-col gap-3 bg-ink-900 px-4 py-3">
         <div className="min-w-0">
@@ -722,6 +769,8 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
             onReset={resetGrid}
             onToggleLock={toggleLock}
             onDeleteGrid={deleteGrid}
+            onAnalyze={runAnalyzeGrid}
+            analyzing={gridBusy}
           />
         )}
 
@@ -863,6 +912,18 @@ export function PrepStrip({ track, playRequest = 0, onError }: Props) {
                   </select>
                 )}
               </div>
+              <button
+                onClick={runAutoHotcues}
+                disabled={!canAutoCue || autoBusy}
+                title={
+                  canAutoCue
+                    ? 'Auto-place hotcues at detected phrase boundaries (empty slots only)'
+                    : 'Set a beatgrid first'
+                }
+                className="flex w-16 items-center justify-center gap-1 bg-ink-900 text-[11px] font-semibold uppercase tracking-wider text-muted transition-colors hover:bg-ink-800 hover:text-accent disabled:opacity-30 disabled:hover:bg-ink-900 disabled:hover:text-muted"
+              >
+                {autoBusy ? '…' : '✨ Auto'}
+              </button>
               <button
                 onClick={deleteSelected}
                 disabled={!selectedCue}
