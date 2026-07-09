@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import threading
 import uuid as uuidlib
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,13 +91,14 @@ class PlaylistStore:
         self._track_edits: dict[str, set[str]] = {}
         # track_id -> (image_bytes, mime) of staged replacement cover art
         self._track_art: dict[str, tuple[bytes, str]] = {}
-        # (category, detail) events accumulated this session -> commit summary
-        self._edit_events: list[tuple[str, str | None]] = []
+        # (category, detail, track_id) events this session -> commit summary.
+        # track_id lets prep edits report how many distinct tracks were affected.
+        self._edit_events: list[tuple[str, str | None, str | None]] = []
         self.dirty = False
 
-    def _note(self, category: str, detail: str | None = None) -> None:
+    def _note(self, category: str, detail: str | None = None, track_id: str | None = None) -> None:
         """Record a human-meaningful edit for the next commit's summary."""
-        self._edit_events.append((category, detail))
+        self._edit_events.append((category, detail, track_id))
 
     def _root(self) -> Nodetype:
         node = self._nml.playlists.node if self._nml.playlists else None
@@ -339,7 +339,9 @@ class PlaylistStore:
                         grid=None,
                     )
                 )
-            self._note("hotcue-set")
+            # "add" only when it's a genuinely new hotcue; repositioning/retyping
+            # an existing slot is a "modify" (keeps the net add/remove count honest).
+            self._note("hotcue", "modify" if existing is not None else "add", track_id)
             self.dirty = True
 
     def place_hotcues(
@@ -376,14 +378,16 @@ class PlaylistStore:
             if cue is None:
                 raise PlaylistError(f"Hotcue {slot} is not set")
             cue.type = cue_type
-            self._note("hotcue-type")
+            self._note("hotcue", "modify", track_id)
             self.dirty = True
 
     def delete_hotcue(self, track_id: str, slot: int) -> None:
         with self._lock:
             entry = self._entry_or_raise(track_id)
-            entry.cue_v2 = [c for c in (entry.cue_v2 or []) if c.hotcue != slot]
-            self._note("hotcue-delete")
+            before = entry.cue_v2 or []
+            entry.cue_v2 = [c for c in before if c.hotcue != slot]
+            if len(entry.cue_v2) != len(before):  # only count an actual removal
+                self._note("hotcue", "delete", track_id)
             self.dirty = True
 
     # ---- beatgrid -----------------------------------------------------
@@ -433,7 +437,7 @@ class PlaylistStore:
                             grid=GridType(bpm=grid_bpm),
                         )
                     )
-            self._note("grid-edit")
+            self._note("grid", "edit", track_id)
             self.dirty = True
 
     def delete_grid(self, track_id: str) -> None:
@@ -442,14 +446,14 @@ class PlaylistStore:
             entry.cue_v2 = [
                 c for c in (entry.cue_v2 or []) if getattr(c, "grid", None) is None
             ]
-            self._note("grid-delete")
+            self._note("grid", "delete", track_id)
             self.dirty = True
 
     def set_lock(self, track_id: str, locked: bool) -> None:
         with self._lock:
             entry = self._entry_or_raise(track_id)
             entry.lock = 1 if locked else None
-            self._note("lock-toggle")
+            self._note("lock", "on" if locked else "off", track_id)
             self.dirty = True
 
     # ---- cover art -----------------------------------------------------
@@ -642,25 +646,34 @@ class PlaylistStore:
     def _edit_summary(self) -> str:
         """A one-line, human-readable summary of this session's edits, used as the
         version-history commit message (e.g. "Edited 3 tracks; renamed playlist
-        'House'; set 2 hotcues")."""
+        'House'; added 6 hotcues; edited beatgrid on 2 tracks").
+
+        Prep edits are collapsed to meaningful aggregates rather than raw op
+        counts: hotcues report their NET change (created − removed), and beatgrid/
+        lock edits report how many distinct tracks were affected — so tweaking one
+        grid ten times reads as "1 track", not "10 edits"."""
         parts: list[str] = []
-        counts = Counter(cat for cat, _ in self._edit_events)
-        details: dict[str, list[str]] = {}
-        for cat, detail in self._edit_events:
-            if detail:
-                details.setdefault(cat, []).append(detail)
 
-        n_tracks = len(self._track_edits.keys() | self._track_art.keys())
-        if n_tracks:
-            parts.append(f"edited {n_tracks} track{'' if n_tracks == 1 else 's'}")
+        def tracks(n: int) -> str:
+            return f"{n} track{'' if n == 1 else 's'}"
 
+        # --- track metadata + cover art (already counted per-track) ---
+        n_meta = len(self._track_edits.keys() | self._track_art.keys())
+        if n_meta:
+            parts.append(f"edited {tracks(n_meta)}")
+
+        # --- playlists (name-bearing) ---
+        pl_names: dict[str, list[str]] = {}
+        for cat, detail, _tid in self._edit_events:
+            if cat.startswith("playlist-") and detail:
+                pl_names.setdefault(cat, []).append(detail)
         for cat, verb in (
             ("playlist-create", "created"),
             ("playlist-rename", "renamed"),
             ("playlist-delete", "deleted"),
             ("playlist-entries", "reordered"),
         ):
-            names = details.get(cat, [])
+            names = pl_names.get(cat, [])
             if not names:
                 continue
             if len(names) <= 2:
@@ -669,22 +682,50 @@ class PlaylistStore:
             else:
                 parts.append(f"{verb} {len(names)} playlists")
 
-        for cat, verb, sing, plur in (
-            ("hotcue-set", "set", "hotcue", "hotcues"),
-            ("hotcue-type", "changed", "hotcue type", "hotcue types"),
-            ("hotcue-delete", "deleted", "hotcue", "hotcues"),
-        ):
-            n = counts.get(cat, 0)
-            if n:
-                parts.append(f"{verb} {n} {sing if n == 1 else plur}")
-        if counts.get("grid-edit"):
-            parts.append("edited beatgrid")
-        if counts.get("grid-delete"):
-            parts.append("deleted beatgrid")
-        if counts.get("lock-toggle"):
-            parts.append("toggled lock")
-        for detail in details.get("remap", []):
-            parts.append(f"remapped {detail} file paths")
+        # --- hotcues: net change in count, scoped by how many tracks were touched ---
+        hc_add = hc_del = 0
+        hc_tracks: set[str] = set()
+        grid_edit: set[str] = set()
+        grid_del: set[str] = set()
+        lock_on: set[str] = set()
+        lock_off: set[str] = set()
+        for cat, detail, tid in self._edit_events:
+            if cat == "hotcue":
+                if tid:
+                    hc_tracks.add(tid)
+                if detail == "add":
+                    hc_add += 1
+                elif detail == "delete":
+                    hc_del += 1
+            elif cat == "grid":
+                (grid_edit if detail == "edit" else grid_del).add(tid or "")
+            elif cat == "lock":
+                (lock_on if detail == "on" else lock_off).add(tid or "")
+
+        if hc_tracks:
+            net = hc_add - hc_del
+            scope = f" across {tracks(len(hc_tracks))}" if len(hc_tracks) > 1 else ""
+            if net > 0:
+                parts.append(f"added {net} hotcue{'' if net == 1 else 's'}{scope}")
+            elif net < 0:
+                parts.append(f"removed {-net} hotcue{'' if -net == 1 else 's'}{scope}")
+            else:  # net zero but there was activity (moves / retypes / add-then-delete)
+                parts.append(f"adjusted hotcues{scope}")
+
+        # --- beatgrids & lock: per-track counts ---
+        if grid_edit:
+            parts.append(f"edited beatgrid on {tracks(len(grid_edit))}")
+        if grid_del:
+            parts.append(f"deleted beatgrid on {tracks(len(grid_del))}")
+        if lock_on:
+            parts.append(f"locked {tracks(len(lock_on))}")
+        if lock_off:
+            parts.append(f"unlocked {tracks(len(lock_off))}")
+
+        # --- path remap ---
+        for cat, detail, _tid in self._edit_events:
+            if cat == "remap" and detail:
+                parts.append(f"remapped {detail} file paths")
 
         if not parts:
             return "Saved changes"
