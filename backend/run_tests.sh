@@ -6,7 +6,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 source .venv/bin/activate
 
 fail=0
-for t in test_save_fidelity.py test_phase3.py; do
+for t in test_save_fidelity.py test_phase3.py test_history.py; do
   echo "──────────────────────────────────────────"
   echo "▶ $t"
   echo "──────────────────────────────────────────"

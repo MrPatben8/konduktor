@@ -6,7 +6,8 @@ Design goals:
     exact formatting; lxml does not),
   * surgical — the ~14 MB COLLECTION stays byte-identical (we splice only the
     <PLAYLISTS> span back into the original file bytes),
-  * safe — a timestamped .bak is written before every save.
+  * safe — every save is committed to the collection's version history (see
+    ``history.py``); the commit is additive and never alters the saved bytes.
 
 We edit the parsed dataclass model in memory (create/rename/delete/set-entries),
 then on save render the full model, extract just the freshly-rendered
@@ -17,9 +18,7 @@ Playlists are identified by their stable UUID; folders by a synthetic path id
 """
 from __future__ import annotations
 
-import shutil
 import threading
-import time
 import uuid as uuidlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +42,7 @@ from traktor_nml_utils.models.collection import (
 )
 from xsdata.formats.dataclass.serializers import XmlSerializer
 
+from . import __version__, history
 from .path_mapping import PathMapping
 from .schemas import PlaylistNode
 
@@ -62,7 +62,7 @@ class FileTagResult:
 
 @dataclass
 class SaveOutcome:
-    backup: Path
+    commit: str | None  # sha of the version-history commit (None if deduped/failed)
     tag_results: list[FileTagResult]
 
 
@@ -91,7 +91,14 @@ class PlaylistStore:
         self._track_edits: dict[str, set[str]] = {}
         # track_id -> (image_bytes, mime) of staged replacement cover art
         self._track_art: dict[str, tuple[bytes, str]] = {}
+        # (category, detail, track_id) events this session -> commit summary.
+        # track_id lets prep edits report how many distinct tracks were affected.
+        self._edit_events: list[tuple[str, str | None, str | None]] = []
         self.dirty = False
+
+    def _note(self, category: str, detail: str | None = None, track_id: str | None = None) -> None:
+        """Record a human-meaningful edit for the next commit's summary."""
+        self._edit_events.append((category, detail, track_id))
 
     def _root(self) -> Nodetype:
         node = self._nml.playlists.node if self._nml.playlists else None
@@ -199,6 +206,7 @@ class PlaylistStore:
             )
             folder.subnodes.node.append(node)
             folder.subnodes.count = len(folder.subnodes.node)
+            self._note("playlist-create", name)
             self.dirty = True
             return new_uuid
 
@@ -208,6 +216,7 @@ class PlaylistStore:
             if node is None:
                 raise PlaylistError(f"Playlist not found: {playlist_uuid}")
             node.name = name
+            self._note("playlist-rename", name)
             self.dirty = True
 
     def delete_playlist(self, playlist_uuid: str) -> None:
@@ -220,6 +229,7 @@ class PlaylistStore:
                 raise PlaylistError("Cannot delete a top-level node")
             parent.subnodes.node.remove(node)
             parent.subnodes.count = len(parent.subnodes.node)
+            self._note("playlist-delete", node.name)
             self.dirty = True
 
     def set_entries(self, playlist_uuid: str, entries: list[tuple[str, str]]) -> None:
@@ -233,6 +243,7 @@ class PlaylistStore:
                 for key, ptype in entries
             ]
             pl.entries = len(pl.entry)
+            self._note("playlist-entries", node.name)
             self.dirty = True
 
     # ---- track metadata editing ---------------------------------------
@@ -328,6 +339,9 @@ class PlaylistStore:
                         grid=None,
                     )
                 )
+            # "add" only when it's a genuinely new hotcue; repositioning/retyping
+            # an existing slot is a "modify" (keeps the net add/remove count honest).
+            self._note("hotcue", "modify" if existing is not None else "add", track_id)
             self.dirty = True
 
     def place_hotcues(
@@ -364,12 +378,16 @@ class PlaylistStore:
             if cue is None:
                 raise PlaylistError(f"Hotcue {slot} is not set")
             cue.type = cue_type
+            self._note("hotcue", "modify", track_id)
             self.dirty = True
 
     def delete_hotcue(self, track_id: str, slot: int) -> None:
         with self._lock:
             entry = self._entry_or_raise(track_id)
-            entry.cue_v2 = [c for c in (entry.cue_v2 or []) if c.hotcue != slot]
+            before = entry.cue_v2 or []
+            entry.cue_v2 = [c for c in before if c.hotcue != slot]
+            if len(entry.cue_v2) != len(before):  # only count an actual removal
+                self._note("hotcue", "delete", track_id)
             self.dirty = True
 
     # ---- beatgrid -----------------------------------------------------
@@ -419,6 +437,7 @@ class PlaylistStore:
                             grid=GridType(bpm=grid_bpm),
                         )
                     )
+            self._note("grid", "edit", track_id)
             self.dirty = True
 
     def delete_grid(self, track_id: str) -> None:
@@ -427,12 +446,14 @@ class PlaylistStore:
             entry.cue_v2 = [
                 c for c in (entry.cue_v2 or []) if getattr(c, "grid", None) is None
             ]
+            self._note("grid", "delete", track_id)
             self.dirty = True
 
     def set_lock(self, track_id: str, locked: bool) -> None:
         with self._lock:
             entry = self._entry_or_raise(track_id)
             entry.lock = 1 if locked else None
+            self._note("lock", "on" if locked else "off", track_id)
             self.dirty = True
 
     # ---- cover art -----------------------------------------------------
@@ -585,6 +606,7 @@ class PlaylistStore:
                     pk = entry.primarykey
                     if pk and pk.key in key_remap:
                         pk.key = key_remap[pk.key]
+            self._note("remap", str(len(key_remap)))
             self.dirty = True
             return len(key_remap)
 
@@ -609,15 +631,106 @@ class PlaylistStore:
     # ---- persistence ---------------------------------------------------
     def save(self) -> "SaveOutcome":
         with self._lock:
-            backup = self._backup()
             new_data = self._render()
             tmp = self.nml_path.with_suffix(self.nml_path.suffix + ".tmp")
             tmp.write_bytes(new_data)
             tmp.replace(self.nml_path)
             # Best-effort: sync the edited fields into each edited track's file.
             tag_results = self._sync_file_tags()
-            self._load()  # clears dirty + _track_edits
-            return SaveOutcome(backup=backup, tag_results=tag_results)
+            # Version history: commit the saved bytes (additive — never touches the
+            # file we just wrote). Summary is computed before _load() clears state.
+            commit = history.commit(self.nml_path, new_data, self._edit_summary(), __version__)
+            self._load()  # clears dirty + _track_edits + _edit_events
+            return SaveOutcome(commit=commit, tag_results=tag_results)
+
+    def _edit_summary(self) -> str:
+        """A one-line, human-readable summary of this session's edits, used as the
+        version-history commit message (e.g. "Edited 3 tracks; renamed playlist
+        'House'; added 6 hotcues; edited beatgrid on 2 tracks").
+
+        Prep edits are collapsed to meaningful aggregates rather than raw op
+        counts: hotcues report their NET change (created − removed), and beatgrid/
+        lock edits report how many distinct tracks were affected — so tweaking one
+        grid ten times reads as "1 track", not "10 edits"."""
+        parts: list[str] = []
+
+        def tracks(n: int) -> str:
+            return f"{n} track{'' if n == 1 else 's'}"
+
+        # --- track metadata + cover art (already counted per-track) ---
+        n_meta = len(self._track_edits.keys() | self._track_art.keys())
+        if n_meta:
+            parts.append(f"edited {tracks(n_meta)}")
+
+        # --- playlists (name-bearing) ---
+        pl_names: dict[str, list[str]] = {}
+        for cat, detail, _tid in self._edit_events:
+            if cat.startswith("playlist-") and detail:
+                pl_names.setdefault(cat, []).append(detail)
+        for cat, verb in (
+            ("playlist-create", "created"),
+            ("playlist-rename", "renamed"),
+            ("playlist-delete", "deleted"),
+            ("playlist-entries", "reordered"),
+        ):
+            names = pl_names.get(cat, [])
+            if not names:
+                continue
+            if len(names) <= 2:
+                joined = ", ".join(f"'{n}'" for n in names)
+                parts.append(f"{verb} playlist{'' if len(names) == 1 else 's'} {joined}")
+            else:
+                parts.append(f"{verb} {len(names)} playlists")
+
+        # --- hotcues: net change in count, scoped by how many tracks were touched ---
+        hc_add = hc_del = 0
+        hc_tracks: set[str] = set()
+        grid_edit: set[str] = set()
+        grid_del: set[str] = set()
+        lock_on: set[str] = set()
+        lock_off: set[str] = set()
+        for cat, detail, tid in self._edit_events:
+            if cat == "hotcue":
+                if tid:
+                    hc_tracks.add(tid)
+                if detail == "add":
+                    hc_add += 1
+                elif detail == "delete":
+                    hc_del += 1
+            elif cat == "grid":
+                (grid_edit if detail == "edit" else grid_del).add(tid or "")
+            elif cat == "lock":
+                (lock_on if detail == "on" else lock_off).add(tid or "")
+
+        if hc_tracks:
+            net = hc_add - hc_del
+            scope = f" across {tracks(len(hc_tracks))}" if len(hc_tracks) > 1 else ""
+            if net > 0:
+                parts.append(f"added {net} hotcue{'' if net == 1 else 's'}{scope}")
+            elif net < 0:
+                parts.append(f"removed {-net} hotcue{'' if -net == 1 else 's'}{scope}")
+            else:  # net zero but there was activity (moves / retypes / add-then-delete)
+                parts.append(f"adjusted hotcues{scope}")
+
+        # --- beatgrids & lock: per-track counts ---
+        if grid_edit:
+            parts.append(f"edited beatgrid on {tracks(len(grid_edit))}")
+        if grid_del:
+            parts.append(f"deleted beatgrid on {tracks(len(grid_del))}")
+        if lock_on:
+            parts.append(f"locked {tracks(len(lock_on))}")
+        if lock_off:
+            parts.append(f"unlocked {tracks(len(lock_off))}")
+
+        # --- path remap ---
+        for cat, detail, _tid in self._edit_events:
+            if cat == "remap" and detail:
+                parts.append(f"remapped {detail} file paths")
+
+        if not parts:
+            return "Saved changes"
+        summary = "; ".join(parts)
+        return summary[0].upper() + summary[1:]
 
     def _sync_file_tags(self) -> list["FileTagResult"]:
         from . import file_tags
@@ -658,17 +771,3 @@ class PlaylistStore:
         s = restore_traktor_float_format(s, self._nml)
         s = format_traktor_layout(s)
         return s.encode("utf-8")
-
-    def _backup(self) -> Path:
-        # Backups live in a `backups/` folder next to the collection, not beside
-        # the file itself (keeps the collection's directory clean).
-        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
-        backup_dir = self.nml_path.parent / "backups"
-        backup_dir.mkdir(exist_ok=True)
-        backup = backup_dir / f"{self.nml_path.name}.{stamp}.bak"
-        n = 1
-        while backup.exists():
-            backup = backup_dir / f"{self.nml_path.name}.{stamp}-{n}.bak"
-            n += 1
-        shutil.copy2(self.nml_path, backup)
-        return backup

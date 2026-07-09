@@ -5,6 +5,11 @@ uvicorn[standard]>=0.34
 pydantic>=2.11
 mutagen>=1.47  # embedded audio-file tag read/write (ID3/MP4/FLAC/AIFF)
 python-multipart>=0.0.9  # multipart form parsing for cover-art upload
+# Version-history backups: a self-contained git impl (no system git needed;
+# ships prebuilt py3.14 wheels, no from-source build) + a per-OS user-writable
+# app-data dir. Both bundle cleanly into the frozen sidecar.
+dulwich>=0.22
+platformdirs>=4.0
 # Auto Hotcues: structural segmentation (McFee/Ellis Laplacian). Pure-Python,
 # ~150MB; numba/llvmlite ship Python 3.14 wheels (verified). No torch/native build.
 librosa>=0.11

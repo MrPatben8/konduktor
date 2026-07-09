@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 
 from . import __version__
 from . import auto_hotcues as ah
-from . import prefs
+from . import history, prefs
 from .collection_service import CollectionService
 from .discovery import describe, detect_collections
 from .path_mapping import PathMapping
@@ -36,6 +36,7 @@ from .schemas import (
     FsEntry,
     FsListing,
     GridEdit,
+    HistoryEntry,
     OpenCollection,
     PathMappingInfo,
     PlaylistNode,
@@ -94,6 +95,9 @@ class AppState:
         if saved:
             store.set_path_mapping(PathMapping.make(saved["from"], saved["to"]))
         self.path, self.service, self.store = path, service, store
+        # Version history: record an "as I found it" baseline (deduped, so
+        # re-opening an unchanged collection is a no-op). Best-effort.
+        history.ensure_baseline(path)
 
 
 STATE = AppState()
@@ -211,17 +215,18 @@ def preview_path_mapping(
 @app.post("/api/collection/remap-paths", response_model=RemapResult)
 def remap_paths(body: PathMappingInfo) -> RemapResult:
     """Write-back: permanently rewrite matching track LOCATIONs (and the
-    playlist references that join to them) to the `to` prefix, then save
-    (backup-first). Destructive and OS-specific — the UI warns accordingly."""
+    playlist references that join to them) to the `to` prefix, then save (a
+    version-history commit is written). Destructive and OS-specific — the UI
+    warns accordingly."""
     store = require_store()
     mapping = PathMapping.make(body.from_, body.to)
     if mapping.empty:
         raise HTTPException(400, "Both a `from` and `to` prefix are required")
     count = store.remap_locations(mapping)
     if count == 0:
-        return RemapResult(rewritten=0, backup=None)
+        return RemapResult(rewritten=0, commit=None)
     outcome = store.save()
-    return RemapResult(rewritten=count, backup=str(outcome.backup))
+    return RemapResult(rewritten=count, commit=outcome.commit)
 
 
 @app.get("/api/prefs")
@@ -644,11 +649,47 @@ async def set_track_art(track_id: str = Form(...), file: UploadFile = File(...))
 def save() -> SaveResult:
     store = require_store()
     if not store.dirty:
-        return SaveResult(saved=False, backup=None, playlists=store.count_playlists())
+        return SaveResult(saved=False, commit=None, playlists=store.count_playlists())
     outcome = store.save()
     return SaveResult(
         saved=True,
-        backup=str(outcome.backup),
+        commit=outcome.commit,
         playlists=store.count_playlists(),
         file_tags=[FileTagOutcome(**r.__dict__) for r in outcome.tag_results],
     )
+
+
+# ---- version history --------------------------------------------------
+
+
+@app.get("/api/history", response_model=list[HistoryEntry])
+def get_history() -> list[HistoryEntry]:
+    """All saved versions of the current collection, newest first."""
+    require_store()
+    return [HistoryEntry(**e.__dict__) for e in history.list_history(STATE.path)]
+
+
+@app.post("/api/history/{commit_id}/restore", response_model=CollectionStatus)
+def restore_version(commit_id: str) -> CollectionStatus:
+    """Restore the collection to a past version. Writes that version back as a
+    NEW forward save (a fresh commit on top of history — never a rewind), then
+    reloads. The user should close Traktor first (it overwrites on exit)."""
+    require_store()
+    data = history.read_version(STATE.path, commit_id)
+    if data is None:
+        raise HTTPException(404, f"Version not found: {commit_id}")
+    path = STATE.path
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(path)
+    history.commit(path, data, f"Restored version {commit_id[:8]}", __version__)
+    STATE.open(path)  # rebuild read + edit models from the restored file
+    return collection_status()
+
+
+@app.delete("/api/history")
+def clear_history() -> dict:
+    """Permanently delete ALL version history for the current collection."""
+    require_store()
+    history.clear_history(STATE.path)
+    return {"status": "cleared"}

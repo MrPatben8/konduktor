@@ -1,20 +1,35 @@
 """Tiny persisted user-preferences store.
 
-Kept as a self-contained JSON file that travels with the app (resolved relative
-to this package, not a per-OS config dir) so it works the same on every platform
-and when the app is moved. Best-effort: any I/O error degrades to "no prefs".
+A self-contained JSON file in the app's per-OS user-writable data dir (see
+``paths.app_data_dir``) so it survives a frozen/packaged build and works the same
+on every platform. Best-effort: any I/O error degrades to "no prefs".
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-# backend/userprefs.json — one level up from the package (konduktor/).
-_PREFS_PATH = Path(__file__).resolve().parent.parent / "userprefs.json"
+from . import paths
+
+# userprefs.json in the app-data dir. Older versions kept it package-relative
+# (backend/userprefs.json); _migrate_legacy() copies that in once on first use.
+_PREFS_PATH = paths.app_data_dir() / "userprefs.json"
+_LEGACY_PREFS_PATH = Path(__file__).resolve().parent.parent / "userprefs.json"
+
+
+def _migrate_legacy() -> None:
+    """One-time: if the new file is absent but a legacy package-relative one
+    exists, copy it into the app-data dir. Best-effort."""
+    try:
+        if not _PREFS_PATH.exists() and _LEGACY_PREFS_PATH.exists():
+            _PREFS_PATH.write_bytes(_LEGACY_PREFS_PATH.read_bytes())
+    except OSError:
+        pass
 
 
 def load_prefs() -> dict:
     try:
+        _migrate_legacy()
         data = json.loads(_PREFS_PATH.read_text())
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):

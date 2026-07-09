@@ -64,7 +64,15 @@ Two independent apps that talk over HTTP:
     state every commit → infinite re-render loop. Keep that reference stable.
     `SelectionBar` (bulk add-to-playlist), `ContextMenu` + `EditTagsDialog`
     (right-click → multi-field metadata + album-art edit), `StatusBar`,
-    `RatingStars` (read-only, or click-to-set when given `onChange`), `Toast`.
+    `RatingStars` (read-only, or click-to-set when given `onChange`), `Toast`,
+    `UpdateDialog` (`UpdateCheck`, mounted in `main.tsx` beside `App` so it shows
+    even on the picker screen: on startup fetches the latest GitHub release and,
+    if its tag's **semver part** is newer than `__APP_VERSION__` — build-number
+    `-b<N>` bumps don't count — shows an update dialog with the release's
+    "What's Changed" bullets; Download opens the release page in the system
+    browser via `@tauri-apps/plugin-shell` `open` — falls back to `window.open`
+    outside Tauri; "Skip this version" persists `skippedUpdateVersion` to
+    userprefs via `/api/prefs`; all failures are silent).
   - **Prep strip** (DJ deck across the top of the window): `PrepStrip` owns it —
     transport (play/pause, CUE), two waveforms (`MainWaveform` scrolling+zoomable
     — its zoom is owned by `PrepStrip` so it survives track switches and persists,
@@ -171,6 +179,9 @@ that number and nothing else — everything derives from it:
   the PyInstaller root via `sys._MEIPASS`, added in `konduktor-sidecar.spec`).
   `main.py` uses this for the FastAPI `version`. Falls back to `"0.0.0"` if not
   found (cosmetic, must never crash startup).
+- **Frontend / update check** — `vite.config.ts` bakes it in at build time as
+  the `__APP_VERSION__` global (declared in `src/vite-env.d.ts`); `UpdateCheck`
+  compares it against the latest GitHub release tag on startup.
 - **CI release** — `.github/workflows/build.yml` reads it with
   `jq .version frontend/package.json` and tags each push
   `v<version>-b<run_number>` (release name `Konduktor v<version>-b<run_number>`).

@@ -7,7 +7,7 @@ interface Props {
 }
 
 // Bottom-of-sidebar save control. Shows unsaved-changes state and writes to the
-// NML (backup-first). On-disk saving is gated server-side by KONDUKTOR_ALLOW_WRITE.
+// NML; every save is recorded in the collection's version history.
 export function SaveBar({ onError }: Props) {
   const qc = useQueryClient()
   const [justSaved, setJustSaved] = useState<string | null>(null)
@@ -17,9 +17,9 @@ export function SaveBar({ onError }: Props) {
     mutationFn: api.save,
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['state'] })
-      if (res.saved && res.backup) {
-        const name = res.backup.split('/').pop()
-        setJustSaved(`Saved · backup ${name}`)
+      qc.invalidateQueries({ queryKey: ['history'] })
+      if (res.saved && res.commit) {
+        setJustSaved(`Saved · version ${res.commit.slice(0, 8)}`)
         setTimeout(() => setJustSaved(null), 6000)
       }
     },
