@@ -11,15 +11,14 @@ PY="${PY:-.venv/bin/python}"
 "$PY" -m PyInstaller --noconfirm --clean konduktor-sidecar.spec
 echo "Built: $ROOT/dist/konduktor-sidecar"
 
-# macOS: ad-hoc sign the sidecar so the app can spawn it. On Apple Silicon the
-# OS kills unsigned executables on exec, and a signed .app (see tauri.conf.json
-# bundle.macOS.signingIdentity "-") isn't enough on its own — the nested sidecar
-# must be signed too. Ad-hoc (`-s -`) needs no cert/keychain; --force re-signs
-# cleanly even if Tauri signs it again during bundling.
-if [ "$(uname)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
-  codesign --force -s - "$ROOT/dist/konduktor-sidecar"
-  echo "Ad-hoc signed: $ROOT/dist/konduktor-sidecar"
-fi
+# NOTE: do NOT re-codesign this binary. PyInstaller already ad-hoc signs the
+# one-file bootloader AND its packed libraries (Python.framework, etc.) with a
+# matching identity. Re-signing only the outer bootloader (e.g. `codesign -s -`)
+# desyncs the Team IDs, so at runtime dlopen of the extracted Python framework
+# fails with "different Team IDs" and the sidecar dies on launch (which makes
+# the Tauri app panic: "backend sidecar did not report a port"). The app bundle
+# is ad-hoc signed separately via tauri.conf.json `bundle.macOS.signingIdentity`,
+# which seals this binary without re-signing it.
 
 # Stage for Tauri: the sidecar must be named with the host target triple so the
 # shell plugin can resolve it in both dev and bundle. (rustc must be on PATH.)

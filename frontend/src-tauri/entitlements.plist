@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    The backend is a PyInstaller one-file binary: at launch it extracts its
+    bundled Python.framework to a temp dir and dlopen()s it. Tauri signs every
+    nested binary with the hardened runtime (adhoc,runtime), which enforces
+    library validation — and the extracted framework has a different Team ID
+    than the ad-hoc-signed bootloader, so it's rejected ("different Team IDs")
+    and the sidecar dies on launch. Disabling library validation lets it load.
+  -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>
