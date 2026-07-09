@@ -248,10 +248,9 @@ export function Sidebar({ source, onSelect, onError, onOpenHistory }: Props) {
 
       <button
         onClick={onOpenHistory}
-        className="flex items-center gap-2 border-t border-line px-4 py-2 text-left text-xs text-muted hover:bg-ink-800 hover:text-text"
+        className="flex items-center justify-center gap-2 border-t border-line px-4 py-2 text-center text-xs text-muted hover:bg-ink-800 hover:text-text"
       >
-        <span className="text-[11px] text-faint">🕑</span>
-        Version history
+        Collection Version History
       </button>
 
       <SaveBar onError={onError} />

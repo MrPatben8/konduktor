@@ -281,7 +281,7 @@ function FolderBrowser({
           {data?.path ?? '…'}
         </span>
       </div>
-      <div className="max-h-48 overflow-y-auto">
+      <div className="h-48 overflow-y-auto">
         {data?.dirs.length ? (
           data.dirs.map((d) => (
             <button

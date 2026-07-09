@@ -21,6 +21,17 @@ function formatWhen(iso: string): string {
   })
 }
 
+// Backend joins the summary's parts with "; " (e.g. "Added 6 hotcues; edited
+// beatgrid on 3 tracks"). Split them back out so each renders as its own chip
+// that wraps — far more scannable than one truncated run-on line.
+function summaryChips(summary: string): string[] {
+  return summary
+    .split('; ')
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+}
+
 /**
  * Version history browser for the current collection. Every save is a commit in
  * a purely-local git repo (see backend history.py); this lists them newest-first
@@ -96,18 +107,25 @@ export function HistoryPanel({ onClose, onNotify, onError }: Props) {
                 return (
                   <li
                     key={e.id}
-                    className="group flex items-center gap-3 rounded-md border border-line bg-ink-850 px-3 py-2"
+                    className="group flex items-start gap-3 rounded-md border border-line bg-ink-850 px-3 py-2"
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="truncate text-sm text-text">{e.summary}</span>
+                      <div className="flex flex-wrap items-center gap-1">
                         {isCurrent && (
-                          <span className="shrink-0 rounded bg-mint/15 px-1.5 py-0.5 text-[10px] font-medium text-mint">
+                          <span className="rounded bg-mint/15 px-1.5 py-0.5 text-[10px] font-medium text-mint">
                             current
                           </span>
                         )}
+                        {summaryChips(e.summary).map((chip, ci) => (
+                          <span
+                            key={ci}
+                            className="rounded bg-ink-800 px-1.5 py-0.5 text-xs text-text"
+                          >
+                            {chip}
+                          </span>
+                        ))}
                       </div>
-                      <div className="text-[11px] text-faint">
+                      <div className="mt-1 text-[11px] text-faint">
                         {formatWhen(e.timestamp)} · {e.id.slice(0, 8)}
                       </div>
                     </div>
@@ -132,7 +150,7 @@ export function HistoryPanel({ onClose, onNotify, onError }: Props) {
                         onClick={() => setConfirmingId(e.id)}
                         disabled={isCurrent}
                         title={isCurrent ? 'This is the current version' : 'Restore this version'}
-                        className="shrink-0 rounded-md border border-line px-2.5 py-1 text-xs text-muted opacity-0 transition-opacity hover:bg-ink-800 hover:text-text group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-0"
+                        className="mt-0.5 shrink-0 rounded-md border border-line px-2.5 py-1 text-xs text-muted opacity-0 transition-opacity hover:bg-ink-800 hover:text-text group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-0"
                       >
                         Restore
                       </button>
