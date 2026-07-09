@@ -18,11 +18,14 @@ frontend/dist-ssr/
 # The collection is personal, large, and irreplaceable — don't commit it.
 # Remove this if you deliberately want to version a sample .nml.
 *.nml
-# Backups Konduktor will create before any write (Phase 3+).
+# Legacy pre-git backups (superseded by version history; left ignored so any
+# old .bak files on disk stay out of git).
 *.nml.bak
 *.nml.backup
 *.nml.*.bak
 backups/
+# Version-history git repos, if a dev points KONDUKTOR_DATA_DIR inside the repo.
+history/
 
 # ---- Editor / OS ----
 .vscode/

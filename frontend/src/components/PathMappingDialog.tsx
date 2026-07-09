@@ -87,7 +87,7 @@ export function PathMappingDialog({ onClose, onNotify, onError }: Props) {
         onNotify(
           'success',
           `Rewrote ${res.rewritten} track path${res.rewritten === 1 ? '' : 's'}.` +
-            (res.backup ? ` Backup: ${res.backup.split('/').pop()}` : ''),
+            (res.commit ? ` Version: ${res.commit.slice(0, 8)}` : ''),
         )
         onClose()
       }
@@ -195,8 +195,8 @@ export function PathMappingDialog({ onClose, onNotify, onError }: Props) {
           <div className="mt-2 space-y-2 rounded-md border border-gold/40 bg-gold/5 px-3 py-3">
             <div className="text-xs font-semibold text-gold">Make permanent</div>
             <p className="text-[11px] leading-relaxed text-muted">
-              Rewrites the matching file paths directly in the collection (a backup is
-              written first). Use this only when you've moved the library for good — it
+              Rewrites the matching file paths directly in the collection (saved to
+              version history). Use this only when you've moved the library for good — it
               bakes in <span className="text-text">this machine's</span> paths and will
               break the collection on other machines/OSes.
             </p>

@@ -154,8 +154,14 @@ export interface FsListing {
 
 export interface SaveResult {
   saved: boolean
-  backup: string | null
+  commit: string | null
   playlists: number
+}
+
+export interface HistoryEntry {
+  id: string
+  timestamp: string
+  summary: string
 }
 
 export interface PathMapping {
@@ -178,7 +184,7 @@ export interface RemapPreview {
 
 export interface RemapResult {
   rewritten: number
-  backup: string | null
+  commit: string | null
 }
 
 export interface PrefixSuggestions {
@@ -249,7 +255,7 @@ export const api = {
     getJSON<RemapPreview>(
       `/api/collection/path-mapping/preview?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
     ),
-  // Write-back: permanently rewrite matching LOCATIONs in the .nml (backup-first).
+  // Write-back: permanently rewrite matching LOCATIONs in the .nml (committed to history).
   remapPaths: (from: string, to: string) =>
     send<RemapResult>('POST', '/api/collection/remap-paths', { from, to }),
 
@@ -283,6 +289,13 @@ export const api = {
   patchPrefs: (patch: Record<string, unknown>) =>
     send<Record<string, unknown>>('PATCH', '/api/prefs', patch),
   save: () => send<SaveResult>('POST', '/api/save'),
+
+  // ---- version history ----
+  history: () => getJSON<HistoryEntry[]>('/api/history'),
+  restoreVersion: (id: string) =>
+    send<CollectionStatus>('POST', `/api/history/${id}/restore`),
+  clearHistory: () => send<{ status: string }>('DELETE', '/api/history'),
+
   editTrack: (trackId: string, fields: Record<string, string | number | null>) =>
     send<{ status: string }>('PATCH', '/api/tracks', { track_id: trackId, fields }),
   artUrl: (trackId: string) =>

@@ -15,6 +15,7 @@ two invariants against a COPY of the real collection:
 
 Run: `python test_save_fidelity.py` in the backend venv (see run_tests.sh).
 """
+import os
 import shutil
 import sys
 import tempfile
@@ -22,6 +23,10 @@ import warnings
 from pathlib import Path
 
 warnings.filterwarnings("ignore")
+
+# Isolate version-history commits (triggered by every save()) to a throwaway dir
+# so the tests never touch the real app-data dir. Set before importing konduktor.
+os.environ["KONDUKTOR_DATA_DIR"] = tempfile.mkdtemp(prefix="konduktor-fidelity-appdata-")
 
 REAL = Path(__file__).resolve().parents[1] / "collection.nml"
 

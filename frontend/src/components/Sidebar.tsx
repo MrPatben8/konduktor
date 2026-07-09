@@ -9,6 +9,7 @@ interface Props {
   source: Source
   onSelect: (s: Source) => void
   onError: (msg: string) => void
+  onOpenHistory: () => void
 }
 
 const icons: Record<string, string> = {
@@ -157,7 +158,7 @@ function NodeRow({
   )
 }
 
-export function Sidebar({ source, onSelect, onError }: Props) {
+export function Sidebar({ source, onSelect, onError, onOpenHistory }: Props) {
   const qc = useQueryClient()
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
@@ -244,6 +245,14 @@ export function Sidebar({ source, onSelect, onError }: Props) {
           />
         ))}
       </div>
+
+      <button
+        onClick={onOpenHistory}
+        className="flex items-center gap-2 border-t border-line px-4 py-2 text-left text-xs text-muted hover:bg-ink-800 hover:text-text"
+      >
+        <span className="text-[11px] text-faint">🕑</span>
+        Version history
+      </button>
 
       <SaveBar onError={onError} />
     </aside>

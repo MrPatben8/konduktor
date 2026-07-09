@@ -2,7 +2,7 @@
 
 Runs against a COPY of the collection (never the original). Verifies:
   * create / add-tracks / reorder / rename / delete all work
-  * save creates a backup and produces a Traktor-parseable file
+  * save records a version-history commit and produces a Traktor-parseable file
   * the COLLECTION section is byte-identical after save (truly surgical)
   * changes survive a reload
 """
@@ -26,6 +26,8 @@ shutil.copy2(REAL, WORK)
 REAL_STAT = (REAL.stat().st_size, REAL.stat().st_mtime)
 
 os.environ["KONDUKTOR_NML"] = str(WORK)
+# Isolate version history + prefs to a throwaway dir (never the real app data).
+os.environ["KONDUKTOR_DATA_DIR"] = str(work_dir / "appdata")
 
 from fastapi.testclient import TestClient  # noqa: E402
 from traktor_nml_utils import TraktorCollection  # noqa: E402
@@ -79,9 +81,11 @@ check("state is dirty before save", st["dirty"] is True)
 print("== save ==")
 res = client.post("/api/save").json()
 check("saved", res["saved"] is True)
-backup = Path(res["backup"])
-check("backup file exists", backup.exists())
-check("backup matches original size", backup.stat().st_size == REAL.stat().st_size)
+check("commit recorded", bool(res["commit"]))
+hist = client.get("/api/history").json()
+check("history has baseline + this save", len(hist) >= 2)
+check("newest history summary non-empty", bool(hist[0]["summary"]))
+check("no .bak litter next to collection", not list(work_dir.glob("*.bak")))
 st = client.get("/api/state").json()
 check("state clean after save", st["dirty"] is False)
 

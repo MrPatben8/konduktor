@@ -16,6 +16,7 @@ import { CollectionPicker } from './components/CollectionPicker'
 import { ContextMenu } from './components/ContextMenu'
 import { EditTagsDialog } from './components/EditTagsDialog'
 import { PathMappingDialog } from './components/PathMappingDialog'
+import { HistoryPanel } from './components/HistoryPanel'
 import { PrepStrip } from './components/PrepStrip'
 
 function applyFilters(tracks: Track[], f: Filters): Track[] {
@@ -49,6 +50,7 @@ export default function App() {
   const [menu, setMenu] = useState<{ track: Track; x: number; y: number } | null>(null)
   const [editing, setEditing] = useState<Track | null>(null)
   const [showPaths, setShowPaths] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
   const [prepTrack, setPrepTrack] = useState<Track | null>(null)
   const [playRequest, setPlayRequest] = useState(0) // bump → deck loads & auto-plays
 
@@ -267,12 +269,24 @@ export default function App() {
           onError={onError}
         />
       )}
+      {showHistory && (
+        <HistoryPanel
+          onClose={() => setShowHistory(false)}
+          onNotify={notify}
+          onError={onError}
+        />
+      )}
 
       {/* Prep strip spans the top of the window; the library sits below it. */}
       <PrepStrip track={prepTrack} playRequest={playRequest} onError={onError} onNotify={notify} />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <Sidebar source={source} onSelect={selectSource} onError={onError} />
+        <Sidebar
+          source={source}
+          onSelect={selectSource}
+          onError={onError}
+          onOpenHistory={() => setShowHistory(true)}
+        />
 
         <main className="relative flex min-w-0 flex-1 flex-col">
         {/* Search / filters / column settings — always visible. */}

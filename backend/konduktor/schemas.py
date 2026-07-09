@@ -114,9 +114,15 @@ class FileTagOutcome(BaseModel):
 
 class SaveResult(BaseModel):
     saved: bool
-    backup: str | None = None
+    commit: str | None = None  # sha of the version-history commit (None if deduped)
     playlists: int
     file_tags: list[FileTagOutcome] = []
+
+
+class HistoryEntry(BaseModel):
+    id: str  # commit sha
+    timestamp: str  # ISO 8601, UTC
+    summary: str  # human-readable edit summary
 
 
 class CuePoint(BaseModel):
@@ -252,7 +258,7 @@ class RemapPreview(BaseModel):
 
 class RemapResult(BaseModel):
     rewritten: int  # tracks whose LOCATION was rewritten
-    backup: str | None = None  # path of the .bak written before the rewrite
+    commit: str | None = None  # sha of the version-history commit for the rewrite
 
 
 class PrefixGroup(BaseModel):

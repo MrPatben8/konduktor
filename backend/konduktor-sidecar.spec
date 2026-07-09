@@ -8,6 +8,8 @@
 #  - traktor-nml-utils parses/serializes via xsdata, which discovers plugins at
 #    runtime → collect_submodules('xsdata')
 #  - python-multipart is imported as `multipart` by starlette → hidden import
+#  - dulwich (version-history backups) imports git backends dynamically →
+#    collect_submodules('dulwich')
 from PyInstaller.utils.hooks import collect_submodules, collect_all
 
 hiddenimports = []
@@ -15,7 +17,7 @@ datas = []
 binaries = []
 
 # Dynamically-imported subpackages.
-for pkg in ("uvicorn", "xsdata"):
+for pkg in ("uvicorn", "xsdata", "dulwich"):
     hiddenimports += collect_submodules(pkg)
 
 # Native standard extras — grab modules + shared libs + any data.
