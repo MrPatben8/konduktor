@@ -158,10 +158,20 @@ The installers land in `frontend\src-tauri\target\release\bundle\` (an `.msi` an
 an NSIS `-setup.exe`). See [BUILDING-WINDOWS.md](BUILDING-WINDOWS.md) for the full
 walkthrough and Windows-specific notes.
 
-> **Note:** builds are currently **unsigned**, so the first launch is flagged by
-> the OS — on macOS right-click → **Open** to get past Gatekeeper; on Windows
-> click **More info → Run anyway** past SmartScreen. The macOS `.dmg` is
-> Apple-Silicon (`aarch64`) only.
+> **First launch — getting past the OS security prompt.** Builds are
+> **ad-hoc signed, not notarized** (no paid Apple/Windows developer cert yet), so
+> the OS flags them the first time. This is expected — the app isn't damaged.
+>
+> - **macOS:** right-click the app → **Open** → **Open** (or System Settings →
+>   Privacy & Security → **Open Anyway** after the first blocked attempt). If it
+>   still refuses — common for a `.dmg` downloaded via a browser, which macOS
+>   quarantines — clear the quarantine flag once from Terminal:
+>   ```bash
+>   xattr -cr /Applications/Konduktor.app
+>   ```
+> - **Windows:** click **More info → Run anyway** past SmartScreen.
+>
+> The macOS `.dmg` is Apple-Silicon (`aarch64`) only.
 
 > **Faster local builds:** `npx tauri build --debug --bundles app` skips the
 > optimizer and the installer, giving you a runnable app in seconds — handy while
