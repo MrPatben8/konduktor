@@ -30,7 +30,6 @@ os.environ["KONDUKTOR_DATA_DIR"] = tempfile.mkdtemp(prefix="konduktor-fidelity-a
 
 REAL = Path(__file__).resolve().parents[1] / "collection.nml"
 
-from konduktor.collection_service import CollectionService  # noqa: E402
 from konduktor.playlist_store import PlaylistError, PlaylistStore  # noqa: E402
 
 failed = False
@@ -92,7 +91,6 @@ with tempfile.TemporaryDirectory() as d:
     shutil.copy2(REAL, work)
     original = work.read_bytes()
 
-    svc = CollectionService(work)
     store = PlaylistStore(work)
 
     def walk(n):
@@ -107,7 +105,7 @@ with tempfile.TemporaryDirectory() as d:
     uuid = target.playlist.uuid
     keys = store.entry_keys(uuid)
 
-    store.set_entries(uuid, svc.entries_for(list(reversed(keys))))
+    store.set_entries(uuid, store.entries_for(list(reversed(keys))))
     store.save()
     edited = work.read_bytes()
 

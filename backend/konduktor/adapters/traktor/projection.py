@@ -1,0 +1,105 @@
+"""Traktor native model -> the generic projection.
+
+The only place an NML dataclass is turned into a generic `Track`/`TrackCues`.
+Everything above this file sees generic types exclusively.
+"""
+from __future__ import annotations
+
+from ...core.model import CuePoint, GridMarker, Track, TrackCues
+from . import beatgrid
+
+
+def primary_key(location) -> str:
+    """Reconstruct the Traktor primary key used by playlist entries."""
+    vol = location.volume or ""
+    d = location.dir or ""
+    f = location.file or ""
+    return f"{vol}{d}{f}"
+
+
+def _display_path(location) -> str:
+    """Human-readable OS-ish path from Traktor's '/:'-separated dir."""
+    d = (location.dir or "").replace("/:", "/")
+    f = location.file or ""
+    return f"{d}{f}"
+
+
+def _rating_stars(ranking) -> int:
+    if not ranking:
+        return 0
+    return max(0, min(5, round(ranking / 51)))
+
+
+def to_track(e) -> Track:
+    info = e.info
+    loc = e.location
+    cues = e.cue_v2 or []
+    hotcues = sum(
+        1 for c in cues if c.hotcue is not None and c.hotcue >= 0
+    )
+    markers = beatgrid.grid_markers(e)
+    return Track(
+        id=primary_key(loc) if loc else (e.title or ""),
+        artist=e.artist,
+        title=e.title,
+        album=e.album.title if e.album else None,
+        genre=info.genre if info else None,
+        label=info.label if info else None,
+        remixer=info.remixer if info else None,
+        producer=info.producer if info else None,
+        mix=info.mix if info else None,
+        comment=info.comment if info else None,
+        bpm=beatgrid.effective_bpm(e),
+        key=info.key if info else None,
+        rating=_rating_stars(info.ranking if info else None),
+        playcount=info.playcount if info else None,
+        length=info.playtime if info else None,
+        bitrate=info.bitrate if info else None,
+        import_date=info.import_date if info else None,
+        last_played=info.last_played if info else None,
+        release_date=info.release_date if info else None,
+        filepath=_display_path(loc) if loc else None,
+        cue_count=len(cues),
+        hotcue_count=hotcues,
+        has_grid=bool(markers),
+        grid_markers=len(markers),
+        is_stem=getattr(e, "stems", None) is not None,
+    )
+
+
+def to_track_cues(entry) -> TrackCues:
+    """Project an ENTRY's beatgrid + cues.
+
+    The beatgrid is the FULL ordered marker list — a constant grid is a list of
+    length one. Grid markers themselves are not cues; their companion cues are,
+    because they occupy real hotcue slots, and each is tagged with the marker it
+    belongs to so the UI can show it as beatgrid-owned rather than editable.
+    """
+    markers = beatgrid.grid_markers(entry)
+    comps = beatgrid.companions(entry)
+    marker_of = {id(c): i for i, c in comps.items()}
+    grid_markers = [
+        GridMarker(
+            start=(m.start or 0.0) / 1000.0,  # Traktor stores START in ms
+            bpm=m.grid.bpm if m.grid and m.grid.bpm else 0.0,
+            name=m.name,
+            companion=comps[i].hotcue if i in comps else None,
+        )
+        for i, m in enumerate(markers)
+    ]
+    cues = [
+        CuePoint(
+            name=c.name,
+            type=c.type if c.type is not None else 0,
+            start=(c.start or 0.0) / 1000.0,
+            length=(c.len or 0.0) / 1000.0,
+            hotcue=c.hotcue if c.hotcue is not None else -1,
+            color=c.color,
+            grid_marker=marker_of.get(id(c)),
+        )
+        for c in (entry.cue_v2 or [])
+        if getattr(c, "grid", None) is None
+    ]
+    return TrackCues(
+        grid_markers=grid_markers, locked=bool(entry.lock), cues=cues
+    )

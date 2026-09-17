@@ -13,13 +13,14 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from . import __version__, beatgrid
-from . import auto_hotcues as ah
+from . import __version__
+from .adapters.traktor import projection
+from .core import auto_hotcues as ah
 from . import history, prefs
-from .collection_service import CollectionService
-from .discovery import describe, detect_collections
-from .path_mapping import PathMapping
-from .playlist_store import PlaylistError, PlaylistStore
+from .adapters.traktor.adapter import TraktorAdapter
+from .adapters.traktor.discovery import describe, detect_collections
+from .core.pathmap import PathMapping
+from .adapters.traktor.store import PlaylistError, PlaylistStore
 from .schemas import (
     AutoGridRequest,
     AutoHotcue,
@@ -80,24 +81,23 @@ class AppState:
 
     def __init__(self) -> None:
         self.path: Path | None = None
-        self.service: CollectionService | None = None
-        self.store: PlaylistStore | None = None
+        self.adapter: TraktorAdapter | None = None
 
     @property
     def loaded(self) -> bool:
-        return self.service is not None
+        return self.adapter is not None
 
     def open(self, path: Path) -> None:
-        # Both raise on an invalid/parse-incompatible or playlist-less file;
-        # only commit to the new collection if BOTH succeed.
-        service = CollectionService(path)
-        store = PlaylistStore(path)
+        # Raises on an invalid/parse-incompatible file; only commit to the new
+        # collection once it has parsed. One parse — the adapter builds its read
+        # projection from the same object graph the commands mutate.
+        adapter = TraktorAdapter(path)
         # Apply this collection's saved OS-path remapping (per-machine, keyed by
         # the collection's local path) so runtime translation is live on open.
         saved = prefs.get_path_mapping(str(path))
         if saved:
-            store.set_path_mapping(PathMapping.make(saved["from"], saved["to"]))
-        self.path, self.service, self.store = path, service, store
+            adapter.store.set_path_mapping(PathMapping.make(saved["from"], saved["to"]))
+        self.path, self.adapter = path, adapter
         # Version history: record an "as I found it" baseline (deduped, so
         # re-opening an unchanged collection is a no-op). Best-effort.
         history.ensure_baseline(path)
@@ -114,18 +114,18 @@ if _env_nml and Path(_env_nml).exists():
         pass
 
 
-def require_service() -> CollectionService:
+def require_service() -> TraktorAdapter:
     if not STATE.loaded:
         raise HTTPException(409, "No collection loaded")
-    assert STATE.service is not None
-    return STATE.service
+    assert STATE.adapter is not None
+    return STATE.adapter
 
 
 def require_store() -> PlaylistStore:
     if not STATE.loaded:
         raise HTTPException(409, "No collection loaded")
-    assert STATE.store is not None
-    return STATE.store
+    assert STATE.adapter is not None
+    return STATE.adapter.store
 
 
 # ---- collection selection ---------------------------------------------
@@ -454,49 +454,17 @@ def track_audio(track_id: str) -> FileResponse:
     return FileResponse(path, media_type=mime)
 
 
-def _build_track_cues(entry) -> TrackCues:
-    """Project an ENTRY's beatgrid + cues.
-
-    The beatgrid is the FULL ordered marker list — a constant grid is a list of
-    length one. Grid markers themselves are not cues; their companion cues are,
-    because they occupy real hotcue slots, and each is tagged with the marker it
-    belongs to so the UI can show it as beatgrid-owned rather than editable.
-    """
-    markers = beatgrid.grid_markers(entry)
-    comps = beatgrid.companions(entry)
-    marker_of = {id(c): i for i, c in comps.items()}
-    grid_markers = [
-        GridMarker(
-            start=(m.start or 0.0) / 1000.0,  # Traktor stores START in ms
-            bpm=m.grid.bpm if m.grid and m.grid.bpm else 0.0,
-            name=m.name,
-            companion=comps[i].hotcue if i in comps else None,
-        )
-        for i, m in enumerate(markers)
-    ]
-    cues = [
-        CuePoint(
-            name=c.name,
-            type=c.type if c.type is not None else 0,
-            start=(c.start or 0.0) / 1000.0,
-            length=(c.len or 0.0) / 1000.0,
-            hotcue=c.hotcue if c.hotcue is not None else -1,
-            color=c.color,
-            grid_marker=marker_of.get(id(c)),
-        )
-        for c in (entry.cue_v2 or [])
-        if getattr(c, "grid", None) is None
-    ]
-    return TrackCues(
-        grid_markers=grid_markers, locked=bool(entry.lock), cues=cues
-    )
+# Compatibility alias — the cue projection moved into the Traktor adapter.
+# Kept so test_save_fidelity's invariant K imports the old name unchanged while
+# the refactor lands; removed in the final cleanup step.
+_build_track_cues = projection.to_track_cues
 
 
 def _cues_for(track_id: str) -> TrackCues:
     entry = require_store().model_entry(track_id)
     if entry is None:
         raise HTTPException(404, "Track not found")
-    return _build_track_cues(entry)
+    return projection.to_track_cues(entry)
 
 
 @app.get("/api/tracks/cues", response_model=TrackCues)
@@ -511,7 +479,7 @@ def _sync_cue_edit(track_id: str) -> TrackCues:
     entry = store.model_entry(track_id)
     if entry is not None:
         require_service().replace_track(track_id, entry)
-    return _build_track_cues(entry) if entry is not None else TrackCues()
+    return projection.to_track_cues(entry) if entry is not None else TrackCues()
 
 
 @app.post("/api/tracks/hotcue", response_model=TrackCues)
@@ -537,7 +505,7 @@ def auto_hotcues(body: AutoHotcuesRequest) -> TrackCues:
     entry = store.model_entry(body.track_id)
     if entry is None:
         raise HTTPException(404, "Track not found")
-    cues = _build_track_cues(entry)
+    cues = projection.to_track_cues(entry)
     if not cues.grid_markers:
         raise HTTPException(400, "Set a beatgrid before using Auto Hotcues")
     path = store.audio_path(body.track_id)
