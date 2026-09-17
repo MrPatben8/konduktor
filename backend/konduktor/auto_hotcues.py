@@ -114,11 +114,41 @@ def detect_grid(audio_path: str, sr: int = _SR) -> tuple[float, float]:
     return bpm, first_beat
 
 
+def _segment_for(t: float, markers: list[tuple[float, float]]) -> tuple[float, float]:
+    """The ``(start, bpm)`` of the beatgrid segment containing ``t``.
+
+    Times before the first marker use the first segment, extrapolated backwards
+    — the same convention the deck draws with.
+    """
+    seg = markers[0]
+    for m in markers:
+        if m[0] <= t:
+            seg = m
+        else:
+            break
+    return seg
+
+
+def snap_to_phrase(
+    t: float, markers: list[tuple[float, float]], phrase_bars: int = 16
+) -> float:
+    """Snap ``t`` to the nearest phrase boundary OF ITS OWN SEGMENT.
+
+    Snapping is deliberately segment-local rather than a running phrase count
+    across the whole track: a flexible grid exists precisely because the tempo
+    drifted, so carrying a phrase count across a marker seam would propagate the
+    very error the marker was placed to correct. With a single marker this is
+    exactly the old ``anchor + round((t - anchor) / phrase) * phrase``.
+    """
+    anchor, bpm = _segment_for(t, markers)
+    phrase = phrase_bars * 4 * (60.0 / bpm)
+    return anchor + round((t - anchor) / phrase) * phrase
+
+
 def select_hotcues(
     boundaries: list[tuple[float, float]],
     *,
-    bpm: float,
-    anchor: float,
+    markers: list[tuple[float, float]],
     duration: float,
     free_slots: list[int],
     existing_times: list[float],
@@ -127,21 +157,26 @@ def select_hotcues(
 ) -> list[dict]:
     """Turn raw boundaries into hotcue specs, phrase-snapped to the beatgrid.
 
-    Snaps each boundary to the nearest ``phrase_bars``-bar grid point (which
-    also merges near-duplicates), drops any coinciding with an existing hotcue,
-    caps to the free slots (down-sampling evenly if there are too many), and
-    assigns positional names. Returns dicts with slot/start/name/type/length.
+    ``markers`` is the beatgrid as ``[(start_sec, bpm), ...]`` ordered by start —
+    a constant-tempo track is simply a one-element list.
+
+    Snaps each boundary to the nearest ``phrase_bars``-bar grid point of its own
+    tempo segment (which also merges near-duplicates), drops any coinciding with
+    an existing hotcue, caps to the free slots (down-sampling evenly if there
+    are too many), and assigns positional names. Returns dicts with
+    slot/start/name/type/length.
     """
-    if not boundaries or not free_slots or bpm <= 0:
+    if not boundaries or not free_slots or not markers or markers[0][1] <= 0:
         return []
 
-    beat = 60.0 / bpm
-    phrase = phrase_bars * 4 * beat  # seconds per phrase
+    # Tolerance for "same place as an existing cue" and the end clamp. Marker
+    # BPMs differ by well under 1% in practice, so the first is representative.
+    beat = 60.0 / markers[0][1]
 
     # Snap to phrase grid; dedupe (keep the strongest energy seen at each point).
     snapped: dict[float, float] = {}
     for t, energy in boundaries:
-        p = anchor + round((t - anchor) / phrase) * phrase
+        p = snap_to_phrase(t, markers, phrase_bars)
         p = max(0.0, min(p, duration - beat))
         snapped[p] = max(snapped.get(p, 0.0), energy)
 

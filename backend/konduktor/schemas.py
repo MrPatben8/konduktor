@@ -30,6 +30,7 @@ class Track(BaseModel):
     cue_count: int = 0
     hotcue_count: int = 0
     has_grid: bool = False
+    grid_markers: int = 0  # >1 = a flexible (multi-tempo) beatgrid
     is_stem: bool = False  # a Stem file (<STEMS> child) vs a normal audio track
 
 
@@ -132,19 +133,45 @@ class CuePoint(BaseModel):
     length: float  # seconds (>0 for loops)
     hotcue: int  # -1 if not assigned to a hotcue slot
     color: str | None = None  # "#RRGGBB" if set
+    # Index of the grid marker this cue is the companion of, if any. Such a cue
+    # holds a real hotcue slot but belongs to the beatgrid and is not editable.
+    grid_marker: int | None = None
+
+
+class GridMarker(BaseModel):
+    """One beatgrid marker. Its position in the list IS its index/identity."""
+
+    start: float  # seconds
+    bpm: float  # governs from this marker until the next one
+    name: str | None = None  # Traktor's label — display only, NOT a discriminator
+    companion: int | None = None  # hotcue slot of the paired white cue, if any
 
 
 class TrackCues(BaseModel):
-    bpm: float | None = None  # beatgrid BPM (from the grid marker; falls back to tempo)
-    grid_anchor: float | None = None  # seconds — first grid marker (beat 1 of the grid)
+    # THE beatgrid, ordered by start. Empty = no grid; one marker = constant
+    # tempo. There is deliberately no scalar bpm/anchor here: a single "the BPM"
+    # is what made flexible grids render and edit wrongly.
+    grid_markers: list[GridMarker] = []
     locked: bool = False  # Traktor LOCK flag
-    cues: list[CuePoint] = []  # cue/loop markers (grid markers excluded)
+    cues: list[CuePoint] = []  # cue/loop markers (grid markers themselves excluded)
 
 
-class GridEdit(BaseModel):
+class AddGridMarker(BaseModel):
     track_id: str
-    bpm: float | None = None  # set the beatgrid tempo
-    anchor: float | None = None  # set the grid marker (beat 1) position, in seconds
+    start: float  # seconds
+    bpm: float | None = None  # unset = inherit the tempo governing that position
+
+
+class GridMarkerEdit(BaseModel):
+    track_id: str
+    index: int  # into the start-ordered marker list
+    start: float | None = None  # move it (clamped between its neighbours)
+    bpm: float | None = None  # retempo the section it opens
+
+
+class ReplaceGrid(BaseModel):
+    track_id: str
+    markers: list[GridMarker] = []  # [] is equivalent to deleting the grid
 
 
 class SetLock(BaseModel):

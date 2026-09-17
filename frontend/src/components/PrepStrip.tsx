@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type Track, type TrackCues } from '../api'
+import { api, type GridMarker, type Track, type TrackCues } from '../api'
+import { buildBeatGrid, GRID_EPS } from '../lib/beatgrid'
 import { analyzeWaveform, type WaveColumn } from '../lib/waveform'
 import { ScratchEngine } from '../lib/scratchEngine'
 import { PlaybackEngine } from '../lib/playbackEngine'
@@ -54,6 +55,9 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   const [cols, setCols] = useState<WaveColumn[] | null>(null)
   const [waveStatus, setWaveStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [cueData, setCueData] = useState<TrackCues | null>(null)
+  // The beatgrid, rebuilt whenever the cue data is replaced (every edit returns
+  // a fresh TrackCues, so this stays in step automatically). Null = no grid.
+  const grid = useMemo(() => buildBeatGrid(cueData?.grid_markers), [cueData?.grid_markers])
   const [snap, setSnap] = useState(true)
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null)
   const [cuePoint, setCuePoint] = useState(0) // floating "CUE" point (frontend-only)
@@ -65,7 +69,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   const [loopActive, setLoopActive] = useState(false)
   const [activeBeats, setActiveBeats] = useState<number | null>(null)
   const loopInRef = useRef<number | null>(null) // armed manual loop-in point
-  const originalGridRef = useRef<{ bpm: number | null; anchor: number | null } | null>(null)
+  const originalGridRef = useRef<GridMarker[] | null>(null)
 
   const audioCtxRef = useRef<AudioContext | null>(null) // playback
   const scratchCtxRef = useRef<AudioContext | null>(null) // scratch (kept separate!)
@@ -244,8 +248,10 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
       .then((d) => {
         if (cancelled) return
         setCueData(d)
-        // Remember the loaded grid values for "Reset".
-        originalGridRef.current = { bpm: d.bpm, anchor: d.grid_anchor }
+        // Remember the grid as loaded, for "Reset". Flexible-grid editing is
+        // multi-step and destructive, so restoring exactly what Traktor had is
+        // the safety net. Set only here (keyed on trackId), never by an edit.
+        originalGridRef.current = d.grid_markers
       })
       .catch(() => {
         if (!cancelled) setCueData(null)
@@ -397,13 +403,14 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   // active loop. seek() clamps to [0, duration], preserves play/pause state.
   const beatJump = (dir: -1 | 1) => {
     const eng = playbackRef.current
-    const bpm = cueData?.bpm ?? null
-    if (!eng || !bpm || bpm <= 0) return
+    if (!eng || !grid) return
     if (loopActive) {
       eng.setLoopEnabled(false)
       setLoopActive(false)
     }
-    eng.seek(eng.getPosition() + dir * jumpBeats * (60 / bpm))
+    // Phase is preserved in BEAT space, so a jump crossing a tempo change lands
+    // on the musically right beat rather than a fixed number of seconds away.
+    eng.seek(grid.advanceBeats(eng.getPosition(), dir * jumpBeats))
     setCurrent(eng.getPosition())
   }
 
@@ -475,13 +482,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
 
   // ---- loops ------------------------------------------------------------
   // Snap a time to the nearest beat when Snap is on (needs a beatgrid).
-  const snapTime = (t: number) => {
-    const bpm = cueData?.bpm ?? null
-    const anchor = cueData?.grid_anchor ?? null
-    if (!snap || !bpm || bpm <= 0 || anchor == null) return Math.max(0, t)
-    const beat = 60 / bpm
-    return Math.max(0, anchor + Math.round((t - anchor) / beat) * beat)
-  }
+  const snapTime = (t: number) => (snap && grid ? grid.snapToBeat(t) : Math.max(0, t))
 
   const engagLoop = (start: number, end: number, beats: number | null) => {
     const eng = playbackRef.current
@@ -496,8 +497,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
 
   const setBeatLoop = (beats: number) => {
     const eng = playbackRef.current
-    const bpm = cueData?.bpm ?? null
-    if (!eng || !eng.ready || !bpm || bpm <= 0) return
+    if (!eng || !eng.ready || !grid) return
     // Pressing the size of the loop that's already playing disables it.
     if (loopActive && activeBeats === beats) {
       eng.setLoopEnabled(false)
@@ -508,7 +508,9 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     // Resizing an active loop keeps its start locked; only a fresh loop starts
     // at the current playhead.
     const start = loopActive && loopRegion ? loopRegion.start : snapTime(eng.getPosition())
-    engagLoop(start, start + beats * (60 / bpm), beats)
+    // Measured from the loop's own start, so a loop spanning a tempo change
+    // still covers the right number of beats.
+    engagLoop(start, grid.advanceBeats(start, beats), beats)
   }
 
   const loopIn = () => {
@@ -534,6 +536,19 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     setCurrent(eng.getPosition())
   }
 
+  // A beat loop's end is stored in seconds, so editing the tempo of a marker
+  // inside it would silently detune it. Re-derive the end whenever the grid
+  // changes, keeping the loop the beat length the user actually asked for.
+  useEffect(() => {
+    if (!grid || !loopActive || !loopRegion || activeBeats == null) return
+    const end = grid.advanceBeats(loopRegion.start, activeBeats)
+    if (Math.abs(end - loopRegion.end) < 1e-4) return
+    playbackRef.current?.setLoop(loopRegion.start, end, true)
+    setLoopRegion({ start: loopRegion.start, end })
+    // Only the grid should trigger this; loop state changes set the end already.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grid])
+
   // ---- hotcues ----------------------------------------------------------
   const hotcueAt = (slot: number) => cueData?.cues.find((c) => c.hotcue === slot) ?? null
 
@@ -546,10 +561,11 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
 
   // Map a loop length (seconds) back to a preset beat count for the size
   // highlight, snapping to the nearest preset when it's close (float tolerance).
-  const beatsForLength = (length: number): number | null => {
-    const bpm = cueData?.bpm ?? null
-    if (!bpm || bpm <= 0) return null
-    const beats = length / (60 / bpm)
+  // Needs the start as well as the length: under a marker list a duration
+  // alone no longer identifies a beat count.
+  const beatsForLoop = (start: number, length: number): number | null => {
+    if (!grid) return null
+    const beats = grid.beatsBetween(start, start + length)
     let best: number | null = null
     let bestDiff = Infinity
     for (const s of LOOP_SIZES) {
@@ -570,6 +586,12 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   const onSlotPress = async (slot: number) => {
     if (!track) return
     const cue = hotcueAt(slot)
+    // A grid marker's companion cue holds this slot. It belongs to the beatgrid,
+    // so pressing it only seeks — never create, retype, select or preview.
+    if (cue?.grid_marker != null) {
+      seekManual(cue.start)
+      return
+    }
     if (!cue) {
       try {
         // Setting a hotcue while a loop is active stores it as a loop hotcue.
@@ -593,7 +615,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     // A loop hotcue jumps to its start AND re-engages a loop of its length.
     if (cue.type === LOOP_TYPE && cue.length > 0) {
       seek(cue.start)
-      engagLoop(cue.start, cue.start + cue.length, beatsForLength(cue.length))
+      engagLoop(cue.start, cue.start + cue.length, beatsForLoop(cue.start, cue.length))
     } else {
       seek(cue.start)
     }
@@ -607,7 +629,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   // Auto Hotcues: the backend analyses the track's audio (librosa structural
   // segmentation), snaps boundaries to the beatgrid, and fills empty slots only.
   // Requires a beatgrid (button disabled otherwise).
-  const canAutoCue = !!(cueData?.bpm && cueData.bpm > 0 && cueData.grid_anchor != null)
+  const canAutoCue = grid != null
   const runAutoHotcues = async () => {
     if (!track || !canAutoCue || autoBusy) return
     const hotcueCount = (c: TrackCues | null) =>
@@ -654,7 +676,9 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   }
 
   const deleteHotcueSlot = async (slot: number) => {
-    if (!track || !hotcueAt(slot)) return // nothing to remove in an empty slot
+    const existing = hotcueAt(slot)
+    if (!track || !existing) return // nothing to remove in an empty slot
+    if (existing.grid_marker != null) return // beatgrid-owned: delete the marker instead
     try {
       applyCueEdit(await api.deleteHotcue(track.id, slot))
       if (selectedSlot === slot) setSelectedSlot(null)
@@ -663,105 +687,72 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     }
   }
 
-  // ---- keyboard shortcuts ----------------------------------------------
-  // Space → play/pause; 1–8 → the matching hotcue slot; Shift+1–8 → delete it.
-  // Digits are read from e.code (layout-/Shift-independent) and a ref holds the
-  // latest handlers so the listener attaches once and never goes stale.
-  const shortcutsRef = useRef({
-    toggle,
-    onSlotPress,
-    onSlotRelease,
-    deleteHotcueSlot,
-    onCuePress,
-    onCueRelease,
-    beatJump,
-  })
-  shortcutsRef.current = {
-    toggle,
-    onSlotPress,
-    onSlotRelease,
-    deleteHotcueSlot,
-    onCuePress,
-    onCueRelease,
-    beatJump,
-  }
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      // Ignore while typing in a field or with a non-Shift modifier held.
-      const t = e.target as HTMLElement | null
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-      if (e.repeat) return // held key auto-repeats — treat as one press+hold
-      if (e.code === 'Space') {
-        e.preventDefault()
-        shortcutsRef.current.toggle()
-        return
-      }
-      if (e.code === 'KeyC') {
-        e.preventDefault()
-        shortcutsRef.current.onCuePress()
-        return
-      }
-      if (e.code === 'ArrowLeft') {
-        e.preventDefault()
-        shortcutsRef.current.beatJump(-1)
-        return
-      }
-      if (e.code === 'ArrowRight') {
-        e.preventDefault()
-        shortcutsRef.current.beatJump(1)
-        return
-      }
-      const digit = e.code.match(/^(?:Digit|Numpad)([1-8])$/)
-      if (digit) {
-        e.preventDefault()
-        const slot = Number(digit[1]) - 1
-        if (e.shiftKey) void shortcutsRef.current.deleteHotcueSlot(slot)
-        else void shortcutsRef.current.onSlotPress(slot)
-      }
-    }
-    // keyup ends a held hotcue's momentary preview (release).
-    const onKeyRelease = (e: KeyboardEvent) => {
-      if (e.code === 'KeyC') shortcutsRef.current.onCueRelease()
-      const digit = e.code.match(/^(?:Digit|Numpad)([1-8])$/)
-      if (digit) shortcutsRef.current.onSlotRelease(Number(digit[1]) - 1)
-    }
-    window.addEventListener('keydown', onKey)
-    window.addEventListener('keyup', onKeyRelease)
-    return () => {
-      window.removeEventListener('keydown', onKey)
-      window.removeEventListener('keyup', onKeyRelease)
-    }
-  }, [])
-
   // ---- beatgrid ---------------------------------------------------------
-  const gridBpm = cueData?.bpm ?? null
-  const gridAnchor = cueData?.grid_anchor ?? null
-  // Beat jump needs a tempo to size beats; disabled on ungridded tracks.
-  const canBeatJump = ready && gridBpm != null && gridBpm > 0
+  // Which marker the grid controls act on is derived from the playhead — there
+  // is no separate selection state to keep in sync.
+  const activeMarkerIndex = grid ? grid.markerIndexAt(current) : -1
+  const activeMarker = activeMarkerIndex >= 0 ? grid!.markers[activeMarkerIndex] : null
+  // ~4px of the current zoom, so "on the marker" stays usable at 2s and 64s/view.
+  const markerHitSec = Math.max(0.01, secPerView / 250)
+  const atMarker = !!grid && grid.isOnMarker(current, markerHitSec)
+  const beforeFirstMarker = !!grid && current < grid.markers[0].start - GRID_EPS
+  // Beat jump needs a grid to size beats; disabled on ungridded tracks.
+  const canBeatJump = ready && grid != null
 
-  const editGrid = async (patch: { bpm?: number; anchor?: number }) => {
-    if (!track) return
+  const playheadNow = () => playbackRef.current?.getPosition() ?? current
+
+  const editMarker = async (index: number, patch: { bpm?: number; start?: number }) => {
+    if (!track || index < 0) return
     try {
-      applyCueEdit(await api.setGrid(track.id, patch))
+      applyCueEdit(await api.setGridMarker(track.id, index, patch))
     } catch (e) {
       onError?.((e as Error).message)
     }
   }
-  const setBpm = (bpm: number) => editGrid({ bpm })
-  const nudgeBpm = (delta: number) =>
-    gridBpm && editGrid({ bpm: Math.round((gridBpm + delta) * 1000) / 1000 })
-  const halveBpm = () => gridBpm && editGrid({ bpm: gridBpm / 2 })
-  const doubleBpm = () => gridBpm && editGrid({ bpm: gridBpm * 2 })
+  const setBpm = (bpm: number) =>
+    editMarker(activeMarkerIndex, { bpm: Math.round(bpm * 1000) / 1000 })
+  const nudgeBpm = (delta: number) => activeMarker && setBpm(activeMarker.bpm + delta)
+  // /2 and x2 retempo the governing marker only, like every other tempo control
+  // in this panel — a section can be octave-wrong on its own.
+  const halveBpm = () => activeMarker && setBpm(activeMarker.bpm / 2)
+  const doubleBpm = () => activeMarker && setBpm(activeMarker.bpm * 2)
   const nudgeGrid = (deltaMs: number) => {
-    if (gridAnchor == null) return
-    editGrid({ anchor: Math.max(0, gridAnchor + deltaMs / 1000) })
+    if (!activeMarker) return
+    editMarker(activeMarkerIndex, { start: Math.max(0, activeMarker.start + deltaMs / 1000) })
   }
-  const setGridHere = () => editGrid({ anchor: playbackRef.current?.getPosition() ?? current })
-  const resetGrid = () => {
+  // Adds a marker at the playhead — and creates the grid when there is none.
+  // Uses the raw playhead, not snapTime: a marker defines where beats are.
+  const addMarkerHere = async () => {
+    if (!track) return
+    try {
+      applyCueEdit(await api.addGridMarker(track.id, playheadNow()))
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+  const deleteMarkerHere = async () => {
+    if (!track || activeMarkerIndex < 0) return
+    try {
+      applyCueEdit(await api.deleteGridMarker(track.id, activeMarkerIndex))
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+  // Seeking between markers IS how the user changes which marker is active.
+  const seekToMarker = (index: number) => {
+    if (!grid || index < 0 || index >= grid.count) return
+    seekManual(grid.markers[index].start)
+  }
+  const prevMarker = () => seekToMarker(grid ? grid.prevMarkerIndex(current, markerHitSec) : -1)
+  const nextMarker = () => seekToMarker(grid ? grid.nextMarkerIndex(current, markerHitSec) : -1)
+  const resetGrid = async () => {
     const o = originalGridRef.current
-    if (!o) return
-    editGrid({ bpm: o.bpm ?? undefined, anchor: o.anchor ?? undefined })
+    if (!track || !o) return
+    try {
+      applyCueEdit(await api.replaceGridMarkers(track.id, o))
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
   }
   const toggleLock = async () => {
     if (!track) return
@@ -793,6 +784,84 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     }
   }
 
+  // ---- keyboard shortcuts ----------------------------------------------
+  // Space → play/pause; 1–8 → the matching hotcue slot; Shift+1–8 → delete it.
+  // ←/→ → beat jump; Shift+←/→ → step between grid markers.
+  // Digits are read from e.code (layout-/Shift-independent) and a ref holds the
+  // latest handlers so the listener attaches once and never goes stale.
+  const shortcutsRef = useRef({
+    toggle,
+    onSlotPress,
+    onSlotRelease,
+    deleteHotcueSlot,
+    onCuePress,
+    onCueRelease,
+    beatJump,
+    prevMarker,
+    nextMarker,
+  })
+  shortcutsRef.current = {
+    toggle,
+    onSlotPress,
+    onSlotRelease,
+    deleteHotcueSlot,
+    onCuePress,
+    onCueRelease,
+    beatJump,
+    prevMarker,
+    nextMarker,
+  }
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Ignore while typing in a field or with a non-Shift modifier held.
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.repeat) return // held key auto-repeats — treat as one press+hold
+      if (e.code === 'Space') {
+        e.preventDefault()
+        shortcutsRef.current.toggle()
+        return
+      }
+      if (e.code === 'KeyC') {
+        e.preventDefault()
+        shortcutsRef.current.onCuePress()
+        return
+      }
+      if (e.code === 'ArrowLeft') {
+        e.preventDefault()
+        if (e.shiftKey) shortcutsRef.current.prevMarker()
+        else shortcutsRef.current.beatJump(-1)
+        return
+      }
+      if (e.code === 'ArrowRight') {
+        e.preventDefault()
+        if (e.shiftKey) shortcutsRef.current.nextMarker()
+        else shortcutsRef.current.beatJump(1)
+        return
+      }
+      const digit = e.code.match(/^(?:Digit|Numpad)([1-8])$/)
+      if (digit) {
+        e.preventDefault()
+        const slot = Number(digit[1]) - 1
+        if (e.shiftKey) void shortcutsRef.current.deleteHotcueSlot(slot)
+        else void shortcutsRef.current.onSlotPress(slot)
+      }
+    }
+    // keyup ends a held hotcue's momentary preview (release).
+    const onKeyRelease = (e: KeyboardEvent) => {
+      if (e.code === 'KeyC') shortcutsRef.current.onCueRelease()
+      const digit = e.code.match(/^(?:Digit|Numpad)([1-8])$/)
+      if (digit) shortcutsRef.current.onSlotRelease(Number(digit[1]) - 1)
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('keyup', onKeyRelease)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keyup', onKeyRelease)
+    }
+  }, [])
+
   const selectedCue = selectedSlot != null ? hotcueAt(selectedSlot) : null
   const showWaves = track && cols && waveStatus === 'ready'
   const activeLoop = loopActive && loopRegion ? loopRegion : null
@@ -818,15 +887,23 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
 
         {track && (
           <GridControls
-            bpm={gridBpm}
+            bpm={activeMarker?.bpm ?? null}
+            markerIndex={activeMarkerIndex}
+            markerCount={grid?.count ?? 0}
+            markerStart={activeMarker?.start ?? null}
+            atMarker={atMarker}
+            beforeFirst={beforeFirstMarker}
             locked={cueData?.locked ?? false}
-            hasGrid={gridAnchor != null}
+            canReset={originalGridRef.current != null}
             onSetBpm={setBpm}
             onNudgeBpm={nudgeBpm}
             onHalve={halveBpm}
             onDouble={doubleBpm}
-            onNudge={nudgeGrid}
-            onSetHere={setGridHere}
+            onNudgeMarker={nudgeGrid}
+            onAddMarker={addMarkerHere}
+            onDeleteMarker={deleteMarkerHere}
+            onPrevMarker={prevMarker}
+            onNextMarker={nextMarker}
             onReset={resetGrid}
             onToggleLock={toggleLock}
             onDeleteGrid={deleteGrid}
@@ -907,8 +984,8 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
                   duration={duration}
                   cues={cueData?.cues ?? []}
                   cuePoint={cuePoint}
-                  bpm={cueData?.bpm ?? null}
-                  gridAnchor={cueData?.grid_anchor ?? null}
+                  grid={grid}
+                  activeMarker={activeMarkerIndex}
                   loop={activeLoop}
                   secPerView={secPerView}
                   onZoomChange={setSecPerView}
@@ -938,7 +1015,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
             </div>
 
             <LoopControls
-              bpm={cueData?.bpm ?? null}
+              hasGrid={grid != null}
               active={loopActive}
               activeBeats={activeBeats}
               canToggle={loopRegion != null}

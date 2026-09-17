@@ -1,5 +1,5 @@
 interface Props {
-  bpm: number | null // beat-loops need a grid; buttons disable without one
+  hasGrid: boolean // beat-loops need a beatgrid; buttons disable without one
   active: boolean // a loop is currently engaged
   activeBeats: number | null // size of the active loop (null for a manual loop)
   canToggle: boolean // a loop region exists to enable/disable
@@ -23,7 +23,7 @@ const IDLE = 'bg-ink-900 text-text hover:bg-ink-800'
 const OFF = 'disabled:opacity-30 disabled:hover:bg-ink-900'
 
 export function LoopControls({
-  bpm,
+  hasGrid,
   active,
   activeBeats,
   canToggle,
@@ -34,7 +34,6 @@ export function LoopControls({
   onLoopOut,
   onToggleActive,
 }: Props) {
-  const hasGrid = !!bpm && bpm > 0
 
   return (
     <div className="flex h-10 shrink-0 items-stretch gap-px border-t border-line bg-ink-950">

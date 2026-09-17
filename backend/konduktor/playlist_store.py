@@ -42,7 +42,7 @@ from traktor_nml_utils.models.collection import (
 )
 from xsdata.formats.dataclass.serializers import XmlSerializer
 
-from . import __version__, history
+from . import __version__, beatgrid, history
 from .path_mapping import PathMapping
 from .schemas import PlaylistNode
 
@@ -295,6 +295,21 @@ class PlaylistStore:
             raise PlaylistError(f"Track not found: {track_id}")
         return entry
 
+    @staticmethod
+    def _reject_if_companion(entry: Entrytype, slot: int) -> None:
+        """Refuse to touch a slot held by a grid marker's companion cue.
+
+        Traktor pairs most grid markers with a white cue in a real hotcue slot.
+        Overwriting, retyping or deleting one desyncs it from its marker, so the
+        beatgrid commands own these slots — move or delete the marker instead.
+        """
+        cue = next((c for c in (entry.cue_v2 or []) if c.hotcue == slot), None)
+        if cue is not None and beatgrid.is_companion(entry, cue):
+            raise PlaylistError(
+                f"Hotcue {slot + 1} belongs to a beatgrid marker — "
+                "move or delete the marker instead"
+            )
+
     def set_hotcue(
         self,
         track_id: str,
@@ -314,6 +329,7 @@ class PlaylistStore:
             raise PlaylistError(f"Unsupported cue type: {cue_type}")
         with self._lock:
             entry = self._entry_or_raise(track_id)
+            self._reject_if_companion(entry, slot)
             start_ms = max(0.0, start_sec * 1000.0)  # Traktor stores START/LEN in ms
             len_ms = max(0.0, length_sec * 1000.0)
             existing = next(
@@ -356,8 +372,13 @@ class PlaylistStore:
             occupied = {
                 c.hotcue for c in (entry.cue_v2 or []) if c.hotcue is not None and c.hotcue >= 0
             }
+            # Companion slots belong to the beatgrid — never fill them, even
+            # with overwrite=True (occupied alone only guards them while False).
+            protected = {
+                c.hotcue for c in beatgrid.companions(entry).values() if c.hotcue is not None
+            }
         for spec in specs:
-            if not overwrite and spec.slot in occupied:
+            if spec.slot in protected or (not overwrite and spec.slot in occupied):
                 continue
             self.set_hotcue(
                 track_id,
@@ -374,6 +395,7 @@ class PlaylistStore:
             raise PlaylistError(f"Unsupported cue type: {cue_type}")
         with self._lock:
             entry = self._entry_or_raise(track_id)
+            self._reject_if_companion(entry, slot)
             cue = next((c for c in (entry.cue_v2 or []) if c.hotcue == slot), None)
             if cue is None:
                 raise PlaylistError(f"Hotcue {slot} is not set")
@@ -384,6 +406,7 @@ class PlaylistStore:
     def delete_hotcue(self, track_id: str, slot: int) -> None:
         with self._lock:
             entry = self._entry_or_raise(track_id)
+            self._reject_if_companion(entry, slot)
             before = entry.cue_v2 or []
             entry.cue_v2 = [c for c in before if c.hotcue != slot]
             if len(entry.cue_v2) != len(before):  # only count an actual removal
@@ -391,61 +414,279 @@ class PlaylistStore:
             self.dirty = True
 
     # ---- beatgrid -----------------------------------------------------
+    # A beatgrid is an ORDERED LIST of markers (see beatgrid.py); a constant
+    # grid is a list of length one. Markers are addressed by their index in that
+    # start-ordered list. CUE_V2 has no id attribute and save() reparses the
+    # whole file, so any synthetic id would have to be rebuilt by position
+    # anyway — the index IS the identity.
+    _MARKER_MIN_GAP_MS = 1.0
+
     @staticmethod
     def _grid_marker(entry: Entrytype) -> CueV2Type | None:
-        return next(
-            (c for c in (entry.cue_v2 or []) if getattr(c, "grid", None) is not None), None
-        )
+        """The first grid marker BY START — the one <TEMPO BPM> mirrors."""
+        return beatgrid.first_marker(entry)
 
-    def set_grid(
-        self, track_id: str, bpm: float | None = None, anchor_sec: float | None = None
-    ) -> None:
-        """Set the beatgrid tempo (TEMPO + grid marker BPM) and/or move the grid
-        marker (beat 1). Creates a grid marker if the track has none."""
+    @staticmethod
+    def _sync_tempo(entry: Entrytype) -> None:
+        """Mirror <TEMPO BPM> from the first marker (7968/7968 in the reference
+        collection). Called last by every grid mutator, so a move that changes
+        which marker is first re-mirrors for free.
+
+        With no markers left, TEMPO is LEFT ALONE: Traktor keeps the analysed
+        BPM on gridless tracks (53 such entries exist in the reference file).
+        """
+        marker = beatgrid.first_marker(entry)
+        if marker is None or marker.grid is None or not marker.grid.bpm:
+            return
+        if entry.tempo is None:
+            entry.tempo = Tempotype(bpm=marker.grid.bpm, bpm_quality=100.0)
+        else:
+            entry.tempo.bpm = marker.grid.bpm
+
+    @staticmethod
+    def _sort_cues(entry: Entrytype) -> None:
+        """Keep CUE_V2 ascending by START — true for 8485/8485 reference
+        entries, so an inserted marker must not become the one exception.
+        Stable, so a marker stays ahead of a companion at an identical START.
+        """
+        if entry.cue_v2:
+            entry.cue_v2.sort(key=lambda c: c.start or 0.0)
+
+    def _markers_or_raise(
+        self, entry: Entrytype, index: int
+    ) -> tuple[list[CueV2Type], CueV2Type]:
+        markers = beatgrid.grid_markers(entry)
+        if not markers:
+            raise PlaylistError("Track has no beatgrid")
+        if not 0 <= index < len(markers):
+            raise PlaylistError(
+                f"Grid marker {index} out of range (track has {len(markers)})"
+            )
+        return markers, markers[index]
+
+    def _drop_grid(self, entry: Entrytype) -> None:
+        """Remove every marker AND every companion. No _note — callers do that."""
+        doomed = {id(m) for m in beatgrid.grid_markers(entry)}
+        doomed |= {id(c) for c in beatgrid.companions(entry).values()}
+        entry.cue_v2 = [c for c in (entry.cue_v2 or []) if id(c) not in doomed]
+
+    def add_grid_marker(
+        self,
+        track_id: str,
+        start_sec: float,
+        bpm: float | None = None,
+        name: str | None = None,
+    ) -> int:
+        """Add a beatgrid marker at `start_sec`; returns its index.
+
+        With `bpm` unset the marker INHERITS the tempo of the section it lands
+        in, so splitting a section is musically a no-op until it's retempoed.
+        Creates no companion cue — Traktor tolerates markers without one, and
+        inventing them would silently consume the user's hotcue slots.
+        """
+        if bpm is not None and bpm <= 0:
+            raise PlaylistError(f"BPM must be positive: {bpm}")
         with self._lock:
             entry = self._entry_or_raise(track_id)
-            marker = self._grid_marker(entry)
-            if bpm is not None:
-                if bpm <= 0:
-                    raise PlaylistError(f"BPM must be positive: {bpm}")
-                if entry.tempo is None:
-                    entry.tempo = Tempotype(bpm=bpm, bpm_quality=100.0)
-                else:
-                    entry.tempo.bpm = bpm
-                if marker is not None and marker.grid is not None:
-                    marker.grid.bpm = bpm
-            if anchor_sec is not None:
-                start_ms = max(0.0, anchor_sec * 1000.0)
-                if marker is not None:
-                    marker.start = start_ms
-                else:
-                    grid_bpm = bpm if bpm is not None else (entry.tempo.bpm if entry.tempo else None)
-                    if grid_bpm is None:
-                        raise PlaylistError("No BPM available to create a beatgrid")
-                    if entry.cue_v2 is None:
-                        entry.cue_v2 = []
-                    entry.cue_v2.append(
-                        CueV2Type(
-                            name="AutoGrid",
-                            displ_order=0,
-                            type=4,
-                            start=start_ms,
-                            len=0.0,
-                            repeats=-1,
-                            hotcue=-1,
-                            color=None,
-                            grid=GridType(bpm=grid_bpm),
-                        )
-                    )
-            self._note("grid", "edit", track_id)
+            start_ms = max(0.0, start_sec * 1000.0)
+            markers = beatgrid.grid_markers(entry)
+            for m in markers:
+                if abs((m.start or 0.0) - start_ms) < self._MARKER_MIN_GAP_MS:
+                    raise PlaylistError("A grid marker already exists at that position")
+            if bpm is None:
+                bpm = self._bpm_governing(entry, start_ms)
+                if bpm is None:
+                    raise PlaylistError("No BPM available to create a beatgrid")
+            if entry.cue_v2 is None:
+                entry.cue_v2 = []
+            entry.cue_v2.append(
+                CueV2Type(
+                    name=name or ("AutoGrid" if not markers else "n.n."),
+                    displ_order=0,
+                    type=4,
+                    start=start_ms,
+                    len=0.0,
+                    repeats=-1,
+                    hotcue=-1,
+                    color=None,
+                    grid=GridType(bpm=bpm),
+                )
+            )
+            self._sort_cues(entry)
+            self._sync_tempo(entry)
+            self._note("grid", "marker-add", track_id)
+            self.dirty = True
+            return next(
+                i
+                for i, m in enumerate(beatgrid.grid_markers(entry))
+                if abs((m.start or 0.0) - start_ms) < 1e-9
+            )
+
+    @staticmethod
+    def _bpm_governing(entry: Entrytype, start_ms: float) -> float | None:
+        """The tempo in force at `start_ms`: the last marker at or before it,
+        else the first marker (extrapolated backwards), else <TEMPO BPM>."""
+        markers = beatgrid.grid_markers(entry)
+        if not markers:
+            return entry.tempo.bpm if entry.tempo else None
+        governing = markers[0]
+        for m in markers:
+            if (m.start or 0.0) <= start_ms:
+                governing = m
+            else:
+                break
+        return governing.grid.bpm if governing.grid else None
+
+    def move_grid_marker(self, track_id: str, index: int, start_sec: float) -> None:
+        """Move marker `index`, DRAGGING ITS COMPANION with it.
+
+        The new position is CLAMPED between the neighbouring markers rather than
+        allowed to reorder them, so an index can never go stale mid-edit. Phase
+        nudges are +/-1 and +/-10 ms, so this is no practical constraint;
+        restructuring a grid is add-then-delete.
+        """
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            markers, marker = self._markers_or_raise(entry, index)
+            start_ms = max(0.0, start_sec * 1000.0)
+            if index > 0:
+                lo = (markers[index - 1].start or 0.0) + self._MARKER_MIN_GAP_MS
+                start_ms = max(start_ms, lo)
+            if index < len(markers) - 1:
+                hi = (markers[index + 1].start or 0.0) - self._MARKER_MIN_GAP_MS
+                start_ms = min(start_ms, hi)
+            companion = beatgrid.companions(entry).get(index)
+            marker.start = start_ms
+            if companion is not None:
+                # Copy the float — never recompute from seconds. A 1-ULP drift
+                # here would change the rendered bytes and break byte-reverts.
+                companion.start = marker.start
+            self._sync_tempo(entry)
+            self._note("grid", "marker-move", track_id)
             self.dirty = True
 
-    def delete_grid(self, track_id: str) -> None:
+    def set_grid_marker_bpm(self, track_id: str, index: int, bpm: float) -> None:
+        """Set marker `index`'s tempo (governs until the next marker)."""
+        if bpm <= 0:
+            raise PlaylistError(f"BPM must be positive: {bpm}")
         with self._lock:
             entry = self._entry_or_raise(track_id)
-            entry.cue_v2 = [
-                c for c in (entry.cue_v2 or []) if getattr(c, "grid", None) is None
-            ]
+            _, marker = self._markers_or_raise(entry, index)
+            if marker.grid is None:
+                marker.grid = GridType(bpm=bpm)
+            else:
+                marker.grid.bpm = bpm
+            self._sync_tempo(entry)
+            self._note("grid", "marker-bpm", track_id)
+            self.dirty = True
+
+    def delete_grid_marker(self, track_id: str, index: int) -> None:
+        """Remove marker `index` and its companion (freeing that hotcue slot)."""
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            markers, marker = self._markers_or_raise(entry, index)
+            companion = beatgrid.companions(entry).get(index)
+            doomed = {id(marker)} | ({id(companion)} if companion is not None else set())
+            entry.cue_v2 = [c for c in (entry.cue_v2 or []) if id(c) not in doomed]
+            self._sync_tempo(entry)
+            # Removing the last marker IS deleting the grid — report it as one.
+            self._note(
+                "grid", "delete" if len(markers) == 1 else "marker-delete", track_id
+            )
+            self.dirty = True
+
+    def replace_grid(
+        self, track_id: str, markers: list[tuple[float, float]]
+    ) -> None:
+        """Throw the grid away and rebuild it from `markers` [(start_sec, bpm)].
+
+        Serves both Auto Grid (a single marker) and the deck's Reset (restore
+        the list as loaded) as one atomic, single-event command. Companions of
+        the old grid go with it; none are created.
+        """
+        for start_sec, bpm in markers:
+            if bpm <= 0:
+                raise PlaylistError(f"BPM must be positive: {bpm}")
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            self._drop_grid(entry)
+            if entry.cue_v2 is None:
+                entry.cue_v2 = []
+            for i, (start_sec, bpm) in enumerate(
+                sorted(markers, key=lambda m: m[0])
+            ):
+                entry.cue_v2.append(
+                    CueV2Type(
+                        name="AutoGrid" if i == 0 else "n.n.",
+                        displ_order=0,
+                        type=4,
+                        start=max(0.0, start_sec * 1000.0),
+                        len=0.0,
+                        repeats=-1,
+                        hotcue=-1,
+                        color=None,
+                        grid=GridType(bpm=bpm),
+                    )
+                )
+            self._sort_cues(entry)
+            self._sync_tempo(entry)
+            self._note("grid", "replace", track_id)
+            self.dirty = True
+
+    def place_grid_companion(
+        self, track_id: str, index: int, *, prefer_slot: int = 0
+    ) -> int | None:
+        """Give marker `index` the white beat-1 hotcue Traktor writes beside its
+        own markers: `prefer_slot` when free, else the lowest free slot.
+
+        Returns the slot used, or None when the bank is full or the marker
+        already has a companion. NEVER overwrites. This is the ONLY place
+        Konduktor creates a companion — grid edits never do — because it is a
+        deliberate, user-invoked feature (Auto Grid), not a side effect.
+        """
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            _, marker = self._markers_or_raise(entry, index)
+            if index in beatgrid.companions(entry):
+                return None
+            used = {
+                c.hotcue
+                for c in (entry.cue_v2 or [])
+                if c.hotcue is not None and c.hotcue >= 0
+            }
+            slot = next(
+                (s for s in [prefer_slot, *range(8)] if 0 <= s <= 7 and s not in used),
+                None,
+            )
+            if slot is None:
+                return None
+            entry.cue_v2.append(
+                CueV2Type(
+                    name=marker.name or "AutoGrid",
+                    displ_order=0,
+                    type=0,
+                    start=marker.start,  # copy the float, not start_sec * 1000
+                    len=0.0,
+                    repeats=-1,
+                    hotcue=slot,
+                    color=beatgrid.COMPANION_COLOR,
+                    grid=None,
+                )
+            )
+            self._sort_cues(entry)
+            self._note("grid", "marker-add", track_id)
+            self.dirty = True
+            return slot
+
+    def delete_grid(self, track_id: str) -> None:
+        """Remove EVERY grid marker AND EVERY companion; <TEMPO> is kept.
+
+        Dropping companions is the debris fix: the old code stripped markers
+        only, leaving orphan white cues squatting in hotcue slots.
+        """
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            self._drop_grid(entry)
             self._note("grid", "delete", track_id)
             self.dirty = True
 
@@ -698,7 +939,10 @@ class PlaylistStore:
                 elif detail == "delete":
                     hc_del += 1
             elif cat == "grid":
-                (grid_edit if detail == "edit" else grid_del).add(tid or "")
+                # "delete" is the ONLY deletion detail. Everything else — including
+                # details added later — counts as an edit, because mis-labelling an
+                # edit as a deletion in the history summary is the damaging direction.
+                (grid_del if detail == "delete" else grid_edit).add(tid or "")
             elif cat == "lock":
                 (lock_on if detail == "on" else lock_off).add(tid or "")
 

@@ -211,11 +211,19 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
     size: 72,
     cell: (c) => {
       const n = c.getValue()
-      const grid = c.row.original.has_grid
+      const markers = c.row.original.grid_markers
+      // Gold marks a flexible (multi-tempo) grid, mint an ordinary constant one.
       return (
         <span className="flex items-center gap-1 tabular-nums">
           <span className={n > 0 ? 'text-text' : 'text-faint'}>{n}</span>
-          {grid && <span className="text-[10px] text-mint" title="Beatgrid analyzed">⊞</span>}
+          {c.row.original.has_grid && (
+            <span
+              className={markers > 1 ? 'text-[10px] text-gold' : 'text-[10px] text-mint'}
+              title={markers > 1 ? `Flexible beatgrid (${markers} markers)` : 'Beatgrid analyzed'}
+            >
+              ⊞
+            </span>
+          )}
         </span>
       )
     },

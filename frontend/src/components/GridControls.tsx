@@ -1,21 +1,50 @@
-import { useRef, useState } from 'react'
+import { memo, useRef, useState } from 'react'
 
 interface Props {
+  /** Tempo of the marker governing the playhead — what the tempo controls act
+   *  on. Null when the track has no grid. */
   bpm: number | null
+  /** Index of that marker; -1 when there is no grid. */
+  markerIndex: number
+  /** 0 = no grid, 1 = constant tempo, >1 = a flexible (multi-tempo) grid. */
+  markerCount: number
+  /** Position (s) of the governing marker; null when there is no grid. */
+  markerStart: number | null
+  /** The playhead is sitting on the governing marker. */
+  atMarker: boolean
+  /** The playhead precedes the first marker (whose tempo extrapolates back). */
+  beforeFirst: boolean
   locked: boolean
-  hasGrid: boolean
+  /** A snapshot of the grid as loaded exists to restore. */
+  canReset: boolean
   onSetBpm: (bpm: number) => void
   onNudgeBpm: (delta: number) => void
+  /** Octave fix for the governing marker (halve / double its BPM). */
   onHalve: () => void
   onDouble: () => void
-  onNudge: (deltaMs: number) => void
-  onSetHere: () => void
+  /** Move the governing marker by ±ms. */
+  onNudgeMarker: (deltaMs: number) => void
+  /** Add a marker at the playhead (creates the grid when there is none). */
+  onAddMarker: () => void
+  /** Delete the governing marker (offered only while standing on it). */
+  onDeleteMarker: () => void
+  /** Seek to the adjacent marker — under playhead-derived selection this is
+   *  how the user changes which marker they are editing. */
+  onPrevMarker: () => void
+  onNextMarker: () => void
   onReset: () => void
   onToggleLock: () => void
   onDeleteGrid: () => void
-  /** Detect BPM + first beat and build the grid (sets hotcue 1 + anchor). */
+  /** Detect BPM + first beat and rebuild the grid as a single marker. */
   onAnalyze: () => void
   analyzing: boolean
+}
+
+/** m:ss.mmm — marker positions need millisecond precision to be useful. */
+function markerTime(t: number): string {
+  const m = Math.floor(t / 60)
+  const s = t - m * 60
+  return `${m}:${s < 10 ? '0' : ''}${s.toFixed(3)}`
 }
 
 const BTN =
@@ -26,25 +55,39 @@ const BTN =
 /**
  * Beatgrid / tempo panel (Traktor grid-control equivalent): editable BPM, BPM
  * nudge (fine ±0.01 / coarse ±0.25), half/double, tap tempo, grid-phase nudge
- * (±1/±10 ms), set beat 1 at the playhead, reset to the loaded values, lock,
- * and delete grid.
+ * (±1/±10 ms), add/delete markers, reset to the loaded grid, lock, delete grid.
+ *
+ * A beatgrid is a list of tempo markers, and the one being edited is derived
+ * from the playhead rather than selected separately — so the tempo controls
+ * always act on the marker governing what you are hearing. Memoised because the
+ * playhead updates every frame and most of those frames change nothing here.
  */
-export function GridControls({
+export const GridControls = memo(function GridControls({
   bpm,
+  markerIndex,
+  markerCount,
+  markerStart,
+  atMarker,
+  beforeFirst,
   locked,
-  hasGrid,
+  canReset,
   onSetBpm,
   onNudgeBpm,
   onHalve,
   onDouble,
-  onNudge,
-  onSetHere,
+  onNudgeMarker,
+  onAddMarker,
+  onDeleteMarker,
+  onPrevMarker,
+  onNextMarker,
   onReset,
   onToggleLock,
   onDeleteGrid,
   onAnalyze,
   analyzing,
 }: Props) {
+  const hasGrid = markerCount > 0
+  const flexible = markerCount > 1
   const [editing, setEditing] = useState(false)
   const [val, setVal] = useState('')
   const tapsRef = useRef<number[]>([])
@@ -96,7 +139,39 @@ export function GridControls({
             {bpm != null ? bpm.toFixed(2) : '––'}
           </button>
         )}
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-faint">BPM</div>
+        {!hasGrid ? (
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-faint">
+            No grid
+          </div>
+        ) : !flexible ? (
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-faint">BPM</div>
+        ) : (
+          // Flexible grid: show which marker is in charge and let the user step
+          // between them (which seeks — there is no separate selection).
+          <div
+            className={
+              'flex items-center justify-center gap-1 text-[10px] font-semibold tabular-nums ' +
+              (beforeFirst ? 'text-faint' : 'text-gold')
+            }
+            title={
+              beforeFirst
+                ? "Playhead is before the first marker — marker 1's tempo extrapolates backwards"
+                : `Editing marker ${markerIndex + 1} of ${markerCount}`
+            }
+          >
+            <button onClick={onPrevMarker} className="px-1 hover:text-accent" title="Previous marker">
+              ‹
+            </button>
+            <span>
+              {beforeFirst ? '↤ ' : '⊞ '}
+              {markerIndex + 1}/{markerCount}
+              {markerStart != null ? ` · ${markerTime(markerStart)}` : ''}
+            </span>
+            <button onClick={onNextMarker} className="px-1 hover:text-accent" title="Next marker">
+              ›
+            </button>
+          </div>
+        )}
       </div>
 
       {/* BPM nudge — coarse ±0.25 (outer) / fine ±0.01 (inner) */}
@@ -140,16 +215,31 @@ export function GridControls({
 
       {/* halve / double / tap / reset */}
       <div className="flex gap-1">
-        <button className={BTN} onClick={onHalve} disabled={bpm == null} title="Halve BPM">
+        <button
+          className={BTN}
+          onClick={onHalve}
+          disabled={bpm == null}
+          title={flexible ? `Halve BPM of marker ${markerIndex + 1}` : 'Halve BPM'}
+        >
           /2
         </button>
-        <button className={BTN} onClick={onDouble} disabled={bpm == null} title="Double BPM">
+        <button
+          className={BTN}
+          onClick={onDouble}
+          disabled={bpm == null}
+          title={flexible ? `Double BPM of marker ${markerIndex + 1}` : 'Double BPM'}
+        >
           ×2
         </button>
         <button className={BTN} onClick={tap} title="Tap tempo">
           TAP
         </button>
-        <button className={BTN} onClick={onReset} title="Reset to loaded values">
+        <button
+          className={BTN}
+          onClick={onReset}
+          disabled={!canReset}
+          title="Restore the beatgrid as loaded"
+        >
           Reset
         </button>
       </div>
@@ -159,19 +249,49 @@ export function GridControls({
         <span className="mr-0.5 text-[10px] font-semibold uppercase tracking-wider text-faint">
           Grid
         </span>
-        <button className={BTN} onClick={() => onNudge(-10)} disabled={!hasGrid} title="−10 ms">
+        {/* Phase nudges move the GOVERNING marker — deliberately not gated on
+            atMarker, since the drift is heard at the playhead, not at the marker. */}
+        <button
+          className={BTN}
+          onClick={() => onNudgeMarker(-10)}
+          disabled={!hasGrid}
+          title="Move this marker −10 ms"
+        >
           ◀◀
         </button>
-        <button className={BTN} onClick={() => onNudge(-1)} disabled={!hasGrid} title="−1 ms">
+        <button
+          className={BTN}
+          onClick={() => onNudgeMarker(-1)}
+          disabled={!hasGrid}
+          title="Move this marker −1 ms"
+        >
           ◀
         </button>
-        <button className={BTN} onClick={onSetHere} title="Set beat 1 at the playhead">
-          SET
+        <button
+          className={BTN}
+          onClick={onAddMarker}
+          title={
+            hasGrid
+              ? 'Add a grid marker at the playhead'
+              : 'Set the beatgrid at the playhead'
+          }
+        >
+          {hasGrid ? '+ Mrk' : 'SET'}
         </button>
-        <button className={BTN} onClick={() => onNudge(1)} disabled={!hasGrid} title="+1 ms">
+        <button
+          className={BTN}
+          onClick={() => onNudgeMarker(1)}
+          disabled={!hasGrid}
+          title="Move this marker +1 ms"
+        >
           ▶
         </button>
-        <button className={BTN} onClick={() => onNudge(10)} disabled={!hasGrid} title="+10 ms">
+        <button
+          className={BTN}
+          onClick={() => onNudgeMarker(10)}
+          disabled={!hasGrid}
+          title="Move this marker +10 ms"
+        >
           ▶▶
         </button>
       </div>
@@ -190,9 +310,36 @@ export function GridControls({
         >
           {locked ? '🔒 Locked' : '🔓 Lock'}
         </button>
+        {/* Only a marker you are standing on can be deleted, so one that is
+            scrolled off-screen can never go by accident. Deleting the last
+            marker is "delete grid", not a second button doing the same thing. */}
         <button
           className={BTN}
-          onClick={onDeleteGrid}
+          onClick={onDeleteMarker}
+          disabled={!atMarker || !flexible}
+          title={
+            !flexible
+              ? 'Use Delete grid to remove the last marker'
+              : atMarker
+                ? `Delete grid marker ${markerIndex + 1}`
+                : 'Park the playhead on a marker to delete it (‹ › to step)'
+          }
+        >
+          🗑 Mrk
+        </button>
+        <button
+          className={BTN}
+          onClick={() => {
+            if (
+              confirm(
+                flexible
+                  ? `Delete this track's beatgrid? All ${markerCount} grid markers will be removed.`
+                  : "Delete this track's beatgrid?",
+              )
+            ) {
+              onDeleteGrid()
+            }
+          }}
           disabled={!hasGrid}
           title="Delete beatgrid"
         >
@@ -213,4 +360,4 @@ export function GridControls({
       </div>
     </div>
   )
-}
+})

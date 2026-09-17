@@ -24,6 +24,7 @@ export interface Track {
   cue_count: number
   hotcue_count: number
   has_grid: boolean
+  grid_markers: number // >1 = a flexible (multi-tempo) beatgrid
   is_stem: boolean
 }
 
@@ -105,11 +106,31 @@ export interface CuePoint {
   length: number // seconds (>0 for loops)
   hotcue: number // -1 if not a hotcue
   color: string | null // "#RRGGBB"
+  /**
+   * Index of the grid marker this cue is the companion of, if any. Traktor
+   * pairs most grid markers with a white cue that occupies a real hotcue slot;
+   * it belongs to the beatgrid, so it is shown read-only and the backend
+   * refuses hotcue edits on it.
+   */
+  grid_marker: number | null
+}
+
+/** One beatgrid marker. Its position in the list IS its index/identity. */
+export interface GridMarker {
+  start: number // seconds
+  bpm: number // governs from this marker until the next one
+  name: string | null // Traktor's label — display only, NOT a discriminator
+  companion: number | null // hotcue slot of the paired white cue, if any
 }
 
 export interface TrackCues {
-  bpm: number | null
-  grid_anchor: number | null // seconds
+  /**
+   * The beatgrid, ordered by start. Empty = no grid, one marker = constant
+   * tempo, more = a flexible (multi-tempo) grid. There is deliberately no
+   * scalar bpm/anchor: assuming a single tempo is what made flexible grids
+   * render and edit wrongly.
+   */
+  grid_markers: GridMarker[]
   locked: boolean
   cues: CuePoint[]
 }
@@ -336,8 +357,25 @@ export const api = {
       'DELETE',
       `/api/tracks/hotcue?track_id=${encodeURIComponent(trackId)}&slot=${slot}`,
     ),
-  setGrid: (trackId: string, patch: { bpm?: number; anchor?: number }) =>
-    send<TrackCues>('PATCH', '/api/tracks/grid', { track_id: trackId, ...patch }),
+  /** Retempo and/or move one marker. `index` is its position in grid_markers;
+   *  a move is clamped between its neighbours rather than reordering them. */
+  setGridMarker: (trackId: string, index: number, patch: { bpm?: number; start?: number }) =>
+    send<TrackCues>('PATCH', '/api/tracks/grid/marker', {
+      track_id: trackId,
+      index,
+      ...patch,
+    }),
+  /** Add a marker. Omitting `bpm` inherits the tempo governing that position. */
+  addGridMarker: (trackId: string, start: number, bpm?: number) =>
+    send<TrackCues>('POST', '/api/tracks/grid/marker', { track_id: trackId, start, bpm }),
+  deleteGridMarker: (trackId: string, index: number) =>
+    send<TrackCues>(
+      'DELETE',
+      `/api/tracks/grid/marker?track_id=${encodeURIComponent(trackId)}&index=${index}`,
+    ),
+  /** Replace the whole grid (the deck's Reset). `[]` clears it. */
+  replaceGridMarkers: (trackId: string, markers: GridMarker[]) =>
+    send<TrackCues>('PUT', '/api/tracks/grid', { track_id: trackId, markers }),
   deleteGrid: (trackId: string) =>
     send<TrackCues>('DELETE', `/api/tracks/grid?track_id=${encodeURIComponent(trackId)}`),
   setLock: (trackId: string, locked: boolean) =>

@@ -11,6 +11,8 @@ from pathlib import Path
 
 from traktor_nml_utils import TraktorCollection
 
+from . import beatgrid
+
 from .schemas import (
     Facets,
     GenreCount,
@@ -80,7 +82,7 @@ class CollectionService:
         hotcues = sum(
             1 for c in cues if c.hotcue is not None and c.hotcue >= 0
         )
-        has_grid = any(getattr(c, "grid", None) is not None for c in cues)
+        markers = beatgrid.grid_markers(e)
         return Track(
             id=_primary_key(loc) if loc else (e.title or ""),
             artist=e.artist,
@@ -92,7 +94,7 @@ class CollectionService:
             producer=info.producer if info else None,
             mix=info.mix if info else None,
             comment=info.comment if info else None,
-            bpm=e.tempo.bpm if e.tempo else None,
+            bpm=beatgrid.effective_bpm(e),
             key=info.key if info else None,
             rating=_rating_stars(info.ranking if info else None),
             playcount=info.playcount if info else None,
@@ -104,7 +106,8 @@ class CollectionService:
             filepath=_display_path(loc) if loc else None,
             cue_count=len(cues),
             hotcue_count=hotcues,
-            has_grid=has_grid,
+            has_grid=bool(markers),
+            grid_markers=len(markers),
             is_stem=getattr(e, "stems", None) is not None,
         )
 

@@ -1,7 +1,10 @@
 import type { CuePoint } from '../api'
+import { BEATS_PER_BAR, type BeatGrid } from './beatgrid'
 
 // Marker colour by Traktor cue type. Type is authoritative here (the NML's
 // stored per-cue colour is intentionally ignored) so each type reads consistently.
+// There is deliberately no entry for type 4 (grid): grid markers are not cues —
+// they arrive as TrackCues.grid_markers and are drawn by drawBeatgrid.
 const TYPE_COLORS: Record<number, string> = {
   0: '#3b82f6', // cue — blue
   1: '#ff8c2f', // fade-in — orange
@@ -50,6 +53,10 @@ export function drawCues(
   const flagH = Math.round(14 * dpr)
   const half = Math.floor(lineW / 2)
   for (const cue of cues) {
+    // Grid markers and their companion cues belong to the beatgrid and are
+    // drawn by drawBeatgrid; painting them here too would stack a grey line and
+    // a numbered flag on top of every marker.
+    if (cue.type === 4 || cue.grid_marker != null) continue
     const color = cueColor(cue)
     const x = Math.round(timeToX(cue.start))
 
@@ -129,43 +136,91 @@ export function drawLoop(
   ctx.fillRect(endX - edge, 0, edge, h)
 }
 
+/** Grid marker line colours. Markers are structural, so they are never culled
+ *  by the density check the way ordinary beat lines are. */
+export const GRID_MARKER_COLOR = '#4f8cff' // accent — an inactive marker
+export const GRID_MARKER_ACTIVE_COLOR = '#ffb020' // gold — governs the playhead
+
 /**
- * Draw the beatgrid: beat lines extrapolated from the grid anchor at 60/bpm
- * spacing, across the visible window [startSec, endSec]. Downbeats (every 4th
- * beat from the anchor) are brighter; regular beats are hidden when too dense.
+ * Draw the beatgrid across the visible window [startSec, endSec].
+ *
+ * The grid is a list of tempo segments, so beats are drawn per segment at that
+ * segment's own spacing, and downbeats restart at every marker. Marker lines go
+ * on top; the segment governing the playhead is tinted and its marker drawn in
+ * gold, so it is visible which marker the grid controls are acting on.
  */
 export function drawBeatgrid(
   ctx: CanvasRenderingContext2D,
-  bpm: number,
-  gridAnchor: number,
+  grid: BeatGrid,
   startSec: number,
   endSec: number,
   w: number,
   h: number,
   dpr: number,
+  activeMarker: number,
 ): void {
-  if (bpm <= 0 || endSec <= startSec) return
-  const beat = 60 / bpm
+  if (endSec <= startSec) return
   const span = endSec - startSec
-  const beatPx = (beat / span) * w
-  const showBeats = beatPx >= 6 * dpr
+  const toX = (t: number) => Math.round(((t - startSec) / span) * w)
   const outline = Math.max(1, Math.round(dpr))
   const beatW = Math.max(1, Math.round(dpr))
   const barW = Math.max(2, Math.round(2 * dpr))
-  let k = Math.ceil((startSec - gridAnchor) / beat)
-  for (;;) {
-    const bt = gridAnchor + k * beat
-    if (bt > endSec) break
-    const downbeat = ((k % 4) + 4) % 4 === 0
-    k++
-    if (bt < startSec) continue
-    if (!downbeat && !showBeats) continue
-    const x = Math.round(((bt - startSec) / span) * w)
-    const lw = downbeat ? barW : beatW
-    // Dark outline so the line reads on any waveform colour, then a bright line.
+
+  // 1. Tint the active segment. Only meaningful on a flexible grid — on a
+  // constant one it would just wash the whole canvas for no information.
+  if (grid.count > 1) {
+    const seg = grid.segments[activeMarker]
+    if (seg && seg.start < endSec && seg.end > startSec) {
+      const x1 = toX(Math.max(seg.start, startSec))
+      const x2 = toX(Math.min(seg.end, endSec))
+      ctx.fillStyle = 'rgba(255,176,32,0.07)'
+      ctx.fillRect(x1, 0, Math.max(1, x2 - x1), h)
+    }
+  }
+
+  // 2. Beat lines, per segment at its own spacing. Density culling is therefore
+  // per-segment too: a fast segment can cull while its slower neighbour does not.
+  for (const seg of grid.segmentsIn(startSec, endSec)) {
+    const beatPx = (seg.beatDur / span) * w
+    if (beatPx * BEATS_PER_BAR < 3 * dpr) continue // even bars are sub-pixel
+    const showBeats = beatPx >= 6 * dpr
+    let jFrom = Math.ceil((startSec - seg.start) / seg.beatDur)
+    // Only segment 0 extrapolates backwards; later segments start at their marker.
+    if (seg.index > 0) jFrom = Math.max(0, jFrom)
+    const jLimit = Math.floor((Math.min(endSec, seg.end) - seg.start) / seg.beatDur)
+    const jTo = Math.min(seg.beatCount - 1, jLimit)
+    for (let j = jFrom; j <= jTo; j++) {
+      const downbeat = ((j % BEATS_PER_BAR) + BEATS_PER_BAR) % BEATS_PER_BAR === 0
+      if (!downbeat && !showBeats) continue
+      const bt = seg.start + j * seg.beatDur
+      if (bt < startSec || bt > endSec) continue
+      const x = toX(bt)
+      const lw = downbeat ? barW : beatW
+      // Dark outline so the line reads on any waveform colour, then a bright line.
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'
+      ctx.fillRect(x - Math.floor(lw / 2) - outline, 0, lw + outline * 2, h)
+      ctx.fillStyle = downbeat ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.65)'
+      ctx.fillRect(x - Math.floor(lw / 2), 0, lw, h)
+    }
+  }
+
+  // 3. Marker lines on top, with a tab at the bottom edge (the top is already
+  // occupied by drawCues' hotcue flags).
+  for (const i of grid.markersIn(startSec, endSec)) {
+    const active = i === activeMarker
+    const color = active ? GRID_MARKER_ACTIVE_COLOR : GRID_MARKER_COLOR
+    const lw = Math.max(2, Math.round((active ? 3 : 2) * dpr))
+    const x = toX(grid.markers[i].start)
     ctx.fillStyle = 'rgba(0,0,0,0.6)'
     ctx.fillRect(x - Math.floor(lw / 2) - outline, 0, lw + outline * 2, h)
-    ctx.fillStyle = downbeat ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.65)'
+    ctx.fillStyle = color
     ctx.fillRect(x - Math.floor(lw / 2), 0, lw, h)
+    const tab = Math.round(7 * dpr)
+    ctx.beginPath()
+    ctx.moveTo(x, h - tab)
+    ctx.lineTo(x + tab, h)
+    ctx.lineTo(x - tab, h)
+    ctx.closePath()
+    ctx.fill()
   }
 }

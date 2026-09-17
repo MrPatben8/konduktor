@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { CuePoint } from '../api'
+import type { BeatGrid } from '../lib/beatgrid'
 import { drawBeatgrid, drawCuePoint, drawCues, drawLoop } from '../lib/cues'
 import { paintWave, type WaveColumn } from '../lib/waveform'
 
@@ -9,8 +10,9 @@ interface Props {
   duration: number
   cues: CuePoint[]
   cuePoint: number | null
-  bpm: number | null
-  gridAnchor: number | null
+  grid: BeatGrid | null
+  /** Marker governing the playhead — drawn gold, its segment tinted. */
+  activeMarker: number
   loop: { start: number; end: number } | null
   /** Seconds across the view — the zoom level, owned by the parent so it
       survives track switches and persists to prefs. */
@@ -40,8 +42,8 @@ export function MainWaveform({
   duration,
   cues,
   cuePoint,
-  bpm,
-  gridAnchor,
+  grid,
+  activeMarker,
   loop,
   secPerView,
   onZoomChange,
@@ -84,8 +86,8 @@ export function MainWaveform({
       if (loop) {
         drawLoop(ctx, timeToX(loop.start), timeToX(loop.end), h, dpr)
       }
-      if (bpm && gridAnchor != null) {
-        drawBeatgrid(ctx, bpm, gridAnchor, startSec, endSec, w, h, dpr)
+      if (grid) {
+        drawBeatgrid(ctx, grid, startSec, endSec, w, h, dpr, activeMarker)
       }
       if (cues.length) {
         drawCues(ctx, cues, w, h, dpr, timeToX, true)

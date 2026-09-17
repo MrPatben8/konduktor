@@ -13,7 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from . import __version__
+from . import __version__, beatgrid
 from . import auto_hotcues as ah
 from . import history, prefs
 from .collection_service import CollectionService
@@ -35,7 +35,10 @@ from .schemas import (
     FileTagOutcome,
     FsEntry,
     FsListing,
-    GridEdit,
+    AddGridMarker,
+    GridMarker,
+    GridMarkerEdit,
+    ReplaceGrid,
     HistoryEntry,
     OpenCollection,
     PathMappingInfo,
@@ -452,30 +455,40 @@ def track_audio(track_id: str) -> FileResponse:
 
 
 def _build_track_cues(entry) -> TrackCues:
-    grid_anchor: float | None = None
-    grid_bpm: float | None = None
-    cues: list[CuePoint] = []
-    for c in entry.cue_v2 or []:
-        grid = getattr(c, "grid", None)
-        start_sec = (c.start or 0.0) / 1000.0  # Traktor stores cue START in ms
-        if grid is not None:
-            if grid_anchor is None:
-                grid_anchor = start_sec
-                grid_bpm = grid.bpm
-            continue  # grid markers are represented by the beatgrid, not as cues
-        cues.append(
-            CuePoint(
-                name=c.name,
-                type=c.type if c.type is not None else 0,
-                start=start_sec,
-                length=(c.len or 0.0) / 1000.0,
-                hotcue=c.hotcue if c.hotcue is not None else -1,
-                color=c.color,
-            )
+    """Project an ENTRY's beatgrid + cues.
+
+    The beatgrid is the FULL ordered marker list — a constant grid is a list of
+    length one. Grid markers themselves are not cues; their companion cues are,
+    because they occupy real hotcue slots, and each is tagged with the marker it
+    belongs to so the UI can show it as beatgrid-owned rather than editable.
+    """
+    markers = beatgrid.grid_markers(entry)
+    comps = beatgrid.companions(entry)
+    marker_of = {id(c): i for i, c in comps.items()}
+    grid_markers = [
+        GridMarker(
+            start=(m.start or 0.0) / 1000.0,  # Traktor stores START in ms
+            bpm=m.grid.bpm if m.grid and m.grid.bpm else 0.0,
+            name=m.name,
+            companion=comps[i].hotcue if i in comps else None,
         )
-    bpm = grid_bpm if grid_bpm is not None else (entry.tempo.bpm if entry.tempo else None)
+        for i, m in enumerate(markers)
+    ]
+    cues = [
+        CuePoint(
+            name=c.name,
+            type=c.type if c.type is not None else 0,
+            start=(c.start or 0.0) / 1000.0,
+            length=(c.len or 0.0) / 1000.0,
+            hotcue=c.hotcue if c.hotcue is not None else -1,
+            color=c.color,
+            grid_marker=marker_of.get(id(c)),
+        )
+        for c in (entry.cue_v2 or [])
+        if getattr(c, "grid", None) is None
+    ]
     return TrackCues(
-        bpm=bpm, grid_anchor=grid_anchor, locked=bool(entry.lock), cues=cues
+        grid_markers=grid_markers, locked=bool(entry.lock), cues=cues
     )
 
 
@@ -525,7 +538,7 @@ def auto_hotcues(body: AutoHotcuesRequest) -> TrackCues:
     if entry is None:
         raise HTTPException(404, "Track not found")
     cues = _build_track_cues(entry)
-    if not cues.bpm or cues.bpm <= 0 or cues.grid_anchor is None:
+    if not cues.grid_markers:
         raise HTTPException(400, "Set a beatgrid before using Auto Hotcues")
     path = store.audio_path(body.track_id)
     if path is None or not path.exists():
@@ -541,8 +554,7 @@ def auto_hotcues(body: AutoHotcuesRequest) -> TrackCues:
     existing_times = [c.start for c in cues.cues if c.hotcue is not None and c.hotcue >= 0]
     specs = ah.select_hotcues(
         boundaries,
-        bpm=cues.bpm,
-        anchor=cues.grid_anchor,
+        markers=[(m.start, m.bpm) for m in cues.grid_markers],
         duration=duration,
         free_slots=free,
         existing_times=existing_times,
@@ -573,8 +585,10 @@ def auto_grid(body: AutoGridRequest) -> TrackCues:
     except Exception as ex:  # analysis is best-effort; never 500 the UI
         raise HTTPException(400, f"Analysis failed: {ex}")
     try:
-        store.set_grid(body.track_id, bpm=bpm, anchor_sec=first_beat)
-        store.set_hotcue(body.track_id, 0, first_beat, 0)  # hotcue 1 = slot 0
+        store.replace_grid(body.track_id, [(first_beat, bpm)])
+        # Traktor pairs its own grid markers with a white beat-1 cue; mirror
+        # that, but never over an existing hotcue (the old code clobbered slot 0).
+        store.place_grid_companion(body.track_id, 0, prefer_slot=0)
     except PlaylistError as ex:
         raise HTTPException(400, str(ex))
     return _sync_cue_edit(body.track_id)
@@ -600,11 +614,51 @@ def delete_hotcue(track_id: str, slot: int) -> TrackCues:
     return _sync_cue_edit(track_id)
 
 
-@app.patch("/api/tracks/grid", response_model=TrackCues)
-def edit_grid(body: GridEdit) -> TrackCues:
-    """Set the beatgrid BPM and/or move the grid marker (beat 1)."""
+@app.post("/api/tracks/grid/marker", response_model=TrackCues)
+def add_grid_marker(body: AddGridMarker) -> TrackCues:
+    """Add a beatgrid marker. Omitting `bpm` inherits the governing tempo."""
     try:
-        require_store().set_grid(body.track_id, body.bpm, body.anchor)
+        require_store().add_grid_marker(body.track_id, body.start, body.bpm)
+    except PlaylistError as ex:
+        raise HTTPException(400, str(ex))
+    return _sync_cue_edit(body.track_id)
+
+
+@app.patch("/api/tracks/grid/marker", response_model=TrackCues)
+def edit_grid_marker(body: GridMarkerEdit) -> TrackCues:
+    """Retempo and/or move one grid marker.
+
+    BPM is applied before the move: a tempo change can never reorder markers, so
+    `index` is still valid for the move afterwards.
+    """
+    store = require_store()
+    try:
+        if body.bpm is not None:
+            store.set_grid_marker_bpm(body.track_id, body.index, body.bpm)
+        if body.start is not None:
+            store.move_grid_marker(body.track_id, body.index, body.start)
+    except PlaylistError as ex:
+        raise HTTPException(400, str(ex))
+    return _sync_cue_edit(body.track_id)
+
+
+@app.delete("/api/tracks/grid/marker", response_model=TrackCues)
+def remove_grid_marker(track_id: str, index: int) -> TrackCues:
+    """Delete one grid marker (and its companion cue)."""
+    try:
+        require_store().delete_grid_marker(track_id, index)
+    except PlaylistError as ex:
+        raise HTTPException(400, str(ex))
+    return _sync_cue_edit(track_id)
+
+
+@app.put("/api/tracks/grid", response_model=TrackCues)
+def replace_grid(body: ReplaceGrid) -> TrackCues:
+    """Replace the whole beatgrid (the deck's Reset). `markers: []` clears it."""
+    try:
+        require_store().replace_grid(
+            body.track_id, [(m.start, m.bpm) for m in body.markers]
+        )
     except PlaylistError as ex:
         raise HTTPException(400, str(ex))
     return _sync_cue_edit(body.track_id)
@@ -612,7 +666,7 @@ def edit_grid(body: GridEdit) -> TrackCues:
 
 @app.delete("/api/tracks/grid", response_model=TrackCues)
 def remove_grid(track_id: str) -> TrackCues:
-    """Delete the track's grid marker(s)."""
+    """Delete every grid marker and its companion cue. <TEMPO> is kept."""
     try:
         require_store().delete_grid(track_id)
     except PlaylistError as ex:

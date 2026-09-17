@@ -78,11 +78,14 @@ Two independent apps that talk over HTTP:
     — its zoom is owned by `PrepStrip` so it survives track switches and persists,
     `OverviewWaveform` whole-track), `LoopControls`, `HotcueBar`, `GridControls`
     (BPM readout/editor, fine ±0.01 / coarse ±0.25 BPM nudge, /2·×2, tap tempo,
-    grid-phase nudge, set beat 1, lock, delete grid).
+    marker nudge, add/delete marker, lock, delete grid (confirmed) — all on the
+    marker **governing the playhead**, since a beatgrid is a marker list and
+    there is no separate marker selection; see "Beatgrid" below).
     Prep libs live in `src/lib/`: `playbackEngine.ts` (Web Audio, seamless loops),
     `scratchEngine.ts` (drag-to-scratch), `waveform.ts` (frequency-colored
-    analysis + paint), `cues.ts` (draw cues/loop/beatgrid/cue-point). See "Prep
-    engine" below.
+    analysis + paint), `beatgrid.ts` (the marker-list beat math — every
+    beat/bar/snap/jump calculation goes through it), `cues.ts` (draw
+    cues/loop/beatgrid/cue-point). See "Prep engine" below.
   - `lib/trackColumns.tsx` — single source of truth for the library table's
     columns (defs, default widths/visibility/order, the Columns-menu list, the
     inline `InlineEdit` cell, and the `TableMeta.onEditField` augmentation).
@@ -110,6 +113,7 @@ uvicorn konduktor.main:app --reload --port 8000
 cd frontend
 npm run dev          # dev server (proxies /api -> :8000)
 npm run build        # tsc -b && vite build — run this to typecheck
+npm run test         # vitest — unit tests for src/lib/beatgrid.ts
 ```
 
 **Tests:** `cd backend && ./run_tests.sh` (runs against a temp copy of the real
@@ -118,7 +122,10 @@ serialization path.** It enforces:
 - `test_save_fidelity.py` — a no-op save is byte-identical (A); a playlist edit
   changes only that playlist's block (B); a **track-metadata edit changes only
   that `<ENTRY>`** (C); a **hotcue create is localized + round-trips** with
-  START stored in ms (D); a **beatgrid/BPM edit is localized + round-trips** (E).
+  START stored in ms (D); a **grid-marker edit is localized + round-trips** (E);
+  **flexible (multi-marker) grids** add/move/delete reversibly, `delete_grid`
+  leaves no companion debris (I); **companion cues are protected** from hotcue
+  commands (J); and real flexible grids in the collection project correctly (K).
   The guard that catches serialization regressions like the lxml reformatting bug.
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched.
@@ -149,6 +156,23 @@ frontend at `http://localhost:5173`.
   (`PRIMARYKEY.KEY`) join to collection tracks. `Track.id` uses this.
 - **Rating** = `RANKING / 51`, giving 0–5 stars (`_rating_stars`).
 - **Key** is Traktor's display key string, e.g. `"10m"` (Open Key notation).
+- **Beatgrid = an ORDERED LIST of markers**, never a single BPM + anchor.
+  Traktor stores each as a `CUE_V2 TYPE="4"` with its own `<GRID BPM>` child
+  (flexible beatgrids, 3.4+); `<TEMPO BPM>` mirrors the **first marker by
+  START**. A constant-tempo track is simply a list of length one, so this is the
+  model for every track. Two rules verified against the real 8485-entry
+  collection — get these wrong and you corrupt grids:
+  - **Marker NAME is not a discriminator** (`AutoGrid` ×7888, `n.n.` ×64,
+    `Beat Marker` ×14, `Unnamed` ×4). Identify by the `<GRID>` child, order by
+    `START` — never by name or document order.
+  - **Companion cues are conventional, not structural.** Traktor usually pairs a
+    marker with a white (`COLOR="#FFFFFF"`) `TYPE="0"` cue at the same position,
+    which occupies a **real hotcue slot** — but 60 of 7970 markers have none.
+    Konduktor follows them, keeps them in sync, and **never invents one** (except
+    `place_grid_companion`, used only by Auto Grid). The `#FFFFFF` test is
+    load-bearing: 49 uncoloured cues and 18 *loops* also sit within 1 ms of a
+    marker and must not be dragged or deleted. `backend/konduktor/beatgrid.py`
+    is the single shared definition of all of this.
 - **Playlist tree**: recurse `nml.playlists.node.subnodes.node`. A node's `.type`
   is `FOLDER`, `PLAYLIST`, or `SMARTLIST`. Smart playlists are rule-based and
   have no static entry list. `PlaylistNode.id` is the playlist's stable `UUID`;
@@ -204,6 +228,9 @@ that number and nothing else — everything derives from it:
   beatgrid display + editing, cue/hotcue create/jump/delete, loops; keyboard
   shortcuts (Space = play/pause, 1–8 = hotcues, Shift+1–8 = delete). See "Prep engine".
 - ✅ Track prep Tier 2 — cue-point fine editing / audio export polish
+- ✅ Flexible beatgrids — the grid is a marker list end to end (marker-level
+  commands, piecewise beat math, playhead-derived marker editing). Step 1 of the
+  multi-platform plan in `.claude/discussions/`.
 - ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 
 ## Write path (playlists + track metadata + prep)
@@ -232,10 +259,15 @@ diff — no COLLECTION splicing needed.
   `set_hotcue(track_id, slot, start_sec, type, length_sec)` creates/replaces a
   `CUE_V2` (types 0 cue, 1 fade-in, 2 fade-out, 3 load, 5 loop; START/LEN stored
   in **ms**; a loop hotcue carries LEN); `set_hotcue_type` changes just the type;
-  `delete_hotcue` removes a slot. `set_grid(track_id, bpm?, anchor_sec?)` edits
-  the TEMPO + the grid marker (`CUE_V2` type 4 with a `<GRID BPM>` child);
-  `delete_grid` drops it; `set_lock(track_id, locked)` toggles the `LOCK` attr.
-  Invariants D/E prove hotcue + grid edits are localized and round-trip.
+  `delete_hotcue` removes a slot. Hotcue commands **refuse a slot held by a grid
+  marker's companion cue** (see "Beatgrid"). Beatgrid commands are marker-level:
+  `add_grid_marker` (inherits the governing tempo when no BPM is given),
+  `move_grid_marker` (clamped between its neighbours, drags the companion),
+  `set_grid_marker_bpm` (also serves ×2 / ÷2, which retempo the governing marker
+  like every other tempo control), `delete_grid_marker`, `replace_grid` (Auto
+  Grid and the deck's Reset), `delete_grid` (markers **and** companions; keeps
+  `TEMPO`), `place_grid_companion`. `set_lock(track_id, locked)` toggles `LOCK`.
+  Invariants D/E/I/J prove hotcue + grid edits are localized and round-trip.
 - **Embedded file tags + cover art**: on save, for each edited track,
   `_sync_file_tags()` writes the changed fields (and staged cover art) into the
   audio file via `file_tags` (mutagen; ID3/MP4/FLAC/AIFF, WAV skipped) —
@@ -252,7 +284,9 @@ diff — no COLLECTION splicing needed.
   `POST .../add` (append); `PATCH /api/tracks` (metadata); `GET/PUT /api/tracks/art`
   (cover art); `GET /api/tracks/audio` (Range-aware stream for playback/analysis);
   `GET /api/tracks/cues`, `POST/PATCH/DELETE /api/tracks/hotcue`,
-  `PATCH/DELETE /api/tracks/grid`, `PATCH /api/tracks/lock` (prep); `POST /api/save`.
+  `POST/PATCH/DELETE /api/tracks/grid/marker`,
+  `PUT /api/tracks/grid` (replace), `DELETE /api/tracks/grid`,
+  `PATCH /api/tracks/lock` (prep); `POST /api/save`.
 - Tests: `backend/run_tests.sh` → `test_save_fidelity.py` + `test_phase3.py`
   (both run against a temp copy). Run before touching the save/serialization path.
 
@@ -278,8 +312,14 @@ The prep strip plays every track through the **Web Audio API** (a plain
   by blending three palette targets (bass→orange, mids→violet, highs→cyan — no
   green, matching Traktor's Spectrum). Height = amplitude.
 - `cues.ts` — canvas drawers for cue markers (type-colored), the active loop
-  band, the beatgrid (white beats/brighter downbeats), and the floating CUE
-  point (gold). The main waveform's playhead is red; both waveforms share these.
+  band, the beatgrid (per-segment white beats/brighter downbeats, plus marker
+  lines — gold for the one governing the playhead, accent otherwise, with the
+  active segment tinted), and the floating CUE point (gold). The main waveform's
+  playhead is red; both waveforms share these.
+- `beatgrid.ts` — the `BeatGrid` model (`buildBeatGrid` → `BeatGrid | null`).
+  Unit-tested (`npm run test`, vitest); `beatgrid.test.ts` pins the property that
+  a **single-marker grid is algebraically identical to the old single-BPM math**,
+  which is what protects the 99.98% of tracks with a constant tempo.
 - Prep edits go straight to the prep endpoints above; after each edit the
   endpoint refreshes the read model (`service.replace_track()`) so cue/grid
   counts update live, and the frontend invalidates the relevant queries.
