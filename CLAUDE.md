@@ -16,34 +16,61 @@ given a mobile version.
 
 Two independent apps that talk over HTTP:
 
-- **`backend/`** — Python + FastAPI. Parses `collection.nml` via
-  `traktor-nml-utils` and serves a query + edit API. Entry point:
+- **`backend/`** — Python + FastAPI. Entry point:
   [backend/konduktor/main.py](backend/konduktor/main.py).
-  - `collection_service.py` — the **read** model: loads the NML, flattens ENTRYs
-    into `Track` objects, indexes them by primary key. All query logic
-    (filter/sort/facets/stats) lives here. `replace_track()` refreshes one
-    projection after an edit (bridges the read model and the edit store).
-  - `playlist_store.py` (`PlaylistStore`) — the **edit** model: owns the parsed
-    dataclass NML and applies all edits (playlists, track metadata, cover art,
-    AND track-prep edits: hotcues/cues, beatgrid/BPM, lock), then renders +
-    saves. See "Write path" below.
-  - `file_tags.py` — reads/writes embedded audio-file tags & cover art (mutagen)
-    and resolves Traktor `LOCATION`s to OS paths. Best-effort.
-  - `discovery.py` — finds Traktor collections in their default install location
-    (`~/Documents/Native Instruments/Traktor <version>/collection.nml`) for the
-    picker's "Automatic" option; sorts newest Traktor version first.
-  - `prefs.py` — tiny persisted user-prefs store in `userprefs.json` (resolved
-    relative to the package so it travels with the app; gitignored). Holds the
-    last-opened collection path, the library column layout, and the prep deck's
-    main-waveform zoom (`mainZoomSec`). Best-effort I/O.
-  - `schemas.py` — Pydantic response/request models.
-  - `main.py` — FastAPI routes (all under `/api`). Holds an `AppState` with the
-    currently-loaded collection; it starts **unloaded** and the collection is
-    chosen at runtime via `POST /api/collection/open` (data routes 409 until
-    then). `GET /api/fs/list` powers the in-app file browser;
-    `GET /api/collection/options` feeds the picker's auto-detect + last-opened
-    shortcuts; `GET`/`PATCH /api/prefs` persist UI prefs. Setting `KONDUKTOR_NML`
-    auto-loads on startup (dev/tests).
+
+  **Architecture: projection + command replay.** The generic model is a *read
+  projection*; edits are strictly-generic commands that a per-platform **adapter**
+  replays onto its **retained native model**, which stays the write target. The
+  generic model is NEVER serialized back over a library — that is what preserves
+  byte-exact saves, and it is the only model that works for formats you cannot
+  regenerate (a Rekordbox SQLite row, a Serato tag inside an audio file). Traktor
+  is currently the only adapter; see `.claude/discussions/` for the decision log.
+
+  - `core/` — **platform-independent. Must not import `traktor_nml_utils` or
+    `konduktor.adapters`** (`test_layering.py` enforces this). This is the
+    contract a Rekordbox or Serato adapter will be written against.
+    - `model.py` — the generic model (`Track`, `CuePoint`, `GridMarker`,
+      `TrackCues`, `PlaylistNode`, `Facets`, `Stats`, …). Served straight to HTTP.
+    - `adapter.py` — the `LibraryAdapter` / `LibraryDriver` protocols and the
+      error tree (`NotFound` → 404, `InvalidCommand` → 400, `Unsupported` → 422),
+      mapped to status codes once in `main.py` rather than per route.
+    - `capabilities.py` — `Capabilities`: what the loaded library can persist, so
+      the UI can gate controls instead of branching on the platform.
+    - `query.py` (`TrackIndex`) — all query/filter/sort/facet/stats logic, over
+      generic `Track`s. Shared so "sort by artist" cannot mean different things
+      on different platforms behind one UI.
+    - `edit_journal.py` (`EditJournal`) — every edit this session at **field
+      resolution** (`track/set/genre`, `cue/add/slot:1`, `grid/marker-bpm/marker:0`).
+      Drives the file-tag sync, the version-history message, and `retarget()`
+      when a path remap changes track ids. Recording `before` keeps undo cheap later.
+    - `registry.py` — adapter selection by **`can_open()` probe**, not extension
+      (Rekordbox is a `.db`, Serato is a directory).
+    - `audio_tags.py`, `pathmap.py`, `auto_hotcues.py` — format-agnostic helpers.
+  - `adapters/traktor/` — everything that knows NML exists.
+    - `store.py` (`TraktorStore`) — the retained native model: owns the parsed
+      dataclass NML, applies every edit, renders + saves. See "Write path".
+    - `adapter.py` (`TraktorAdapter`) — owns the store **and** the `TrackIndex`
+      built from it, so projection and native model cannot drift. Translates the
+      generic cue vocabulary to Traktor's integers (the only place that mapping
+      exists). **Every mutating command returns its refreshed projection** — a
+      forgotten refresh would be a silently stale UI no byte test would catch.
+    - `projection.py` — native → generic (`to_track`, `to_track_cues`).
+    - `driver.py`/`discovery.py` — `can_open`, default-location detection, restore.
+    - `beatgrid.py`, `locations.py`, `capabilities.py` — Traktor's grid/companion
+      rules, LOCATION ↔ OS path conversion, and its capability set.
+  - `app_state.py` — the one loaded library, and the **version-history commit**.
+    History is app-level: the adapter returns the bytes it wrote plus a summary,
+    and `AppState.save()` versions them. Every write path must go through it.
+  - `prefs.py` — persisted user prefs (`userprefs.json` in the per-OS app-data
+    dir). Last-opened collection, library column layout, prep-deck zoom. Best-effort.
+  - `schemas.py` — HTTP request bodies + envelopes; re-exports `core.model`.
+  - `main.py` — thin FastAPI routes (all under `/api`), talking only to the
+    adapter. Starts **unloaded**; the library is chosen at runtime via
+    `POST /api/collection/open` (data routes 409 until then).
+    `GET /api/capabilities` feeds the UI's gating; `GET /api/fs/list` powers the
+    file browser; `GET`/`PATCH /api/prefs` persist UI prefs. Setting
+    `KONDUKTOR_NML` auto-loads on startup (dev/tests).
 - **`frontend/`** — React + TypeScript + Vite. A dark, virtualized track
   explorer. Entry: [frontend/src/App.tsx](frontend/src/App.tsx).
   - `api.ts` — typed client + all API types (keep in sync with backend
@@ -129,6 +156,11 @@ serialization path.** It enforces:
   The guard that catches serialization regressions like the lxml reformatting bug.
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched.
+- `test_traktor_adapter.py` — the **generic layer**: one parse per open, the
+  projection refreshing after every command family, cue-type translation,
+  capabilities, and `set_analysed_grid` vs `replace_grid`. `test_save_fidelity`
+  covers the store and its bytes; without this the adapter layer would be untested.
+- `test_layering.py` — `core/` imports nothing platform-specific.
 
 Also validate the backend interactively at `http://localhost:8000/docs` and the
 frontend at `http://localhost:5173`.
@@ -231,6 +263,10 @@ that number and nothing else — everything derives from it:
 - ✅ Flexible beatgrids — the grid is a marker list end to end (marker-level
   commands, piecewise beat math, playhead-derived marker editing). Step 1 of the
   multi-platform plan in `.claude/discussions/`.
+- ✅ Generic model + adapter interface (Traktor as the only adapter) — step 2 of
+  the multi-platform plan. Backend done; the wire format and UI are still
+  Traktor-shaped (cue type integers, 8 hard-coded hotcue slots) and are next.
+- ⬜ Rekordbox adapter; ⬜ Serato adapter; ⬜ export/conversion
 - ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 
 ## Write path (playlists + track metadata + prep)
@@ -259,7 +295,10 @@ diff — no COLLECTION splicing needed.
   `set_hotcue(track_id, slot, start_sec, type, length_sec)` creates/replaces a
   `CUE_V2` (types 0 cue, 1 fade-in, 2 fade-out, 3 load, 5 loop; START/LEN stored
   in **ms**; a loop hotcue carries LEN); `set_hotcue_type` changes just the type;
-  `delete_hotcue` removes a slot. Hotcue commands **refuse a slot held by a grid
+  `delete_hotcue` removes a slot. (The adapter exposes these generically as
+  `set_cue`/`set_cue_type`/`delete_cue`, taking a `cue_type` STRING — `cue`,
+  `fade_in`, `fade_out`, `load`, `loop` — which the Traktor adapter maps to the
+  integers below.) Hotcue commands **refuse a slot held by a grid
   marker's companion cue** (see "Beatgrid"). Beatgrid commands are marker-level:
   `add_grid_marker` (inherits the governing tempo when no BPM is given),
   `move_grid_marker` (clamped between its neighbours, drags the companion),

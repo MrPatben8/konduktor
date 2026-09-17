@@ -42,7 +42,7 @@ from traktor_nml_utils.models.collection import (
 )
 from xsdata.formats.dataclass.serializers import XmlSerializer
 
-from ... import __version__, history
+from ...core.adapter import InvalidCommand
 from ...core.edit_journal import EditJournal
 from ...core.pathmap import common_dir_prefix
 from ...core.pathmap import PathMapping
@@ -55,8 +55,13 @@ from .locations import os_path_to_location, resolve_path
 TRAKTOR_POPM_EMAIL = "traktor@native-instruments.de"
 
 
-class PlaylistError(Exception):
-    pass
+class PlaylistError(InvalidCommand):
+    """A command this library cannot accept.
+
+    Subclasses the generic `InvalidCommand` so the HTTP layer maps it without
+    knowing Traktor exists; the name is kept because it is what every call site
+    and the fidelity tests already catch.
+    """
 
 
 @dataclass
@@ -70,11 +75,12 @@ class FileTagResult:
 
 @dataclass
 class SaveOutcome:
-    commit: str | None  # sha of the version-history commit (None if deduped/failed)
+    summary: str  # human-readable edit summary, for the version-history message
+    snapshot: bytes  # exactly the bytes written, for the version-history commit
     tag_results: list[FileTagResult]
 
 
-class PlaylistStore:
+class TraktorStore:
     def __init__(self, nml_path: Path):
         self.nml_path = Path(nml_path)
         self._lock = threading.RLock()
@@ -938,11 +944,11 @@ class PlaylistStore:
             tmp.replace(self.nml_path)
             # Best-effort: sync the edited fields into each edited track's file.
             tag_results = self._sync_file_tags()
-            # Version history: commit the saved bytes (additive — never touches the
-            # file we just wrote). Summary is computed before _load() clears state.
-            commit = history.commit(self.nml_path, new_data, self._edit_summary(), __version__)
+            # Computed before _load() clears the journal. Versioning the bytes is
+            # the app's job, not the adapter's — see app_state.AppState.save.
+            summary = self._edit_summary()
             self._load()  # clears dirty + the edit journal + staged art
-            return SaveOutcome(commit=commit, tag_results=tag_results)
+            return SaveOutcome(summary=summary, snapshot=new_data, tag_results=tag_results)
 
     def _edit_summary(self) -> str:
         """Delegates to the journal; kept as a method because save() and the

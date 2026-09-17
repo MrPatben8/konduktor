@@ -10,7 +10,7 @@ Design rules:
   * ALL git interaction is confined to this module.
   * EVERY public function is best-effort: it swallows its own errors (returning a
     safe empty/None value) so a history failure can never break a save or an open.
-  * The tracked file is a fixed name inside each repo (``collection.nml``); the
+  * The tracked file is named after the library itself; the
     repo is keyed by a hash of the collection's absolute OS path (mirrors prefs'
     path-based keying). Collection identity is therefore the OS path — moving the
     collection starts a fresh history (same fragility prefs already accepts).
@@ -32,7 +32,17 @@ from . import paths
 
 log = logging.getLogger(__name__)
 
-_TRACKED_NAME = "collection.nml"
+_LEGACY_TRACKED_NAME = "collection.nml"
+
+
+def _tracked_name(library_path: Path) -> str:
+    """The file name used inside the repo.
+
+    Was hard-coded to ``collection.nml``. Using the library's own name lets a
+    non-Traktor library be versioned the same way; reads fall back to the legacy
+    name so histories recorded before this change stay readable.
+    """
+    return Path(library_path).name
 _AUTHOR = b"Konduktor <konduktor@localhost>"
 
 
@@ -53,8 +63,8 @@ def _repo_dir(nml_path: Path) -> Path:
     return paths.app_data_dir() / "history" / _key(nml_path)
 
 
-def _tracked_file(repo_dir: Path) -> Path:
-    return repo_dir / _TRACKED_NAME
+def _tracked_file(repo_dir: Path, nml_path: Path) -> Path:
+    return repo_dir / _tracked_name(nml_path)
 
 
 def _write_meta(repo_dir: Path, nml_path: Path) -> None:
@@ -77,7 +87,25 @@ def _open_or_init(nml_path: Path) -> Path:
     return repo_dir
 
 
-def _head_blob(repo: Repo) -> bytes | None:
+def _tree_blob(tree, nml_path: Path):
+    """Find the tracked blob in a commit's tree.
+
+    Tries the library's own name first, then the legacy fixed name, then — if the
+    repo holds exactly one file — that one, so a history written under any past
+    naming rule stays readable.
+    """
+    for name in (_tracked_name(nml_path), _LEGACY_TRACKED_NAME):
+        try:
+            return tree[name.encode()]
+        except KeyError:
+            continue
+    items = list(tree.items())
+    if len(items) == 1:
+        return items[0].mode, items[0].sha
+    raise KeyError(f"no tracked file in history for {nml_path}")
+
+
+def _head_blob(repo: Repo, nml_path: Path) -> bytes | None:
     """The tracked file's bytes at HEAD, or None if the repo has no commits."""
     try:
         head = repo.head()
@@ -85,7 +113,10 @@ def _head_blob(repo: Repo) -> bytes | None:
         return None
     commit = repo[head]
     tree = repo[commit.tree]
-    _mode, blob_sha = tree[_TRACKED_NAME.encode()]
+    try:
+        _mode, blob_sha = _tree_blob(tree, nml_path)
+    except KeyError:
+        return None
     return repo[blob_sha].data
 
 
@@ -98,9 +129,9 @@ def commit(nml_path: Path, data: bytes, message: str, app_version: str) -> str |
     try:
         repo_dir = _open_or_init(nml_path)
         with Repo(str(repo_dir)) as repo:
-            if _head_blob(repo) == data:
+            if _head_blob(repo, nml_path) == data:
                 return None  # nothing changed since last version
-            path = _tracked_file(repo_dir)
+            path = _tracked_file(repo_dir, nml_path)
             path.write_bytes(data)
             porcelain.add(str(repo_dir), paths=[str(path)])
             msg = f"{message}\n\nApp-Version: {app_version}".encode()
@@ -153,7 +184,7 @@ def read_version(nml_path: Path, commit_id: str) -> bytes | None:
         with Repo(str(repo_dir)) as repo:
             c = repo[commit_id.encode()]
             tree = repo[c.tree]
-            _mode, blob_sha = tree[_TRACKED_NAME.encode()]
+            _mode, blob_sha = _tree_blob(tree, nml_path)
             return repo[blob_sha].data
     except Exception:
         log.exception("history.read_version failed for %s @ %s", nml_path, commit_id)

@@ -2,7 +2,7 @@
 
 This is the object the app talks to. It holds:
 
-  * a ``PlaylistStore`` — the retained NATIVE model, which is the write target.
+  * a ``TraktorStore`` — the retained NATIVE model, which is the write target.
     Commands are replayed onto it; it is never regenerated from the projection.
   * a ``TrackIndex`` — the generic READ projection, rebuilt from the store.
 
@@ -21,12 +21,13 @@ from ...core.pathmap import PathMapping
 from ...core.query import TrackIndex
 from . import capabilities as caps
 from . import projection
-from .store import PlaylistError, PlaylistStore
+from .store import PlaylistError, TraktorStore
 
 # Generic cue vocabulary -> Traktor's CUE_V2 TYPE encoding. This table is the
 # only place the integers exist outside the store; type 4 is a grid marker and
 # is never a cue, so it has no generic name.
 CUE_TYPE_TO_NATIVE = {"cue": 0, "fade_in": 1, "fade_out": 2, "load": 3, "loop": 5}
+NATIVE_TO_CUE_TYPE = {v: k for k, v in CUE_TYPE_TO_NATIVE.items()}
 
 
 class TraktorAdapter:
@@ -34,7 +35,7 @@ class TraktorAdapter:
 
     def __init__(self, path: Path):
         self.path = Path(path)
-        self._store = PlaylistStore(self.path)
+        self._store = TraktorStore(self.path)
         self._index = TrackIndex()
         self._rebuild()
 
@@ -81,7 +82,7 @@ class TraktorAdapter:
     # main.py still drives the store directly and calls replace_track after each
     # command; both go away when the routes move onto the protocol (step 7).
     @property
-    def store(self) -> PlaylistStore:
+    def store(self) -> TraktorStore:
         return self._store
 
     def entries_for(self, track_ids: list[str]) -> list[tuple[str, str]]:
@@ -94,8 +95,11 @@ class TraktorAdapter:
         self._store._load()
         self._rebuild()
 
+    def playlist_count(self) -> int:
+        return self._store.count_playlists()
+
     def capabilities(self) -> Capabilities:
-        return caps.capabilities_for(self.path, sorted(PlaylistStore.EDITABLE_FIELDS))
+        return caps.capabilities_for(self.path, sorted(TraktorStore.EDITABLE_FIELDS))
 
     # ---- playlists -------------------------------------------------------
     def playlist_tree(self) -> list[PlaylistNode]:

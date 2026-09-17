@@ -1,4 +1,8 @@
-"""Regression guard for save fidelity — keeps playlist diffs minimal.
+"""Regression guard for save fidelity — the Traktor adapter's byte contract.
+
+This is deliberately a TRAKTOR test: it constructs the store directly and
+asserts on rendered bytes, which is exactly the level the guarantee lives at.
+The generic layer above it is covered by test_traktor_adapter.py.
 
 This is the test that would have caught the lxml reformatting bug. It asserts
 two invariants against a COPY of the real collection:
@@ -30,7 +34,7 @@ os.environ["KONDUKTOR_DATA_DIR"] = tempfile.mkdtemp(prefix="konduktor-fidelity-a
 
 REAL = Path(__file__).resolve().parents[1] / "collection.nml"
 
-from konduktor.playlist_store import PlaylistError, PlaylistStore  # noqa: E402
+from konduktor.adapters.traktor.store import PlaylistError, TraktorStore  # noqa: E402
 
 failed = False
 
@@ -71,7 +75,7 @@ with tempfile.TemporaryDirectory() as d:
     work = Path(d) / "collection.nml"
     shutil.copy2(REAL, work)
     before = work.read_bytes()
-    store = PlaylistStore(work)
+    store = TraktorStore(work)
     store.save()  # no edits
     after = work.read_bytes()
     check("whole file identical after no-op save", before == after)
@@ -91,7 +95,7 @@ with tempfile.TemporaryDirectory() as d:
     shutil.copy2(REAL, work)
     original = work.read_bytes()
 
-    store = PlaylistStore(work)
+    store = TraktorStore(work)
 
     def walk(n):
         yield n
@@ -139,7 +143,7 @@ with tempfile.TemporaryDirectory() as d:
     shutil.copy2(REAL, work)
     original = work.read_bytes()
 
-    store = PlaylistStore(work)
+    store = TraktorStore(work)
     # pick the first track that has a resolvable primary key
     entry = store._nml.collection.entry[0]
     loc = entry.location
@@ -185,7 +189,7 @@ with tempfile.TemporaryDirectory() as d:
     shutil.copy2(REAL, work)
     original = work.read_bytes()
 
-    store = PlaylistStore(work)
+    store = TraktorStore(work)
     entry = store._nml.collection.entry[0]
     loc = entry.location
     track_id = f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}"
@@ -224,21 +228,21 @@ with tempfile.TemporaryDirectory() as d:
     check("hotcue START stored in ms", new_cue is not None and abs(new_cue.start - 42500.0) < 1)
 
     # Create then delete must round-trip back to a byte-identical file.
-    store2 = PlaylistStore(work)  # reload the edited file
+    store2 = TraktorStore(work)  # reload the edited file
     store2.delete_hotcue(track_id, slot)
     store2.save()
     check("create+delete round-trips to the original bytes", work.read_bytes() == original)
 
 # ---- Invariant E: a beatgrid edit is fully localized -------------------
 print("== E. grid marker edit touches only that track's ENTRY ==")
-from konduktor import beatgrid as bg  # noqa: E402
+from konduktor.adapters.traktor import beatgrid as bg  # noqa: E402
 
 with tempfile.TemporaryDirectory() as d:
     work = Path(d) / "collection.nml"
     shutil.copy2(REAL, work)
     original = work.read_bytes()
 
-    store = PlaylistStore(work)
+    store = TraktorStore(work)
 
     def _key(e):
         loc = e.location
@@ -305,7 +309,7 @@ with tempfile.TemporaryDirectory() as d:
         check("companion kept its hotcue slot", comp is not None and comp.hotcue == comp_slot)
 
     # Reverting BPM + position round-trips to the original bytes.
-    store2 = PlaylistStore(work)
+    store2 = TraktorStore(work)
     store2.set_grid_marker_bpm(track_id, 0, orig_bpm)
     store2.move_grid_marker(track_id, 0, orig_anchor_ms / 1000.0)
     store2.save()
@@ -314,13 +318,13 @@ with tempfile.TemporaryDirectory() as d:
 # ---- Invariant F: batch place_hotcues (Auto Hotcues) -------------------
 print("== F. place_hotcues fills empty slots only, names round-trip, localized ==")
 with tempfile.TemporaryDirectory() as d:
-    from konduktor.schemas import AutoHotcue
+    from konduktor.core.model import AutoHotcue
     from traktor_nml_utils import TraktorCollection
 
     work = Path(d) / "collection.nml"
     shutil.copy2(REAL, work)
 
-    store = PlaylistStore(work)
+    store = TraktorStore(work)
     entry = store._nml.collection.entry[0]
     loc = entry.location
     track_id = f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}"
@@ -340,7 +344,7 @@ with tempfile.TemporaryDirectory() as d:
     original = work.read_bytes()
 
     # Batch: one spec targets the occupied slot (must be skipped), two fill free slots.
-    store2 = PlaylistStore(work)
+    store2 = TraktorStore(work)
     e2 = store2._nml.collection.entry[0]
     now_used = {c.hotcue for c in (e2.cue_v2 or []) if c.hotcue is not None and c.hotcue >= 0}
     free = [s for s in range(8) if s not in now_used][:2]
@@ -377,7 +381,7 @@ with tempfile.TemporaryDirectory() as d:
 
 # ---- Invariant G: select_hotcues placement logic (pure, no audio) ------
 print("== G. select_hotcues: phrase-snap, empty-slots, names, existing-cue avoidance ==")
-from konduktor import auto_hotcues as ah  # noqa: E402
+from konduktor.core import auto_hotcues as ah  # noqa: E402
 
 # 128 BPM => beat 0.46875s, 16-bar phrase = 30.0s exactly; marker at 0.0.
 BPM, ANCHOR, DUR = 128.0, 0.0, 300.0
@@ -424,8 +428,9 @@ check("flexible grid: post-seam points snap to that segment's 32s phrase",
 print("== H. remap_locations rewrites LOCATIONs (+ playlist keys), localized, round-trips ==")
 from collections import Counter  # noqa: E402
 
-from konduktor.file_tags import resolve_path  # noqa: E402
-from konduktor.path_mapping import PathMapping, os_path_to_location  # noqa: E402
+from konduktor.adapters.traktor.locations import resolve_path  # noqa: E402
+from konduktor.core.pathmap import PathMapping  # noqa: E402
+from konduktor.adapters.traktor.locations import os_path_to_location  # noqa: E402
 from traktor_nml_utils import TraktorCollection  # noqa: E402
 
 
@@ -447,7 +452,7 @@ with tempfile.TemporaryDirectory() as d:
     shutil.copy2(REAL, work)
     original = work.read_bytes()
 
-    store = PlaylistStore(work)
+    store = TraktorStore(work)
     pl_keys = {
         k
         for n in store._iter_nodes(store._root())
@@ -492,7 +497,7 @@ with tempfile.TemporaryDirectory() as d:
     check("H1: moved ENTRY has the new VOLUME", moved.location.volume == "KONDUKTOR_TEST_H1")
 
     # Reverting (to -> from) round-trips to the original bytes exactly.
-    store2 = PlaylistStore(work)
+    store2 = TraktorStore(work)
     store2.remap_locations(PathMapping.make(to_prefix, from_prefix))
     store2.save()
     check("H1: revert round-trips to original bytes", work.read_bytes() == original)
@@ -502,7 +507,7 @@ with tempfile.TemporaryDirectory() as d:
     work = Path(d) / "collection.nml"
     shutil.copy2(REAL, work)
 
-    store = PlaylistStore(work)
+    store = TraktorStore(work)
     # A collection entry whose key appears in at least one playlist.
     pl_keys = {
         k
@@ -535,7 +540,7 @@ with tempfile.TemporaryDirectory() as d:
     )
     check("H2: collection ENTRY location rewritten", moved is not None)
 
-    store3 = PlaylistStore(work)
+    store3 = TraktorStore(work)
     all_pl_keys = {
         k
         for node in store3._iter_nodes(store3._root())
@@ -566,7 +571,7 @@ with tempfile.TemporaryDirectory() as d:
 
     # Synthesize the flexible grid rather than relying on the handful of real
     # ones: those are the user's own data and could change at any time.
-    store = PlaylistStore(work)
+    store = TraktorStore(work)
     entry = next(
         e for e in store._nml.collection.entry
         if e.tempo and len(bg.grid_markers(e)) == 1
@@ -600,14 +605,14 @@ with tempfile.TemporaryDirectory() as d:
           original[:os_] + b"@@" + original[oe:] == two[:es_] + b"@@" + two[ee:])
 
     # Removing it must return the file to its original bytes exactly.
-    store2 = PlaylistStore(work)
+    store2 = TraktorStore(work)
     store2.delete_grid_marker(track_id, 1)
     store2.save()
     check("I: deleting the added marker round-trips to original bytes",
           work.read_bytes() == original)
 
     # Moves clamp between neighbours rather than reordering the list.
-    store3 = PlaylistStore(work)
+    store3 = TraktorStore(work)
     store3.add_grid_marker(track_id, (m0_start + 60_000.0) / 1000.0, bpm=m0_bpm * 0.99)
     store3.move_grid_marker(track_id, 0, (m0_start + 120_000.0) / 1000.0)
     e3 = store3.model_entry(track_id)
@@ -631,7 +636,7 @@ with tempfile.TemporaryDirectory() as d:
     shutil.copy2(REAL, work)
     original = work.read_bytes()
 
-    store = PlaylistStore(work)
+    store = TraktorStore(work)
     entry = next(
         e for e in store._nml.collection.entry if bg.companions(e).get(0) is not None
     )
@@ -660,7 +665,7 @@ with tempfile.TemporaryDirectory() as d:
     check("J: a non-companion slot is still editable", store.dirty is True)
 
     # Auto Hotcues must skip companion slots even when told to overwrite.
-    store2 = PlaylistStore(work)
+    store2 = TraktorStore(work)
     spec = type("S", (), {"slot": slot, "start": 42.0, "name": "X", "type": 0, "length": 0.0})()
     store2.place_hotcues(track_id, [spec], overwrite=True)
     e2 = store2.model_entry(track_id)
@@ -682,7 +687,7 @@ _flex = [e for e in _real if len(bg.grid_markers(e)) > 1]
 if not _flex:
     print("  [SKIP] no flexible-grid entries in the reference collection")
 else:
-    import konduktor.main as _m
+    from konduktor.adapters.traktor import projection as _proj
 
     ok_order = ok_tempo = ok_proj = ok_comp = True
     for e in _flex:
@@ -690,7 +695,7 @@ else:
         ok_order &= all(ms[i].start < ms[i + 1].start for i in range(len(ms) - 1))
         if e.tempo and e.tempo.bpm:
             ok_tempo &= abs(e.tempo.bpm - ms[0].grid.bpm) < 1e-6
-        tc = _m._build_track_cues(e)
+        tc = _proj.to_track_cues(e)
         ok_proj &= len(tc.grid_markers) == len(ms) and all(
             abs(g.bpm - m.grid.bpm) < 1e-9 and abs(g.start - (m.start or 0) / 1000.0) < 1e-9
             for g, m in zip(tc.grid_markers, ms)

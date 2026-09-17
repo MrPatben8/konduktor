@@ -11,16 +11,24 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
-from . import __version__
-from .adapters.traktor import projection
+from . import __version__, history, prefs
+from .adapters.traktor.adapter import NATIVE_TO_CUE_TYPE
+from .adapters.traktor.discovery import describe
+from .app_state import STATE
 from .core import auto_hotcues as ah
-from . import history, prefs
-from .adapters.traktor.adapter import TraktorAdapter
-from .adapters.traktor.discovery import describe, detect_collections
+from .core import registry
+from .core.adapter import (
+    AdapterError,
+    InvalidCommand,
+    LibraryAdapter,
+    LibraryNotSupported,
+    NotFound,
+    Unsupported,
+)
+from .core.capabilities import Capabilities
 from .core.pathmap import PathMapping
-from .adapters.traktor.store import PlaylistError, PlaylistStore
 from .schemas import (
     AutoGridRequest,
     AutoHotcue,
@@ -29,7 +37,6 @@ from .schemas import (
     CollectionOptions,
     CollectionStatus,
     CreatePlaylist,
-    CuePoint,
     EditState,
     EditTrack,
     Facets,
@@ -37,7 +44,6 @@ from .schemas import (
     FsEntry,
     FsListing,
     AddGridMarker,
-    GridMarker,
     GridMarkerEdit,
     ReplaceGrid,
     HistoryEntry,
@@ -76,56 +82,37 @@ app.add_middleware(
 )
 
 
-class AppState:
-    """Holds the currently-loaded collection (selectable at runtime)."""
+def _cue_type_name(native: int) -> str:
+    """Map the wire's Traktor cue integer onto the generic vocabulary.
 
-    def __init__(self) -> None:
-        self.path: Path | None = None
-        self.adapter: TraktorAdapter | None = None
-
-    @property
-    def loaded(self) -> bool:
-        return self.adapter is not None
-
-    def open(self, path: Path) -> None:
-        # Raises on an invalid/parse-incompatible file; only commit to the new
-        # collection once it has parsed. One parse — the adapter builds its read
-        # projection from the same object graph the commands mutate.
-        adapter = TraktorAdapter(path)
-        # Apply this collection's saved OS-path remapping (per-machine, keyed by
-        # the collection's local path) so runtime translation is live on open.
-        saved = prefs.get_path_mapping(str(path))
-        if saved:
-            adapter.store.set_path_mapping(PathMapping.make(saved["from"], saved["to"]))
-        self.path, self.adapter = path, adapter
-        # Version history: record an "as I found it" baseline (deduped, so
-        # re-opening an unchanged collection is a no-op). Best-effort.
-        history.ensure_baseline(path)
+    Transitional: the HTTP contract still carries Traktor's encoding, so the
+    translation happens here at the boundary rather than in the adapter.
+    """
+    name = NATIVE_TO_CUE_TYPE.get(native)
+    if name is None:
+        raise HTTPException(400, f"Unsupported cue type: {native}")
+    return name
 
 
-STATE = AppState()
-
-# Optional auto-load for dev/tests.
-_env_nml = os.environ.get("KONDUKTOR_NML")
-if _env_nml and Path(_env_nml).exists():
-    try:
-        STATE.open(Path(_env_nml))
-    except Exception:  # noqa: BLE001 — bad env path shouldn't crash startup
-        pass
-
-
-def require_service() -> TraktorAdapter:
+def require_adapter() -> LibraryAdapter:
+    """The loaded library, or a 409. Routes talk to this and nothing else."""
     if not STATE.loaded:
         raise HTTPException(409, "No collection loaded")
     assert STATE.adapter is not None
     return STATE.adapter
 
 
-def require_store() -> PlaylistStore:
-    if not STATE.loaded:
-        raise HTTPException(409, "No collection loaded")
-    assert STATE.adapter is not None
-    return STATE.adapter.store
+@app.exception_handler(AdapterError)
+def _adapter_error(_request, exc: AdapterError):
+    """Map the adapter's error vocabulary onto status codes in one place, so no
+    route has to guess whether a given failure is a 400 or a 404."""
+    status = {
+        NotFound: 404,
+        InvalidCommand: 400,
+        Unsupported: 422,
+        LibraryNotSupported: 400,
+    }.get(type(exc), 400)
+    return JSONResponse(status_code=status, content={"detail": str(exc)})
 
 
 # ---- collection selection ---------------------------------------------
@@ -138,8 +125,8 @@ def collection_status() -> CollectionStatus:
     return CollectionStatus(
         loaded=True,
         path=str(STATE.path),
-        tracks=len(require_service().tracks),
-        playlists=require_store().count_playlists(),
+        tracks=len(require_adapter().tracks),
+        playlists=require_adapter().playlist_count(),
     )
 
 
@@ -150,10 +137,10 @@ def open_collection(body: OpenCollection) -> CollectionStatus:
         raise HTTPException(400, f"File not found: {path}")
     try:
         STATE.open(path)
-    except PlaylistError as ex:
-        raise HTTPException(400, f"Not a valid Traktor collection: {ex}")
+    except AdapterError as ex:
+        raise HTTPException(400, f"Not a valid collection: {ex}")
     except Exception as ex:  # noqa: BLE001
-        raise HTTPException(400, f"Could not parse as a Traktor collection: {ex}")
+        raise HTTPException(400, f"Could not open that collection: {ex}")
     prefs.set_last_collection(str(path))
     return collection_status()
 
@@ -162,7 +149,7 @@ def open_collection(body: OpenCollection) -> CollectionStatus:
 def collection_options() -> CollectionOptions:
     """Startup shortcuts for the picker: the best auto-detected Traktor
     collection and the last one opened (may no longer exist → exists=False)."""
-    detected = detect_collections()
+    detected = registry.detect_all()
     auto = CollectionCandidate(**detected[0]) if detected else None
     recent = None
     last = prefs.get_last_collection()
@@ -174,7 +161,7 @@ def collection_options() -> CollectionOptions:
 @app.get("/api/collection/path-mapping", response_model=PathMappingInfo)
 def get_path_mapping() -> PathMappingInfo:
     """The current collection's saved OS-path remapping (blank if none)."""
-    require_store()
+    require_adapter()
     saved = prefs.get_path_mapping(str(STATE.path))
     if saved:
         return PathMappingInfo.model_validate({"from": saved["from"], "to": saved["to"]})
@@ -186,12 +173,12 @@ def put_path_mapping(body: PathMappingInfo) -> PathMappingInfo:
     """Set (or, with blank prefixes, clear) the current collection's remapping.
     Persists to userprefs AND updates the live store so playback/analysis
     re-resolve immediately — no reopen needed. Never touches the .nml."""
-    store = require_store()
+    a = require_adapter()
     mapping = PathMapping.make(body.from_, body.to)
     prefs.set_path_mapping(
         str(STATE.path), mapping.from_prefix or None, mapping.to_prefix or None
     )
-    store.set_path_mapping(mapping)
+    a.set_path_mapping(mapping)
     return PathMappingInfo.model_validate(
         {"from": mapping.from_prefix, "to": mapping.to_prefix}
     )
@@ -201,8 +188,7 @@ def put_path_mapping(body: PathMappingInfo) -> PathMappingInfo:
 def suggest_path_prefix() -> PrefixSuggestions:
     """Auto-detected `from` prefix candidates (common directory per volume),
     so the editor can prefill the stored prefix."""
-    store = require_store()
-    return PrefixSuggestions.model_validate(store.path_prefix_suggestions())
+    return PrefixSuggestions.model_validate(require_adapter().path_prefix_suggestions())
 
 
 @app.get("/api/collection/path-mapping/preview", response_model=RemapPreview)
@@ -211,8 +197,9 @@ def preview_path_mapping(
 ) -> RemapPreview:
     """Validate a candidate mapping before saving/committing: how many tracks
     match `from` and how many exist at `to`."""
-    store = require_store()
-    return RemapPreview.model_validate(store.remap_preview(PathMapping.make(from_, to)))
+    return RemapPreview.model_validate(
+        require_adapter().remap_preview(PathMapping.make(from_, to))
+    )
 
 
 @app.post("/api/collection/remap-paths", response_model=RemapResult)
@@ -221,15 +208,16 @@ def remap_paths(body: PathMappingInfo) -> RemapResult:
     playlist references that join to them) to the `to` prefix, then save (a
     version-history commit is written). Destructive and OS-specific — the UI
     warns accordingly."""
-    store = require_store()
     mapping = PathMapping.make(body.from_, body.to)
     if mapping.empty:
         raise HTTPException(400, "Both a `from` and `to` prefix are required")
-    count = store.remap_locations(mapping)
+    count = require_adapter().remap_locations(mapping)
     if count == 0:
         return RemapResult(rewritten=0, commit=None)
-    outcome = store.save()
-    return RemapResult(rewritten=count, commit=outcome.commit)
+    # Through AppState, not the adapter: this is the one route besides /api/save
+    # that writes, and skipping it would leave a gap in the version history.
+    _outcome, commit = STATE.save()
+    return RemapResult(rewritten=count, commit=commit)
 
 
 @app.get("/api/prefs")
@@ -260,7 +248,7 @@ def fs_list(path: str | None = None) -> FsListing:
             try:
                 if entry.is_dir():
                     dirs.append(FsEntry(name=entry.name, path=str(entry)))
-                elif entry.suffix.lower() == ".nml":
+                elif entry.suffix.lower() in registry.browsable_suffixes():
                     files.append(FsEntry(name=entry.name, path=str(entry)))
             except OSError:
                 continue
@@ -280,10 +268,15 @@ def health() -> dict:
     return {"status": "ok", "loaded": STATE.loaded, "path": str(STATE.path) if STATE.path else None}
 
 
+@app.get("/api/capabilities", response_model=Capabilities)
+def capabilities() -> Capabilities:
+    """What the loaded library can persist, so the UI can gate its controls."""
+    return require_adapter().capabilities()
+
+
 @app.get("/api/state", response_model=EditState)
 def state() -> EditState:
-    store = require_store()
-    return EditState(dirty=store.dirty, nml_path=str(STATE.path))
+    return EditState(dirty=require_adapter().dirty, nml_path=str(STATE.path))
 
 
 @app.post("/api/reload")
@@ -291,7 +284,7 @@ def reload_collection() -> dict:
     if not STATE.loaded:
         raise HTTPException(409, "No collection loaded")
     STATE.open(STATE.path)  # re-parse current file from disk
-    return {"status": "reloaded", "tracks": len(require_service().tracks)}
+    return {"status": "reloaded", "tracks": len(require_adapter().tracks)}
 
 
 # ---- read: stats / facets / tracks ------------------------------------
@@ -299,12 +292,13 @@ def reload_collection() -> dict:
 
 @app.get("/api/stats", response_model=Stats)
 def stats() -> Stats:
-    return require_service().stats(playlist_count=require_store().count_playlists())
+    a = require_adapter()
+    return a.stats(playlist_count=a.playlist_count())
 
 
 @app.get("/api/facets", response_model=Facets)
 def facets() -> Facets:
-    return require_service().facets()
+    return require_adapter().facets()
 
 
 @app.get("/api/tracks", response_model=TrackPage)
@@ -321,7 +315,7 @@ def tracks(
     limit: int = Query(100, ge=1, le=20000),
     offset: int = Query(0, ge=0),
 ) -> TrackPage:
-    return require_service().query_tracks(
+    return require_adapter().query_tracks(
         q=q, genre=genre, key=key, bpm_min=bpm_min, bpm_max=bpm_max,
         rating_min=rating_min, has_cues=has_cues, sort=sort, order=order,
         limit=limit, offset=offset,
@@ -333,16 +327,15 @@ def tracks(
 
 @app.get("/api/playlists", response_model=list[PlaylistNode])
 def playlists() -> list[PlaylistNode]:
-    return require_store().tree()
+    return require_adapter().playlist_tree()
 
 
 @app.get("/api/playlists/{playlist_id}/tracks", response_model=list[Track])
 def playlist_tracks(playlist_id: str) -> list[Track]:
-    keys = require_store().entry_keys(playlist_id)
-    if keys is None:
+    tracks = require_adapter().playlist_tracks(playlist_id)
+    if tracks is None:
         raise HTTPException(404, f"Playlist not found: {playlist_id}")
-    svc = require_service()
-    return [svc.by_key[k] for k in keys if k in svc.by_key]
+    return tracks
 
 
 # ---- write: playlist editing ------------------------------------------
@@ -350,76 +343,54 @@ def playlist_tracks(playlist_id: str) -> list[Track]:
 
 @app.post("/api/playlists", response_model=PlaylistNode)
 def create_playlist(body: CreatePlaylist) -> PlaylistNode:
-    store = require_store()
-    try:
-        new_uuid = store.create_playlist(body.name.strip() or "New Playlist", body.parent_id)
-    except PlaylistError as ex:
-        raise HTTPException(400, str(ex))
-    return PlaylistNode(id=new_uuid, name=body.name, type="PLAYLIST", uuid=new_uuid, count=0)
+    new_id = require_adapter().create_playlist(
+        body.name.strip() or "New Playlist", body.parent_id
+    )
+    return PlaylistNode(id=new_id, name=body.name, type="PLAYLIST", uuid=new_id, count=0)
 
 
 @app.patch("/api/playlists/{playlist_uuid}")
 def rename_playlist(playlist_uuid: str, body: RenamePlaylist) -> dict:
-    try:
-        require_store().rename_playlist(playlist_uuid, body.name.strip())
-    except PlaylistError as ex:
-        raise HTTPException(404, str(ex))
+    require_adapter().rename_playlist(playlist_uuid, body.name.strip())
     return {"status": "renamed", "id": playlist_uuid, "name": body.name}
 
 
 @app.delete("/api/playlists/{playlist_uuid}")
 def delete_playlist(playlist_uuid: str) -> dict:
-    try:
-        require_store().delete_playlist(playlist_uuid)
-    except PlaylistError as ex:
-        raise HTTPException(404, str(ex))
+    require_adapter().delete_playlist(playlist_uuid)
     return {"status": "deleted", "id": playlist_uuid}
 
 
 @app.put("/api/playlists/{playlist_uuid}/entries")
 def set_entries(playlist_uuid: str, body: SetEntries) -> dict:
-    store = require_store()
-    entries = require_service().entries_for(body.track_ids)
-    try:
-        store.set_entries(playlist_uuid, entries)
-    except PlaylistError as ex:
-        raise HTTPException(404, str(ex))
-    return {"status": "updated", "id": playlist_uuid, "count": len(entries)}
+    n = require_adapter().set_playlist_entries(playlist_uuid, body.track_ids)
+    return {"status": "updated", "id": playlist_uuid, "count": n}
 
 
 @app.post("/api/playlists/{playlist_uuid}/add")
 def add_entries(playlist_uuid: str, body: SetEntries) -> dict:
     """Append tracks to a playlist (skips ids already present)."""
-    store = require_store()
-    current = store.entry_keys(playlist_uuid)
+    a = require_adapter()
+    current = a.playlist_entries(playlist_uuid)
     if current is None:
         raise HTTPException(404, f"Playlist not found: {playlist_uuid}")
     have = set(current)
     added = [tid for tid in body.track_ids if tid not in have]
-    entries = require_service().entries_for(current + added)
-    store.set_entries(playlist_uuid, entries)
-    return {"status": "added", "id": playlist_uuid, "added": len(added), "count": len(entries)}
+    n = a.set_playlist_entries(playlist_uuid, current + added)
+    return {"status": "added", "id": playlist_uuid, "added": len(added), "count": n}
 
 
 @app.patch("/api/tracks")
 def edit_track(body: EditTrack) -> dict:
     """Edit a single track's safe metadata fields (in-memory; persisted on save)."""
-    store = require_store()
-    try:
-        store.set_track_metadata(body.track_id, body.fields)
-    except PlaylistError as ex:
-        raise HTTPException(404, str(ex))
-    # Keep the read projection in sync so the edit shows immediately.
-    entry = store.model_entry(body.track_id)
-    if entry is not None:
-        require_service().replace_track(body.track_id, entry)
+    require_adapter().set_track_metadata(body.track_id, body.fields)
     return {"status": "updated", "id": body.track_id}
 
 
 @app.get("/api/tracks/art")
 def track_art(track_id: str) -> Response:
     """Stream a track's embedded cover art (staged replacement if unsaved)."""
-    art = require_store().cover_art(track_id)
+    art = require_adapter().cover_art(track_id)
     if art is None:
         raise HTTPException(404, "No cover art")
     data, mime = art
@@ -442,7 +413,7 @@ _AUDIO_MIME = {
 @app.get("/api/tracks/audio")
 def track_audio(track_id: str) -> FileResponse:
     """Stream a track's audio file for playback (supports HTTP Range/seeking)."""
-    path = require_store().audio_path(track_id)
+    path = require_adapter().audio_path(track_id)
     if path is None:
         raise HTTPException(404, "Track not found")
     if not path.exists():
@@ -454,17 +425,11 @@ def track_audio(track_id: str) -> FileResponse:
     return FileResponse(path, media_type=mime)
 
 
-# Compatibility alias — the cue projection moved into the Traktor adapter.
-# Kept so test_save_fidelity's invariant K imports the old name unchanged while
-# the refactor lands; removed in the final cleanup step.
-_build_track_cues = projection.to_track_cues
-
-
 def _cues_for(track_id: str) -> TrackCues:
-    entry = require_store().model_entry(track_id)
-    if entry is None:
+    cues = require_adapter().track_cues(track_id)
+    if cues is None:
         raise HTTPException(404, "Track not found")
-    return projection.to_track_cues(entry)
+    return cues
 
 
 @app.get("/api/tracks/cues", response_model=TrackCues)
@@ -473,25 +438,17 @@ def track_cues(track_id: str) -> TrackCues:
     return _cues_for(track_id)
 
 
-def _sync_cue_edit(track_id: str) -> TrackCues:
-    """After a hotcue edit, refresh the read projection and return fresh cues."""
-    store = require_store()
-    entry = store.model_entry(track_id)
-    if entry is not None:
-        require_service().replace_track(track_id, entry)
-    return projection.to_track_cues(entry) if entry is not None else TrackCues()
-
-
 @app.post("/api/tracks/hotcue", response_model=TrackCues)
 def create_hotcue(body: SetHotcue) -> TrackCues:
     """Create (or reposition + retype) the hotcue in a slot at a position."""
-    try:
-        require_store().set_hotcue(
-            body.track_id, body.slot, body.start, body.type, body.length, name=body.name
-        )
-    except PlaylistError as ex:
-        raise HTTPException(400, str(ex))
-    return _sync_cue_edit(body.track_id)
+    return require_adapter().set_cue(
+        body.track_id,
+        slot=body.slot,
+        start_sec=body.start,
+        cue_type=_cue_type_name(body.type),
+        length_sec=body.length,
+        name=body.name,
+    )
 
 
 @app.post("/api/tracks/auto-hotcues", response_model=TrackCues)
@@ -501,14 +458,13 @@ def auto_hotcues(body: AutoHotcuesRequest) -> TrackCues:
     Detects section boundaries (librosa Laplacian segmentation), snaps them to
     the track's beatgrid phrases, names them positionally, and places up to
     MAX_HOTCUES into empty slots only (never overwrites). Requires a beatgrid."""
-    store = require_store()
-    entry = store.model_entry(body.track_id)
-    if entry is None:
+    a = require_adapter()
+    cues = a.track_cues(body.track_id)
+    if cues is None:
         raise HTTPException(404, "Track not found")
-    cues = projection.to_track_cues(entry)
     if not cues.grid_markers:
         raise HTTPException(400, "Set a beatgrid before using Auto Hotcues")
-    path = store.audio_path(body.track_id)
+    path = a.audio_path(body.track_id)
     if path is None or not path.exists():
         raise HTTPException(400, "Audio file not found (is the drive mounted?)")
 
@@ -517,8 +473,9 @@ def auto_hotcues(body: AutoHotcuesRequest) -> TrackCues:
     except Exception as ex:  # analysis is best-effort; never 500 the UI
         raise HTTPException(400, f"Analysis failed: {ex}")
 
+    slots = a.capabilities().cues.hotcue_slots
     occupied = {c.hotcue for c in cues.cues if c.hotcue is not None and c.hotcue >= 0}
-    free = [s for s in range(ah.MAX_HOTCUES) if s not in occupied]
+    free = [s for s in range(slots) if s not in occupied]
     existing_times = [c.start for c in cues.cues if c.hotcue is not None and c.hotcue >= 0]
     specs = ah.select_hotcues(
         boundaries,
@@ -526,15 +483,11 @@ def auto_hotcues(body: AutoHotcuesRequest) -> TrackCues:
         duration=duration,
         free_slots=free,
         existing_times=existing_times,
-        max_cues=body.max_cues or ah.MAX_HOTCUES,
+        max_cues=body.max_cues or slots,
     )
     if not specs:
         return cues  # no confident structure / no free slots — leave untouched
-    try:
-        store.place_hotcues(body.track_id, [AutoHotcue(**s) for s in specs])
-    except PlaylistError as ex:
-        raise HTTPException(400, str(ex))
-    return _sync_cue_edit(body.track_id)
+    return a.place_cues(body.track_id, [AutoHotcue(**s) for s in specs])
 
 
 @app.post("/api/tracks/auto-grid", response_model=TrackCues)
@@ -542,54 +495,39 @@ def auto_grid(body: AutoGridRequest) -> TrackCues:
     """Detect tempo + first beat and build a beatgrid: sets BPM, sets hotcue 1
     (slot 0) to the first beat, and anchors the grid to that position. Octave
     (half/double) errors are left for the user to fix with the ×2/÷2 controls."""
-    store = require_store()
-    if store.model_entry(body.track_id) is None:
+    a = require_adapter()
+    if a.track(body.track_id) is None:
         raise HTTPException(404, "Track not found")
-    path = store.audio_path(body.track_id)
+    path = a.audio_path(body.track_id)
     if path is None or not path.exists():
         raise HTTPException(400, "Audio file not found (is the drive mounted?)")
     try:
         bpm, first_beat = ah.detect_grid(str(path))
     except Exception as ex:  # analysis is best-effort; never 500 the UI
         raise HTTPException(400, f"Analysis failed: {ex}")
-    try:
-        store.replace_grid(body.track_id, [(first_beat, bpm)])
-        # Traktor pairs its own grid markers with a white beat-1 cue; mirror
-        # that, but never over an existing hotcue (the old code clobbered slot 0).
-        store.place_grid_companion(body.track_id, 0, prefer_slot=0)
-    except PlaylistError as ex:
-        raise HTTPException(400, str(ex))
-    return _sync_cue_edit(body.track_id)
+    # "Analysed", not "replace": each platform writes an analysis result in its
+    # own shape (Traktor pairs the first marker with a beat-1 cue).
+    return a.set_analysed_grid(body.track_id, [(first_beat, bpm)])
 
 
 @app.patch("/api/tracks/hotcue", response_model=TrackCues)
 def edit_hotcue_type(body: SetHotcueType) -> TrackCues:
     """Change the type of an existing hotcue (keeps its position)."""
-    try:
-        require_store().set_hotcue_type(body.track_id, body.slot, body.type)
-    except PlaylistError as ex:
-        raise HTTPException(400, str(ex))
-    return _sync_cue_edit(body.track_id)
+    return require_adapter().set_cue_type(
+        body.track_id, body.slot, _cue_type_name(body.type)
+    )
 
 
 @app.delete("/api/tracks/hotcue", response_model=TrackCues)
 def delete_hotcue(track_id: str, slot: int) -> TrackCues:
     """Remove the hotcue in a slot."""
-    try:
-        require_store().delete_hotcue(track_id, slot)
-    except PlaylistError as ex:
-        raise HTTPException(400, str(ex))
-    return _sync_cue_edit(track_id)
+    return require_adapter().delete_cue(track_id, slot)
 
 
 @app.post("/api/tracks/grid/marker", response_model=TrackCues)
 def add_grid_marker(body: AddGridMarker) -> TrackCues:
     """Add a beatgrid marker. Omitting `bpm` inherits the governing tempo."""
-    try:
-        require_store().add_grid_marker(body.track_id, body.start, body.bpm)
-    except PlaylistError as ex:
-        raise HTTPException(400, str(ex))
-    return _sync_cue_edit(body.track_id)
+    return require_adapter().add_grid_marker(body.track_id, body.start, body.bpm)
 
 
 @app.patch("/api/tracks/grid/marker", response_model=TrackCues)
@@ -599,84 +537,64 @@ def edit_grid_marker(body: GridMarkerEdit) -> TrackCues:
     BPM is applied before the move: a tempo change can never reorder markers, so
     `index` is still valid for the move afterwards.
     """
-    store = require_store()
-    try:
-        if body.bpm is not None:
-            store.set_grid_marker_bpm(body.track_id, body.index, body.bpm)
-        if body.start is not None:
-            store.move_grid_marker(body.track_id, body.index, body.start)
-    except PlaylistError as ex:
-        raise HTTPException(400, str(ex))
-    return _sync_cue_edit(body.track_id)
+    a = require_adapter()
+    cues = a.track_cues(body.track_id)
+    if body.bpm is not None:
+        cues = a.set_grid_marker_bpm(body.track_id, body.index, body.bpm)
+    if body.start is not None:
+        cues = a.move_grid_marker(body.track_id, body.index, body.start)
+    if cues is None:
+        raise HTTPException(404, "Track not found")
+    return cues
 
 
 @app.delete("/api/tracks/grid/marker", response_model=TrackCues)
 def remove_grid_marker(track_id: str, index: int) -> TrackCues:
     """Delete one grid marker (and its companion cue)."""
-    try:
-        require_store().delete_grid_marker(track_id, index)
-    except PlaylistError as ex:
-        raise HTTPException(400, str(ex))
-    return _sync_cue_edit(track_id)
+    return require_adapter().delete_grid_marker(track_id, index)
 
 
 @app.put("/api/tracks/grid", response_model=TrackCues)
 def replace_grid(body: ReplaceGrid) -> TrackCues:
     """Replace the whole beatgrid (the deck's Reset). `markers: []` clears it."""
-    try:
-        require_store().replace_grid(
-            body.track_id, [(m.start, m.bpm) for m in body.markers]
-        )
-    except PlaylistError as ex:
-        raise HTTPException(400, str(ex))
-    return _sync_cue_edit(body.track_id)
+    return require_adapter().replace_grid(
+        body.track_id, [(m.start, m.bpm) for m in body.markers]
+    )
 
 
 @app.delete("/api/tracks/grid", response_model=TrackCues)
 def remove_grid(track_id: str) -> TrackCues:
     """Delete every grid marker and its companion cue. <TEMPO> is kept."""
-    try:
-        require_store().delete_grid(track_id)
-    except PlaylistError as ex:
-        raise HTTPException(400, str(ex))
-    return _sync_cue_edit(track_id)
+    return require_adapter().delete_grid(track_id)
 
 
 @app.patch("/api/tracks/lock", response_model=TrackCues)
 def edit_lock(body: SetLock) -> TrackCues:
     """Toggle Traktor's LOCK flag on a track."""
-    try:
-        require_store().set_lock(body.track_id, body.locked)
-    except PlaylistError as ex:
-        raise HTTPException(400, str(ex))
-    return _sync_cue_edit(body.track_id)
+    return require_adapter().set_grid_lock(body.track_id, body.locked)
 
 
 @app.put("/api/tracks/art")
 async def set_track_art(track_id: str = Form(...), file: UploadFile = File(...)) -> dict:
     """Stage replacement cover art for a track (written to the file on save)."""
-    store = require_store()
+    a = require_adapter()
     data = await file.read()
     if not data:
         raise HTTPException(400, "Empty image")
-    mime = file.content_type or "image/jpeg"
-    try:
-        store.set_track_art(track_id, data, mime)
-    except PlaylistError as ex:
-        raise HTTPException(404, str(ex))
+    a.set_cover_art(track_id, data, file.content_type or "image/jpeg")
     return {"status": "staged", "id": track_id, "bytes": len(data)}
 
 
 @app.post("/api/save", response_model=SaveResult)
 def save() -> SaveResult:
-    store = require_store()
-    if not store.dirty:
-        return SaveResult(saved=False, commit=None, playlists=store.count_playlists())
-    outcome = store.save()
+    a = require_adapter()
+    if not a.dirty:
+        return SaveResult(saved=False, commit=None, playlists=a.playlist_count())
+    outcome, commit = STATE.save()
     return SaveResult(
         saved=True,
-        commit=outcome.commit,
-        playlists=store.count_playlists(),
+        commit=commit,
+        playlists=a.playlist_count(),
         file_tags=[FileTagOutcome(**r.__dict__) for r in outcome.tag_results],
     )
 
@@ -687,7 +605,7 @@ def save() -> SaveResult:
 @app.get("/api/history", response_model=list[HistoryEntry])
 def get_history() -> list[HistoryEntry]:
     """All saved versions of the current collection, newest first."""
-    require_store()
+    require_adapter()
     return [HistoryEntry(**e.__dict__) for e in history.list_history(STATE.path)]
 
 
@@ -696,14 +614,13 @@ def restore_version(commit_id: str) -> CollectionStatus:
     """Restore the collection to a past version. Writes that version back as a
     NEW forward save (a fresh commit on top of history — never a rewind), then
     reloads. The user should close Traktor first (it overwrites on exit)."""
-    require_store()
+    require_adapter()
     data = history.read_version(STATE.path, commit_id)
     if data is None:
         raise HTTPException(404, f"Version not found: {commit_id}")
     path = STATE.path
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_bytes(data)
-    tmp.replace(path)
+    # The adapter's driver owns writing its own format back, even for a restore.
+    registry.driver_for(path).restore(path, data)
     history.commit(path, data, f"Restored version {commit_id[:8]}", __version__)
     STATE.open(path)  # rebuild read + edit models from the restored file
     return collection_status()
@@ -712,6 +629,6 @@ def restore_version(commit_id: str) -> CollectionStatus:
 @app.delete("/api/history")
 def clear_history() -> dict:
     """Permanently delete ALL version history for the current collection."""
-    require_store()
+    require_adapter()
     history.clear_history(STATE.path)
     return {"status": "cleared"}
