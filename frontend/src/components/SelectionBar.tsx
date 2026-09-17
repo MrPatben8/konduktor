@@ -12,7 +12,7 @@ interface Props {
 
 function flattenPlaylists(nodes: PlaylistNode[]): PlaylistNode[] {
   return nodes.flatMap((n) => [
-    ...(n.type === 'PLAYLIST' ? [n] : []),
+    ...(n.can_add_tracks ? [n] : []),
     ...flattenPlaylists(n.children),
   ])
 }

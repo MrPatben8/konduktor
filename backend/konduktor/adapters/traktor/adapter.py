@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 from ...core.adapter import InvalidCommand, NotFound, Unsupported
 from ...core.capabilities import Capabilities
@@ -21,13 +22,10 @@ from ...core.pathmap import PathMapping
 from ...core.query import TrackIndex
 from . import capabilities as caps
 from . import projection
+from .cue_types import CUE_TYPE_TO_NATIVE
 from .store import PlaylistError, TraktorStore
 
-# Generic cue vocabulary -> Traktor's CUE_V2 TYPE encoding. This table is the
-# only place the integers exist outside the store; type 4 is a grid marker and
-# is never a cue, so it has no generic name.
-CUE_TYPE_TO_NATIVE = {"cue": 0, "fade_in": 1, "fade_out": 2, "load": 3, "loop": 5}
-NATIVE_TO_CUE_TYPE = {v: k for k, v in CUE_TYPE_TO_NATIVE.items()}
+
 
 
 class TraktorAdapter:
@@ -186,8 +184,18 @@ class TraktorAdapter:
         return self._refresh(track_id)
 
     def place_cues(self, track_id: str, cues: list, *, overwrite: bool = False) -> TrackCues:
+        native = [
+            SimpleNamespace(
+                slot=c.slot,
+                start=c.start,
+                name=c.name,
+                type=self._native_cue_type(getattr(c, "type", "cue")),
+                length=getattr(c, "length", 0.0),
+            )
+            for c in cues
+        ]
         with _translate():
-            self._store.place_hotcues(track_id, cues, overwrite=overwrite)
+            self._store.place_hotcues(track_id, native, overwrite=overwrite)
         return self._refresh(track_id)
 
     # ---- beatgrid ---------------------------------------------------------

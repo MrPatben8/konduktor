@@ -52,6 +52,13 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
   const [manual, setManual] = useState('')
 
   const options = useQuery({ queryKey: ['collectionOptions'], queryFn: api.collectionOptions })
+  // The picker runs BEFORE a library is open, so capabilities do not exist yet —
+  // /api/platforms is the pre-load equivalent.
+  const { data: platforms } = useQuery({ queryKey: ['platforms'], queryFn: api.platforms })
+  // One platform today, so name it; with more, stay general rather than listing.
+  const only = platforms?.length === 1 ? platforms[0] : null
+  const appName = only?.name ?? 'DJ'
+  const fileLabel = only?.library_label ?? 'library file'
   const listing = useQuery({
     queryKey: ['fs', dir ?? '~'],
     queryFn: () => api.listDir(dir),
@@ -76,12 +83,12 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
         <div className="flex items-center gap-3 border-b border-line px-5 py-4">
           <div className="flex-1">
             <div className="text-[15px] font-semibold tracking-tight">
-              Select your Traktor collection
+              Select your {appName} library
             </div>
             <div className="text-xs text-muted">
               {mode === 'choose'
                 ? 'Open automatically, resume your last one, or browse.'
-                : 'Choose a collection.nml file to open.'}
+                : `Choose a ${fileLabel} to open.`}
             </div>
           </div>
           {mode === 'browse' && (
@@ -112,8 +119,8 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
                 auto
                   ? `${auto.label} · modified ${formatWhen(auto.modified)}`
                   : options.isLoading
-                    ? 'Searching for a Traktor collection…'
-                    : 'No Traktor collection found in the default location'
+                    ? `Searching for a ${appName} library…`
+                    : `No ${appName} library found in the default location`
               }
               disabled={!auto}
               busy={open.isPending}
@@ -136,7 +143,7 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
             <OptionCard
               icon="📂"
               title="Find collection manually"
-              subtitle="Browse for a collection.nml file"
+              subtitle={`Browse for a ${fileLabel}`}
               busy={open.isPending}
               onClick={() => setMode('browse')}
             />
@@ -218,7 +225,7 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && manual.trim()) open.mutate(manual.trim())
                   }}
-                  placeholder="…or paste a full path to collection.nml"
+                  placeholder={`…or paste a full path to ${fileLabel}`}
                   className="min-w-0 flex-1 rounded-md border border-line bg-ink-850 px-3 py-2 font-mono text-xs text-text outline-none placeholder:text-faint focus:border-accent"
                 />
                 <button

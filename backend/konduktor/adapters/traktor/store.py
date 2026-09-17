@@ -154,20 +154,26 @@ class TraktorStore:
             return PlaylistNode(
                 id=pl.uuid if pl and pl.uuid else name,
                 name=name,
-                type="PLAYLIST",
-                uuid=pl.uuid if pl else None,
+                kind="playlist",
                 count=len(keys),
+                selectable=True,
+                can_add_tracks=True,
+                can_reorder=True,
+                can_rename=True,
+                can_delete=True,
             )
         if ntype == "SMARTLIST" or node.smartplaylist is not None:
+            # Rule-based, so it has no static entry list to show or edit.
             return PlaylistNode(
-                id="sl:" + "/".join(parent_path + [name]), name=name, type="SMARTLIST"
+                id="sl:" + "/".join(parent_path + [name]), name=name, kind="smart"
             )
         path = parent_path + [name]
         return PlaylistNode(
             id="fld:" + "/".join(path),
             name=name,
-            type="FOLDER",
+            kind="folder",
             children=[self._to_model(c, path) for c in self._children(node)],
+            can_contain_children=True,
         )
 
     @staticmethod

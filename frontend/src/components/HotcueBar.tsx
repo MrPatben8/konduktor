@@ -1,14 +1,21 @@
 import type { CuePoint } from '../api'
-import { contrastText, cueColor, GRID_MARKER_COLOR } from '../lib/cues'
+import { contrastText, cueColor, cueGlyph } from '../lib/cues'
 
 interface Props {
   cues: CuePoint[]
+  /** Bank size, from capabilities — not every platform has eight. */
+  slotCount: number
+  /** How a slot is labelled ("1".."8" or "A".."H"). */
+  slotLabel: (slot: number) => string
   selectedSlot: number | null
   onSlotPress: (slot: number) => void
   onSlotRelease: (slot: number) => void
 }
 
-const SLOTS = [0, 1, 2, 3, 4, 5, 6, 7] // Traktor hotcue slots → labelled 1–8
+const READONLY_LABELS: Record<string, string> = {
+  beatgrid_companion: 'Beatgrid marker — managed by the grid controls',
+  platform_managed: 'Managed by the DJ app — not editable here',
+}
 
 /**
  * The 8 hotcue slots, colour-coded by cue type when assigned (gray when empty).
@@ -24,14 +31,24 @@ const SLOTS = [0, 1, 2, 3, 4, 5, 6, 7] // Traktor hotcue slots → labelled 1–
  * the backend refuses hotcue edits on them, and showing that up front is better
  * than surfacing the refusal as an error.
  */
-export function HotcueBar({ cues, selectedSlot, onSlotPress, onSlotRelease }: Props) {
+export function HotcueBar({
+  cues,
+  slotCount,
+  slotLabel,
+  selectedSlot,
+  onSlotPress,
+  onSlotRelease,
+}: Props) {
   return (
     <div className="flex flex-1 items-stretch gap-px">
-      {SLOTS.map((slot) => {
-        const cue = cues.find((c) => c.hotcue === slot) ?? null
-        const isMarker = cue?.grid_marker != null
-        const selected = selectedSlot === slot && !isMarker
-        const color = cue ? (isMarker ? GRID_MARKER_COLOR : cueColor(cue)) : null
+      {Array.from({ length: slotCount }, (_, i) => i).map((slot) => {
+        const cue = cues.find((c) => c.role === 'hotcue' && c.slot === slot) ?? null
+        // Gate on `editable`, never on why: a platform-owned cue is a read-only
+        // case, not a Traktor-companion case.
+        const locked = cue != null && !cue.editable
+        const selected = selectedSlot === slot && !locked
+        const color = cue ? cueColor(cue) : null
+        const glyph = cue ? cueGlyph(cue) : ''
         return (
           <button
             key={slot}
@@ -45,13 +62,14 @@ export function HotcueBar({ cues, selectedSlot, onSlotPress, onSlotRelease }: Pr
             onPointerUp={() => onSlotRelease(slot)}
             onPointerCancel={() => onSlotRelease(slot)}
             title={
-              isMarker
-                ? `Beatgrid marker ${(cue!.grid_marker ?? 0) + 1} — managed by the grid controls`
+              locked
+                ? (cue!.readonly_reason && READONLY_LABELS[cue!.readonly_reason]) ??
+                  'Not editable here'
                 : cue
                   ? cue.name && cue.name !== 'n.n.'
-                    ? `${slot + 1}: ${cue.name}`
-                    : `Hotcue ${slot + 1}`
-                  : `Hotcue ${slot + 1} — click to set at playhead`
+                    ? `${slotLabel(slot)}: ${cue.name}`
+                    : `Hotcue ${slotLabel(slot)}`
+                  : `Hotcue ${slotLabel(slot)} — click to set at playhead`
             }
             style={color ? { backgroundColor: color, color: contrastText(color) } : undefined}
             className={
@@ -60,7 +78,12 @@ export function HotcueBar({ cues, selectedSlot, onSlotPress, onSlotRelease }: Pr
               (selected ? ' ring-2 ring-inset ring-white/80' : '')
             }
           >
-            {isMarker ? '⊞' : slot + 1}
+            {locked ? '🔒' : slotLabel(slot)}
+            {glyph && (
+              <span className="absolute right-0.5 top-0 text-[9px] leading-none opacity-80">
+                {glyph}
+              </span>
+            )}
           </button>
         )
       })}

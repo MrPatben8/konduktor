@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .core.capabilities import CueRole, CueType
+
 
 class CreatePlaylist(BaseModel):
     name: str
@@ -61,18 +63,20 @@ class ReplaceGrid(BaseModel):
     markers: list[GridMarker] = []  # [] is equivalent to deleting the grid
 
 
-class SetLock(BaseModel):
+class SetGridLock(BaseModel):
     track_id: str
     locked: bool
 
 
-class SetHotcue(BaseModel):
+class SetCue(BaseModel):
     track_id: str
-    slot: int  # 0–7
+    slot: int  # bank slot; capabilities.cues.hotcue_slots bounds it
     start: float  # seconds
-    type: int  # 0 cue, 1 fade-in, 2 fade-out, 3 load, 5 loop
-    length: float = 0.0  # seconds (>0 for a loop hotcue)
-    name: str | None = None  # cue label; defaults to Traktor's "n.n." when unset
+    type: CueType = "cue"
+    role: CueRole = "hotcue"
+    length: float = 0.0  # seconds (>0 for a loop cue)
+    name: str | None = None
+    color: str | None = None
 
 
 class AutoHotcuesRequest(BaseModel):
@@ -84,15 +88,15 @@ class AutoGridRequest(BaseModel):
     track_id: str
 
 
-class SetHotcueType(BaseModel):
+class SetCueType(BaseModel):
     track_id: str
     slot: int
-    type: int
+    type: CueType
 
 
 class EditState(BaseModel):
-    dirty: bool  # unsaved in-memory playlist changes exist
-    nml_path: str
+    dirty: bool  # unsaved in-memory changes exist
+    library: LibraryInfo
 
 
 # ---- collection selection ----
@@ -103,6 +107,9 @@ class CollectionStatus(BaseModel):
     path: str | None = None
     tracks: int | None = None
     playlists: int | None = None
+    # Identity of the loaded library, so the UI can name it without parsing the
+    # path (a Serato library is a directory, not a file).
+    library: LibraryInfo | None = None
 
 
 class OpenCollection(BaseModel):
@@ -157,6 +164,8 @@ class RemapResult(BaseModel):
 # one import site. The dependency runs schemas -> core, never the reverse.
 from .core.model import (  # noqa: E402,F401
     AutoHotcue,
+    LibraryInfo,
+    PlatformOption,
     CuePoint,
     Facets,
     GenreCount,

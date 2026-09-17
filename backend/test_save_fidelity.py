@@ -23,6 +23,7 @@ import os
 import shutil
 import sys
 import tempfile
+from types import SimpleNamespace
 import warnings
 from pathlib import Path
 
@@ -318,8 +319,13 @@ with tempfile.TemporaryDirectory() as d:
 # ---- Invariant F: batch place_hotcues (Auto Hotcues) -------------------
 print("== F. place_hotcues fills empty slots only, names round-trip, localized ==")
 with tempfile.TemporaryDirectory() as d:
-    from konduktor.core.model import AutoHotcue
     from traktor_nml_utils import TraktorCollection
+
+    # The store is the NATIVE layer, so its specs carry Traktor's own cue TYPE
+    # integer. The generic AutoHotcue (string types) is translated by the adapter
+    # before it gets here — test_traktor_adapter.py covers that path.
+    def spec(slot, start, name, type=0, length=0.0):
+        return SimpleNamespace(slot=slot, start=start, name=name, type=type, length=length)
 
     work = Path(d) / "collection.nml"
     shutil.copy2(REAL, work)
@@ -348,8 +354,8 @@ with tempfile.TemporaryDirectory() as d:
     e2 = store2._nml.collection.entry[0]
     now_used = {c.hotcue for c in (e2.cue_v2 or []) if c.hotcue is not None and c.hotcue >= 0}
     free = [s for s in range(8) if s not in now_used][:2]
-    specs = [AutoHotcue(slot=hand_slot, start=99.0, name="SHOULD-NOT-OVERWRITE")]
-    specs += [AutoHotcue(slot=s, start=30.0 + i * 10, name=f"Auto {i}") for i, s in enumerate(free)]
+    specs = [spec(slot=hand_slot, start=99.0, name="SHOULD-NOT-OVERWRITE")]
+    specs += [spec(slot=s, start=30.0 + i * 10, name=f"Auto {i}") for i, s in enumerate(free)]
     store2.place_hotcues(track_id, specs)
     store2.save()
     edited = work.read_bytes()

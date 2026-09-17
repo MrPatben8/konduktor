@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type GridMarker, type Track, type TrackCues } from '../api'
+import { api, type CueType, type GridMarker, type Track, type TrackCues } from '../api'
 import { buildBeatGrid, GRID_EPS } from '../lib/beatgrid'
+import { slotLabeller, useCaps } from '../lib/capabilities'
+import { CUE_TYPE_LABELS } from '../lib/cues'
 import { analyzeWaveform, type WaveColumn } from '../lib/waveform'
 import { ScratchEngine } from '../lib/scratchEngine'
 import { PlaybackEngine } from '../lib/playbackEngine'
@@ -29,13 +31,22 @@ function fmt(secs: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-const CUE_TYPES: { value: number; label: string }[] = [
-  { value: 0, label: 'Cue' },
-  { value: 1, label: 'Fade-In' },
-  { value: 2, label: 'Fade-Out' },
-  { value: 3, label: 'Load' },
-]
-const LOOP_TYPE = 5
+/**
+ * Digit key -> bank slot: 1..9 map to slots 0..8 and 0 maps to slot 10.
+ *
+ * Ten digits is the physical ceiling, so a bank larger than that simply has no
+ * shortcut for its tail. Returns null when the key is not a digit or the slot is
+ * beyond this platform's bank — an 8-slot bank behaves exactly as before.
+ */
+const DIGIT_RE = /^(?:Digit|Numpad)([0-9])$/
+
+function slotForDigit(code: string, slotCount: number): number | null {
+  const m = code.match(DIGIT_RE)
+  if (!m) return null
+  const slot = m[1] === '0' ? 9 : Number(m[1]) - 1
+  return slot < slotCount ? slot : null
+}
+
 const LOOP_SIZES = [1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32]
 
 /**
@@ -549,8 +560,17 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [grid])
 
+  // ---- capability-derived -----------------------------------------------
+  const caps = useCaps()
+  const slotCount = caps.cues.hotcue_slots
+  const slotLabel = slotLabeller(caps)
+  // Loops are a cue TYPE on some platforms and a separate bank on others; the
+  // dropdown only ever offers the point types.
+  const pointCueTypes = caps.cues.types.filter((t) => t !== 'loop')
+
   // ---- hotcues ----------------------------------------------------------
-  const hotcueAt = (slot: number) => cueData?.cues.find((c) => c.hotcue === slot) ?? null
+  const hotcueAt = (slot: number) =>
+    cueData?.cues.find((c) => c.role === 'hotcue' && c.slot === slot) ?? null
 
   const applyCueEdit = (fresh: TrackCues) => {
     setCueData(fresh)
@@ -597,10 +617,10 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
         // Setting a hotcue while a loop is active stores it as a loop hotcue.
         if (loopActive && loopRegion) {
           const len = loopRegion.end - loopRegion.start
-          applyCueEdit(await api.createHotcue(track.id, slot, loopRegion.start, LOOP_TYPE, len))
+          applyCueEdit(await api.createCue(track.id, slot, loopRegion.start, 'loop', len))
         } else {
           const t = snapTime(playbackRef.current?.getPosition() ?? current)
-          applyCueEdit(await api.createHotcue(track.id, slot, t, 0))
+          applyCueEdit(await api.createCue(track.id, slot, t, 'cue'))
         }
         setSelectedSlot(slot)
       } catch (e) {
@@ -613,7 +633,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     if (!eng || !eng.ready) return
     getCtx()
     // A loop hotcue jumps to its start AND re-engages a loop of its length.
-    if (cue.type === LOOP_TYPE && cue.length > 0) {
+    if (cue.type === 'loop' && cue.length > 0) {
       seek(cue.start)
       engagLoop(cue.start, cue.start + cue.length, beatsForLoop(cue.start, cue.length))
     } else {
@@ -633,15 +653,15 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   const runAutoHotcues = async () => {
     if (!track || !canAutoCue || autoBusy) return
     const hotcueCount = (c: TrackCues | null) =>
-      c?.cues.filter((x) => x.hotcue >= 0).length ?? 0
-    if (hotcueCount(cueData) >= 8) {
-      onError?.('No free hotcue slots — delete some first')
+      c?.cues.filter((x) => x.role === 'hotcue' && x.slot != null).length ?? 0
+    if (hotcueCount(cueData) >= slotCount) {
+      onError?.(`No free hotcue slots (${slotCount} of ${slotCount} used) — delete some first`)
       return
     }
     setAutoBusy(true)
     try {
       const before = hotcueCount(cueData)
-      const fresh = await api.autoHotcues(track.id)
+      const fresh = await api.autoCues(track.id)
       applyCueEdit(fresh)
       const placed = Math.max(0, hotcueCount(fresh) - before)
       if (placed === 0) {
@@ -656,10 +676,10 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     }
   }
 
-  const changeSelectedType = async (type: number) => {
+  const changeSelectedType = async (type: CueType) => {
     if (!track || selectedSlot == null) return
     try {
-      applyCueEdit(await api.setHotcueType(track.id, selectedSlot, type))
+      applyCueEdit(await api.setCueType(track.id, selectedSlot, type))
     } catch (e) {
       onError?.((e as Error).message)
     }
@@ -668,7 +688,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   const deleteSelected = async () => {
     if (!track || selectedSlot == null) return
     try {
-      applyCueEdit(await api.deleteHotcue(track.id, selectedSlot))
+      applyCueEdit(await api.deleteCue(track.id, selectedSlot))
       setSelectedSlot(null)
     } catch (e) {
       onError?.((e as Error).message)
@@ -680,7 +700,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     if (!track || !existing) return // nothing to remove in an empty slot
     if (existing.grid_marker != null) return // beatgrid-owned: delete the marker instead
     try {
-      applyCueEdit(await api.deleteHotcue(track.id, slot))
+      applyCueEdit(await api.deleteCue(track.id, slot))
       if (selectedSlot === slot) setSelectedSlot(null)
     } catch (e) {
       onError?.((e as Error).message)
@@ -757,7 +777,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   const toggleLock = async () => {
     if (!track) return
     try {
-      applyCueEdit(await api.setLock(track.id, !cueData?.locked))
+      applyCueEdit(await api.setGridLock(track.id, !cueData?.grid_locked))
     } catch (e) {
       onError?.((e as Error).message)
     }
@@ -799,6 +819,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     beatJump,
     prevMarker,
     nextMarker,
+    slotCount,
   })
   shortcutsRef.current = {
     toggle,
@@ -810,6 +831,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     beatJump,
     prevMarker,
     nextMarker,
+    slotCount,
   }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -840,10 +862,9 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
         else shortcutsRef.current.beatJump(1)
         return
       }
-      const digit = e.code.match(/^(?:Digit|Numpad)([1-8])$/)
-      if (digit) {
+      const slot = slotForDigit(e.code, shortcutsRef.current.slotCount)
+      if (slot != null) {
         e.preventDefault()
-        const slot = Number(digit[1]) - 1
         if (e.shiftKey) void shortcutsRef.current.deleteHotcueSlot(slot)
         else void shortcutsRef.current.onSlotPress(slot)
       }
@@ -851,8 +872,8 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     // keyup ends a held hotcue's momentary preview (release).
     const onKeyRelease = (e: KeyboardEvent) => {
       if (e.code === 'KeyC') shortcutsRef.current.onCueRelease()
-      const digit = e.code.match(/^(?:Digit|Numpad)([1-8])$/)
-      if (digit) shortcutsRef.current.onSlotRelease(Number(digit[1]) - 1)
+      const slot = slotForDigit(e.code, shortcutsRef.current.slotCount)
+      if (slot != null) shortcutsRef.current.onSlotRelease(slot)
     }
     window.addEventListener('keydown', onKey)
     window.addEventListener('keyup', onKeyRelease)
@@ -893,7 +914,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
             markerStart={activeMarker?.start ?? null}
             atMarker={atMarker}
             beforeFirst={beforeFirstMarker}
-            locked={cueData?.locked ?? false}
+            locked={cueData?.grid_locked ?? false}
             canReset={originalGridRef.current != null}
             onSetBpm={setBpm}
             onNudgeBpm={nudgeBpm}
@@ -1034,24 +1055,32 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
               </span>
               <HotcueBar
                 cues={cueData?.cues ?? []}
+                slotCount={slotCount}
+                slotLabel={slotLabel}
                 selectedSlot={selectedSlot}
                 onSlotPress={onSlotPress}
                 onSlotRelease={onSlotRelease}
               />
               <div className="flex w-28 items-center justify-center bg-ink-900 px-1">
-                {selectedCue && selectedCue.type === LOOP_TYPE ? (
+                {selectedCue && selectedCue.type === 'loop' ? (
                   <span className="text-sm font-semibold text-mint">Loop</span>
+                ) : pointCueTypes.length < 2 ? (
+                  // One point type means there is nothing to choose between —
+                  // show it rather than a dropdown that cannot change anything.
+                  <span className="text-sm font-semibold text-text">
+                    {selectedCue ? CUE_TYPE_LABELS[selectedCue.type] : '—'}
+                  </span>
                 ) : (
                   <select
                     value={selectedCue ? selectedCue.type : ''}
                     disabled={!selectedCue}
-                    onChange={(e) => changeSelectedType(Number(e.target.value))}
+                    onChange={(e) => changeSelectedType(e.target.value as CueType)}
                     className="w-full bg-transparent text-center text-sm font-semibold text-text outline-none disabled:opacity-40"
                   >
                     {!selectedCue && <option value="">—</option>}
-                    {CUE_TYPES.map((t) => (
-                      <option key={t.value} value={t.value}>
-                        {t.label}
+                    {pointCueTypes.map((t) => (
+                      <option key={t} value={t}>
+                        {CUE_TYPE_LABELS[t]}
                       </option>
                     ))}
                   </select>

@@ -53,7 +53,7 @@ check.failed = False
 print("== initial read ==")
 pls = client.get("/api/playlists").json()
 flat = lambda ns: [x for n in ns for x in [n] + flat(n.get("children", []))]
-playlists = [n for n in flat(pls) if n["type"] == "PLAYLIST"]
+playlists = [n for n in flat(pls) if n["kind"] == "playlist"]
 print(f"  {len(playlists)} playlists, e.g. {[p['name'] for p in playlists[:3]]}")
 donor = next(p for p in playlists if p["count"] >= 5)
 donor_tracks = client.get(f"/api/playlists/{donor['id']}/tracks").json()
@@ -64,7 +64,7 @@ collection_before = collection_span(WORK.read_bytes())
 
 print("== create + add + reorder + rename ==")
 created = client.post("/api/playlists", json={"name": "Konduktor Test"}).json()
-new_uuid = created["uuid"]
+new_uuid = created["id"]
 check("create returns uuid", bool(new_uuid))
 
 r = client.put(f"/api/playlists/{new_uuid}/entries", json={"track_ids": track_ids})

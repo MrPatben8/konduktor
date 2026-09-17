@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnSizingState, SortingState, VisibilityState } from '@tanstack/react-table'
+import { CapabilitiesContext } from './lib/capabilities'
+import { writeHint } from './lib/platformCopy'
 import { api, type Track } from './api'
 import {
   DEFAULT_COLUMN_ORDER,
@@ -113,6 +115,22 @@ export default function App() {
     }
   }, [columnVisibility, columnOrder, columnSizing])
 
+  const collection = useQuery({ queryKey: ['collection'], queryFn: api.collection })
+  const loaded = collection.data?.loaded ?? false
+  // What the loaded library can persist. Never stale within a session, and the
+  // app does not render until it resolves — so no first frame can offer an edit
+  // the adapter would reject.
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: api.capabilities,
+    enabled: loaded,
+    staleTime: Infinity,
+  })
+  const save = capabilities.data?.save
+  // From the adapter, not a path split: a Serato library is a directory.
+  const libraryName = collection.data?.library?.display_name ?? null
+  const writeHintText = save ? writeHint(save) : 'save to write it to disk'
+
   const notify = useCallback((kind: ToastMsg['kind'], text: string) => {
     setToast({ id: Date.now(), kind, text })
   }, [])
@@ -128,16 +146,13 @@ export default function App() {
           qc.invalidateQueries({ queryKey: ['playlist'] })
           qc.invalidateQueries({ queryKey: ['state'] })
           qc.invalidateQueries({ queryKey: ['facets'] })
-          qc.invalidateQueries({ queryKey: ['stats'] })
-          notify('success', `Updated ${String(field)} — Save to write to Traktor`)
+          notify('success', `Updated ${String(field)} — ${writeHintText}`)
         })
         .catch((e) => onError((e as Error).message))
     },
-    [qc, notify, onError],
+    [qc, notify, onError, writeHintText],
   )
 
-  const collection = useQuery({ queryKey: ['collection'], queryFn: api.collection })
-  const loaded = collection.data?.loaded ?? false
 
   // NOTE: all hooks must run on every render (Rules of Hooks). Data queries are
   // gated with `enabled: loaded` so they don't fire before a collection is open;
@@ -206,7 +221,7 @@ export default function App() {
     qc.invalidateQueries() // refetch everything for the newly-opened collection
   }
 
-  if (collection.isLoading) {
+  if (collection.isLoading || (loaded && !capabilities.data)) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-ink-950 text-muted">
         Loading…
@@ -241,6 +256,7 @@ export default function App() {
     )
 
   return (
+    <CapabilitiesContext.Provider value={capabilities.data!}>
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-ink-950">
       <Toast toast={toast} onClose={() => setToast(null)} />
       {menu && (
@@ -387,11 +403,12 @@ export default function App() {
           total={tracks.length}
           sourceName={isAll ? 'All Tracks' : source.name}
           loading={loading}
-          collectionName={collection.data?.path?.split('/').pop() ?? null}
+          collectionName={capabilities.data ? libraryName : null}
           onChangeCollection={() => setForcePicker(true)}
         />
         </main>
       </div>
     </div>
+    </CapabilitiesContext.Provider>
   )
 }

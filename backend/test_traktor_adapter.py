@@ -105,21 +105,21 @@ with tempfile.TemporaryDirectory() as d:
     # cues — a free slot on a track with a grid, so the companion guard is clear
     tid2 = next(
         t.id for t in adapter.tracks
-        if t.has_grid and (cues := adapter.track_cues(t.id))
-        and len({c.hotcue for c in cues.cues if c.hotcue >= 0}) < 7
+        if t.grid_marker_count and (cues := adapter.track_cues(t.id))
+        and len({c.slot for c in cues.cues if c.slot is not None}) < 7
     )
     before = adapter.track(tid2).hotcue_count
-    used = {c.hotcue for c in adapter.track_cues(tid2).cues if c.hotcue >= 0}
+    used = {c.slot for c in adapter.track_cues(tid2).cues if c.slot is not None}
     free = next(s for s in range(8) if s not in used)
     fresh = adapter.set_cue(tid2, slot=free, start_sec=12.5, cue_type="cue")
-    check("set_cue returns fresh cues", any(c.hotcue == free for c in fresh.cues))
+    check("set_cue returns fresh cues", any(c.slot == free for c in fresh.cues))
     check("hotcue count in the projection incremented",
           adapter.track(tid2).hotcue_count == before + 1)
 
     # cue type translation, both directions
     adapter.set_cue_type(tid2, free, "load")
-    check("generic cue type maps to Traktor's encoding",
-          next(c.type for c in adapter.track_cues(tid2).cues if c.hotcue == free) == 3)
+    check("cue type round-trips through the generic vocabulary",
+          next(c.type for c in adapter.track_cues(tid2).cues if c.slot == free) == "load")
     try:
         adapter.set_cue(tid2, slot=free, start_sec=1.0, cue_type="cue", role="memory")
         check("memory cues are refused on Traktor", False, "no error raised")
@@ -132,7 +132,7 @@ with tempfile.TemporaryDirectory() as d:
     check("grid marker added and projected",
           len(adapter.track_cues(tid2).grid_markers) == grid_before + 1)
     check("marker count reached the track projection",
-          adapter.track(tid2).grid_markers == grid_before + 1)
+          adapter.track(tid2).grid_marker_count == grid_before + 1)
 
 # ---- analysed grid vs plain replace --------------------------------------
 print("== set_analysed_grid writes Traktor's own shape, replace_grid does not ==")
@@ -140,7 +140,7 @@ with tempfile.TemporaryDirectory() as d:
     work = Path(d) / "collection.nml"
     shutil.copy2(REAL, work)
     adapter = TraktorAdapter(work)
-    tid = next(t.id for t in adapter.tracks if t.has_grid)
+    tid = next(t.id for t in adapter.tracks if t.grid_marker_count)
 
     cues = adapter.replace_grid(tid, [(1.0, 128.0)])
     check("replace_grid sets exactly the markers given", len(cues.grid_markers) == 1)
@@ -179,12 +179,12 @@ with tempfile.TemporaryDirectory() as d:
     adapter = TraktorAdapter(work)
     tid = next(
         t.id for t in adapter.tracks
-        if len({c.hotcue for c in adapter.track_cues(t.id).cues if c.hotcue >= 0}) < 6
+        if len({c.slot for c in adapter.track_cues(t.id).cues if c.slot is not None}) < 6
     )
-    used = {c.hotcue for c in adapter.track_cues(tid).cues if c.hotcue >= 0}
+    used = {c.slot for c in adapter.track_cues(tid).cues if c.slot is not None}
     free = [s for s in range(8) if s not in used][:2]
     adapter.place_cues(tid, [AutoHotcue(slot=free[0], start=30.0, name="Drop")])
-    placed = next((c for c in adapter.track_cues(tid).cues if c.hotcue == free[0]), None)
+    placed = next((c for c in adapter.track_cues(tid).cues if c.slot == free[0]), None)
     check("batch-placed cue exists with its name", placed is not None and placed.name == "Drop")
 
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")

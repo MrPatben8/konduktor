@@ -2,6 +2,9 @@ import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Track } from '../api'
 import { formatBpm, formatDuration } from '../lib/format'
+import { useCaps } from '../lib/capabilities'
+import { RatingStars } from './RatingStars'
+import { saveLabel, writeHint } from '../lib/platformCopy'
 
 interface Props {
   track: Track
@@ -25,6 +28,7 @@ const TEXT_FIELDS: { key: keyof Track; label: string; textarea?: boolean }[] = [
 ]
 
 export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
+  const caps = useCaps()
   const qc = useQueryClient()
   const { data: facets } = useQuery({ queryKey: ['facets'], queryFn: api.facets })
 
@@ -61,7 +65,9 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
       qc.invalidateQueries({ queryKey: ['state'] })
       qc.invalidateQueries({ queryKey: ['facets'] })
       qc.invalidateQueries({ queryKey: ['stats'] })
-      onApplied(`Updated “${form.title || track.title || 'track'}” — Save to write to Traktor`)
+      onApplied(
+        `Updated “${form.title || track.title || 'track'}” — ${writeHint(caps.save)}`,
+      )
       onClose()
     },
     onError: (e: Error) => onError(e.message),
@@ -170,15 +176,7 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
               Rating
             </span>
             <div className="flex items-center gap-1 text-xl">
-              {[1, 2, 3, 4, 5].map((i) => (
-                <button
-                  key={i}
-                  onClick={() => setRating(i === rating ? 0 : i)}
-                  className={i <= rating ? 'text-gold' : 'text-ink-600 hover:text-faint'}
-                >
-                  ★
-                </button>
-              ))}
+              <RatingStars value={rating} max={caps.tracks.rating_max} onChange={setRating} />
               {rating > 0 && (
                 <button
                   onClick={() => setRating(0)}
@@ -204,8 +202,10 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
           </div>
           <p className="text-[11px] leading-snug text-faint">
             BPM, key and path aren’t editable here. Changes apply in-app; click
-            <span className="text-muted"> Save to Traktor</span> to write them to disk.
-            New album art is written into the file; Traktor may need a manual
+            <span className="text-muted"> {saveLabel(caps.save)}</span> to write them to disk.
+            New album art is written into the file.{' '}
+            {caps.tracks.artwork_note}
+            {'' /* platform-specific footnote, supplied by the adapter */}
             “Import Cover Art” to refresh its own cached thumbnail.
           </p>
         </div>

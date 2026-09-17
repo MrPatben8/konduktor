@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
+import { useCaps } from '../lib/capabilities'
+import { overwriteWarning, saveLabel } from '../lib/platformCopy'
 
 interface Props {
   onError: (msg: string) => void
@@ -26,13 +28,15 @@ export function SaveBar({ onError }: Props) {
     onError: (e: Error) => onError(e.message),
   })
 
+  const caps = useCaps()
+  const warning = overwriteWarning(caps.save)
   const dirty = state?.dirty ?? false
 
   return (
     <div className="border-t border-line bg-ink-900 px-3 py-3">
-      {dirty && (
+      {dirty && warning && (
         <div className="mb-2 rounded-md bg-gold/10 px-2 py-1.5 text-[11px] leading-snug text-gold">
-          ⚠ Close Traktor before saving — it overwrites the collection on exit.
+          ⚠ {warning}
         </div>
       )}
       <button
@@ -49,7 +53,7 @@ export function SaveBar({ onError }: Props) {
         ) : dirty ? (
           <>
             <span className="h-1.5 w-1.5 rounded-full bg-ink-950/60" />
-            Save to Traktor
+            {saveLabel(caps.save)}
           </>
         ) : (
           'No unsaved changes'

@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type HistoryEntry } from '../api'
+import { useCaps } from '../lib/capabilities'
+import { restoreWarning } from '../lib/platformCopy'
 import type { ToastMsg } from './Toast'
 
 interface Props {
@@ -37,9 +39,10 @@ function summaryChips(summary: string): string[] {
  * a purely-local git repo (see backend history.py); this lists them newest-first
  * and lets the user restore any past version (written back as a new forward save)
  * or wipe the entire history. Restore overwrites the collection on disk, so the
- * user must close Traktor first (it rewrites the .nml on exit).
+ * user is warned first, in the loaded platform's own terms.
  */
 export function HistoryPanel({ onClose, onNotify, onError }: Props) {
+  const caps = useCaps()
   const qc = useQueryClient()
   const history = useQuery({ queryKey: ['history'], queryFn: api.history })
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
@@ -87,8 +90,7 @@ export function HistoryPanel({ onClose, onNotify, onError }: Props) {
         <div className="border-b border-line px-5 py-4">
           <div className="text-[15px] font-semibold tracking-tight">Version History</div>
           <div className="text-xs text-muted">
-            Every save is a restorable version of this collection. Close Traktor before
-            restoring — it overwrites the collection on exit.
+            Every save is a restorable version of this library. {restoreWarning(caps.save)}
           </div>
         </div>
 

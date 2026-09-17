@@ -14,7 +14,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from . import __version__, history, prefs
-from .adapters.traktor.adapter import NATIVE_TO_CUE_TYPE
 from .adapters.traktor.discovery import describe
 from .app_state import STATE
 from .core import auto_hotcues as ah
@@ -38,6 +37,8 @@ from .schemas import (
     CollectionStatus,
     CreatePlaylist,
     EditState,
+    LibraryInfo,
+    PlatformOption,
     EditTrack,
     Facets,
     FileTagOutcome,
@@ -56,9 +57,9 @@ from .schemas import (
     RenamePlaylist,
     SaveResult,
     SetEntries,
-    SetHotcue,
-    SetHotcueType,
-    SetLock,
+    SetCue,
+    SetCueType,
+    SetGridLock,
     Stats,
     Track,
     TrackCues,
@@ -80,18 +81,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-def _cue_type_name(native: int) -> str:
-    """Map the wire's Traktor cue integer onto the generic vocabulary.
-
-    Transitional: the HTTP contract still carries Traktor's encoding, so the
-    translation happens here at the boundary rather than in the adapter.
-    """
-    name = NATIVE_TO_CUE_TYPE.get(native)
-    if name is None:
-        raise HTTPException(400, f"Unsupported cue type: {native}")
-    return name
 
 
 def require_adapter() -> LibraryAdapter:
@@ -118,7 +107,7 @@ def _adapter_error(_request, exc: AdapterError):
 # ---- collection selection ---------------------------------------------
 
 
-@app.get("/api/collection", response_model=CollectionStatus)
+@app.get("/api/library", response_model=CollectionStatus)
 def collection_status() -> CollectionStatus:
     if not STATE.loaded:
         return CollectionStatus(loaded=False)
@@ -127,10 +116,11 @@ def collection_status() -> CollectionStatus:
         path=str(STATE.path),
         tracks=len(require_adapter().tracks),
         playlists=require_adapter().playlist_count(),
+        library=_library_info(),
     )
 
 
-@app.post("/api/collection/open", response_model=CollectionStatus)
+@app.post("/api/library/open", response_model=CollectionStatus)
 def open_collection(body: OpenCollection) -> CollectionStatus:
     path = Path(body.path).expanduser()
     if not path.exists() or not path.is_file():
@@ -145,7 +135,7 @@ def open_collection(body: OpenCollection) -> CollectionStatus:
     return collection_status()
 
 
-@app.get("/api/collection/options", response_model=CollectionOptions)
+@app.get("/api/library/options", response_model=CollectionOptions)
 def collection_options() -> CollectionOptions:
     """Startup shortcuts for the picker: the best auto-detected Traktor
     collection and the last one opened (may no longer exist → exists=False)."""
@@ -158,7 +148,7 @@ def collection_options() -> CollectionOptions:
     return CollectionOptions(auto=auto, recent=recent)
 
 
-@app.get("/api/collection/path-mapping", response_model=PathMappingInfo)
+@app.get("/api/library/path-mapping", response_model=PathMappingInfo)
 def get_path_mapping() -> PathMappingInfo:
     """The current collection's saved OS-path remapping (blank if none)."""
     require_adapter()
@@ -168,7 +158,7 @@ def get_path_mapping() -> PathMappingInfo:
     return PathMappingInfo()
 
 
-@app.put("/api/collection/path-mapping", response_model=PathMappingInfo)
+@app.put("/api/library/path-mapping", response_model=PathMappingInfo)
 def put_path_mapping(body: PathMappingInfo) -> PathMappingInfo:
     """Set (or, with blank prefixes, clear) the current collection's remapping.
     Persists to userprefs AND updates the live store so playback/analysis
@@ -184,14 +174,14 @@ def put_path_mapping(body: PathMappingInfo) -> PathMappingInfo:
     )
 
 
-@app.get("/api/collection/path-mapping/suggest", response_model=PrefixSuggestions)
+@app.get("/api/library/path-mapping/suggest", response_model=PrefixSuggestions)
 def suggest_path_prefix() -> PrefixSuggestions:
     """Auto-detected `from` prefix candidates (common directory per volume),
     so the editor can prefill the stored prefix."""
     return PrefixSuggestions.model_validate(require_adapter().path_prefix_suggestions())
 
 
-@app.get("/api/collection/path-mapping/preview", response_model=RemapPreview)
+@app.get("/api/library/path-mapping/preview", response_model=RemapPreview)
 def preview_path_mapping(
     from_: str = Query("", alias="from"), to: str = Query("")
 ) -> RemapPreview:
@@ -202,7 +192,7 @@ def preview_path_mapping(
     )
 
 
-@app.post("/api/collection/remap-paths", response_model=RemapResult)
+@app.post("/api/library/remap-paths", response_model=RemapResult)
 def remap_paths(body: PathMappingInfo) -> RemapResult:
     """Write-back: permanently rewrite matching track LOCATIONs (and the
     playlist references that join to them) to the `to` prefix, then save (a
@@ -268,6 +258,42 @@ def health() -> dict:
     return {"status": "ok", "loaded": STATE.loaded, "path": str(STATE.path) if STATE.path else None}
 
 
+def _library_info() -> LibraryInfo:
+    """Identity of the loaded library, for display and for composing warnings."""
+    caps = require_adapter().capabilities()
+    return LibraryInfo(
+        platform=caps.platform,
+        name=caps.save.app_name,
+        library_label=caps.save.library_label,
+        path=str(STATE.path),
+        display_name=Path(str(STATE.path)).name,
+        version=caps.version,
+    )
+
+
+@app.get("/api/platforms", response_model=list[PlatformOption])
+def platforms() -> list[PlatformOption]:
+    """Every DJ platform Konduktor can open — used by the picker BEFORE a
+    library is loaded, where capabilities are not yet available."""
+    out = []
+    for d in registry.drivers():
+        found = []
+        try:
+            found = d.detect()
+        except OSError:
+            pass
+        out.append(
+            PlatformOption(
+                platform=d.platform,
+                name=d.display_name,
+                library_label=getattr(d, "library_label", ""),
+                selects="file",
+                installed=bool(found),
+            )
+        )
+    return out
+
+
 @app.get("/api/capabilities", response_model=Capabilities)
 def capabilities() -> Capabilities:
     """What the loaded library can persist, so the UI can gate its controls."""
@@ -276,7 +302,7 @@ def capabilities() -> Capabilities:
 
 @app.get("/api/state", response_model=EditState)
 def state() -> EditState:
-    return EditState(dirty=require_adapter().dirty, nml_path=str(STATE.path))
+    return EditState(dirty=require_adapter().dirty, library=_library_info())
 
 
 @app.post("/api/reload")
@@ -346,7 +372,17 @@ def create_playlist(body: CreatePlaylist) -> PlaylistNode:
     new_id = require_adapter().create_playlist(
         body.name.strip() or "New Playlist", body.parent_id
     )
-    return PlaylistNode(id=new_id, name=body.name, type="PLAYLIST", uuid=new_id, count=0)
+    return PlaylistNode(
+        id=new_id,
+        name=body.name,
+        kind="playlist",
+        count=0,
+        selectable=True,
+        can_add_tracks=True,
+        can_reorder=True,
+        can_rename=True,
+        can_delete=True,
+    )
 
 
 @app.patch("/api/playlists/{playlist_uuid}")
@@ -438,20 +474,21 @@ def track_cues(track_id: str) -> TrackCues:
     return _cues_for(track_id)
 
 
-@app.post("/api/tracks/hotcue", response_model=TrackCues)
-def create_hotcue(body: SetHotcue) -> TrackCues:
-    """Create (or reposition + retype) the hotcue in a slot at a position."""
+@app.post("/api/tracks/cue", response_model=TrackCues)
+def create_cue(body: SetCue) -> TrackCues:
+    """Create (or reposition + retype) the cue in a slot at a position."""
     return require_adapter().set_cue(
         body.track_id,
         slot=body.slot,
         start_sec=body.start,
-        cue_type=_cue_type_name(body.type),
+        cue_type=body.type,
+        role=body.role,
         length_sec=body.length,
         name=body.name,
     )
 
 
-@app.post("/api/tracks/auto-hotcues", response_model=TrackCues)
+@app.post("/api/tracks/cue/auto", response_model=TrackCues)
 def auto_hotcues(body: AutoHotcuesRequest) -> TrackCues:
     """Analyze the track's audio and place structural hotcues into empty slots.
 
@@ -490,7 +527,7 @@ def auto_hotcues(body: AutoHotcuesRequest) -> TrackCues:
     return a.place_cues(body.track_id, [AutoHotcue(**s) for s in specs])
 
 
-@app.post("/api/tracks/auto-grid", response_model=TrackCues)
+@app.post("/api/tracks/grid/auto", response_model=TrackCues)
 def auto_grid(body: AutoGridRequest) -> TrackCues:
     """Detect tempo + first beat and build a beatgrid: sets BPM, sets hotcue 1
     (slot 0) to the first beat, and anchors the grid to that position. Octave
@@ -510,16 +547,14 @@ def auto_grid(body: AutoGridRequest) -> TrackCues:
     return a.set_analysed_grid(body.track_id, [(first_beat, bpm)])
 
 
-@app.patch("/api/tracks/hotcue", response_model=TrackCues)
-def edit_hotcue_type(body: SetHotcueType) -> TrackCues:
-    """Change the type of an existing hotcue (keeps its position)."""
-    return require_adapter().set_cue_type(
-        body.track_id, body.slot, _cue_type_name(body.type)
-    )
+@app.patch("/api/tracks/cue", response_model=TrackCues)
+def edit_cue_type(body: SetCueType) -> TrackCues:
+    """Change the type of an existing cue (keeps its position)."""
+    return require_adapter().set_cue_type(body.track_id, body.slot, body.type)
 
 
-@app.delete("/api/tracks/hotcue", response_model=TrackCues)
-def delete_hotcue(track_id: str, slot: int) -> TrackCues:
+@app.delete("/api/tracks/cue", response_model=TrackCues)
+def delete_cue(track_id: str, slot: int) -> TrackCues:
     """Remove the hotcue in a slot."""
     return require_adapter().delete_cue(track_id, slot)
 
@@ -568,8 +603,8 @@ def remove_grid(track_id: str) -> TrackCues:
     return require_adapter().delete_grid(track_id)
 
 
-@app.patch("/api/tracks/lock", response_model=TrackCues)
-def edit_lock(body: SetLock) -> TrackCues:
+@app.patch("/api/tracks/grid/lock", response_model=TrackCues)
+def edit_grid_lock(body: SetGridLock) -> TrackCues:
     """Toggle Traktor's LOCK flag on a track."""
     return require_adapter().set_grid_lock(body.track_id, body.locked)
 

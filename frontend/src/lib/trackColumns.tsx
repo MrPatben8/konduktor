@@ -122,12 +122,12 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
       )
     },
   }),
-  col.accessor('is_stem', {
+  col.accessor('media_kind', {
     id: 'type',
     header: 'Type',
     size: 64,
     cell: (c) =>
-      c.getValue() ? (
+      c.getValue() === 'stem' ? (
         // Stem file → stacked lines ("burger"), the usual stem glyph.
         <span title="Stem file" className="text-accent">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-label="Stem">
@@ -168,7 +168,10 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
       return (
         <span
           className="rounded px-1.5 py-0.5 text-xs font-semibold"
-          style={{ color: keyColor(k), background: 'color-mix(in srgb, currentColor 14%, transparent)' }}
+          style={{
+            color: keyColor(c.row.original.key_wheel),
+            background: 'color-mix(in srgb, currentColor 14%, transparent)',
+          }}
         >
           {k}
         </span>
@@ -211,12 +214,12 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
     size: 72,
     cell: (c) => {
       const n = c.getValue()
-      const markers = c.row.original.grid_markers
+      const markers = c.row.original.grid_marker_count
       // Gold marks a flexible (multi-tempo) grid, mint an ordinary constant one.
       return (
         <span className="flex items-center gap-1 tabular-nums">
           <span className={n > 0 ? 'text-text' : 'text-faint'}>{n}</span>
-          {c.row.original.has_grid && (
+          {markers > 0 && (
             <span
               className={markers > 1 ? 'text-[10px] text-gold' : 'text-[10px] text-mint'}
               title={markers > 1 ? `Flexible beatgrid (${markers} markers)` : 'Beatgrid analyzed'}

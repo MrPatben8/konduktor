@@ -12,20 +12,27 @@ export interface Track {
   mix: string | null
   comment: string | null
   bpm: number | null
+  /** The platform's own display string, shown verbatim: "10m", "8A", "Am". */
   key: string | null
+  /** Camelot wheel position 1-12 + mode, parsed by the ADAPTER — notation is
+   *  platform knowledge, not display formatting. Null when unparseable. */
+  key_wheel: number | null
+  key_mode: 'major' | 'minor' | null
   rating: number
   playcount: number | null
   length: number | null
   bitrate: number | null
+  /** ISO-8601 "YYYY-MM-DD", normalised by the adapter. */
   import_date: string | null
   last_played: string | null
   release_date: string | null
   filepath: string | null
   cue_count: number
   hotcue_count: number
-  has_grid: boolean
-  grid_markers: number // >1 = a flexible (multi-tempo) beatgrid
-  is_stem: boolean
+  /** 0 = no beatgrid, 1 = constant tempo, >1 = a flexible (multi-tempo) grid. */
+  grid_marker_count: number
+  grid_locked: boolean
+  media_kind: MediaKind
 }
 
 export interface TrackPage {
@@ -48,29 +55,21 @@ export interface Facets {
   total_tracks: number
 }
 
-export interface Stats {
-  total_tracks: number
-  total_playlists: number
-  rated: number
-  unrated: number
-  missing_key: number
-  missing_genre: number
-  missing_bpm: number
-  no_cues: number
-  rating_breakdown: Record<string, number>
-  bpm_histogram: { bucket: string; count: number }[]
-  top_genres: GenreCount[]
-}
-
-export type PlaylistType = 'FOLDER' | 'PLAYLIST' | 'SMARTLIST'
-
 export interface PlaylistNode {
+  /** Opaque, adapter-minted. The UI never constructs, parses or prefixes it. */
   id: string
   name: string
-  type: PlaylistType
-  uuid: string | null
+  /** For choosing an icon only — every behavioural question is answered by the
+   *  flags below, so the UI never infers what a node can do from its kind. */
+  kind: PlaylistKind
   count: number
   children: PlaylistNode[]
+  selectable: boolean
+  can_add_tracks: boolean
+  can_reorder: boolean
+  can_rename: boolean
+  can_delete: boolean
+  can_contain_children: boolean
 }
 
 export type SortField =
@@ -99,19 +98,31 @@ export interface TrackQuery {
   offset?: number
 }
 
+export type Platform = string
+export type CueRole = 'hotcue' | 'memory'
+export type CueType = 'cue' | 'fade_in' | 'fade_out' | 'load' | 'loop'
+export type MediaKind = 'audio' | 'stem' | 'video'
+export type PlaylistKind = 'folder' | 'playlist' | 'smart'
+export type TrackField =
+  | 'title' | 'artist' | 'album' | 'genre' | 'label' | 'remixer'
+  | 'producer' | 'mix' | 'release_date' | 'comment' | 'rating'
+
 export interface CuePoint {
   name: string | null
-  type: number // 0 cue, 1 fade-in, 2 fade-out, 3 load, 4 grid, 5 loop
+  type: CueType
+  /** Memory cues have no bank slot. Only Rekordbox has them, so they are
+   *  preserved and shown but not editable anywhere yet. */
+  role: CueRole
   start: number // seconds
   length: number // seconds (>0 for loops)
-  hotcue: number // -1 if not a hotcue
-  color: string | null // "#RRGGBB"
-  /**
-   * Index of the grid marker this cue is the companion of, if any. Traktor
-   * pairs most grid markers with a white cue that occupies a real hotcue slot;
-   * it belongs to the beatgrid, so it is shown read-only and the backend
-   * refuses hotcue edits on it.
-   */
+  slot: number | null // bank slot; null for a cue not in a bank
+  color: string | null // "#RRGGBB" as the platform stored it
+  /** False when the adapter refuses commands on this cue. Gate on THIS, never
+   *  on a platform-specific reason like grid_marker. */
+  editable: boolean
+  readonly_reason: 'beatgrid_companion' | 'platform_managed' | null
+  /** Index of the grid marker this cue mirrors, where the platform pairs them.
+   *  A display hint only; null on platforms that do not. */
   grid_marker: number | null
 }
 
@@ -131,18 +142,74 @@ export interface TrackCues {
    * render and edit wrongly.
    */
   grid_markers: GridMarker[]
-  locked: boolean
+  grid_locked: boolean
   cues: CuePoint[]
+}
+
+export interface CueCapabilities {
+  hotcue_slots: number
+  slot_labels: 'number' | 'letter'
+  memory_cues: boolean
+  max_memory_cues: number | null
+  types: CueType[]
+  color: 'none' | 'free' | 'palette'
+  palette: string[]
+  named: boolean
+  loops: 'none' | 'cue_type' | 'separate_bank'
+  loop_slots: number | null
+}
+
+export interface SaveCapabilities {
+  /** Structured facts, never finished sentences — the UI composes the wording
+   *  (see lib/platformCopy.ts) so it stays specific without being hard-coded. */
+  app_name: string
+  library_label: string
+  overwrite_risk: 'none' | 'on_exit' | 'while_running'
+  history: boolean
+}
+
+export interface Capabilities {
+  platform: Platform
+  version: string | null
+  cues: CueCapabilities
+  grid: { editable: boolean; flexible: boolean; lockable: boolean }
+  tracks: {
+    rating_max: number
+    editable_fields: TrackField[]
+    media_kinds: MediaKind[]
+    artwork: boolean
+    artwork_note: string | null
+  }
+  playlists: { folders: boolean; smart: 'none' | 'read_only'; reorder: boolean }
+  save: SaveCapabilities
+}
+
+export interface LibraryInfo {
+  platform: Platform
+  name: string // the DJ app's name, e.g. "Traktor"
+  library_label: string // e.g. "collection.nml"
+  path: string
+  display_name: string
+  version: string | null
+}
+
+export interface PlatformOption {
+  platform: Platform
+  name: string
+  library_label: string
+  selects: 'file' | 'directory'
+  installed: boolean
 }
 
 export interface EditState {
   dirty: boolean
-  nml_path: string
+  library: LibraryInfo
 }
 
 export interface CollectionStatus {
   loaded: boolean
   path: string | null
+  library: LibraryInfo | null
   tracks: number | null
   playlists: number | null
 }
@@ -259,28 +326,29 @@ function qs(params: Record<string, unknown>): string {
 
 export const api = {
   // ---- collection selection ----
-  collection: () => getJSON<CollectionStatus>('/api/collection'),
+  collection: () => getJSON<CollectionStatus>('/api/library'),
   openCollection: (path: string) =>
-    send<CollectionStatus>('POST', '/api/collection/open', { path }),
-  collectionOptions: () => getJSON<CollectionOptions>('/api/collection/options'),
+    send<CollectionStatus>('POST', '/api/library/open', { path }),
+  collectionOptions: () => getJSON<CollectionOptions>('/api/library/options'),
   listDir: (path?: string) =>
     getJSON<FsListing>(`/api/fs/list${path ? `?path=${encodeURIComponent(path)}` : ''}`),
 
   // ---- path remapping (per-collection OS-path prefix translation) ----
-  getPathMapping: () => getJSON<PathMapping>('/api/collection/path-mapping'),
+  getPathMapping: () => getJSON<PathMapping>('/api/library/path-mapping'),
   suggestPrefix: () =>
-    getJSON<PrefixSuggestions>('/api/collection/path-mapping/suggest'),
+    getJSON<PrefixSuggestions>('/api/library/path-mapping/suggest'),
   putPathMapping: (m: PathMapping) =>
-    send<PathMapping>('PUT', '/api/collection/path-mapping', m),
+    send<PathMapping>('PUT', '/api/library/path-mapping', m),
   previewRemap: (from: string, to: string) =>
     getJSON<RemapPreview>(
-      `/api/collection/path-mapping/preview?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+      `/api/library/path-mapping/preview?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
     ),
   // Write-back: permanently rewrite matching LOCATIONs in the .nml (committed to history).
   remapPaths: (from: string, to: string) =>
-    send<RemapResult>('POST', '/api/collection/remap-paths', { from, to }),
+    send<RemapResult>('POST', '/api/library/remap-paths', { from, to }),
 
-  stats: () => getJSON<Stats>('/api/stats'),
+  capabilities: () => getJSON<Capabilities>('/api/capabilities'),
+  platforms: () => getJSON<PlatformOption[]>('/api/platforms'),
   facets: () => getJSON<Facets>('/api/facets'),
   playlists: () => getJSON<PlaylistNode[]>('/api/playlists'),
   tracks: (query: TrackQuery) =>
@@ -292,18 +360,18 @@ export const api = {
   state: () => getJSON<EditState>('/api/state'),
   createPlaylist: (name: string, parentId?: string) =>
     send<PlaylistNode>('POST', '/api/playlists', { name, parent_id: parentId ?? null }),
-  renamePlaylist: (uuid: string, name: string) =>
-    send<{ status: string }>('PATCH', `/api/playlists/${uuid}`, { name }),
-  deletePlaylist: (uuid: string) =>
-    send<{ status: string }>('DELETE', `/api/playlists/${uuid}`),
-  setEntries: (uuid: string, trackIds: string[]) =>
-    send<{ status: string; count: number }>('PUT', `/api/playlists/${uuid}/entries`, {
+  renamePlaylist: (nodeId: string, name: string) =>
+    send<{ status: string }>('PATCH', `/api/playlists/${encodeURIComponent(nodeId)}`, { name }),
+  deletePlaylist: (nodeId: string) =>
+    send<{ status: string }>('DELETE', `/api/playlists/${encodeURIComponent(nodeId)}`),
+  setEntries: (nodeId: string, trackIds: string[]) =>
+    send<{ status: string; count: number }>('PUT', `/api/playlists/${encodeURIComponent(nodeId)}/entries`, {
       track_ids: trackIds,
     }),
-  addEntries: (uuid: string, trackIds: string[]) =>
+  addEntries: (nodeId: string, trackIds: string[]) =>
     send<{ status: string; added: number; count: number }>(
       'POST',
-      `/api/playlists/${uuid}/add`,
+      `/api/playlists/${encodeURIComponent(nodeId)}/add`,
       { track_ids: trackIds },
     ),
   getPrefs: () => getJSON<Record<string, unknown>>('/api/prefs'),
@@ -325,15 +393,15 @@ export const api = {
     `${API_BASE}/api/tracks/audio?track_id=${encodeURIComponent(trackId)}`,
   trackCues: (trackId: string) =>
     getJSON<TrackCues>(`/api/tracks/cues?track_id=${encodeURIComponent(trackId)}`),
-  createHotcue: (
+  createCue: (
     trackId: string,
     slot: number,
     start: number,
-    type: number,
+    type: CueType,
     length = 0,
     name?: string,
   ) =>
-    send<TrackCues>('POST', '/api/tracks/hotcue', {
+    send<TrackCues>('POST', '/api/tracks/cue', {
       track_id: trackId,
       slot,
       start,
@@ -342,20 +410,20 @@ export const api = {
       name,
     }),
   // Backend analyses the audio and places structural hotcues into empty slots.
-  autoHotcues: (trackId: string, maxCues?: number) =>
-    send<TrackCues>('POST', '/api/tracks/auto-hotcues', {
+  autoCues: (trackId: string, maxCues?: number) =>
+    send<TrackCues>('POST', '/api/tracks/cue/auto', {
       track_id: trackId,
       max_cues: maxCues,
     }),
   // Backend detects tempo + first beat: sets BPM, hotcue 1, and grid anchor.
   autoGrid: (trackId: string) =>
-    send<TrackCues>('POST', '/api/tracks/auto-grid', { track_id: trackId }),
-  setHotcueType: (trackId: string, slot: number, type: number) =>
-    send<TrackCues>('PATCH', '/api/tracks/hotcue', { track_id: trackId, slot, type }),
-  deleteHotcue: (trackId: string, slot: number) =>
+    send<TrackCues>('POST', '/api/tracks/grid/auto', { track_id: trackId }),
+  setCueType: (trackId: string, slot: number, type: CueType) =>
+    send<TrackCues>('PATCH', '/api/tracks/cue', { track_id: trackId, slot, type }),
+  deleteCue: (trackId: string, slot: number) =>
     send<TrackCues>(
       'DELETE',
-      `/api/tracks/hotcue?track_id=${encodeURIComponent(trackId)}&slot=${slot}`,
+      `/api/tracks/cue?track_id=${encodeURIComponent(trackId)}&slot=${slot}`,
     ),
   /** Retempo and/or move one marker. `index` is its position in grid_markers;
    *  a move is clamped between its neighbours rather than reordering them. */
@@ -378,8 +446,8 @@ export const api = {
     send<TrackCues>('PUT', '/api/tracks/grid', { track_id: trackId, markers }),
   deleteGrid: (trackId: string) =>
     send<TrackCues>('DELETE', `/api/tracks/grid?track_id=${encodeURIComponent(trackId)}`),
-  setLock: (trackId: string, locked: boolean) =>
-    send<TrackCues>('PATCH', '/api/tracks/lock', { track_id: trackId, locked }),
+  setGridLock: (trackId: string, locked: boolean) =>
+    send<TrackCues>('PATCH', '/api/tracks/grid/lock', { track_id: trackId, locked }),
   uploadArt: async (trackId: string, file: File) => {
     const fd = new FormData()
     fd.append('track_id', trackId)

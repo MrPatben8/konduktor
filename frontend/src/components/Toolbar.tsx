@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import type { VisibilityState } from '@tanstack/react-table'
 import { api } from '../api'
+import { useCaps } from '../lib/capabilities'
 import { ColumnsMenu } from './ColumnsMenu'
 import { SettingsMenu } from './SettingsMenu'
 
@@ -44,6 +45,7 @@ export function Toolbar({
   onResetColumns,
   onOpenPathMapping,
 }: Props) {
+  const caps = useCaps()
   const { data: facets } = useQuery({ queryKey: ['facets'], queryFn: api.facets })
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch })
   const active =
@@ -117,7 +119,7 @@ export function Toolbar({
         className={selectCls}
       >
         <option value={0}>Any rating</option>
-        {[1, 2, 3, 4, 5].map((r) => (
+        {Array.from({ length: caps.tracks.rating_max }, (_, i) => i + 1).map((r) => (
           <option key={r} value={r}>
             {'★'.repeat(r)}+
           </option>

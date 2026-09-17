@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type PlaylistNode } from '../api'
+import { api, type PlaylistKind, type PlaylistNode } from '../api'
 import { SaveBar } from './SaveBar'
 
 export type Source = { kind: 'all' } | { kind: 'playlist'; id: string; name: string }
@@ -12,10 +12,12 @@ interface Props {
   onOpenHistory: () => void
 }
 
-const icons: Record<string, string> = {
-  FOLDER: '▸',
-  PLAYLIST: '♫',
-  SMARTLIST: '✦',
+// Kind picks the icon; every behavioural question is answered by the node's own
+// flags, so nothing here infers what a node can do from what it is called.
+const icons: Record<PlaylistKind, string> = {
+  folder: '▸',
+  playlist: '♫',
+  smart: '✦',
 }
 
 function NodeRow({
@@ -35,9 +37,9 @@ function NodeRow({
   const [open, setOpen] = useState(true)
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState(node.name)
-  const isFolder = node.type === 'FOLDER'
+  const isFolder = node.kind === 'folder'
   const selected = source.kind === 'playlist' && source.id === node.id
-  const selectable = node.type === 'PLAYLIST'
+  const selectable = node.selectable
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['playlists'] })
@@ -82,10 +84,10 @@ function NodeRow({
         >
           <span
             className={`w-3 shrink-0 text-center text-[11px] ${
-              isFolder ? 'text-faint' : node.type === 'SMARTLIST' ? 'text-pink' : 'text-accent'
+              isFolder ? 'text-faint' : node.kind === 'smart' ? 'text-pink' : 'text-accent'
             } ${isFolder && open ? 'rotate-90' : ''} transition-transform`}
           >
-            {icons[node.type]}
+            {icons[node.kind]}
           </span>
           {renaming ? (
             <input
@@ -113,7 +115,7 @@ function NodeRow({
           )}
         </button>
 
-        {node.type === 'PLAYLIST' && !renaming && (
+        {node.can_rename && !renaming && (
           <>
             <button
               title="Rename"

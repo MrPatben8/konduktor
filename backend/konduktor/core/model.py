@@ -9,13 +9,17 @@ is the shape a batch cue placement takes in generic terms.
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
+
+from .capabilities import CueRole, CueType, MediaKind, PlaylistKind
 
 
 class Track(BaseModel):
-    """A single track, flattened from a Traktor collection ENTRY."""
+    """A single track in the library, as the app sees it."""
 
-    id: str  # primary key: "<VOLUME><DIR><FILE>", used to join playlist entries
+    id: str  # the adapter's stable track key; opaque above the adapter
     artist: str | None = None
     title: str | None = None
     album: str | None = None
@@ -26,20 +30,27 @@ class Track(BaseModel):
     mix: str | None = None
     comment: str | None = None
     bpm: float | None = None
-    key: str | None = None  # Traktor display key, e.g. "10m"
+    # The platform's own display string, shown verbatim ("10m", "8A", "Am").
+    key: str | None = None
+    # Camelot wheel position 1-12 + mode, parsed BY THE ADAPTER — notation is
+    # platform knowledge. None when the key is absent or unparseable.
+    key_wheel: int | None = None
+    key_mode: Literal["major", "minor"] | None = None
     rating: int = 0  # 0-5 stars (derived from RANKING/51)
     playcount: int | None = None
     length: int | None = None  # seconds
     bitrate: int | None = None
+    # ISO-8601 "YYYY-MM-DD", normalised by the adapter.
     import_date: str | None = None
     last_played: str | None = None
     release_date: str | None = None
     filepath: str | None = None  # human-readable OS path
     cue_count: int = 0
     hotcue_count: int = 0
-    has_grid: bool = False
-    grid_markers: int = 0  # >1 = a flexible (multi-tempo) beatgrid
-    is_stem: bool = False  # a Stem file (<STEMS> child) vs a normal audio track
+    # 0 = no beatgrid, 1 = constant tempo, >1 = a flexible (multi-tempo) grid.
+    grid_marker_count: int = 0
+    grid_locked: bool = False
+    media_kind: MediaKind = "audio"
 
 
 class TrackPage(BaseModel):
@@ -79,14 +90,26 @@ class Stats(BaseModel):
 
 
 class PlaylistNode(BaseModel):
-    """A node in the playlist tree — either a FOLDER or a PLAYLIST/SMARTLIST."""
+    """A node in the playlist tree.
 
-    id: str  # stable synthetic id ("pl-<n>" / "fld-<n>")
+    `id` is OPAQUE: the adapter mints it and decodes it, and the UI never
+    constructs, parses or prefixes one. `kind` is for choosing an icon — every
+    behavioural question is answered by the flags, so the UI never has to infer
+    what a node can do from what it is called.
+    """
+
+    id: str
     name: str
-    type: str  # "FOLDER" | "PLAYLIST" | "SMARTLIST"
-    uuid: str | None = None
+    kind: PlaylistKind = "playlist"
     count: int = 0  # track count (for playlists)
     children: list["PlaylistNode"] = []
+
+    selectable: bool = False  # has a static, listable entry set
+    can_add_tracks: bool = False
+    can_reorder: bool = False
+    can_rename: bool = False
+    can_delete: bool = False
+    can_contain_children: bool = False  # a valid parent for a new playlist
 
 
 PlaylistNode.model_rebuild()
@@ -97,13 +120,20 @@ PlaylistNode.model_rebuild()
 
 class CuePoint(BaseModel):
     name: str | None = None
-    type: int  # Traktor: 0 cue, 1 fade-in, 2 fade-out, 3 load, 4 grid, 5 loop
+    type: CueType = "cue"
+    # "memory" cues have no bank slot. Only Rekordbox has them, so they are
+    # modelled and preserved but not yet editable anywhere.
+    role: CueRole = "hotcue"
     start: float  # seconds
     length: float  # seconds (>0 for loops)
-    hotcue: int  # -1 if not assigned to a hotcue slot
-    color: str | None = None  # "#RRGGBB" if set
-    # Index of the grid marker this cue is the companion of, if any. Such a cue
-    # holds a real hotcue slot but belongs to the beatgrid and is not editable.
+    slot: int | None = None  # bank slot; None for a cue not in a bank
+    color: str | None = None  # "#RRGGBB" as the platform stored it
+    # False when the adapter refuses commands on this cue — the UI gates on THIS
+    # rather than on any platform-specific reason.
+    editable: bool = True
+    readonly_reason: Literal["beatgrid_companion", "platform_managed"] | None = None
+    # Index of the grid marker this cue mirrors, where the platform pairs them.
+    # A display hint only; None on platforms that do not.
     grid_marker: int | None = None
 
 
@@ -121,16 +151,39 @@ class TrackCues(BaseModel):
     # tempo. There is deliberately no scalar bpm/anchor here: a single "the BPM"
     # is what made flexible grids render and edit wrongly.
     grid_markers: list[GridMarker] = []
-    locked: bool = False  # Traktor LOCK flag
+    grid_locked: bool = False
     cues: list[CuePoint] = []  # cue/loop markers (grid markers themselves excluded)
 
 
 class AutoHotcue(BaseModel):
-    slot: int  # 0–7
+    """One cue in a batch placement (Auto Hotcues)."""
+
+    slot: int
     start: float  # seconds
     name: str | None = None  # positional label (e.g. "Drop")
-    type: int = 0  # plain cue
-    length: float = 0.0  # seconds (>0 for a loop hotcue)
+    type: CueType = "cue"
+    length: float = 0.0  # seconds (>0 for a loop cue)
+
+
+class LibraryInfo(BaseModel):
+    """Identity of the loaded library, for display and for composing copy."""
+
+    platform: str
+    name: str  # the DJ app's name, e.g. "Traktor"
+    library_label: str  # what the user thinks of the artefact as, e.g. "collection.nml"
+    path: str
+    display_name: str  # short label for the status bar
+    version: str | None = None
+
+
+class PlatformOption(BaseModel):
+    """A platform the picker can offer before any library is open."""
+
+    platform: str
+    name: str
+    library_label: str
+    selects: Literal["file", "directory"] = "file"
+    installed: bool = False
 
 
 class RemapSample(BaseModel):

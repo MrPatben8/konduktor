@@ -1,21 +1,56 @@
-import type { CuePoint } from '../api'
+import type { CuePoint, CueType } from '../api'
 import { BEATS_PER_BAR, type BeatGrid } from './beatgrid'
 
-// Marker colour by Traktor cue type. Type is authoritative here (the NML's
-// stored per-cue colour is intentionally ignored) so each type reads consistently.
-// There is deliberately no entry for type 4 (grid): grid markers are not cues —
-// they arrive as TrackCues.grid_markers and are drawn by drawBeatgrid.
-const TYPE_COLORS: Record<number, string> = {
-  0: '#3b82f6', // cue — blue
-  1: '#ff8c2f', // fade-in — orange
-  2: '#ff8c2f', // fade-out — orange
-  3: '#ffd60a', // load — yellow
-  5: '#22c55e', // loop — green
+// Fallback colour by cue type, used when the platform stored none.
+const TYPE_COLORS: Record<CueType, string> = {
+  cue: '#3b82f6', // blue
+  fade_in: '#ff8c2f', // orange
+  fade_out: '#ff8c2f', // orange
+  load: '#ffd60a', // yellow
+  loop: '#22c55e', // green
 }
-const OTHER_COLOR = '#8b93a3' // gray
+const MEMORY_COLOR = '#8b93a3' // gray
 
+export const CUE_TYPE_LABELS: Record<CueType, string> = {
+  cue: 'Cue',
+  fade_in: 'Fade-In',
+  fade_out: 'Fade-Out',
+  load: 'Load',
+  loop: 'Loop',
+}
+
+// A second, always-present channel for type. Colour used to be type-derived and
+// therefore always carried it; now that a user's stored colour wins, the glyph
+// is what keeps a fade-in distinguishable from a plain cue.
+const TYPE_GLYPHS: Record<CueType, string> = {
+  cue: '',
+  fade_in: '▶',
+  fade_out: '◀',
+  load: '⏏',
+  loop: '⟳',
+}
+
+/**
+ * Colour for a cue marker or button.
+ *
+ * Stored colour wins where the platform has one: on Rekordbox and Serato it is
+ * the attribute the user actually set, and overriding it with a type palette
+ * would discard their own organisation. Traktor rarely stores one, so in a
+ * Traktor library the type palette still drives virtually every cue and the
+ * existing look is preserved.
+ */
 export function cueColor(cue: CuePoint): string {
-  return TYPE_COLORS[cue.type] ?? OTHER_COLOR
+  if (cue.color) return cue.color
+  if (cue.role === 'memory') return MEMORY_COLOR
+  return TYPE_COLORS[cue.type] ?? MEMORY_COLOR
+}
+
+export function cueTypeColor(type: CueType): string {
+  return TYPE_COLORS[type] ?? MEMORY_COLOR
+}
+
+export function cueGlyph(cue: CuePoint): string {
+  return TYPE_GLYPHS[cue.type] ?? ''
 }
 
 function withAlpha(hex: string, a: number): string {
@@ -46,6 +81,8 @@ export function drawCues(
   dpr: number,
   timeToX: (t: number) => number,
   labels: boolean,
+  /** How a bank slot is labelled — "1".."8" or "A".."H", per the platform. */
+  slotLabel: (slot: number) => string = (slot) => String(slot + 1),
 ): void {
   const lineW = Math.max(2, Math.round(2 * dpr))
   const outline = Math.max(1, Math.round(dpr))
@@ -53,10 +90,9 @@ export function drawCues(
   const flagH = Math.round(14 * dpr)
   const half = Math.floor(lineW / 2)
   for (const cue of cues) {
-    // Grid markers and their companion cues belong to the beatgrid and are
-    // drawn by drawBeatgrid; painting them here too would stack a grey line and
-    // a numbered flag on top of every marker.
-    if (cue.type === 4 || cue.grid_marker != null) continue
+    // A grid marker's companion cue is drawn by drawBeatgrid; painting it here
+    // too would stack a flag on top of every marker line.
+    if (cue.grid_marker != null) continue
     const color = cueColor(cue)
     const x = Math.round(timeToX(cue.start))
 
@@ -78,16 +114,20 @@ export function drawCues(
     ctx.fillRect(x - half, 0, lineW, h)
 
     if (labels) {
-      // A flag tab at the top for every cue (outlined), with the hotcue number.
+      // A flag tab at the top for every cue (outlined). A banked cue carries its
+      // slot label; one without a slot (a memory cue) gets a half-height tab, so
+      // it still reads as a real object rather than an anonymous line.
+      const banked = cue.slot != null
+      const tabH = banked ? flagH : Math.round(flagH / 2)
       ctx.fillStyle = 'rgba(0,0,0,0.7)'
-      ctx.fillRect(x - half - outline, 0, flagW + outline * 2, flagH + outline * 2)
+      ctx.fillRect(x - half - outline, 0, flagW + outline * 2, tabH + outline * 2)
       ctx.fillStyle = color
-      ctx.fillRect(x - half, 0, flagW, flagH)
-      if (cue.hotcue >= 0) {
+      ctx.fillRect(x - half, 0, flagW, tabH)
+      if (banked) {
         ctx.fillStyle = contrastText(color)
         ctx.font = `bold ${Math.round(10 * dpr)}px system-ui, sans-serif`
         ctx.textBaseline = 'top'
-        ctx.fillText(String(cue.hotcue + 1), x - half + Math.round(2 * dpr), Math.round(2 * dpr))
+        ctx.fillText(slotLabel(cue.slot!), x - half + Math.round(2 * dpr), Math.round(2 * dpr))
       }
     }
   }

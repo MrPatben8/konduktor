@@ -73,8 +73,20 @@ Two independent apps that talk over HTTP:
     `KONDUKTOR_NML` auto-loads on startup (dev/tests).
 - **`frontend/`** — React + TypeScript + Vite. A dark, virtualized track
   explorer. Entry: [frontend/src/App.tsx](frontend/src/App.tsx).
-  - `api.ts` — typed client + all API types (keep in sync with backend
-    `schemas.py`).
+  - `api.ts` — typed client + all API types. **Generic, not Traktor-shaped**:
+    cue types are the strings `cue`/`fade_in`/`fade_out`/`load`/`loop`, a cue has
+    a `role` (`hotcue`/`memory`) and a nullable `slot`, and `editable` +
+    `readonly_reason` say whether the adapter will accept a command on it — gate
+    on `editable`, never on a platform-specific reason like `grid_marker`. Keep
+    in lockstep with `core/model.py`; land both in the same commit.
+  - `lib/capabilities.tsx` — `useCaps()` over `GET /api/capabilities`. The app
+    does not render until capabilities resolve, so no first frame can offer an
+    edit the adapter would reject. Containers call `useCaps()`; presentational
+    leaves take plain values as props. **No component branches on the platform.**
+  - `lib/platformCopy.ts` — composes user-facing wording from the *facts* the
+    adapter supplies (`app_name`, `library_label`, `overwrite_risk`), so
+    "Close Traktor before saving — it overwrites collection.nml on exit" stays
+    specific without being hard-coded. Never put finished sentences in the API.
   - `components/` — `CollectionPicker` (startup chooser: Automatic / Open last /
     Find manually — the last reveals a file browser), `Sidebar` (playlist tree +
     create/rename/delete), `SaveBar`, `Toolbar` (search/filters + `ColumnsMenu`),
@@ -113,7 +125,13 @@ Two independent apps that talk over HTTP:
     analysis + paint), `beatgrid.ts` (the marker-list beat math — every
     beat/bar/snap/jump calculation goes through it), `cues.ts` (draw
     cues/loop/beatgrid/cue-point). See "Prep engine" below.
-  - `lib/trackColumns.tsx` — single source of truth for the library table's
+  - Capability-gated today: hotcue bank size (`HotcueBar`, the auto-cue guard and
+  the digit shortcuts all read `cues.hotcue_slots`), the cue-type dropdown
+  (`cues.types`), the rating scale (`tracks.rating_max`), the grid Lock button
+  (`grid.lockable`). Carried but deliberately unused until a second adapter
+  exists: `slot_labels: 'letter'`, `palette`, `loops: 'separate_bank'`, and
+  memory-cue *editing* (one-platform features stay preserved-but-uneditable).
+- `lib/trackColumns.tsx` — single source of truth for the library table's
     columns (defs, default widths/visibility/order, the Columns-menu list, the
     inline `InlineEdit` cell, and the `TableMeta.onEditField` augmentation).
   - Data flow: the whole library is fetched once (`/api/tracks?limit=20000`);
@@ -264,8 +282,8 @@ that number and nothing else — everything derives from it:
   commands, piecewise beat math, playhead-derived marker editing). Step 1 of the
   multi-platform plan in `.claude/discussions/`.
 - ✅ Generic model + adapter interface (Traktor as the only adapter) — step 2 of
-  the multi-platform plan. Backend done; the wire format and UI are still
-  Traktor-shaped (cue type integers, 8 hard-coded hotcue slots) and are next.
+  the multi-platform plan. Backend, wire format and UI are all generic; nothing
+  above `adapters/traktor/` knows what Traktor is.
 - ⬜ Rekordbox adapter; ⬜ Serato adapter; ⬜ export/conversion
 - ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 
