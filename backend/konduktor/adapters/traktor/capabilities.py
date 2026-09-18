@@ -43,6 +43,7 @@ def capabilities_for(path: Path, editable_fields: list[str]) -> Capabilities:
         version=nml_version(path),
         writable=True,
         cues=CueCapabilities(
+            editable=True,
             hotcue_slots=8,
             slot_labels="number",
             # Traktor has no memory cues — every cue occupies a bank slot.

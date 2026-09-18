@@ -758,3 +758,71 @@ they will need components to actually read them: **this change did not retrofit
 per-feature gating**, it added the library-level gate that was missing. A
 platform that is writable but cannot, say, edit a beatgrid would still offer the
 control today.
+
+---
+
+## 11. Milestone 2: metadata + playlist writes
+
+**Scope decision (Ben, 2026-09-18): shipping Rekordbox writes with NO undo is
+accepted.** `capabilities.save.history` stays `False` — a Rekordbox library is
+`master.db` + ~200 ANLZ files + `masterPlaylists6.xml`, and restoring the
+database alone would roll back Rekordbox's auth token and sampler state (§8.9).
+Rekordbox's own `master.backup.db` is the only safety net. Revisit only if Ben
+asks; do not silently add a half-backup.
+
+What turns on here: **track metadata and playlists**. Cues and the beatgrid stay
+read-only until milestone 3 (§8.2, §8.4 — both are hand-written write paths).
+
+### Milestone 2 landed
+
+`./run_tests.sh` green at **258 assertions**; `npm run build` + 25 vitest pass.
+Rekordbox now accepts **track metadata and playlist** edits. Cues and the
+beatgrid still refuse, and now say so through `cues.editable` / `grid.editable`
+rather than through the library-level flag.
+
+**Per-feature gating came first, deliberately.** §10 warned that flipping
+`writable` would re-expose every prep control, because `caps.writable` was the
+only gate in the app. So `cues.editable` was added to `CueCapabilities`
+(symmetric with `grid.editable`), the 12 PrepStrip handlers were split onto
+`refuseCueEdit` / `refuseGridEdit`, and the tables now gate **per field** via a
+`editableFields` set in the table meta — `InlineEdit` takes a `readOnly` prop and
+`RatingStars` simply loses its `onChange`. Without that, milestone 2 would have
+shipped a regression.
+
+**Three real bugs found by building it:**
+
+1. **Foreign-key edits projected as no-ops.** `artist`/`album`/`genre`/`label`/
+   `remixer` are FKs into lookup tables. Setting the id does not move
+   SQLAlchemy's cached relationship, so re-projecting immediately read the OLD
+   name back — the API returned `genre: null` for an edit that had in fact
+   worked. Fixed with a flush + expire; pinned by a test that sets both a brand
+   new lookup value and an existing one.
+2. **`close()` did not release the file.** `pyrekordbox`'s `close()` only closes
+   the session; the pooled connection keeps the OS handle, so `master.db` could
+   not be replaced. Now disposes the engine. This surfaced as a `disk I/O error`
+   in the fidelity test and would have surfaced in production as a failed
+   restore or a locked library.
+3. **Nothing ever closed the previous library.** `AppState.open()` replaced the
+   adapter without closing it, leaking a handle per library switch. It now closes
+   the old one *after* the new one parses, so a failed open leaves the current
+   library intact.
+
+**`SaveOutcome` was promoted to `core/adapter.py`** under the two-platform rule,
+with `snapshot` now optional — Rekordbox has no single blob that IS the library.
+`AppState.save()` gates version history on `capabilities.save.history` instead of
+assuming every platform is versioned.
+
+Also corrected in CLAUDE.md: the cue routes are `/api/tracks/cue`, not
+`/api/tracks/hotcue`.
+
+### What milestone 3 inherits
+
+- `cues.editable` / `grid.editable` are the flags to flip, and the UI already
+  gates on them — no frontend work should be needed beyond flipping them.
+- `beatgrid.beats_from_markers()` is written and unit-tested as the inverse of
+  the read projection.
+- The cue write must maintain **both** `djmdCue` rows and the `contentCue` JSON
+  mirror + `rb_cue_count` (§8.2), and should decide deliberately whether to stamp
+  `rb_local_usn` on `djmdCue` rows — Rekordbox itself leaves them NULL.
+- `test_rekordbox_fidelity.py` is the harness to extend: add a cue edit and a
+  grid edit as phases F and G, asserting the same "exactly these rows" property.

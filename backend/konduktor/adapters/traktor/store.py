@@ -42,7 +42,7 @@ from traktor_nml_utils.models.collection import (
 )
 from xsdata.formats.dataclass.serializers import XmlSerializer
 
-from ...core.adapter import InvalidCommand
+from ...core.adapter import InvalidCommand, SaveOutcome
 from ...core.edit_journal import EditJournal
 from ...core.pathmap import common_dir_prefix
 from ...core.pathmap import PathMapping
@@ -71,13 +71,6 @@ class FileTagResult:
     ok: bool
     status: str  # "written" | "file-not-found" | "unsupported-format" | "error"
     detail: str = ""
-
-
-@dataclass
-class SaveOutcome:
-    summary: str  # human-readable edit summary, for the version-history message
-    snapshot: bytes  # exactly the bytes written, for the version-history commit
-    tag_results: list[FileTagResult]
 
 
 class TraktorStore:

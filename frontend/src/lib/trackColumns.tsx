@@ -22,6 +22,12 @@ declare module '@tanstack/react-table' {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   interface TableMeta<TData extends RowData> {
     onEditField?: (track: Track, field: keyof Track, value: string | number) => void
+    /** Fields the loaded platform can actually persist
+     *  (`capabilities.tracks.editable_fields`). A field outside this set renders
+     *  read-only: the platform-level `onEditField` gate is all-or-nothing, and
+     *  platforms genuinely differ in WHICH fields they accept. Undefined means
+     *  "not gated" — every field with a handler stays editable. */
+    editableFields?: ReadonlySet<string>
   }
 }
 
@@ -34,11 +40,14 @@ function InlineEdit({
   display,
   onCommit,
   className = 'w-full min-w-0 truncate text-muted',
+  readOnly = false,
 }: {
   value: string | null
   display?: ReactNode
   onCommit: (v: string) => void
   className?: string
+  /** Render the value without offering an editor. */
+  readOnly?: boolean
 }) {
   const [editing, setEditing] = useState(false)
   const [val, setVal] = useState('')
@@ -70,6 +79,13 @@ function InlineEdit({
       />
     )
   }
+  if (readOnly) {
+    return (
+      <div className={className}>
+        {display ?? (value?.trim() ? value : <span className="text-faint">—</span>)}
+      </div>
+    )
+  }
   return (
     <div
       onDoubleClick={(e) => {
@@ -85,12 +101,20 @@ function InlineEdit({
   )
 }
 
+/** Whether this table may edit `field`, per the platform's capabilities. */
+function canEdit(c: CellContext<Track, unknown>, field: string): boolean {
+  const meta = c.table.options.meta
+  if (!meta?.onEditField) return false
+  return meta.editableFields ? meta.editableFields.has(field) : true
+}
+
 // Cell renderer factory for a plain editable text field.
 function editable(field: keyof Track, className?: string) {
   return (c: CellContext<Track, unknown>) => (
     <InlineEdit
       value={c.getValue() as string | null}
       className={className}
+      readOnly={!canEdit(c, field)}
       onCommit={(v) => c.table.options.meta?.onEditField?.(c.row.original, field, v)}
     />
   )
@@ -111,11 +135,13 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
             value={title}
             display={title || <span className="text-faint">Untitled</span>}
             className="w-full min-w-0 truncate font-medium text-text"
+            readOnly={!canEdit(c, 'title')}
             onCommit={(v) => edit?.(r, 'title', v)}
           />
           <InlineEdit
             value={r.artist}
             className="w-full min-w-0 truncate text-xs text-muted"
+            readOnly={!canEdit(c, 'artist')}
             onCommit={(v) => edit?.(r, 'artist', v)}
           />
         </div>
@@ -185,7 +211,13 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
     cell: (c) => (
       <RatingStars
         value={c.getValue() as number}
-        onChange={(v) => c.table.options.meta?.onEditField?.(c.row.original, 'rating', v)}
+        // RatingStars is read-only without an onChange, which is exactly the
+        // behaviour wanted when the platform cannot persist a rating.
+        onChange={
+          canEdit(c, 'rating')
+            ? (v) => c.table.options.meta?.onEditField?.(c.row.original, 'rating', v)
+            : undefined
+        }
       />
     ),
   }),
@@ -257,6 +289,7 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
       <InlineEdit
         value={c.getValue() as string | null}
         display={<span className="tabular-nums text-muted">{formatDate(c.getValue() as string | null)}</span>}
+        readOnly={!canEdit(c, 'release_date')}
         onCommit={(v) => c.table.options.meta?.onEditField?.(c.row.original, 'release_date', v)}
       />
     ),

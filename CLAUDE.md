@@ -59,7 +59,8 @@ Two independent apps that talk over HTTP:
     - `driver.py`/`discovery.py` — `can_open`, default-location detection, restore.
     - `beatgrid.py`, `locations.py`, `capabilities.py` — Traktor's grid/companion
       rules, LOCATION ↔ OS path conversion, and its capability set.
-  - `adapters/rekordbox/` — **READ-ONLY** (milestone 1 of the Rekordbox work).
+  - `adapters/rekordbox/` — **track metadata + playlists writable; cues and the
+    beatgrid still read-only** (milestone 2).
     `master.db` is SQLCipher-encrypted SQLite, read via `pyrekordbox`. Every
     mutating command raises `Unsupported` and `capabilities()` advertises nothing
     as editable, so the UI never offers an edit. Three things differ from Traktor
@@ -79,7 +80,23 @@ Two independent apps that talk over HTTP:
       mapping is NOT a plain index and is deliberately left to the UI.
     Writes are refused outright on a **cloud-synced** library (detected by a
     server-issued `usn` on any row): a bad sync state would propagate to the
-    user's other machines, which version history cannot undo.
+    user's other machines, and there is no version history here to undo it.
+    Every command passes through `_require_writable()` so a command added later
+    cannot forget that check.
+    Edits accumulate in the SQLAlchemy session and `save()` commits — which maps
+    onto Konduktor's "edit in memory, Save writes to disk" model exactly, since
+    `pyrekordbox`'s `commit()` is what assigns Rekordbox's USNs. A real Rekordbox
+    7 was verified to accept a library written this way, display the edit, leave
+    the row alone, and continue from the counter it was left at.
+    `artist`/`album`/`genre`/`label`/`remixer` are **foreign keys into lookup
+    tables**, so a write is find-or-create (pyrekordbox's `add_*` RAISES on an
+    existing name) followed by a **flush + expire** — without which the ORM
+    re-reads the stale relationship and a successful edit projects as a no-op.
+    `producer`/`mix` are absent from `editable_fields`: Rekordbox has no column
+    for them and its Composer is a different field.
+    `close()` disposes the SQLAlchemy engine, not just the session — otherwise
+    the OS file handle stays open and `master.db` cannot be replaced. `AppState`
+    closes the previous adapter when opening a new library.
   - `app_state.py` — the one loaded library, and the **version-history commit**.
     History is app-level: the adapter returns the bytes it wrote plus a summary,
     and `AppState.save()` versions them. Every write path must go through it.
@@ -219,6 +236,12 @@ serialization path.** It enforces:
   projection, playlist tree, capabilities and the refusal of all 21 commands
   against a **temp copy** of the local Rekordbox library. Skips cleanly when no
   Rekordbox is installed, so it is safe on any machine.
+- `test_rekordbox_fidelity.py` — the **row-level analogue of the byte diff**: a
+  full table dump before/after, compared row by row (a byte diff is meaningless
+  against SQLite). Asserts a no-op save changes zero rows; a one-field edit
+  changes exactly two — the track and `agentRegistry.localUpdateCount` — with the
+  counter up by one and the edited row stamped with it; edits are invisible on
+  disk until save; and playlist create/fill/rename/delete round-trip.
 - `test_layering.py` — `core/` imports nothing platform-specific, and no adapter
   imports another platform's library (checked on real imports via AST, so merely
   naming a platform in a comment is fine).
@@ -327,12 +350,15 @@ that number and nothing else — everything derives from it:
 - ✅ Generic model + adapter interface (Traktor as the only adapter) — step 2 of
   the multi-platform plan. Backend, wire format and UI are all generic; nothing
   above `adapters/traktor/` knows what Traktor is.
-- 🟡 Rekordbox adapter — **read-only milestone done**: a Rekordbox library opens,
-  projects and browses through the generic layer (tracks, playlists, cues,
-  beatgrid), with every command refused. Research for the write path is captured
-  in `.claude/handoffs/rekordbox-adapter.md` §8, incl. the verified result that
-  Rekordbox accepts Konduktor-written rows when USNs are maintained. Remaining:
-  metadata/playlist writes, then the hand-written cue store and ANLZ grid store.
+- 🟡 Rekordbox adapter — **read + metadata/playlist writes done** (milestones 1
+  and 2). A Rekordbox library opens, projects, browses and now accepts track
+  metadata and playlist edits, verified row-by-row by `test_rekordbox_fidelity.py`
+  and end to end through the API. Research is captured in
+  `.claude/handoffs/rekordbox-adapter.md` §8, incl. the verified result that
+  Rekordbox accepts Konduktor-written rows when USNs are maintained. Remaining
+  (milestone 3): the hand-written cue store (`djmdCue` + the `contentCue` JSON
+  mirror) and the ANLZ beatgrid store. **No version history on Rekordbox** —
+  accepted scope decision, see handoff §11.
 - ⬜ Serato adapter; ⬜ export/conversion
 - ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 
@@ -389,7 +415,7 @@ diff — no COLLECTION splicing needed.
   `POST/PATCH/DELETE /api/playlists[...]`, `PUT .../entries` (replace),
   `POST .../add` (append); `PATCH /api/tracks` (metadata); `GET/PUT /api/tracks/art`
   (cover art); `GET /api/tracks/audio` (Range-aware stream for playback/analysis);
-  `GET /api/tracks/cues`, `POST/PATCH/DELETE /api/tracks/hotcue`,
+  `GET /api/tracks/cues`, `POST/PATCH/DELETE /api/tracks/cue`,
   `POST/PATCH/DELETE /api/tracks/grid/marker`,
   `PUT /api/tracks/grid` (replace), `DELETE /api/tracks/grid`,
   `PATCH /api/tracks/lock` (prep); `POST /api/save`.

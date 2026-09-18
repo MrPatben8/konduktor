@@ -29,6 +29,10 @@ PlaylistKind = Literal["folder", "playlist", "smart"]
 
 
 class CueCapabilities(BaseModel):
+    # Whether cues can be CREATED/CHANGED. Symmetric with GridCapabilities —
+    # a platform can be writable overall while its cue store is not yet
+    # implemented, which is exactly the Rekordbox milestone-2 state.
+    editable: bool = False
     hotcue_slots: int = 8  # size of the addressable bank; 0 = no bank
     slot_labels: Literal["number", "letter"] = "number"
     # Memory cues are Rekordbox-only today, so they are modelled and PRESERVED

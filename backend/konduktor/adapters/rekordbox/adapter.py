@@ -5,14 +5,17 @@ Mirrors `adapters.traktor.adapter`. It holds:
   * a ``RekordboxStore`` — the retained NATIVE model (the open ``master.db``),
   * a ``TrackIndex`` — the generic READ projection built from it.
 
-**Read-only milestone.** Every mutating command raises `Unsupported`, and
-`capabilities()` reports nothing as editable, so a correct UI never offers one
-in the first place; the raise is the backstop, not the mechanism.
+**Track metadata and playlists are writable; cues and the beatgrid are not
+yet.** Those two are separate native stores (two DB tables kept consistent, and
+the per-track ANLZ analysis files), so they keep refusing until milestone 3 —
+and `capabilities.cues.editable` / `grid.editable` say so, which is what the UI
+actually gates on. The raise is the backstop, not the mechanism.
 
-Writes are refused for a second, permanent reason on a cloud-synced library:
+Writes are refused entirely, and permanently, on a **cloud-synced** library:
 propagating a bad sync state to the user's other machines is not something
-version history can undo. That check lives here so it cannot be bypassed by a
-future command path forgetting it.
+version history can undo — especially here, where there is no version history at
+all. That check lives at the top of every command path so no future command can
+forget it.
 """
 from __future__ import annotations
 
@@ -48,6 +51,25 @@ class RekordboxAdapter:
             ]
         )
 
+    def _refresh(self, track_id: str) -> None:
+        """Re-project one track after a command, so the UI cannot go stale.
+
+        Every mutating command must end in this — a forgotten refresh is a
+        silently stale projection that no byte- or row-level test would catch.
+        """
+        counts = self._store.cue_counts()
+        row = self._store.content(track_id)
+        self._index.replace(projection.to_track(row, counts.get(str(row.ID), (0, 0))))
+
+    def close(self) -> None:
+        """Release the database connection.
+
+        Rekordbox's library is a live SQLite file, not a document parsed into
+        memory: leaving the connection open keeps a file handle (and possibly a
+        `-wal`) around, so an adapter that is being replaced must be closed.
+        """
+        self._store.close()
+
     def reload(self) -> None:
         self._store._load()
         self._cloud_synced = self._store.cloud_synced
@@ -55,7 +77,11 @@ class RekordboxAdapter:
 
     # ---- identity --------------------------------------------------------
     def capabilities(self) -> Capabilities:
-        return caps.capabilities_for(self.path, cloud_synced=self._cloud_synced)
+        return caps.capabilities_for(
+            self.path,
+            cloud_synced=self._cloud_synced,
+            editable_fields=sorted(RekordboxStore.EDITABLE_FIELDS),
+        )
 
     @property
     def cloud_synced(self) -> bool:
@@ -107,6 +133,7 @@ class RekordboxAdapter:
         rows = self._store.playlists()
         folder = int(tables.PlaylistType.FOLDER)
         smart = int(tables.PlaylistType.SMART_PLAYLIST)
+        writable = not self._cloud_synced
 
         nodes: dict[str, PlaylistNode] = {}
         parents: dict[str, str] = {}
@@ -122,10 +149,13 @@ class RekordboxAdapter:
                 children=[],
                 # A smart playlist has no static entry list; a folder has no tracks.
                 selectable=kind == "playlist",
-                can_add_tracks=False,
-                can_reorder=False,
-                can_rename=False,
-                can_delete=False,
+                # Rekordbox's own working lists are filtered out by the store, so
+                # everything reaching here is the user's and may be edited — as
+                # long as the library itself is writable at all.
+                can_add_tracks=writable and kind == "playlist",
+                can_reorder=writable and kind == "playlist",
+                can_rename=writable,
+                can_delete=writable,
                 can_contain_children=kind == "folder",
             )
             parent = str(r.ParentID or "root")
@@ -184,13 +214,38 @@ class RekordboxAdapter:
     def remap_locations(self, mapping: PathMapping) -> int:
         raise Unsupported(self._readonly_reason("Rewriting stored paths"))
 
+    # ---- commands: track metadata ----------------------------------------
+    def set_track_metadata(self, track_id: str, fields: dict) -> Track | None:
+        self._require_writable("Editing track metadata")
+        self._store.set_track_metadata(track_id, fields)
+        self._refresh(track_id)
+        return self._index.get(track_id)
+
+    # ---- commands: playlists ----------------------------------------------
+    def create_playlist(self, name: str, parent_id: str | None = None) -> str:
+        self._require_writable("Creating playlists")
+        return self._store.create_playlist(name, parent_id)
+
+    def rename_playlist(self, node_id: str, name: str) -> None:
+        self._require_writable("Renaming playlists")
+        self._store.rename_playlist(node_id, name)
+
+    def delete_playlist(self, node_id: str) -> None:
+        self._require_writable("Deleting playlists")
+        self._store.delete_playlist(node_id)
+
+    def set_playlist_entries(self, node_id: str, track_ids: list[str]) -> int:
+        self._require_writable("Editing playlists")
+        return self._store.set_playlist_entries(node_id, track_ids)
+
     # ---- save -------------------------------------------------------------
     @property
     def dirty(self) -> bool:
-        return False
+        return self._store.dirty
 
     def save(self):
-        raise Unsupported(self._readonly_reason("Saving"))
+        self._require_writable("Saving")
+        return self._store.save()
 
     def snapshot(self) -> bytes:
         """The library's bytes, for version history.
@@ -216,20 +271,11 @@ class RekordboxAdapter:
     def _refuse(self, what: str):
         raise Unsupported(self._readonly_reason(what))
 
-    def create_playlist(self, name: str, parent_id: str | None = None) -> str:
-        self._refuse("Creating playlists")
-
-    def rename_playlist(self, node_id: str, name: str) -> None:
-        self._refuse("Renaming playlists")
-
-    def delete_playlist(self, node_id: str) -> None:
-        self._refuse("Deleting playlists")
-
-    def set_playlist_entries(self, node_id: str, track_ids: list[str]) -> int:
-        self._refuse("Editing playlists")
-
-    def set_track_metadata(self, track_id: str, fields: dict) -> Track | None:
-        self._refuse("Editing track metadata")
+    def _require_writable(self, what: str) -> None:
+        """Every write passes through here, so the cloud-sync refusal cannot be
+        forgotten by a command added later."""
+        if self._cloud_synced:
+            raise Unsupported(self._readonly_reason(what))
 
     def set_cover_art(self, track_id: str, data: bytes, mime: str) -> None:
         self._refuse("Editing cover art")

@@ -147,6 +147,9 @@ export interface TrackCues {
 }
 
 export interface CueCapabilities {
+  /** Whether cues can be created or changed. Symmetric with grid.editable: a
+   *  platform can be writable overall while its cue store is not implemented. */
+  editable: boolean
   hotcue_slots: number
   slot_labels: 'number' | 'letter'
   memory_cues: boolean

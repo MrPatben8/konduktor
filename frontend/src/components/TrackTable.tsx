@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MutableRefObject } from 'react'
+import { useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import {
   flexRender,
   getCoreRowModel,
@@ -11,6 +11,7 @@ import {
   type VisibilityState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { useCaps } from '../lib/capabilities'
 import {
   DndContext,
   PointerSensor,
@@ -30,6 +31,15 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import type { Track } from '../api'
 import { TRACK_COLUMNS } from '../lib/trackColumns'
+
+/** Fields this platform can persist, for the table's per-cell edit gating.
+ *  Platforms differ in WHICH fields they accept, so the all-or-nothing
+ *  `onEditField` handler is not enough on its own. */
+function useEditableFields(): ReadonlySet<string> {
+  const caps = useCaps()
+  return useMemo(() => new Set(caps.tracks.editable_fields), [caps.tracks.editable_fields])
+}
+
 
 const ROW_HEIGHT = 44
 // Stable reference. A controlled `state.sorting` that's a fresh `[]` each render
@@ -259,11 +269,12 @@ export function TrackTable({
   onEditField,
   activeTrackId,
 }: Props) {
+  const editableFields = useEditableFields()
   const table = useReactTable({
     data: tracks,
     columns: TRACK_COLUMNS,
     state: { sorting, columnVisibility, columnOrder, columnSizing },
-    meta: { onEditField },
+    meta: { onEditField, editableFields },
     onSortingChange: (updater) =>
       onSortingChange(typeof updater === 'function' ? updater(sorting) : updater),
     onColumnSizingChange: (updater) =>
@@ -457,11 +468,12 @@ export function PlaylistTable({
   const [items, setItems] = useState<Track[]>(tracks)
   useEffect(() => setItems(tracks), [tracks])
 
+  const editableFields = useEditableFields()
   const table = useReactTable({
     data: items,
     columns: TRACK_COLUMNS,
     state: { sorting: NO_SORTING, columnVisibility, columnOrder, columnSizing },
-    meta: { onEditField },
+    meta: { onEditField, editableFields },
     enableSorting: false, // playlist order is manual
     onColumnSizingChange: (updater) =>
       onColumnSizingChange(typeof updater === 'function' ? updater(columnSizing) : updater),

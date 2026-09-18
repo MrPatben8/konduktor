@@ -563,13 +563,31 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
 
   // ---- capability-derived -----------------------------------------------
   const caps = useCaps()
-  // A read-only library refuses every edit. Guarding at the point of INTENT
-  // means the user gets the reason instead of a 422 from the adapter's backstop,
-  // and the deck stays fully usable for listening — which is most of its value
-  // on a library you cannot write.
-  const refuseIfReadOnly = () => {
-    if (caps.writable) return false
-    onError?.(readOnlyNotice(caps) ?? 'This library is read-only.')
+  // Edits are guarded at the point of INTENT, so the user gets the reason
+  // instead of a 422 from the adapter's backstop, and the deck stays fully
+  // usable for listening — which is most of its value on a library you cannot
+  // write.
+  //
+  // TWO gates, not one. `writable` is the library; `cues.editable` and
+  // `grid.editable` are the features. A platform can be writable overall while
+  // its cue or grid store is not implemented yet, so gating only on `writable`
+  // would re-expose these controls the moment that flips — which is exactly how
+  // this would regress unnoticed when Rekordbox writes land.
+  const canEditCues = caps.writable && caps.cues.editable
+  const canEditGrid = caps.writable && caps.grid.editable
+  const refuseCueEdit = () => {
+    if (canEditCues) return false
+    onError?.(
+      readOnlyNotice(caps) ?? `Cues cannot be edited on ${caps.save.app_name} libraries yet.`,
+    )
+    return true
+  }
+  const refuseGridEdit = () => {
+    if (canEditGrid) return false
+    onError?.(
+      readOnlyNotice(caps) ??
+        `The beatgrid cannot be edited on ${caps.save.app_name} libraries yet.`,
+    )
     return true
   }
   const slotCount = caps.cues.hotcue_slots
@@ -623,7 +641,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
       return
     }
     if (!cue) {
-      if (refuseIfReadOnly()) return
+      if (refuseCueEdit()) return
       try {
         // Setting a hotcue while a loop is active stores it as a loop hotcue.
         if (loopActive && loopRegion) {
@@ -663,7 +681,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   const canAutoCue = grid != null
   const runAutoHotcues = async () => {
     if (!track || !canAutoCue || autoBusy) return
-    if (refuseIfReadOnly()) return
+    if (refuseCueEdit()) return
     const hotcueCount = (c: TrackCues | null) =>
       c?.cues.filter((x) => x.role === 'hotcue' && x.slot != null).length ?? 0
     if (hotcueCount(cueData) >= slotCount) {
@@ -690,7 +708,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
 
   const changeSelectedType = async (type: CueType) => {
     if (!track || selectedSlot == null) return
-    if (refuseIfReadOnly()) return
+    if (refuseCueEdit()) return
     try {
       applyCueEdit(await api.setCueType(track.id, selectedSlot, type))
     } catch (e) {
@@ -700,7 +718,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
 
   const deleteSelected = async () => {
     if (!track || selectedSlot == null) return
-    if (refuseIfReadOnly()) return
+    if (refuseCueEdit()) return
     try {
       applyCueEdit(await api.deleteCue(track.id, selectedSlot))
       setSelectedSlot(null)
@@ -713,7 +731,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     const existing = hotcueAt(slot)
     if (!track || !existing) return // nothing to remove in an empty slot
     if (existing.grid_marker != null) return // beatgrid-owned: delete the marker instead
-    if (refuseIfReadOnly()) return
+    if (refuseCueEdit()) return
     try {
       applyCueEdit(await api.deleteCue(track.id, slot))
       if (selectedSlot === slot) setSelectedSlot(null)
@@ -738,7 +756,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
 
   const editMarker = async (index: number, patch: { bpm?: number; start?: number }) => {
     if (!track || index < 0) return
-    if (refuseIfReadOnly()) return
+    if (refuseGridEdit()) return
     try {
       applyCueEdit(await api.setGridMarker(track.id, index, patch))
     } catch (e) {
@@ -760,7 +778,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   // Uses the raw playhead, not snapTime: a marker defines where beats are.
   const addMarkerHere = async () => {
     if (!track) return
-    if (refuseIfReadOnly()) return
+    if (refuseGridEdit()) return
     try {
       applyCueEdit(await api.addGridMarker(track.id, playheadNow()))
     } catch (e) {
@@ -769,7 +787,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   }
   const deleteMarkerHere = async () => {
     if (!track || activeMarkerIndex < 0) return
-    if (refuseIfReadOnly()) return
+    if (refuseGridEdit()) return
     try {
       applyCueEdit(await api.deleteGridMarker(track.id, activeMarkerIndex))
     } catch (e) {
@@ -786,7 +804,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   const resetGrid = async () => {
     const o = originalGridRef.current
     if (!track || !o) return
-    if (refuseIfReadOnly()) return
+    if (refuseGridEdit()) return
     try {
       applyCueEdit(await api.replaceGridMarkers(track.id, o))
     } catch (e) {
@@ -795,7 +813,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   }
   const toggleLock = async () => {
     if (!track) return
-    if (refuseIfReadOnly()) return
+    if (refuseGridEdit()) return
     try {
       applyCueEdit(await api.setGridLock(track.id, !cueData?.grid_locked))
     } catch (e) {
@@ -804,7 +822,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   }
   const deleteGrid = async () => {
     if (!track) return
-    if (refuseIfReadOnly()) return
+    if (refuseGridEdit()) return
     try {
       applyCueEdit(await api.deleteGrid(track.id))
     } catch (e) {
@@ -814,7 +832,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   // Analyze: backend detects BPM + first beat, sets the grid anchor and hotcue 1.
   const runAnalyzeGrid = async () => {
     if (!track || gridBusy) return
-    if (refuseIfReadOnly()) return
+    if (refuseGridEdit()) return
     setGridBusy(true)
     try {
       applyCueEdit(await api.autoGrid(track.id))

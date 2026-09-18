@@ -1,10 +1,14 @@
 """What a Rekordbox library can persist.
 
-**Milestone 1 reports everything as read-only.** The spike verified that
-Rekordbox accepts writes that maintain its USN columns (see the handoff's
-Findings), but the write path is not built yet, and the capability system exists
-precisely so the UI never offers an edit that will not persist. Every flag here
-is therefore false/empty until milestone 2 turns them on one at a time.
+**Track metadata and playlists are writable; cues and the beatgrid are not.**
+The spike verified that Rekordbox accepts writes which maintain its USN columns
+(see the handoff's Findings), and those two write paths use `pyrekordbox`, which
+maintains them. Cues and the grid are separate hand-written stores and stay
+false until milestone 3 — the capability system exists precisely so the UI never
+offers an edit that will not persist.
+
+A **cloud-synced** library reports `writable=False` regardless: Konduktor will
+not write one at all.
 
 Two facts are already known and encoded, because getting them wrong later would
 be a silent data bug rather than a missing feature:
@@ -35,7 +39,11 @@ HOTCUE_SLOTS = 8
 
 
 def capabilities_for(
-    path, version: str | None = None, *, cloud_synced: bool = False
+    path,
+    version: str | None = None,
+    *,
+    cloud_synced: bool = False,
+    editable_fields: list[str] | None = None,
 ) -> Capabilities:
     # A cloud-synced library is refused PERMANENTLY, not pending a milestone:
     # a local edit the server did not issue could propagate a broken sync state
@@ -43,9 +51,12 @@ def capabilities_for(
     return Capabilities(
         platform="rekordbox",
         version=version,
-        writable=False,
-        readonly_cause="cloud_synced" if cloud_synced else "platform_incomplete",
+        writable=not cloud_synced,
+        readonly_cause="cloud_synced" if cloud_synced else None,
         cues=CueCapabilities(
+            # Milestone 3: the cue store is hand-written (djmdCue rows plus the
+            # contentCue JSON mirror, kept consistent) and does not exist yet.
+            editable=False,
             hotcue_slots=HOTCUE_SLOTS,
             slot_labels="letter",
             # Rekordbox is the only platform with memory cues, so they are
@@ -61,12 +72,15 @@ def capabilities_for(
         grid=GridCapabilities(editable=False, flexible=True, lockable=False),
         tracks=TrackCapabilities(
             rating_max=5,  # Rekordbox stores 0-5 directly, unlike Traktor's /51
-            editable_fields=[],  # read-only in this milestone
+            # Narrower than Traktor's: `producer` and `mix` have no Rekordbox
+            # column (its Composer is a different field), so they are absent
+            # rather than mapped onto something approximate.
+            editable_fields=sorted(editable_fields or []),
             media_kinds=["audio"],
             artwork=False,
             artwork_note=None,
         ),
-        playlists=PlaylistCapabilities(folders=True, smart="read_only", reorder=False),
+        playlists=PlaylistCapabilities(folders=True, smart="read_only", reorder=True),
         save=SaveCapabilities(
             app_name="Rekordbox",
             library_label="master.db",

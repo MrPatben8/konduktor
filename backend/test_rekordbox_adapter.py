@@ -34,10 +34,26 @@ from konduktor.adapters.rekordbox.cue_types import (  # noqa: E402
 from konduktor.adapters.rekordbox.driver import RekordboxDriver  # noqa: E402
 from konduktor.adapters.rekordbox.projection import parse_key  # noqa: E402
 from konduktor.core import registry  # noqa: E402
-from konduktor.core.adapter import LibraryAdapter, Unsupported  # noqa: E402
+from konduktor.core.adapter import (  # noqa: E402
+    InvalidCommand,
+    LibraryAdapter,
+    NotFound,
+    Unsupported,
+)
 from konduktor.core.model import GridMarker  # noqa: E402
 
 failed = False
+
+
+def _raises(fn, exc) -> bool:
+    """True when `fn` raises exactly the expected adapter error."""
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:  # noqa: BLE001 — the wrong error is still a failure
+        return False
+    return False
 
 
 def check(label, cond, detail=""):
@@ -195,13 +211,15 @@ with tempfile.TemporaryDirectory() as d:
     print("== capabilities gate the UI ==")
     caps = adapter.capabilities()
     check("platform is rekordbox", caps.platform == "rekordbox")
-    # The distinction that makes the UI honest: "cannot be written at all" is
-    # not the same as every per-feature flag happening to be false.
-    check("the library reports itself as NOT writable", caps.writable is False)
-    check("and says why, as a fact the UI can word",
-          caps.readonly_cause == "platform_incomplete", str(caps.readonly_cause))
+    # Milestone 2: the library IS writable, but only for what is implemented.
+    # The library-level flag and the per-feature flags are separate gates on
+    # purpose — see the cue/grid refusals below.
+    check("a local library is writable", caps.writable is True)
+    check("with no read-only cause", caps.readonly_cause is None, str(caps.readonly_cause))
     check("per-feature flags still describe what Rekordbox CAN do",
           caps.cues.memory_cues and caps.grid.flexible)
+    check("cues are NOT editable yet (milestone 3)", caps.cues.editable is False)
+    check("the grid is NOT editable yet (milestone 3)", caps.grid.editable is False)
     check("8 hot cue slots, labelled by letter",
           caps.cues.hotcue_slots == 8 and caps.cues.slot_labels == "letter")
     check("memory cues are supported", caps.cues.memory_cues)
@@ -212,19 +230,19 @@ with tempfile.TemporaryDirectory() as d:
     check("cue colour is a palette, not free RGB", caps.cues.color == "palette")
     check("the grid is flexible but not editable yet",
           caps.grid.flexible and not caps.grid.editable)
-    check("no field is advertised as editable", caps.tracks.editable_fields == [])
+    check("the editable field set is advertised", bool(caps.tracks.editable_fields))
+    # Rekordbox has no column for these; Traktor does. Mapping them onto its
+    # Composer field would silently write the wrong thing.
+    check("producer/mix are absent rather than approximated",
+          "producer" not in caps.tracks.editable_fields
+          and "mix" not in caps.tracks.editable_fields)
     check("version history is off (multi-artefact library)", caps.save.history is False)
     check("the save warning says Rekordbox holds the library open",
           caps.save.overwrite_risk == "while_running")
     check("library label is master.db", caps.save.library_label == "master.db")
 
-    print("== every command is refused, with a reason ==")
+    print("== the unimplemented stores still refuse, with a reason ==")
     commands = {
-        "set_track_metadata": lambda: adapter.set_track_metadata(sample.id, {"title": "x"}),
-        "create_playlist": lambda: adapter.create_playlist("x"),
-        "rename_playlist": lambda: adapter.rename_playlist("1", "x"),
-        "delete_playlist": lambda: adapter.delete_playlist("1"),
-        "set_playlist_entries": lambda: adapter.set_playlist_entries("1", []),
         "set_cover_art": lambda: adapter.set_cover_art(sample.id, b"", "image/jpeg"),
         "set_cue": lambda: adapter.set_cue(sample.id, slot=1, start_sec=0.0, cue_type="cue"),
         "set_cue_type": lambda: adapter.set_cue_type(sample.id, 1, "cue"),
@@ -239,7 +257,8 @@ with tempfile.TemporaryDirectory() as d:
         "delete_grid": lambda: adapter.delete_grid(sample.id),
         "set_grid_lock": lambda: adapter.set_grid_lock(sample.id, True),
         "remap_locations": lambda: adapter.remap_locations(None),
-        "save": lambda: adapter.save(),
+        # save() works now; snapshot() must not, because a Rekordbox library is
+        # more than one file and there is nothing to version.
         "snapshot": lambda: adapter.snapshot(),
     }
     refused = []
@@ -251,8 +270,43 @@ with tempfile.TemporaryDirectory() as d:
             pass
         except Exception as ex:  # noqa: BLE001 — anything else is the wrong error
             refused.append(f"{name} ({type(ex).__name__})")
-    check("every mutating command raises Unsupported", not refused, ", ".join(refused))
-    check("the adapter is never dirty while read-only", adapter.dirty is False)
+    check("every cue/grid command still raises Unsupported", not refused, ", ".join(refused))
+    check("refusing a command leaves the adapter clean", adapter.dirty is False)
+
+    print("== metadata writes, including the foreign-key fields ==")
+    # artist/album/genre/label are FKs into lookup tables, not columns. Setting
+    # one must (a) find-or-create the lookup row — pyrekordbox's add_* RAISES on
+    # an existing name — and (b) return a projection that reflects the new value,
+    # which needs a flush+expire or the ORM reads the stale relationship back.
+    writable_target = adapter.tracks[0]
+    updated = adapter.set_track_metadata(
+        writable_target.id,
+        {"genre": "Konduktor Probe Genre", "artist": "Konduktor Probe Artist", "rating": 4},
+    )
+    check("the command returns the refreshed projection", updated is not None)
+    if updated:
+        check("a NEW lookup value is reflected immediately",
+              updated.genre == "Konduktor Probe Genre" and updated.artist == "Konduktor Probe Artist",
+              f"{updated.genre!r} / {updated.artist!r}")
+        check("a direct column is reflected immediately", updated.rating == 4, str(updated.rating))
+    check("the index holds the same refreshed track",
+          adapter.track(writable_target.id).genre == "Konduktor Probe Genre")
+    # Re-using an EXISTING lookup value must not try to create it again.
+    existing_genre = next(
+        (t.genre for t in adapter.tracks if t.genre and t.id != writable_target.id), None
+    )
+    if existing_genre:
+        again = adapter.set_track_metadata(writable_target.id, {"genre": existing_genre})
+        check("an existing lookup value is reused, not re-created",
+              again is not None and again.genre == existing_genre,
+              str(again.genre if again else None))
+    check("an out-of-range rating is rejected",
+          _raises(lambda: adapter.set_track_metadata(writable_target.id, {"rating": 9}),
+                  InvalidCommand))
+    check("an unknown track is a NotFound",
+          _raises(lambda: adapter.set_track_metadata("nope", {"title": "x"}), NotFound))
+    check("unknown fields are ignored, never guessed at",
+          adapter.set_track_metadata(writable_target.id, {"not_a_field": "x"}) is not None)
 
     print("== a cloud-synced library is refused permanently, not pending a milestone ==")
     # The one failure mode version history cannot undo: a local edit the sync

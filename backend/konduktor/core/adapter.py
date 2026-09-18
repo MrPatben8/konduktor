@@ -18,12 +18,35 @@ Two rules keep this honest:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from .capabilities import Capabilities
 from .model import Facets, PlaylistNode, Stats, Track, TrackCues, TrackPage
 from .pathmap import PathMapping
+
+
+@dataclass
+class SaveOutcome:
+    """What a save produced, in terms every platform can answer.
+
+    Promoted here once a second adapter needed it (the two-platform rule). The
+    fields are deliberately optional because platforms differ in kind, not just
+    in detail:
+
+      * `snapshot` is the exact bytes written, for the version-history commit —
+        and it is None on a platform Konduktor does not version. A Rekordbox
+        library is `master.db` plus ~200 analysis files plus a playlist XML, so
+        there is no single blob that *is* the library, and restoring the database
+        alone would roll back the app's own auth and sampler state.
+      * `tag_results` reports embedded audio-file tag writes, which only a
+        platform that does them will populate.
+    """
+
+    summary: str  # human-readable edit summary, for the version-history message
+    snapshot: bytes | None = None
+    tag_results: list = field(default_factory=list)
 
 
 class AdapterError(Exception):

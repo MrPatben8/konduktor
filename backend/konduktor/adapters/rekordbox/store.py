@@ -3,8 +3,16 @@
 This is the only module that knows ``pyrekordbox`` exists. It owns the decrypted
 SQLCipher session, the ANLZ analysis files, and the caches the projection reads.
 
-**Read-only in this milestone.** The write path is deliberately absent rather
-than stubbed: a store that cannot write cannot half-write.
+**Writes cover track metadata and playlists.** Cues and the beatgrid are
+deliberately absent rather than stubbed — they are separate stores (two DB tables
+kept consistent, and the ANLZ analysis files) and a store that cannot write them
+cannot half-write them.
+
+Edits accumulate in the SQLAlchemy session and are only made permanent by
+`save()`, which maps exactly onto Konduktor's "edit in memory, Save writes to
+disk" model. `pyrekordbox`'s `commit()` is what assigns Rekordbox's update
+sequence numbers, and a real Rekordbox was verified to accept and continue from
+the result — see the handoff's Findings.
 
 Two things here are not obvious and are load-bearing:
 
@@ -24,7 +32,8 @@ from pathlib import Path
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import joinedload
 
-from ...core.adapter import LibraryNotSupported, NotFound
+from ...core.adapter import InvalidCommand, LibraryNotSupported, NotFound, SaveOutcome
+from ...core.edit_journal import EditJournal
 from ...core.pathmap import PathMapping
 
 log = logging.getLogger(__name__)
@@ -37,6 +46,7 @@ class RekordboxStore:
         self.path = Path(path)
         self._mapping = PathMapping()
         self._grid_cache: dict[str, tuple[list[float], list[float]] | None] = {}
+        self._journal = EditJournal()
         self._load()
 
     # ---- open ------------------------------------------------------------
@@ -54,9 +64,21 @@ class RekordboxStore:
         self._by_id: dict[str, object] | None = None
 
     def close(self) -> None:
+        """Release the session AND the pooled connection.
+
+        `pyrekordbox`'s own `close()` only closes the SQLAlchemy session, which
+        returns the connection to the engine's pool — the OS file handle stays
+        open. Disposing the engine is what actually releases `master.db`, and
+        without it the file cannot be replaced (a restore, or a test copying a
+        fresh library over it) on any platform that locks open files.
+        """
         try:
             self._db.close()
         except Exception:  # noqa: BLE001 — closing must never raise
+            pass
+        try:
+            self._db.engine.dispose()
+        except Exception:  # noqa: BLE001
             pass
 
     # ---- identity --------------------------------------------------------
@@ -253,3 +275,165 @@ class RekordboxStore:
         return [
             str(c.FolderPath) for c in self.iter_content() if getattr(c, "FolderPath", None)
         ]
+
+    # ---- writes: track metadata -----------------------------------------
+    #
+    # Deliberately NOT editable: the file path (it is the track's identity),
+    # BPM and key (audio/grid territory), and Rekordbox's own read-only
+    # bookkeeping. `producer` and `mix` are Traktor concepts with no Rekordbox
+    # column — Rekordbox has a Composer, which is not the same field — so they
+    # are simply absent from the set rather than mapped to something close.
+    _DIRECT_FIELDS = {
+        "title": "Title",
+        "comment": "Commnt",
+        "release_date": "ReleaseDate",
+    }
+    # Fields stored as a foreign key into a lookup table, which must be
+    # found-or-created: `add_*` in pyrekordbox RAISES on an existing name.
+    _LOOKUP_FIELDS = {
+        "artist": ("DjmdArtist", "ArtistID", "add_artist"),
+        "album": ("DjmdAlbum", "AlbumID", "add_album"),
+        "genre": ("DjmdGenre", "GenreID", "add_genre"),
+        "label": ("DjmdLabel", "LabelID", "add_label"),
+        # A remixer IS an artist in Rekordbox — same table, different column.
+        "remixer": ("DjmdArtist", "RemixerID", "add_artist"),
+    }
+    EDITABLE_FIELDS = set(_DIRECT_FIELDS) | set(_LOOKUP_FIELDS) | {"rating"}
+
+    def _lookup_id(self, table_name: str, adder: str, name: str) -> str | None:
+        """The id of the lookup row called `name`, creating it if needed."""
+        if not name:
+            return None
+        table = getattr(self._tables, table_name)
+        existing = self._db.session.query(table).filter_by(Name=name).first()
+        if existing is not None:
+            return str(existing.ID)
+        row = getattr(self._db, adder)(name)
+        return str(row.ID)
+
+    def set_track_metadata(self, track_id: str, fields: dict) -> None:
+        row = self.content(track_id)
+        for key, value in fields.items():
+            if key not in self.EDITABLE_FIELDS:
+                continue  # unknown/!safe fields are ignored, never guessed at
+            if key == "rating":
+                try:
+                    stars = int(value or 0)
+                except (TypeError, ValueError):
+                    raise InvalidCommand(f"Rating must be a number, got {value!r}") from None
+                if not 0 <= stars <= 5:
+                    raise InvalidCommand(f"Rating must be 0-5, got {stars}")
+                before, new = row.Rating, stars
+                row.Rating = stars
+            elif key in self._DIRECT_FIELDS:
+                column = self._DIRECT_FIELDS[key]
+                before = getattr(row, column)
+                new = (value or None) if isinstance(value, str) else value
+                setattr(row, column, new)
+            else:
+                table_name, column, adder = self._LOOKUP_FIELDS[key]
+                before = getattr(row, column)
+                new = self._lookup_id(table_name, adder, (value or "").strip())
+                setattr(row, column, new)
+            self._journal.record("track", "set", track_id, key, before, new)
+        # Artist/album/genre/label are FOREIGN KEYS. Setting the id does not move
+        # the ORM's cached relationship, so re-projecting the row immediately
+        # would read the OLD name back and report a successful edit as a no-op.
+        # Flush pushes the ids into the transaction; expiring the row makes the
+        # next attribute access reload the joined rows with them.
+        self._db.flush()
+        self._db.session.expire(row)
+
+    # ---- writes: playlists ------------------------------------------------
+    def _playlist(self, node_id: str):
+        t = self._tables
+        row = (
+            self._db.session.query(t.DjmdPlaylist)
+            .filter(t.DjmdPlaylist.ID == str(node_id))
+            .first()
+        )
+        if row is None:
+            raise NotFound(f"No playlist {node_id!r}")
+        return row
+
+    def create_playlist(self, name: str, parent_id: str | None = None) -> str:
+        name = (name or "").strip()
+        if not name:
+            raise InvalidCommand("A playlist needs a name")
+        parent = self._playlist(parent_id) if parent_id else None
+        if parent is not None and int(parent.Attribute or 0) != int(
+            self._tables.PlaylistType.FOLDER
+        ):
+            raise InvalidCommand("A playlist can only be created inside a folder")
+        row = self._db.create_playlist(name, parent=parent)
+        self._journal.record("playlist", "create", name)
+        return str(row.ID)
+
+    def rename_playlist(self, node_id: str, name: str) -> None:
+        name = (name or "").strip()
+        if not name:
+            raise InvalidCommand("A playlist needs a name")
+        row = self._playlist(node_id)
+        self._db.rename_playlist(row, name)
+        self._journal.record("playlist", "rename", name)
+
+    def delete_playlist(self, node_id: str) -> None:
+        row = self._playlist(node_id)
+        name = row.Name
+        self._db.delete_playlist(row)
+        self._journal.record("playlist", "delete", name)
+
+    def set_playlist_entries(self, node_id: str, track_ids: list[str]) -> int:
+        """Replace a playlist's contents, in the given order.
+
+        Rekordbox keys order by `DjmdSongPlaylist.TrackNo`, and there is no
+        bulk reorder — so this clears the list and re-adds it. `add_to_playlist`
+        is used one row at a time because it is what maintains Rekordbox's own
+        USN ordering for these rows.
+        """
+        t = self._tables
+        playlist = self._playlist(node_id)
+        if int(playlist.Attribute or 0) != int(t.PlaylistType.PLAYLIST):
+            raise InvalidCommand("Only a plain playlist has an editable track list")
+        known = {tid for tid in track_ids if self._by_id and str(tid) in self._by_id}
+        unknown = [tid for tid in track_ids if tid not in known]
+        if unknown:
+            raise NotFound(f"Unknown track(s): {', '.join(map(str, unknown[:3]))}")
+        existing = (
+            self._db.session.query(t.DjmdSongPlaylist)
+            .filter(t.DjmdSongPlaylist.PlaylistID == str(node_id))
+            .all()
+        )
+        for song in existing:
+            self._db.remove_from_playlist(playlist, song)
+        for n, track_id in enumerate(track_ids, start=1):
+            self._db.add_to_playlist(playlist, str(track_id), track_no=n)
+        self._journal.record("playlist", "entries", playlist.Name, after=len(track_ids))
+        return len(track_ids)
+
+    # ---- save --------------------------------------------------------------
+    @property
+    def dirty(self) -> bool:
+        return self._journal.dirty
+
+    def edited_fields(self, track_id: str) -> set[str]:
+        return self._journal.fields_for(track_id)
+
+    def save(self) -> SaveOutcome:
+        """Make the session's edits permanent.
+
+        `commit(autoinc=True)` is what assigns Rekordbox's update sequence
+        numbers — one increment per change, stamped onto each changed row. A real
+        Rekordbox was verified to accept a library written this way and to carry
+        on from the counter it was left at.
+
+        `snapshot` is None: a Rekordbox library is `master.db` plus its analysis
+        files plus a playlist XML, so there is no single blob to version, and
+        `capabilities.save.history` says so.
+        """
+        summary = self._journal.summary()
+        self._db.commit(autoinc=True)
+        self._journal.clear()
+        # Reads go through the same session, so nothing needs re-projecting from
+        # scratch — but the grid cache is keyed by track and survives a save.
+        return SaveOutcome(summary=summary, snapshot=None, tag_results=[])

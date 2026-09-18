@@ -39,6 +39,17 @@ class AppState:
         # One parse: the adapter builds its read projection from the same object
         # graph the commands mutate.
         adapter = registry.open_library(path)
+        # Release the previous library first. A file-backed platform (Rekordbox
+        # holds master.db open) would otherwise leak a handle — and a lingering
+        # write-ahead log beside a file another process replaces is how a SQLite
+        # library gets corrupted. Only close once the new one has parsed, so a
+        # failed open leaves the current library intact.
+        previous = self.adapter
+        if previous is not None and hasattr(previous, "close"):
+            try:
+                previous.close()
+            except Exception:  # noqa: BLE001 — a failed close must not block the open
+                pass
         # Apply this library's saved OS-path remapping (per-machine, keyed by the
         # library's local path) so runtime translation is live on open.
         saved = prefs.get_path_mapping(str(path))
@@ -58,9 +69,15 @@ class AppState:
         """
         assert self.adapter is not None and self.path is not None
         outcome = self.adapter.save()
-        commit = history.commit(
-            self.path, outcome.snapshot, outcome.summary, __version__
-        )
+        # Not every platform is versioned. A library that is more than one file
+        # has no single blob that IS the library, and it says so through its
+        # capabilities rather than this module knowing which platforms those are.
+        versioned = self.adapter.capabilities().save.history
+        commit = None
+        if versioned and outcome.snapshot is not None:
+            commit = history.commit(
+                self.path, outcome.snapshot, outcome.summary, __version__
+            )
         return outcome, commit
 
 
