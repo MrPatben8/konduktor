@@ -168,9 +168,21 @@ export interface SaveCapabilities {
   history: boolean
 }
 
+/** Why a library cannot be edited. A fact — lib/platformCopy.ts words it. */
+export type ReadonlyCause = 'platform_incomplete' | 'cloud_synced'
+
 export interface Capabilities {
   platform: Platform
   version: string | null
+  /** Whether ANY edit can be persisted.
+   *
+   *  Deliberately not the same as every per-feature flag being false: "the
+   *  platform has no such feature" and "this library cannot be written at all"
+   *  look identical to a UI that only sees the per-feature flags, and silently
+   *  inert controls read as a bug. Gate edit affordances on this AND on the
+   *  per-feature flag. */
+  writable: boolean
+  readonly_cause: ReadonlyCause | null
   cues: CueCapabilities
   grid: { editable: boolean; flexible: boolean; lockable: boolean }
   tracks: {

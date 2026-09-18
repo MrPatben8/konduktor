@@ -136,7 +136,11 @@ export default function App() {
   }, [])
   const onError = useCallback((msg: string) => notify('error', msg), [notify])
 
-  // Inline single-field edit from a double-clicked table cell.
+  // Inline single-field edit from a double-clicked table cell. Only offered when
+  // the library can take an edit: passing `undefined` makes those cells inert
+  // rather than firing a request the adapter will refuse. Defaults to false, so
+  // no edit is ever offered before capabilities have resolved.
+  const canEdit = capabilities.data?.writable ?? false
   const editField = useCallback(
     (track: Track, field: keyof Track, value: string | number) => {
       api
@@ -265,7 +269,11 @@ export default function App() {
           y={menu.y}
           items={[
             { label: 'Load to Deck', onClick: () => setPrepTrack(menu.track) },
-            { label: 'Edit Tags…', onClick: () => setEditing(menu.track) },
+            // Offering "Edit Tags…" on a read-only library would open a dialog
+            // whose every save is refused, so it is not offered at all.
+            ...(canEdit
+              ? [{ label: 'Edit Tags…', onClick: () => setEditing(menu.track) }]
+              : []),
           ]}
           onClose={() => setMenu(null)}
         />
@@ -348,7 +356,7 @@ export default function App() {
                 }}
                 onRowContextMenu={(track, x, y) => setMenu({ track, x, y })}
                 onPlay={playTrack}
-                onEditField={editField}
+                onEditField={canEdit ? editField : undefined}
                 activeTrackId={prepTrack?.id ?? null}
                 columnVisibility={columnVisibility}
                 columnOrder={columnOrder}
@@ -374,7 +382,7 @@ export default function App() {
               tracks={filtered}
               onRowContextMenu={(track, x, y) => setMenu({ track, x, y })}
               onPlay={playTrack}
-              onEditField={editField}
+              onEditField={canEdit ? editField : undefined}
               activeTrackId={prepTrack?.id ?? null}
               columnVisibility={columnVisibility}
               columnOrder={columnOrder}

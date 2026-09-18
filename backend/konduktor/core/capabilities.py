@@ -15,6 +15,13 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+# Why a library cannot be edited. A FACT, not a sentence — the UI composes the
+# wording (lib/platformCopy.ts), and the two causes need very different ones:
+# "Konduktor cannot write this platform YET" is a roadmap gap the user should
+# expect to close, whereas "this library is synced with Rekordbox Cloud" is a
+# permanent refusal protecting their other machines.
+ReadonlyCause = Literal["platform_incomplete", "cloud_synced"]
+
 CueType = Literal["cue", "fade_in", "fade_out", "load", "loop"]
 CueRole = Literal["hotcue", "memory"]
 MediaKind = Literal["audio", "stem", "video"]
@@ -74,6 +81,16 @@ class SaveCapabilities(BaseModel):
 class Capabilities(BaseModel):
     platform: str
     version: str | None = None
+    # Whether ANY edit can be persisted to this library.
+    #
+    # This is deliberately NOT the same as every individual capability being
+    # false. "The platform has no such feature" and "this library cannot be
+    # written at all" look identical to a UI that only sees the per-feature
+    # flags, and the second one needs saying out loud — silently inert controls
+    # read as a bug. When this is false the per-feature flags are still reported
+    # honestly, so the UI can show what the platform *would* support.
+    writable: bool = True
+    readonly_cause: ReadonlyCause | None = None
     cues: CueCapabilities = CueCapabilities()
     grid: GridCapabilities = GridCapabilities()
     tracks: TrackCapabilities = TrackCapabilities()

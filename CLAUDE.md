@@ -88,7 +88,7 @@ Two independent apps that talk over HTTP:
   - `schemas.py` — HTTP request bodies + envelopes; re-exports `core.model`.
   - `main.py` — thin FastAPI routes (all under `/api`), talking only to the
     adapter. Starts **unloaded**; the library is chosen at runtime via
-    `POST /api/collection/open` (data routes 409 until then).
+    `POST /api/library/open` (data routes 409 until then).
     `GET /api/capabilities` feeds the UI's gating; `GET /api/fs/list` powers the
     file browser; `GET`/`PATCH /api/prefs` persist UI prefs. Setting
     `KONDUKTOR_NML` auto-loads on startup (dev/tests).
@@ -146,10 +146,25 @@ Two independent apps that talk over HTTP:
     analysis + paint), `beatgrid.ts` (the marker-list beat math — every
     beat/bar/snap/jump calculation goes through it), `cues.ts` (draw
     cues/loop/beatgrid/cue-point). See "Prep engine" below.
+  - **`capabilities.writable`** is the library-level gate, and it is deliberately
+    NOT the same as every per-feature flag being false: "the platform has no such
+    feature" and "this library cannot be written at all" look identical to a UI
+    that only sees per-feature flags, and silently inert controls read as a bug.
+    `readonly_cause` says which kind (`platform_incomplete` / `cloud_synced`) and
+    `platformCopy.readOnlyNotice()` words it — the two need very different
+    sentences, since one is a roadmap gap and the other a permanent refusal that
+    protects the user's other machines. Gated on it: `SaveBar` (replaces the save
+    button with the reason), `App`'s `onEditField` (inline edit + click-to-rate
+    go inert), the "Edit Tags…" context item, `Sidebar`'s new-playlist button,
+    and all 12 `PrepStrip` edit handlers (which report the reason rather than
+    firing a request the adapter would refuse — the deck stays fully usable for
+    listening, and shows a "Read-only" badge).
   - Capability-gated today: hotcue bank size (`HotcueBar`, the auto-cue guard and
   the digit shortcuts all read `cues.hotcue_slots`), the cue-type dropdown
   (`cues.types`), the rating scale (`tracks.rating_max`), the grid Lock button
-  (`grid.lockable`). Carried but deliberately unused until a second adapter
+  (`grid.lockable`). Per-node playlist flags (`can_rename`, `can_delete`,
+  `can_add_tracks`) gate the sidebar and `SelectionBar` — each on its OWN flag,
+  since a platform may allow renaming but not deleting. Carried but deliberately unused until a second adapter
   exists: `slot_labels: 'letter'`, `palette`, `loops: 'separate_bank'`, and
   memory-cue *editing* (one-platform features stay preserved-but-uneditable).
 - `lib/trackColumns.tsx` — single source of truth for the library table's

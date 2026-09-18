@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type PlaylistKind, type PlaylistNode } from '../api'
+import { useCaps } from '../lib/capabilities'
 import { SaveBar } from './SaveBar'
 
 export type Source = { kind: 'all' } | { kind: 'playlist'; id: string; name: string }
@@ -115,31 +116,40 @@ function NodeRow({
           )}
         </button>
 
-        {node.can_rename && !renaming && (
-          <>
-            <button
-              title="Rename"
-              onClick={() => {
-                setDraft(node.name)
-                setRenaming(true)
-              }}
-              className="hidden shrink-0 rounded px-1 text-xs text-faint hover:text-text group-hover:block"
-            >
-              ✎
-            </button>
-            <button
-              title="Delete playlist"
-              onClick={() => {
-                if (confirm(`Delete playlist "${node.name}"?`)) del.mutate()
-              }}
-              className="hidden shrink-0 rounded px-1 text-xs text-faint hover:text-pink group-hover:block"
-            >
-              ×
-            </button>
-            <span className="shrink-0 rounded bg-ink-800 px-1.5 py-0.5 text-[10px] tabular-nums text-faint group-hover:hidden">
-              {node.count}
-            </span>
-          </>
+        {/* Each action gates on ITS OWN flag: a platform may allow renaming but
+            not deleting. The count shows either way — it is information, not an
+            action, and hiding it on a read-only library loses real data. */}
+        {!renaming && node.can_rename && (
+          <button
+            title="Rename"
+            onClick={() => {
+              setDraft(node.name)
+              setRenaming(true)
+            }}
+            className="hidden shrink-0 rounded px-1 text-xs text-faint hover:text-text group-hover:block"
+          >
+            ✎
+          </button>
+        )}
+        {!renaming && node.can_delete && (
+          <button
+            title="Delete playlist"
+            onClick={() => {
+              if (confirm(`Delete playlist "${node.name}"?`)) del.mutate()
+            }}
+            className="hidden shrink-0 rounded px-1 text-xs text-faint hover:text-pink group-hover:block"
+          >
+            ×
+          </button>
+        )}
+        {!renaming && !isFolder && (
+          <span
+            className={`shrink-0 rounded bg-ink-800 px-1.5 py-0.5 text-[10px] tabular-nums text-faint ${
+              node.can_rename || node.can_delete ? 'group-hover:hidden' : ''
+            }`}
+          >
+            {node.count}
+          </span>
         )}
       </div>
       {isFolder && open && node.children.length > 0 && (
@@ -162,6 +172,9 @@ function NodeRow({
 
 export function Sidebar({ source, onSelect, onError, onOpenHistory }: Props) {
   const qc = useQueryClient()
+  // There is no per-node flag for "you may create a NEW playlist" — the node
+  // flags describe existing nodes — so this is the library-level gate.
+  const canCreate = useCaps().writable
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
   const { data: playlists, isLoading } = useQuery({
@@ -205,16 +218,18 @@ export function Sidebar({ source, onSelect, onError, onOpenHistory }: Props) {
         <span className="text-[10px] font-semibold uppercase tracking-wider text-faint">
           Playlists
         </span>
-        <button
-          title="New playlist"
-          onClick={() => {
-            setCreating(true)
-            setNewName('')
-          }}
-          className="rounded px-1 text-sm text-faint hover:text-text"
-        >
-          +
-        </button>
+        {canCreate && (
+          <button
+            title="New playlist"
+            onClick={() => {
+              setCreating(true)
+              setNewName('')
+            }}
+            className="rounded px-1 text-sm text-faint hover:text-text"
+          >
+            +
+          </button>
+        )}
       </div>
 
       <div className="mt-1 flex-1 overflow-y-auto px-2 pb-4">

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
 import { useCaps } from '../lib/capabilities'
-import { overwriteWarning, saveLabel } from '../lib/platformCopy'
+import { overwriteWarning, readOnlyNotice, saveLabel } from '../lib/platformCopy'
 
 interface Props {
   onError: (msg: string) => void
@@ -31,6 +31,20 @@ export function SaveBar({ onError }: Props) {
   const caps = useCaps()
   const warning = overwriteWarning(caps.save)
   const dirty = state?.dirty ?? false
+  const readOnly = readOnlyNotice(caps)
+
+  // A read-only library has no save to offer, and saying so plainly is the whole
+  // point: a greyed-out button with no explanation reads as a bug.
+  if (readOnly) {
+    return (
+      <div className="border-t border-line bg-ink-900 px-3 py-3">
+        <div className="rounded-md bg-ink-800 px-2 py-2 text-[11px] leading-snug text-faint">
+          <span className="font-medium text-ink-200">Read-only</span>
+          <div className="mt-1">{readOnly}</div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="border-t border-line bg-ink-900 px-3 py-3">

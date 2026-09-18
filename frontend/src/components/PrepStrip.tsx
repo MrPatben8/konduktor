@@ -4,6 +4,7 @@ import { api, type CueType, type GridMarker, type Track, type TrackCues } from '
 import { buildBeatGrid, GRID_EPS } from '../lib/beatgrid'
 import { slotLabeller, useCaps } from '../lib/capabilities'
 import { CUE_TYPE_LABELS } from '../lib/cues'
+import { readOnlyShort, readOnlyNotice } from '../lib/platformCopy'
 import { analyzeWaveform, type WaveColumn } from '../lib/waveform'
 import { ScratchEngine } from '../lib/scratchEngine'
 import { PlaybackEngine } from '../lib/playbackEngine'
@@ -562,6 +563,15 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
 
   // ---- capability-derived -----------------------------------------------
   const caps = useCaps()
+  // A read-only library refuses every edit. Guarding at the point of INTENT
+  // means the user gets the reason instead of a 422 from the adapter's backstop,
+  // and the deck stays fully usable for listening — which is most of its value
+  // on a library you cannot write.
+  const refuseIfReadOnly = () => {
+    if (caps.writable) return false
+    onError?.(readOnlyNotice(caps) ?? 'This library is read-only.')
+    return true
+  }
   const slotCount = caps.cues.hotcue_slots
   const slotLabel = slotLabeller(caps)
   // Loops are a cue TYPE on some platforms and a separate bank on others; the
@@ -613,6 +623,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
       return
     }
     if (!cue) {
+      if (refuseIfReadOnly()) return
       try {
         // Setting a hotcue while a loop is active stores it as a loop hotcue.
         if (loopActive && loopRegion) {
@@ -652,6 +663,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   const canAutoCue = grid != null
   const runAutoHotcues = async () => {
     if (!track || !canAutoCue || autoBusy) return
+    if (refuseIfReadOnly()) return
     const hotcueCount = (c: TrackCues | null) =>
       c?.cues.filter((x) => x.role === 'hotcue' && x.slot != null).length ?? 0
     if (hotcueCount(cueData) >= slotCount) {
@@ -678,6 +690,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
 
   const changeSelectedType = async (type: CueType) => {
     if (!track || selectedSlot == null) return
+    if (refuseIfReadOnly()) return
     try {
       applyCueEdit(await api.setCueType(track.id, selectedSlot, type))
     } catch (e) {
@@ -687,6 +700,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
 
   const deleteSelected = async () => {
     if (!track || selectedSlot == null) return
+    if (refuseIfReadOnly()) return
     try {
       applyCueEdit(await api.deleteCue(track.id, selectedSlot))
       setSelectedSlot(null)
@@ -699,6 +713,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     const existing = hotcueAt(slot)
     if (!track || !existing) return // nothing to remove in an empty slot
     if (existing.grid_marker != null) return // beatgrid-owned: delete the marker instead
+    if (refuseIfReadOnly()) return
     try {
       applyCueEdit(await api.deleteCue(track.id, slot))
       if (selectedSlot === slot) setSelectedSlot(null)
@@ -723,6 +738,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
 
   const editMarker = async (index: number, patch: { bpm?: number; start?: number }) => {
     if (!track || index < 0) return
+    if (refuseIfReadOnly()) return
     try {
       applyCueEdit(await api.setGridMarker(track.id, index, patch))
     } catch (e) {
@@ -744,6 +760,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   // Uses the raw playhead, not snapTime: a marker defines where beats are.
   const addMarkerHere = async () => {
     if (!track) return
+    if (refuseIfReadOnly()) return
     try {
       applyCueEdit(await api.addGridMarker(track.id, playheadNow()))
     } catch (e) {
@@ -752,6 +769,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   }
   const deleteMarkerHere = async () => {
     if (!track || activeMarkerIndex < 0) return
+    if (refuseIfReadOnly()) return
     try {
       applyCueEdit(await api.deleteGridMarker(track.id, activeMarkerIndex))
     } catch (e) {
@@ -768,6 +786,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   const resetGrid = async () => {
     const o = originalGridRef.current
     if (!track || !o) return
+    if (refuseIfReadOnly()) return
     try {
       applyCueEdit(await api.replaceGridMarkers(track.id, o))
     } catch (e) {
@@ -776,6 +795,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   }
   const toggleLock = async () => {
     if (!track) return
+    if (refuseIfReadOnly()) return
     try {
       applyCueEdit(await api.setGridLock(track.id, !cueData?.grid_locked))
     } catch (e) {
@@ -784,6 +804,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   }
   const deleteGrid = async () => {
     if (!track) return
+    if (refuseIfReadOnly()) return
     try {
       applyCueEdit(await api.deleteGrid(track.id))
     } catch (e) {
@@ -793,6 +814,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   // Analyze: backend detects BPM + first beat, sets the grid anchor and hotcue 1.
   const runAnalyzeGrid = async () => {
     if (!track || gridBusy) return
+    if (refuseIfReadOnly()) return
     setGridBusy(true)
     try {
       applyCueEdit(await api.autoGrid(track.id))
@@ -900,6 +922,17 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
               <div className="truncate text-xs text-muted" title={track.artist ?? ''}>
                 {track.artist ?? 'Unknown artist'}
               </div>
+              {/* The deck stays usable for listening on a read-only library, so
+                  say which it is rather than leaving the edit controls looking
+                  live. The controls themselves report the reason when pressed. */}
+              {readOnlyShort(caps) && (
+                <div
+                  className="mt-1 inline-block rounded bg-ink-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-faint"
+                  title={readOnlyNotice(caps) ?? ''}
+                >
+                  {readOnlyShort(caps)}
+                </div>
+              )}
             </>
           ) : (
             <div className="text-xs uppercase tracking-wider text-faint">No track loaded</div>

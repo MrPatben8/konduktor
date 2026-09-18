@@ -80,6 +80,8 @@ with tempfile.TemporaryDirectory() as d:
     adapter = TraktorAdapter(work)
     caps = adapter.capabilities()
     check("platform reported", caps.platform == "traktor")
+    check("the library is writable, with no read-only cause",
+          caps.writable is True and caps.readonly_cause is None)
     check("version read from the NML header", caps.version == "20", str(caps.version))
     check("8 hotcue slots", caps.cues.hotcue_slots == 8)
     check("no memory cues on Traktor", caps.cues.memory_cues is False)

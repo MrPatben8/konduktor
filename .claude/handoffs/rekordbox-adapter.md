@@ -698,3 +698,63 @@ advertised as editable); the raise is the backstop.
    see §8.2 and §8.4. `beatgrid.beats_from_markers()` is already written and
    unit-tested as the inverse of the read projection, so the grid write has a
    starting point.
+
+---
+
+## 10. The read-only capability landed
+
+`Capabilities` now carries **`writable: bool`** and **`readonly_cause`**
+(`platform_incomplete` | `cloud_synced`), backend and frontend in the same
+change. `./run_tests.sh` is green at **225 assertions**; `npm run build` and
+`npm run test` (25) pass.
+
+This was §9's prerequisite, and building it surfaced that the gap was bigger than
+"the UI lacks a label":
+
+**Almost nothing gated on editability.** `capabilities.tracks.editable_fields`
+and `grid.editable` were modelled but consulted by **no component at all** — only
+`hotcue_slots`, `cues.types` and `rating_max` were ever read. So on a Rekordbox
+library the UI would have cheerfully offered Edit Tags, inline editing,
+click-to-rate, playlist create/rename/delete and every prep-deck control, each
+one 422-ing at the adapter. The adapter's `Unsupported` was doing all the work,
+as a backstop for a UI that never gated.
+
+Now gated on `writable`: `SaveBar` (replaces the save button with the reason),
+`App`'s `onEditField` (inline edit + rating go inert), the "Edit Tags…" context
+item, `Sidebar`'s new-playlist button, and all 12 `PrepStrip` edit handlers —
+which report the reason instead of firing the request. The deck stays fully
+usable for listening, with a "Read-only" badge, because that is most of its value
+on a library you cannot write.
+
+**Two latent bugs fixed in passing**, both only reachable once a second platform
+existed:
+- The sidebar's **delete** button was gated on `can_rename`, not `can_delete`, so
+  a platform allowing one but not the other would offer both.
+- The playlist **track-count badge** was inside that same block, so a read-only
+  library would have shown no counts at all — information hidden as though it
+  were an action.
+
+**Verified end to end**, not just in tests: opening a Rekordbox library reports
+`writable: false, readonly_cause: platform_incomplete` over HTTP, and switching
+to the Traktor collection at runtime flips it to `writable: true, cause: null`
+with 11 editable fields.
+
+**The cloud-synced branch is tested for real**, not asserted: the test forges a
+server-issued `usn` on a throwaway copy, confirms detection flips to
+`cloud_synced`, and confirms the refusal names Rekordbox Cloud rather than the
+milestone. That is the one failure mode version history cannot undo, so it is
+worth the setup.
+
+Also corrected: CLAUDE.md documented the runtime open route as
+`POST /api/collection/open`; it is `POST /api/library/open`.
+
+### Note for whoever does milestone 2
+
+When Rekordbox writes land, `writable` flips to true for a *local* library while
+staying false for a cloud-synced one — the two causes already distinguish that,
+and `RekordboxAdapter._readonly_reason()` already words both. The per-feature
+flags (`editable_fields`, `grid.editable`, …) then become the finer gate, and
+they will need components to actually read them: **this change did not retrofit
+per-feature gating**, it added the library-level gate that was missing. A
+platform that is writable but cannot, say, edit a beatgrid would still offer the
+control today.

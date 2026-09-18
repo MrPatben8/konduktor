@@ -30,3 +30,9 @@ export function slotLabeller(caps: Capabilities): (slot: number) => string {
     ? (slot) => String.fromCharCode(65 + slot)
     : (slot) => String(slot + 1)
 }
+
+/** Whether the loaded library accepts edits at all. Gate every edit affordance
+ *  on this in addition to the relevant per-feature capability. */
+export function useWritable(): boolean {
+  return useCaps().writable
+}

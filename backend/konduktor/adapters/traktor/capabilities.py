@@ -41,6 +41,7 @@ def capabilities_for(path: Path, editable_fields: list[str]) -> Capabilities:
     return Capabilities(
         platform="traktor",
         version=nml_version(path),
+        writable=True,
         cues=CueCapabilities(
             hotcue_slots=8,
             slot_labels="number",

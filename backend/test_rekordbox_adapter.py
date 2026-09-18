@@ -195,6 +195,13 @@ with tempfile.TemporaryDirectory() as d:
     print("== capabilities gate the UI ==")
     caps = adapter.capabilities()
     check("platform is rekordbox", caps.platform == "rekordbox")
+    # The distinction that makes the UI honest: "cannot be written at all" is
+    # not the same as every per-feature flag happening to be false.
+    check("the library reports itself as NOT writable", caps.writable is False)
+    check("and says why, as a fact the UI can word",
+          caps.readonly_cause == "platform_incomplete", str(caps.readonly_cause))
+    check("per-feature flags still describe what Rekordbox CAN do",
+          caps.cues.memory_cues and caps.grid.flexible)
     check("8 hot cue slots, labelled by letter",
           caps.cues.hotcue_slots == 8 and caps.cues.slot_labels == "letter")
     check("memory cues are supported", caps.cues.memory_cues)
@@ -246,6 +253,40 @@ with tempfile.TemporaryDirectory() as d:
             refused.append(f"{name} ({type(ex).__name__})")
     check("every mutating command raises Unsupported", not refused, ", ".join(refused))
     check("the adapter is never dirty while read-only", adapter.dirty is False)
+
+    print("== a cloud-synced library is refused permanently, not pending a milestone ==")
+    # The one failure mode version history cannot undo: a local edit the sync
+    # server did not issue could corrupt the user's OTHER machines. Detection is
+    # a server-issued `usn`, so forge one on a throwaway copy and check it flips.
+    synced = Path(d) / "synced.db"
+    shutil.copy2(work, synced)
+    import sqlcipher3.dbapi2 as sqlcipher
+    from pyrekordbox.db6.database import BLOB
+    from pyrekordbox.utils import deobfuscate
+
+    con = sqlcipher.connect(str(synced))
+    con.execute(f"PRAGMA key='{deobfuscate(BLOB)}'")
+    con.execute("UPDATE djmdContent SET usn = 42 WHERE ID = (SELECT ID FROM djmdContent LIMIT 1)")
+    con.commit()
+    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    con.close()
+    for ext in ("-wal", "-shm"):
+        stale = Path(str(synced) + ext)
+        if stale.exists():
+            stale.unlink()  # a stale WAL beside a copied .db corrupts it
+
+    cloud = RekordboxAdapter(synced)
+    ccaps = cloud.capabilities()
+    check("a server-issued usn marks the library cloud-synced", cloud.cloud_synced)
+    check("the read-only cause distinguishes it from a missing feature",
+          ccaps.readonly_cause == "cloud_synced", str(ccaps.readonly_cause))
+    try:
+        cloud.set_track_metadata(cloud.tracks[0].id, {"title": "x"})
+        check("a cloud-synced library refuses edits", False, "no refusal")
+    except Unsupported as ex:
+        check("a cloud-synced library refuses edits", True)
+        check("and the refusal names the real reason, not the milestone",
+              "Cloud" in str(ex), str(ex))
 
     print("== reads that must still work ==")
     page = adapter.query_tracks(limit=5)

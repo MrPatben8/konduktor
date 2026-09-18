@@ -37,9 +37,14 @@ HOTCUE_SLOTS = 8
 def capabilities_for(
     path, version: str | None = None, *, cloud_synced: bool = False
 ) -> Capabilities:
+    # A cloud-synced library is refused PERMANENTLY, not pending a milestone:
+    # a local edit the server did not issue could propagate a broken sync state
+    # to the user's other machines, which version history cannot undo.
     return Capabilities(
         platform="rekordbox",
         version=version,
+        writable=False,
+        readonly_cause="cloud_synced" if cloud_synced else "platform_incomplete",
         cues=CueCapabilities(
             hotcue_slots=HOTCUE_SLOTS,
             slot_labels="letter",

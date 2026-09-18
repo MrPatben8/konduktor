@@ -6,7 +6,7 @@
  * staying genuinely specific — the pre-save warning is a real, per-platform
  * hazard and must not be watered down into something vague.
  */
-import type { SaveCapabilities } from '../api'
+import type { Capabilities, SaveCapabilities } from '../api'
 
 export function saveLabel(save: SaveCapabilities): string {
   return `Save to ${save.app_name}`
@@ -38,4 +38,29 @@ export function restoreWarning(save: SaveCapabilities): string | null {
 /** Trailing hint after an in-memory edit. */
 export function writeHint(save: SaveCapabilities): string {
   return `Save to ${save.app_name} to write it to disk`
+}
+
+/**
+ * Why this library is read-only, or null when it is editable.
+ *
+ * The two causes need genuinely different wording: a missing feature is a gap
+ * the user should expect Konduktor to close, whereas a cloud-synced library is
+ * a deliberate, permanent refusal that protects their other machines — and a
+ * user told only "read-only" would reasonably file the second as a bug.
+ */
+export function readOnlyNotice(caps: Capabilities): string | null {
+  if (caps.writable) return null
+  switch (caps.readonly_cause) {
+    case 'cloud_synced':
+      return `This ${caps.save.app_name} library is synced with ${caps.save.app_name} Cloud, so Konduktor will not write to it — an edit it did not make could break syncing on your other devices.`
+    case 'platform_incomplete':
+    default:
+      return `Konduktor can read ${caps.save.app_name} libraries but cannot save changes to them yet.`
+  }
+}
+
+/** Compact form for a badge or a disabled control's tooltip. */
+export function readOnlyShort(caps: Capabilities): string | null {
+  if (caps.writable) return null
+  return caps.readonly_cause === 'cloud_synced' ? 'Read-only · cloud-synced' : 'Read-only'
 }
