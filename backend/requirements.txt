@@ -17,3 +17,6 @@ scikit-learn>=1.5
 # Traktor Pro 4 (NML v20) support requires the GitHub master (v4.0.0),
 # NOT the stale PyPI release (3.1.0), which cannot parse v4 files.
 traktor-nml-utils @ git+https://github.com/MrPatben8/traktor-nml-utils.git
+# Rekordbox (master.db is SQLCipher-encrypted SQLite + per-track ANLZ analysis
+# files). Both ship prebuilt Python 3.14 wheels — no Rust/OpenSSL source build.
+pyrekordbox>=0.4.4

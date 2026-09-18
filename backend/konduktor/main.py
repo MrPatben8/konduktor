@@ -14,7 +14,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from . import __version__, history, prefs
-from .adapters.traktor.discovery import describe
 from .app_state import STATE
 from .core import auto_hotcues as ah
 from .core import registry
@@ -144,7 +143,7 @@ def collection_options() -> CollectionOptions:
     recent = None
     last = prefs.get_last_collection()
     if last:
-        recent = CollectionCandidate(**describe(Path(last)))
+        recent = CollectionCandidate(**registry.describe(Path(last)))
     return CollectionOptions(auto=auto, recent=recent)
 
 

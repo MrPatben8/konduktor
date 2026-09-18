@@ -59,6 +59,27 @@ Two independent apps that talk over HTTP:
     - `driver.py`/`discovery.py` — `can_open`, default-location detection, restore.
     - `beatgrid.py`, `locations.py`, `capabilities.py` — Traktor's grid/companion
       rules, LOCATION ↔ OS path conversion, and its capability set.
+  - `adapters/rekordbox/` — **READ-ONLY** (milestone 1 of the Rekordbox work).
+    `master.db` is SQLCipher-encrypted SQLite, read via `pyrekordbox`. Every
+    mutating command raises `Unsupported` and `capabilities()` advertises nothing
+    as editable, so the UI never offers an edit. Three things differ from Traktor
+    and are the reason this adapter is not a copy of it:
+    - **The beatgrid is NOT in the database.** There is no grid table at all; it
+      lives in per-track ANLZ analysis files as a `PQTZ` tag listing EVERY BEAT.
+      `beatgrid.py` collapses those into the generic marker list on read and
+      expands them back on write. `store.anlz_grid()` parses them **lazily** —
+      ~1.4 ms each, i.e. ~12 s for a library of 8,500 if done at open — so
+      `Track.grid_marker_count` carries a documented approximation (1 when the
+      track has a BPM) that `track_cues()` corrects.
+    - **Cues live in two places** that must agree: `djmdCue` rows and a JSON
+      mirror in `contentCue.Cues` (+ `rb_cue_count`). Rekordbox stamps
+      `rb_local_usn` on `contentCue`, never on the cue rows.
+    - **`djmdCue.Kind` is an OPAQUE slot id**: 0 = memory cue, N = hot cue slot N.
+      Pads A and C store 1 and 3, but the 6th pad stored 7 — so the slot→letter
+      mapping is NOT a plain index and is deliberately left to the UI.
+    Writes are refused outright on a **cloud-synced** library (detected by a
+    server-issued `usn` on any row): a bad sync state would propagate to the
+    user's other machines, which version history cannot undo.
   - `app_state.py` — the one loaded library, and the **version-history commit**.
     History is app-level: the adapter returns the bytes it wrote plus a summary,
     and `AppState.save()` versions them. Every write path must go through it.
@@ -178,7 +199,14 @@ serialization path.** It enforces:
   projection refreshing after every command family, cue-type translation,
   capabilities, and `set_analysed_grid` vs `replace_grid`. `test_save_fidelity`
   covers the store and its bytes; without this the adapter layer would be untested.
-- `test_layering.py` — `core/` imports nothing platform-specific.
+- `test_rekordbox_adapter.py` — the second adapter against the same contract:
+  cue/grid/key translation as pure units (they need no library), then the
+  projection, playlist tree, capabilities and the refusal of all 21 commands
+  against a **temp copy** of the local Rekordbox library. Skips cleanly when no
+  Rekordbox is installed, so it is safe on any machine.
+- `test_layering.py` — `core/` imports nothing platform-specific, and no adapter
+  imports another platform's library (checked on real imports via AST, so merely
+  naming a platform in a comment is fine).
 
 Also validate the backend interactively at `http://localhost:8000/docs` and the
 frontend at `http://localhost:5173`.
@@ -284,7 +312,13 @@ that number and nothing else — everything derives from it:
 - ✅ Generic model + adapter interface (Traktor as the only adapter) — step 2 of
   the multi-platform plan. Backend, wire format and UI are all generic; nothing
   above `adapters/traktor/` knows what Traktor is.
-- ⬜ Rekordbox adapter; ⬜ Serato adapter; ⬜ export/conversion
+- 🟡 Rekordbox adapter — **read-only milestone done**: a Rekordbox library opens,
+  projects and browses through the generic layer (tracks, playlists, cues,
+  beatgrid), with every command refused. Research for the write path is captured
+  in `.claude/handoffs/rekordbox-adapter.md` §8, incl. the verified result that
+  Rekordbox accepts Konduktor-written rows when USNs are maintained. Remaining:
+  metadata/playlist writes, then the hand-written cue store and ANLZ grid store.
+- ⬜ Serato adapter; ⬜ export/conversion
 - ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 
 ## Write path (playlists + track metadata + prep)

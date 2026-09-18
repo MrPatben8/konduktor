@@ -40,6 +40,30 @@ def open_library(path: Path):
     return driver_for(path).open(path)
 
 
+def describe(path: Path) -> dict:
+    """Describe a library path using whichever adapter recognises it.
+
+    Used for the picker's "last opened" shortcut, which must still render when
+    the file has since been moved or deleted — so an unrecognised path gets a
+    plain description with ``exists`` false rather than an error.
+    """
+    try:
+        return driver_for(path).describe(path)
+    except (LibraryNotSupported, OSError):
+        pass
+    try:
+        exists = path.is_file()
+    except OSError:
+        exists = False
+    return {
+        "path": str(path),
+        "label": path.name,
+        "version": None,
+        "modified": None,
+        "exists": exists,
+    }
+
+
 def detect_all() -> list:
     """Every library found in the platforms' default install locations."""
     out: list = []
