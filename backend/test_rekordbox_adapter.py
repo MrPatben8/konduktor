@@ -431,6 +431,20 @@ with tempfile.TemporaryDirectory() as d:
         check("Rekordbox has no grid lock",
               _raises(lambda: adapter.set_grid_lock(grid_track.id, True), Unsupported))
 
+    print("== hot cue counting agrees with the projection ==")
+    # One definition of "is this a hot cue?", used by both the per-track count
+    # and the projection. They diverged once: the count treated the reserved
+    # Kind as a hot cue while the projection called it a memory cue, so the
+    # library table disagreed with the pads in the deck.
+    mismatched = []
+    for t in adapter.tracks[:40]:
+        cues = (adapter.track_cues(t.id) or TrackCues()).cues
+        projected = sum(1 for c in cues if c.role == "hotcue")
+        if adapter.track(t.id).hotcue_count != projected:
+            mismatched.append(f"{t.title}: {adapter.track(t.id).hotcue_count} vs {projected}")
+    check("Track.hotcue_count matches the projected hot cues",
+          not mismatched, "; ".join(mismatched[:3]))
+
     print("== saving warns but proceeds while Rekordbox is running ==")
     # pyrekordbox's own commit() refuses outright if it sees a Rekordbox process.
     # Konduktor's settled behaviour is to warn, not block — matching Traktor —

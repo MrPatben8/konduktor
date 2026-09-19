@@ -97,12 +97,13 @@ Two independent apps that talk over HTTP:
       `ContentUUID` and its mirror row's `ID` are both the **track's UUID**, an
       uncoloured cue is `Color=-1, ColorTableIndex=NULL`, and a loop is
       `Color=255, ColorTableIndex=0` with `BeatLoopSize = (beats << 16) | 1`.
+      **`Kind` is 1-based AND skips 4** — the bank is `1,2,3,5,6,7,8,9` for pads
+      A–H. Measured by writing a cue at every `Kind` 1–8 and reading the deck: a
+      cue at `Kind=4` lands on no pad and Rekordbox shows it as a memory cue.
+      Get this wrong and cues silently move to the wrong pad or vanish from the
+      bank. Point cues AND loops both write; `cue_types` owns the translation.
       **Memory cues stay preserved-but-uneditable** (Rekordbox is the only
-      platform with them — the two-platform promotion rule), and **saved loops
-      are read but not written**: verified in Rekordbox, a cue row carrying
-      `OutMsec` does NOT land in the hot cue slot its `Kind` names — it becomes a
-      memory cue — so writing one would silently create an object Konduktor
-      cannot then edit. `cue_types.WRITABLE_CUE_TYPES` is the narrower set.
+      platform with them — the two-platform promotion rule).
     - **Saving warns but does not block when Rekordbox is running.**
       `pyrekordbox.commit()` refuses outright, and its check is process-wide
       rather than per-file, so `RekordboxStore._commit()` suppresses that veto
@@ -391,11 +392,13 @@ that number and nothing else — everything derives from it:
   `test_rekordbox_fidelity.py`, end to end through the API, and in Rekordbox 7
   itself. Research is captured in `.claude/handoffs/rekordbox-adapter.md` §8,
   incl. the verified result that Rekordbox accepts Konduktor-written rows when
-  USNs are maintained. Remaining gaps: **saved loops** (a cue row with an
-  out-point does not land in the slot its `Kind` names — encoding unmeasured) and
-  **cover art**. **No version history on Rekordbox** — accepted scope decision,
+  USNs are maintained. Remaining gap: **cover art**. **No version history on Rekordbox** — accepted scope decision,
   see handoff §11.
-- ⬜ Serato adapter; ⬜ export/conversion
+- ⬜ **Export/conversion** — next up, brought forward ahead of Serato. Design is
+  settled in the discussion doc; current state, the architectural gap (no adapter
+  can create a library from nothing) and the landmines are written up in
+  [.claude/handoffs/export.md](.claude/handoffs/export.md).
+- ⬜ Serato adapter
 - ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 
 ## Write path (playlists + track metadata + prep)

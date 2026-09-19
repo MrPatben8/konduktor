@@ -1005,3 +1005,43 @@ counter move. Suite: **316 assertions**.
 - **`PQT2` is undecoded**, so the extended grid drifts out of step with `PQTZ`
   after any Konduktor grid edit. Harmless for Rekordbox itself; would need
   solving before any CDJ/USB export (currently rejected as out of scope).
+
+### The hot cue slot encoding, measured — and it was never about loops
+
+`djmdCue.Kind` is 1-based **and skips 4**. Established by writing a 4-beat loop
+at every `Kind` from 1 to 8, ten seconds apart, and reading the pads off a real
+deck:
+
+| `Kind` | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+|---|---|---|---|---|---|---|---|---|---|
+| pad | A | B | C | **—** | D | E | F | G | H |
+
+A cue at `Kind=4` occupies no pad at all; Rekordbox displays it as a memory cue.
+
+That single gap explains everything that had been confusing:
+
+- Ben's Rekordbox-authored loop on pad **F** stored `Kind=7` — correct, not an
+  anomaly;
+- a Konduktor cue written at `Kind=4` "turned into a memory cue" — it *was* one;
+- pad H stayed empty in the probe because H is `Kind=9`, and the probe stopped
+  at 8.
+
+**Loops were never the problem.** They had been disabled on the theory that an
+out-point changed the slot encoding; in fact the adapter's `slot -> Kind` map was
+simply wrong from pad D upward, for *every* cue type. Loops write fine now, and
+`cue_types.WRITABLE_CUE_TYPES` is back to `["cue", "loop"]`. **Confirmed in
+Rekordbox**: looped hot cues set in Konduktor save and display correctly.
+
+The lesson is the project's own standing one, and it cost two rounds of wrong
+theory: the mapping was *inferred* from three incidental data points before
+anyone thought to *measure* it across the whole range. One probe settled it.
+
+Tests now pin the exact `Kind` sequence and assert that all eight pads are
+individually addressable, so a regression fails loudly instead of quietly moving
+someone's cues.
+
+### Remaining Rekordbox gap
+
+Only **cover art**, which has never been investigated (`tracks.artwork` is
+false; `djmdContent.ImagePath` plus separate artwork files). `PQT2` also stays
+undecoded, which only matters for CDJ export — out of scope.

@@ -39,7 +39,7 @@ from sqlalchemy.orm import joinedload
 from ...core.adapter import InvalidCommand, LibraryNotSupported, NotFound, SaveOutcome
 from ...core.edit_journal import EditJournal
 from ...core.pathmap import PathMapping
-from .cue_types import beat_loop_size, kind_for
+from .cue_types import beat_loop_size, kind_for, role_and_slot
 
 log = logging.getLogger(__name__)
 
@@ -182,7 +182,12 @@ class RekordboxStore:
         out: dict[str, tuple[int, int]] = {}
         for content_id, kind, n in rows:
             total, hot = out.get(str(content_id), (0, 0))
-            out[str(content_id)] = (total + n, hot + (n if (kind or 0) != 0 else 0))
+            # "Is this a hot cue?" must mean the same here as in the projection,
+            # or the count in the library table disagrees with the pads shown in
+            # the deck. `role_and_slot` is the single definition — it also rules
+            # out the reserved Kind, which occupies no pad.
+            is_hotcue = role_and_slot(kind)[0] == "hotcue"
+            out[str(content_id)] = (total + n, hot + (n if is_hotcue else 0))
         return out
 
     def cues(self, track_id: str) -> list:
