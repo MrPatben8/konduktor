@@ -5,7 +5,24 @@ library (see the handoff's Findings section):
 
   * ``Kind == 0``  -> a MEMORY cue: no bank slot, and Rekordbox allows any
     number of them.
-  * ``Kind >= 1``  -> a HOT CUE occupying bank slot ``Kind``.
+  * ``Kind >= 1``  -> a HOT CUE.
+
+**``Kind`` is 1-based AND it skips 4.** Konduktor's generic model numbers bank
+slots from zero — slot 0 is the pad the UI labels "A", which is also how Traktor
+stores its ``HOTCUE`` attribute. Rekordbox's first pad is ``Kind=1``, and the
+value ``4`` is reserved: the bank runs 1, 2, 3, 5, 6, 7, 8, 9.
+
+Measured, not guessed. A loop was written at every ``Kind`` from 1 to 8, ten
+seconds apart, and read off a real deck:
+
+    Kind  1  2  3  4  5  6  7  8  9
+    pad   A  B  C  -  D  E  F  G  H
+
+``Kind=4`` appears on no pad at all; Rekordbox shows such a cue as a memory cue.
+That one gap explains two earlier puzzles: a Rekordbox-authored loop on pad F
+stored ``Kind=7``, and a Konduktor cue written as ``Kind=4`` vanished from the
+bank. Getting this wrong silently moves cues to the wrong pad — or loses them
+from the bank entirely.
 
 **``Kind`` is treated as an opaque slot id.** Setting cues on pads A and C
 stored 1 and 3, but the pad in the 6th position stored 7, so the slot -> letter
@@ -23,36 +40,42 @@ MEMORY_KIND = 0
 # Rekordbox has no fade-in/fade-out/load cues; those are Traktor-only.
 CUE_TYPES = ["cue", "loop"]
 
-# What Konduktor will WRITE, which is currently narrower than what it reads.
-#
-# A loop is projected and displayed correctly, but writing one is disabled: a
-# cue row carrying `OutMsec` does NOT land in the hot cue slot its `Kind` names.
-# Verified in Rekordbox 7 — a row written with `Kind=4` plus an out-point showed
-# up as a MEMORY cue with pad D left empty, while an identical row without an
-# out-point landed on pad B exactly as `Kind=2` predicts. Rekordbox's own 4-beat
-# loop on pad F (the 6th pad) stores `Kind=7`, so loops evidently use a different
-# slot encoding that has not been measured yet.
-#
-# Writing one anyway would silently create a MEMORY cue — which Konduktor
-# deliberately cannot edit or delete — on a platform with no version history.
-# Preserving a loop we cannot place is strictly better than misplacing it.
-WRITABLE_CUE_TYPES = ["cue"]
+# What Konduktor will write. Loops were disabled for a while because a loop
+# written at `Kind=4` disappeared from the bank — which turned out to be the
+# reserved-Kind gap above, not anything to do with loops. Both types write.
+WRITABLE_CUE_TYPES = ["cue", "loop"]
+
+
+# The Kind value that is not a bank slot. Everything at or above it is shifted
+# by one relative to the pad index.
+RESERVED_KIND = 4
 
 
 def role_and_slot(kind: int | None) -> tuple[str, int | None]:
-    """(role, slot) for a native ``Kind``."""
-    if kind is None or kind == MEMORY_KIND:
+    """(role, 0-based slot) for a native ``Kind``.
+
+    A cue at `RESERVED_KIND` occupies no pad, so it is projected as a memory cue
+    — which is how Rekordbox itself displays one.
+    """
+    if kind is None or kind == MEMORY_KIND or int(kind) == RESERVED_KIND:
         return "memory", None
-    return "hotcue", int(kind)
+    kind = int(kind)
+    return "hotcue", kind - 1 if kind < RESERVED_KIND else kind - 2
 
 
 def kind_for(role: str, slot: int | None) -> int:
-    """The native ``Kind`` for a generic (role, slot). Inverse of `role_and_slot`."""
+    """The native ``Kind`` for a generic (role, 0-based slot).
+
+    Inverse of `role_and_slot`; skips `RESERVED_KIND`.
+    """
     if role == "memory":
         return MEMORY_KIND
     if slot is None:
         raise ValueError("a hot cue needs a slot")
-    return int(slot)
+    slot = int(slot)
+    if slot < 0:
+        raise ValueError(f"a hot cue slot cannot be negative, got {slot}")
+    return slot + 1 if slot < RESERVED_KIND - 1 else slot + 2
 
 
 def cue_type(out_msec: int | None) -> str:

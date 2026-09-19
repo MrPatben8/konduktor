@@ -249,13 +249,6 @@ class RekordboxAdapter:
 
     # ---- commands: cues ---------------------------------------------------
     def _check_cue_type(self, cue_type: str) -> None:
-        if cue_type == "loop":
-            # Reading loops is fine; writing one is not. A cue row with an
-            # out-point does not land in the slot its Kind names — verified in
-            # Rekordbox — so it would silently become an uneditable memory cue.
-            raise Unsupported(
-                "Saved loops can be read but not yet written to Rekordbox libraries"
-            )
         if cue_type not in caps.WRITABLE_CUE_TYPES:
             raise Unsupported(f"Rekordbox has no cue type {cue_type!r}")
 

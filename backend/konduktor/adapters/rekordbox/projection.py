@@ -133,8 +133,13 @@ def to_track_cues(cue_rows: list, grid: tuple[list[float], list[float]] | None) 
     into the generic marker list. Rekordbox pairs nothing with a grid marker, so
     `companion` is always None — that is a Traktor convention.
 
-    Every cue is projected as `editable=False` in this milestone, because the
-    adapter refuses every command; the UI gates on that flag alone.
+    `editable` says whether the adapter will accept a command on THIS cue, which
+    is the only thing the UI gates on. Every hot cue is editable, loops included.
+
+    **Memory cues are not**: Rekordbox is the only platform that has them, so
+    under the two-platform promotion rule they are shown and never written. A cue
+    sitting on the reserved `Kind` occupies no pad and is projected the same way,
+    because that is how Rekordbox itself displays one.
     """
     markers: list[GridMarker] = []
     if grid is not None:
@@ -146,20 +151,22 @@ def to_track_cues(cue_rows: list, grid: tuple[list[float], list[float]] | None) 
         role, slot = role_and_slot(getattr(c, "Kind", None))
         out_msec = getattr(c, "OutMsec", None)
         in_msec = getattr(c, "InMsec", 0) or 0
+        kind = cue_type(out_msec)
         length = 0.0
         if out_msec is not None and out_msec > 0:
             length = max(0.0, (out_msec - in_msec) / 1000.0)
+        editable = role == "hotcue"
         cues.append(
             CuePoint(
                 name=(getattr(c, "Comment", None) or None),
-                type=cue_type(out_msec),
+                type=kind,
                 role=role,
                 start=in_msec / 1000.0,
                 length=length,
                 slot=slot,
                 color=_cue_color(c),
-                editable=False,
-                readonly_reason="platform_managed",
+                editable=editable,
+                readonly_reason=None if editable else "platform_managed",
                 grid_marker=None,
             )
         )

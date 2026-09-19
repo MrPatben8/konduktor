@@ -240,10 +240,20 @@ with tempfile.TemporaryDirectory() as d:
     # ---- F: a cue write touches the cue row AND its mirror ---------------
     print("== F: a hot cue write is localized, and keeps the mirror in step ==")
     clean_copy(REAL, work, closing=[adapter, again, final, reopened])
-    before = dump(work)
     adapter = RekordboxAdapter(work)
     cue_track = next((t for t in adapter.tracks if t.bpm), adapter.tracks[0])
-    adapter.set_cue(cue_track.id, slot=6, start_sec=30.0, cue_type="cue", name="Probe")
+    # Empty the bank FIRST so "one row inserted" is a fact about this edit, not
+    # about whatever the reference library happened to hold. Reading the existing
+    # cues instead made this assertion flip to UPDATE the moment the real library
+    # gained a cue in the same slot.
+    for existing in list(adapter.track_cues(cue_track.id).cues):
+        if existing.slot is not None:
+            adapter.delete_cue(cue_track.id, existing.slot)
+    adapter.save()
+    before = dump(work)
+    # Generic slot 5 is the pad labelled F, stored natively as Kind=7 — the bank
+    # skips the reserved Kind 4, so pads from D up are shifted by two.
+    adapter.set_cue(cue_track.id, slot=5, start_sec=30.0, cue_type="cue", name="Probe")
     adapter.save()
     changes = diff(before, dump(work))
     tables_touched = {t for t, _, _, _ in changes}
@@ -257,7 +267,8 @@ with tempfile.TemporaryDirectory() as d:
           len(cue_rows) == 1 and cue_rows[0][2] == "INSERT", describe(cue_rows))
     if cue_rows and cue_rows[0][2] == "INSERT":
         row = cue_rows[0][3]
-        check("it is a hot cue in the slot asked for", row["Kind"] == 6, str(row["Kind"]))
+        check("the 0-based slot is stored as its measured Kind",
+              row["Kind"] == 7, str(row["Kind"]))
         check("positions are stored in ms AND frames at 150fps",
               row["InMsec"] == 30000 and row["InFrame"] == 4500,
               f"{row['InMsec']}/{row['InFrame']}")
@@ -292,16 +303,16 @@ with tempfile.TemporaryDirectory() as d:
               f"{mirror_row['rb_cue_count']} vs {len(live)}")
         check("the mirror's id is the track's UUID",
               mirror_row["ID"] == after["djmdContent"][cue_track.id]["UUID"])
-        check("the new cue is in the mirror", any(r["Kind"] == 6 for r in records))
+        check("the new cue is in the mirror", any(r["Kind"] == 7 for r in records))
 
     # ---- G: deleting a cue removes it from both places -------------------
     print("== G: deleting a cue clears the row and the mirror ==")
-    adapter.delete_cue(cue_track.id, 6)
+    adapter.delete_cue(cue_track.id, 5)
     adapter.save()
     after = dump(work)
     live = [
         r for r in after["djmdCue"].values()
-        if r["ContentID"] == cue_track.id and r["Kind"] == 6 and not r["rb_local_deleted"]
+        if r["ContentID"] == cue_track.id and r["Kind"] == 7 and not r["rb_local_deleted"]
     ]
     check("the cue row is gone", not live, str(len(live)))
     mirror_row = next(
@@ -311,7 +322,7 @@ with tempfile.TemporaryDirectory() as d:
         import json as _json
 
         records = _json.loads(mirror_row["Cues"])
-        check("and gone from the mirror too", not any(r["Kind"] == 6 for r in records))
+        check("and gone from the mirror too", not any(r["Kind"] == 7 for r in records))
         check("with rb_cue_count updated",
               mirror_row["rb_cue_count"] == len(records),
               f"{mirror_row['rb_cue_count']} vs {len(records)}")

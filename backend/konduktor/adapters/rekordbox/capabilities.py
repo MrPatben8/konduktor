@@ -66,7 +66,7 @@ def capabilities_for(
             # projected and PRESERVED but not editable (two-platform rule).
             memory_cues=True,
             max_memory_cues=None,  # unlimited
-            # Loops are READ but not written — see cue_types.WRITABLE_CUE_TYPES.
+            # Both cue types write; Rekordbox has no fade/load types.
             types=WRITABLE_CUE_TYPES,
             color="palette",
             palette=[],  # TODO milestone 2: the built-in cue colour table

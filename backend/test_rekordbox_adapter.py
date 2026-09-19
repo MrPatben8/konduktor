@@ -66,8 +66,24 @@ def check(label, cond, detail=""):
 # ---- pure units: no library required -----------------------------------
 print("== cue encoding ==")
 check("Kind 0 is a memory cue with no slot", role_and_slot(0) == ("memory", None))
-check("Kind N is hot cue slot N", role_and_slot(5) == ("hotcue", 5))
-check("round-trips back to Kind", kind_for(*role_and_slot(5)) == 5 and kind_for("memory", None) == 0)
+# The generic slot is 0-BASED (slot 0 is the pad the UI labels "A", matching how
+# Traktor stores HOTCUE); Rekordbox's Kind is 1-based. Conflating them shifts
+# every cue by one pad, which is exactly what shipped before it was caught.
+check("Kind 1 is hot cue slot 0 — the pad labelled A", role_and_slot(1) == ("hotcue", 0))
+check("slot 0 maps to Kind 1, not Kind 0", kind_for("hotcue", 0) == 1)
+# MEASURED, not assumed: a loop was written at every Kind 1-8 and read off a real
+# deck. Kind 4 is reserved and lands on no pad, so the bank is 1,2,3,5,6,7,8,9.
+# Getting this wrong moves cues to the wrong pad or loses them from the bank.
+EXPECTED_KINDS = [1, 2, 3, 5, 6, 7, 8, 9]  # pads A..H
+check("the bank skips the reserved Kind",
+      [kind_for("hotcue", i) for i in range(8)] == EXPECTED_KINDS,
+      str([kind_for("hotcue", i) for i in range(8)]))
+check("and every one maps back to its own slot",
+      [role_and_slot(k)[1] for k in EXPECTED_KINDS] == list(range(8)))
+check("the reserved Kind is no pad at all — Rekordbox shows it as a memory cue",
+      role_and_slot(4) == ("memory", None))
+check("pad D is Kind 5, not Kind 4", kind_for("hotcue", 3) == 5)
+check("pad H is Kind 9", kind_for("hotcue", 7) == 9)
 # Verified against two real loops: 1 beat @125 BPM and 4 beats @120 BPM.
 check("BeatLoopSize encodes (beats << 16) | 1", beat_loop_size(4) == 262145 and beat_loop_size(1) == 65537)
 check("and decodes back", beats_in_loop(262145) == 4 and beats_in_loop(None) is None)
@@ -157,8 +173,19 @@ with tempfile.TemporaryDirectory() as d:
         check("a memory cue has no slot",
               all(c.slot is None for c in tc.cues if c.role == "memory"))
         check("a hot cue has a slot", all(c.slot is not None for c in tc.cues if c.role == "hotcue"))
-        check("no cue claims to be editable in the read-only milestone",
-              all(not c.editable for c in tc.cues))
+        # `editable` must track what the adapter will ACTUALLY accept — it is
+        # the only thing the UI gates on, and a stale `False` here showed every
+        # writable hot cue with a padlock.
+        check("ordinary hot cues are editable",
+              all(c.editable for c in tc.cues if c.role == "hotcue" and c.type != "loop"))
+        check("memory cues are preserved but not editable",
+              all(not c.editable for c in tc.cues if c.role == "memory"))
+        check("loops are editable like any other hot cue",
+              all(c.editable for c in tc.cues if c.type == "loop" and c.role == "hotcue"))
+        check("an uneditable cue always says why",
+              all(c.readonly_reason for c in tc.cues if not c.editable))
+        check("an editable cue gives no reason",
+              all(c.readonly_reason is None for c in tc.cues if c.editable))
         check("grid markers carry no companion (a Traktor convention)",
               all(m.companion is None for m in tc.grid_markers))
         loops = [c for c in tc.cues if c.type == "loop"]
@@ -224,10 +251,8 @@ with tempfile.TemporaryDirectory() as d:
     check("8 hot cue slots, labelled by letter",
           caps.cues.hotcue_slots == 8 and caps.cues.slot_labels == "letter")
     check("memory cues are supported", caps.cues.memory_cues)
-    # Loops are READ but not WRITTEN — a cue row with an out-point does not land
-    # in the slot its Kind names (verified in Rekordbox), so offering it would
-    # silently create an uneditable memory cue.
-    check("only writable cue types are advertised", caps.cues.types == ["cue"],
+    # Rekordbox has no fade-in/fade-out/load cues; those are Traktor-only.
+    check("both Rekordbox cue types are writable", caps.cues.types == ["cue", "loop"],
           str(caps.cues.types))
     # A loop is a cue with an out-point, NOT a separate bank — verified on a real
     # library, and the opposite of what the original plan assumed.
@@ -310,20 +335,20 @@ with tempfile.TemporaryDirectory() as d:
         check("the cue is where it was put", abs(placed[0].start - 30.0) < 0.001)
         check("it is a hot cue with a slot", placed[0].role == "hotcue" and placed[0].slot == 6)
         check("its name round-trips", placed[0].name == "Probe", str(placed[0].name))
-    check("writing a loop is refused until its slot encoding is known",
-          _raises(lambda: adapter.set_cue(cue_track.id, slot=7, start_sec=60.0,
-                                          cue_type="loop", length_sec=1.92), Unsupported))
-    # Reading one must still work: Rekordbox libraries contain loops and losing
-    # them from the projection would be worse than not being able to edit them.
-    looped = [
-        c
-        for t in adapter.tracks[:40]
-        for c in (adapter.track_cues(t.id) or TrackCues()).cues
-        if c.type == "loop"
-    ]
-    if looped:
-        check("existing loops are still projected, with their length",
-              all(c.length > 0 for c in looped), str([c.length for c in looped]))
+    # A loop is a cue with an out-point, not a separate bank object.
+    tc = adapter.set_cue(cue_track.id, slot=7, start_sec=60.0, cue_type="loop", length_sec=1.92)
+    loop = [c for c in tc.cues if c.slot == 7]
+    check("a loop can be written to the last pad", len(loop) == 1 and loop[0].type == "loop",
+          str([(c.slot, c.type) for c in tc.cues]))
+    if loop:
+        check("the loop keeps its length", abs(loop[0].length - 1.92) < 0.002, str(loop[0].length))
+        check("and is editable like any other hot cue", loop[0].editable)
+    # Every pad must be reachable — the reserved-Kind gap used to swallow pad D
+    # and shift everything above it.
+    for slot in range(8):
+        adapter.set_cue(cue_track.id, slot=slot, start_sec=5.0 + slot, cue_type="cue")
+    placed = {c.slot for c in adapter.track_cues(cue_track.id).cues if c.slot is not None}
+    check("all eight pads are individually addressable", placed == set(range(8)), str(sorted(placed)))
     # Replacing an occupied slot must not leave two cues in it.
     tc = adapter.set_cue(cue_track.id, slot=6, start_sec=45.0, cue_type="cue")
     in_six = [c for c in tc.cues if c.slot == 6]
@@ -342,8 +367,14 @@ with tempfile.TemporaryDirectory() as d:
     check("memory cues are shown but not writable",
           _raises(lambda: adapter.set_cue(cue_track.id, slot=1, start_sec=1.0,
                                           cue_type="cue", role="memory"), Unsupported))
-    check("slot 0 is rejected — it is the memory-cue encoding, not a bank slot",
-          _raises(lambda: adapter.set_cue(cue_track.id, slot=0, start_sec=1.0,
+    # Slot 0 is the FIRST pad, not an error: it is Kind=1 natively.
+    tc = adapter.set_cue(cue_track.id, slot=0, start_sec=1.0, cue_type="cue")
+    first = [c for c in tc.cues if c.slot == 0]
+    check("slot 0 is the first pad (A), not an error", len(first) == 1, str(len(first)))
+    tc = adapter.set_cue(cue_track.id, slot=7, start_sec=2.0, cue_type="cue")
+    check("slot 7 is the last pad (H)", any(c.slot == 7 for c in tc.cues))
+    check("a negative slot is rejected",
+          _raises(lambda: adapter.set_cue(cue_track.id, slot=-1, start_sec=1.0,
                                           cue_type="cue"), InvalidCommand))
     check("a negative position is rejected",
           _raises(lambda: adapter.set_cue(cue_track.id, slot=2, start_sec=-1.0,

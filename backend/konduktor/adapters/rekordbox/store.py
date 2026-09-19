@@ -33,12 +33,13 @@ from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import joinedload
 
 from ...core.adapter import InvalidCommand, LibraryNotSupported, NotFound, SaveOutcome
 from ...core.edit_journal import EditJournal
 from ...core.pathmap import PathMapping
-from .cue_types import beat_loop_size
+from .cue_types import beat_loop_size, kind_for
 
 log = logging.getLogger(__name__)
 
@@ -485,6 +486,16 @@ class RekordboxStore:
         rb_database.get_rekordbox_pid = lambda *a, **kw: 0
         try:
             self._db.commit(autoinc=True)
+        except OperationalError as ex:
+            # Suppressing pyrekordbox's veto does not remove SQLite's own lock:
+            # a running Rekordbox really does hold the database, and the raw
+            # error is an unhelpful 500. Say what happened and what to do.
+            if "locked" not in str(ex).lower():
+                raise
+            raise InvalidCommand(
+                "Rekordbox has the library open, so it cannot be written right "
+                "now. Close Rekordbox and save again — your changes are still here."
+            ) from ex
         finally:
             rb_database.get_rekordbox_pid = original
 
@@ -519,12 +530,12 @@ class RekordboxStore:
         return int(msec * RekordboxStore._FPS / 1000)
 
     def _cue_row(self, track_id: str, slot: int):
-        """The hot cue occupying `slot` on this track, or None."""
+        """The hot cue occupying the 0-based generic `slot`, or None."""
         t = self._tables
         return (
             self._db.session.query(t.DjmdCue)
             .filter(t.DjmdCue.ContentID == str(track_id))
-            .filter(t.DjmdCue.Kind == int(slot))
+            .filter(t.DjmdCue.Kind == kind_for("hotcue", slot))
             .filter(t.DjmdCue.rb_local_deleted == 0)
             .first()
         )
@@ -565,13 +576,14 @@ class RekordboxStore:
         """Create or replace the cue in `slot`. A loop is a cue with a length."""
         if start_sec < 0:
             raise InvalidCommand("A cue cannot be before the start of the track")
-        if int(slot) < 1:
-            raise InvalidCommand("Hot cue slots start at 1")
+        if int(slot) < 0:
+            raise InvalidCommand(f"Hot cue slot cannot be negative, got {slot}")
         row = self.content(track_id)
         in_ms = int(round(start_sec * 1000))
         is_loop = cue_type == "loop" and length_sec > 0
         out_ms = int(round((start_sec + length_sec) * 1000)) if is_loop else -1
 
+        kind = kind_for("hotcue", slot)
         existing = self._cue_row(track_id, slot)
         op = "add" if existing is None else "modify"
         cue = existing
@@ -584,7 +596,7 @@ class RekordboxStore:
                 # the id of its contentCue mirror row.
                 ContentUUID=str(row.UUID),
                 UUID=str(uuid.uuid4()),
-                Kind=int(slot),
+                Kind=kind,
                 rb_data_status=0,
                 rb_local_data_status=0,
                 rb_local_deleted=0,
@@ -600,7 +612,7 @@ class RekordboxStore:
         cue.OutFrame = self._frames(out_ms) if is_loop else 0
         cue.OutMpegFrame = 0
         cue.OutMpegAbs = 0
-        cue.Kind = int(slot)
+        cue.Kind = kind
         if is_loop:
             beats = self._loop_beats(track_id, start_sec, length_sec)
             cue.BeatLoopSize = beat_loop_size(beats) if beats else None

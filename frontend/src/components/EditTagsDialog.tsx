@@ -29,6 +29,13 @@ const TEXT_FIELDS: { key: keyof Track; label: string; textarea?: boolean }[] = [
 
 export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
   const caps = useCaps()
+  // Only offer fields THIS platform can persist. Platforms differ in which ones
+  // they have — Rekordbox has no Producer or Mix column — and a field the
+  // adapter ignores would take the user's typing and silently drop it on save,
+  // which is the exact failure the capability system exists to prevent.
+  const editable = new Set<string>(caps.tracks.editable_fields)
+  const fields = TEXT_FIELDS.filter((f) => editable.has(f.key as string))
+  const canRate = editable.has('rating')
   const qc = useQueryClient()
   const { data: facets } = useQuery({ queryKey: ['facets'], queryFn: api.facets })
 
@@ -45,11 +52,11 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
 
   const changedFields = () => {
     const changed: Record<string, string | number | null> = {}
-    for (const { key } of TEXT_FIELDS) {
+    for (const { key } of fields) {
       const orig = (track[key] as string | null) ?? ''
       if (form[key] !== orig) changed[key] = form[key]
     }
-    if (rating !== track.rating) changed.rating = rating
+    if (canRate && rating !== track.rating) changed.rating = rating
     return changed
   }
 
@@ -125,26 +132,38 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
               <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-faint">
                 Album art
               </span>
-              <input
-                ref={fileInput}
-                type="file"
-                accept="image/jpeg,image/png"
-                className="hidden"
-                onChange={(e) => pickArt(e.target.files?.[0] ?? null)}
-              />
-              <button
-                onClick={() => fileInput.current?.click()}
-                className="rounded-md border border-line bg-ink-850 px-3 py-1.5 text-sm text-text hover:border-ink-600"
-              >
-                {artFile ? 'Change image…' : 'Replace…'}
-              </button>
-              {artFile && (
-                <div className="mt-1 truncate text-[11px] text-mint">{artFile.name} (applies on Save)</div>
+              {/* Replacing art is only offered where the adapter can write it;
+                  the existing image is still shown either way. */}
+              {caps.tracks.artwork ? (
+                <>
+                  <input
+                    ref={fileInput}
+                    type="file"
+                    accept="image/jpeg,image/png"
+                    className="hidden"
+                    onChange={(e) => pickArt(e.target.files?.[0] ?? null)}
+                  />
+                  <button
+                    onClick={() => fileInput.current?.click()}
+                    className="rounded-md border border-line bg-ink-850 px-3 py-1.5 text-sm text-text hover:border-ink-600"
+                  >
+                    {artFile ? 'Change image…' : 'Replace…'}
+                  </button>
+                  {artFile && (
+                    <div className="mt-1 truncate text-[11px] text-mint">
+                      {artFile.name} (applies on Save)
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="text-[11px] text-faint">
+                  Cover art can’t be changed on {caps.save.app_name} libraries.
+                </div>
               )}
             </div>
           </div>
 
-          {TEXT_FIELDS.map(({ key, label, textarea }) => (
+          {fields.map(({ key, label, textarea }) => (
             <label key={key} className="block">
               <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-faint">
                 {label}
@@ -171,6 +190,7 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
           </datalist>
 
           {/* Rating */}
+          {canRate && (
           <div>
             <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-faint">
               Rating
@@ -187,6 +207,7 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
               )}
             </div>
           </div>
+          )}
 
           {/* Read-only technical fields */}
           <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 rounded-md bg-ink-850 px-3 py-2 text-xs text-muted">
