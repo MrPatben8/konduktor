@@ -30,7 +30,7 @@ from ...core.capabilities import (
     SaveCapabilities,
     TrackCapabilities,
 )
-from .cue_types import CUE_TYPES
+from .cue_types import WRITABLE_CUE_TYPES
 
 # Rekordbox's addressable hot cue bank. The pads are labelled A-H; the stored
 # slot number is NOT a plain letter index (see cue_types), so the adapter keeps
@@ -54,16 +54,20 @@ def capabilities_for(
         writable=not cloud_synced,
         readonly_cause="cloud_synced" if cloud_synced else None,
         cues=CueCapabilities(
-            # Milestone 3: the cue store is hand-written (djmdCue rows plus the
-            # contentCue JSON mirror, kept consistent) and does not exist yet.
-            editable=False,
+            # Hot cues are writable: djmdCue rows plus the contentCue JSON
+            # mirror, kept in step. MEMORY cues stay preserved-but-uneditable —
+            # Rekordbox is the only platform that has them, and the two-platform
+            # promotion rule says a one-platform concept does not become an
+            # editing feature.
+            editable=True,
             hotcue_slots=HOTCUE_SLOTS,
             slot_labels="letter",
             # Rekordbox is the only platform with memory cues, so they are
             # projected and PRESERVED but not editable (two-platform rule).
             memory_cues=True,
             max_memory_cues=None,  # unlimited
-            types=CUE_TYPES,
+            # Loops are READ but not written — see cue_types.WRITABLE_CUE_TYPES.
+            types=WRITABLE_CUE_TYPES,
             color="palette",
             palette=[],  # TODO milestone 2: the built-in cue colour table
             named=True,  # djmdCue.Comment

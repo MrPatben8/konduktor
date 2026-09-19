@@ -826,3 +826,101 @@ Also corrected in CLAUDE.md: the cue routes are `/api/tracks/cue`, not
   `rb_local_usn` on `djmdCue` rows — Rekordbox itself leaves them NULL.
 - `test_rekordbox_fidelity.py` is the harness to extend: add a cue edit and a
   grid edit as phases F and G, asserting the same "exactly these rows" property.
+
+### Milestone 3a landed: hot cue writes
+
+`./run_tests.sh` green at **288 assertions**. `cues.editable` is now true;
+`grid.editable` is still false.
+
+Every native field convention was read off the real library before writing any
+of it, and all of them are asserted in `test_rekordbox_fidelity.py` phase F:
+
+| Field | Value Konduktor writes | Evidence |
+|---|---|---|
+| `InFrame` / `OutFrame` | `floor(msec × 150 / 1000)` | matches every row in the library |
+| `ContentUUID` | the **track's** UUID | verified == `djmdContent.UUID` |
+| `contentCue.ID` | the **track's** UUID too | same |
+| uncoloured cue | `Color=-1, ColorTableIndex=NULL` | how Rekordbox wrote Ben's uncoloured hot cues |
+| loop | `Color=255, ColorTableIndex=0, ActiveLoop=0, CueMicrosec=0` | how Rekordbox wrote both loops |
+| `BeatLoopSize` | `(beats << 16) \| 1`, beats from the track's own tempo | §8.11, verified at two tempos |
+
+Fidelity phases F and G assert that a cue write touches **only** `djmdCue`,
+`contentCue` and `agentRegistry` — never `djmdContent` — that the mirror holds
+one record per live cue row with `rb_cue_count` agreeing, and that a delete
+clears both.
+
+**Memory cues are refused**, not because they are hard but because of the
+two-platform promotion rule: Rekordbox is the only platform that has them, so
+they are projected and displayed and never written. `role="memory"` raises
+`Unsupported` with that explanation.
+
+### Milestone 3b: the beatgrid — read this before starting
+
+`pyrekordbox`'s ANLZ tags **cannot change the number of beats**. `PQTZAnlzTag`'s
+`set()`, `set_beats()`, `set_bpms()` and `set_times()` all raise unless the new
+sequence is exactly as long as the existing one ("For now only values of existing
+beats can be set"). Since a tempo change alters how many beats fit in a track,
+every real grid edit changes that count.
+
+So a grid write means manipulating `tag.content.entries` (a `construct`
+ListContainer) directly, setting `content.entry_count`, and calling the tag's
+`update_len()` — which exists for exactly this and recomputes
+`len_tag = len_header + 8 × entries`. `check_parse()` asserts the count and the
+list agree, so it is worth calling after.
+
+Two further things that make this the riskiest piece so far:
+- the grid lives in **two files** — `PQTZ` in `.DAT` and `PQT2` in `.EXT` — which
+  presumably must stay consistent; and `djmdContent.BPM` (tempo ×100) is a third
+  copy that Rekordbox shows in the library list.
+- `.DAT`/`.EXT` round-trip byte-identically today (§8.3), which is the property
+  that makes a grid write verifiable at all. **Re-check it after any write**: if
+  a rebuilt file stops being byte-identical in the regions we did not touch, the
+  write is corrupting something.
+
+`beatgrid.beats_from_markers()` is already written and unit-tested as the exact
+inverse of the read projection, so the marker→beat maths is not the hard part.
+
+### Milestone 3a verification: point cues confirmed, LOOP WRITES DISABLED
+
+The staged acceptance test was run in Rekordbox 7. Two results, one good and one
+that changed the plan.
+
+**Good: Rekordbox accepted the cue rows verbatim.** A re-read after the session
+showed both rows byte-for-byte as Konduktor wrote them — same `Kind`, same
+`BeatLoopSize`, same USN stamps. No repair, no renumbering. The write mechanism
+and the `contentCue` mirror are sound, and a point cue written with `Kind=2`
+landed on **pad B** exactly as predicted.
+
+**Bad: a cue row carrying `OutMsec` does not land in the slot its `Kind` names.**
+Written with `Kind=4` plus an out-point, it appeared as a **memory cue** with pad
+D left empty (confirmed from a screenshot of the deck — only B lit). The loop's
+*length* was right (4 beats), so `BeatLoopSize` is correct; only its placement is
+wrong. Rekordbox's own 4-beat loop on pad F — the 6th pad — stores `Kind=7`, so
+loops evidently use a slot encoding that has not been measured.
+
+**So loop writing is now refused** (`WRITABLE_CUE_TYPES = ["cue"]`, and
+`capabilities.cues.types` reports only `cue`). Loops are still READ and projected
+with their length — losing them from the projection would be worse than being
+unable to edit them. Writing one anyway would have silently created a memory cue,
+which Konduktor deliberately cannot edit or delete, on a platform with no version
+history.
+
+**To finish loops, measure the encoding**: in Rekordbox, put a 4-beat loop on pad
+**D** and another on pad **E** of any track, quit, and read the `Kind` values —
+two points on known pads, plus Rekordbox-authored loop rows to diff field by
+field against Konduktor's. Until then this is the one gap in cue support.
+
+### Found while verifying: pyrekordbox refuses to commit while Rekordbox runs
+
+`pyrekordbox.commit()` raises `RuntimeError` outright when it detects a Rekordbox
+process. That contradicts the settled decision to **warn but proceed** (§6), and
+the check is **process-wide rather than per-file** — so it refuses to write a
+temp copy while the user has an entirely different library open, which made the
+whole test suite fail purely because Rekordbox happened to be running.
+
+`RekordboxStore._commit()` now suppresses that veto for the duration of the call
+and logs a warning instead, so everything else `commit()` does — the USN
+auto-increment and keeping `masterPlaylists6.xml`'s timestamps in step — still
+runs as the library intends. `store.app_running` exposes the detection for
+warning the user rather than blocking them. A test pins the behaviour by faking
+a running process.

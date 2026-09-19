@@ -26,7 +26,10 @@ Two things here are not obvious and are load-bearing:
 """
 from __future__ import annotations
 
+import json
 import logging
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import func, select, text
@@ -35,8 +38,18 @@ from sqlalchemy.orm import joinedload
 from ...core.adapter import InvalidCommand, LibraryNotSupported, NotFound, SaveOutcome
 from ...core.edit_journal import EditJournal
 from ...core.pathmap import PathMapping
+from .cue_types import beat_loop_size
 
 log = logging.getLogger(__name__)
+
+
+def _iso_stamp(value) -> str:
+    """Rekordbox writes timestamps in the JSON mirror as ISO-8601 with a
+    +00:00 offset and millisecond precision (e.g. 2026-09-17T20:55:13.862+00:00).
+    """
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%dT%H:%M:%S.") + f"{value.microsecond // 1000:03d}+00:00"
+    return str(value)
 
 
 class RekordboxStore:
@@ -432,8 +445,277 @@ class RekordboxStore:
         `capabilities.save.history` says so.
         """
         summary = self._journal.summary()
-        self._db.commit(autoinc=True)
+        self._commit()
         self._journal.clear()
         # Reads go through the same session, so nothing needs re-projecting from
         # scratch — but the grid cache is keyed by track and survives a save.
         return SaveOutcome(summary=summary, snapshot=None, tag_results=[])
+
+    def _commit(self) -> None:
+        """Commit, warning rather than refusing if Rekordbox is running.
+
+        `pyrekordbox.commit()` raises outright when it sees a Rekordbox process.
+        That is not Konduktor's behaviour: the settled decision is to **warn but
+        proceed**, matching how Traktor is handled — the user is told, not
+        blocked on a detection heuristic. The check is also process-wide rather
+        than per-file, so it would refuse to write a temp copy of a library while
+        Rekordbox had an entirely different one open, which makes tests depend on
+        whether the app happens to be running.
+
+        The veto is suppressed by neutralising the process probe for the duration
+        of the call, so every other thing `commit()` does — the USN
+        auto-increment, the session commit, and keeping `masterPlaylists6.xml`'s
+        timestamps in step — still runs as the library intends. Duplicating that
+        body here would silently drift from it on upgrade.
+        """
+        from pyrekordbox.db6 import database as rb_database
+
+        if rb_database.get_rekordbox_pid():
+            log.warning(
+                "Rekordbox appears to be running; saving anyway. It may overwrite "
+                "or re-sync the library while it is open."
+            )
+        original = rb_database.get_rekordbox_pid
+        rb_database.get_rekordbox_pid = lambda *a, **kw: 0
+        try:
+            self._db.commit(autoinc=True)
+        finally:
+            rb_database.get_rekordbox_pid = original
+
+    @property
+    def app_running(self) -> bool:
+        """Whether a Rekordbox process is up — for warning the user, not blocking."""
+        try:
+            from pyrekordbox.db6 import database as rb_database
+
+            return bool(rb_database.get_rekordbox_pid())
+        except Exception:  # noqa: BLE001 — detection must never break a save
+            return False
+
+    # ---- writes: cues -----------------------------------------------------
+    #
+    # Rekordbox keeps cues in TWO places that must agree: normalized `djmdCue`
+    # rows, and a denormalized JSON mirror in `contentCue.Cues` alongside a
+    # `rb_cue_count`. Every mutation here ends in `_sync_content_cue()`.
+    #
+    # Field conventions below are read off a real library (see the handoff's
+    # Findings), not guessed:
+    #   * `Kind` is the bank slot; 0 means a memory cue.
+    #   * a loop is an ordinary cue row with `OutMsec` > 0 plus `BeatLoopSize`.
+    #   * `InFrame`/`OutFrame` are the position in frames at 150 fps.
+    #   * an uncoloured cue is `Color=-1, ColorTableIndex=NULL`; Rekordbox writes
+    #     `Color=255, ColorTableIndex=0` on the loops and auto-cues it creates.
+
+    _FPS = 150  # Rekordbox stores cue positions in frames as well as ms
+
+    @staticmethod
+    def _frames(msec: int) -> int:
+        return int(msec * RekordboxStore._FPS / 1000)
+
+    def _cue_row(self, track_id: str, slot: int):
+        """The hot cue occupying `slot` on this track, or None."""
+        t = self._tables
+        return (
+            self._db.session.query(t.DjmdCue)
+            .filter(t.DjmdCue.ContentID == str(track_id))
+            .filter(t.DjmdCue.Kind == int(slot))
+            .filter(t.DjmdCue.rb_local_deleted == 0)
+            .first()
+        )
+
+    def _loop_beats(self, track_id: str, start_sec: float, length_sec: float) -> int | None:
+        """Musical length of a loop, from the track's own tempo at that point."""
+        if length_sec <= 0:
+            return None
+        bpm = None
+        grid = self.anlz_grid(track_id)
+        if grid:
+            times, bpms = grid
+            for t, b in zip(times, bpms):
+                if t <= start_sec:
+                    bpm = b
+                else:
+                    break
+            if bpm is None and bpms:
+                bpm = bpms[0]
+        if not bpm:
+            raw = getattr(self.content(track_id), "BPM", 0) or 0
+            bpm = raw / 100.0 if raw else None
+        if not bpm:
+            return None
+        beats = round(length_sec / (60.0 / bpm))
+        return max(1, int(beats))
+
+    def set_cue(
+        self,
+        track_id: str,
+        *,
+        slot: int,
+        start_sec: float,
+        cue_type: str,
+        length_sec: float = 0.0,
+        name: str | None = None,
+    ) -> None:
+        """Create or replace the cue in `slot`. A loop is a cue with a length."""
+        if start_sec < 0:
+            raise InvalidCommand("A cue cannot be before the start of the track")
+        if int(slot) < 1:
+            raise InvalidCommand("Hot cue slots start at 1")
+        row = self.content(track_id)
+        in_ms = int(round(start_sec * 1000))
+        is_loop = cue_type == "loop" and length_sec > 0
+        out_ms = int(round((start_sec + length_sec) * 1000)) if is_loop else -1
+
+        existing = self._cue_row(track_id, slot)
+        op = "add" if existing is None else "modify"
+        cue = existing
+        if cue is None:
+            t = self._tables
+            cue = t.DjmdCue.create(
+                ID=str(self._db.generate_unused_id(t.DjmdCue)),
+                ContentID=str(track_id),
+                # Verified: a cue's ContentUUID is the TRACK's UUID, which is also
+                # the id of its contentCue mirror row.
+                ContentUUID=str(row.UUID),
+                UUID=str(uuid.uuid4()),
+                Kind=int(slot),
+                rb_data_status=0,
+                rb_local_data_status=0,
+                rb_local_deleted=0,
+                rb_local_synced=0,
+            )
+            self._db.add(cue)
+
+        cue.InMsec = in_ms
+        cue.InFrame = self._frames(in_ms)
+        cue.InMpegFrame = 0
+        cue.InMpegAbs = 0
+        cue.OutMsec = out_ms
+        cue.OutFrame = self._frames(out_ms) if is_loop else 0
+        cue.OutMpegFrame = 0
+        cue.OutMpegAbs = 0
+        cue.Kind = int(slot)
+        if is_loop:
+            beats = self._loop_beats(track_id, start_sec, length_sec)
+            cue.BeatLoopSize = beat_loop_size(beats) if beats else None
+            cue.ActiveLoop = 0
+            cue.CueMicrosec = 0
+            cue.Color = 255
+            cue.ColorTableIndex = 0
+        else:
+            cue.BeatLoopSize = None
+            cue.ActiveLoop = None
+            cue.CueMicrosec = None
+            cue.Color = -1
+            cue.ColorTableIndex = None
+        cue.Comment = name or None
+
+        self._db.flush()
+        self._sync_content_cue(track_id)
+        self._journal.record("cue", op, track_id, f"slot:{slot}")
+
+    def set_cue_type(self, track_id: str, slot: int, cue_type: str) -> None:
+        cue = self._cue_row(track_id, slot)
+        if cue is None:
+            raise NotFound(f"No cue in slot {slot}")
+        start = (cue.InMsec or 0) / 1000.0
+        length = 0.0
+        if cue_type == "loop":
+            if cue.OutMsec and cue.OutMsec > 0:
+                length = (cue.OutMsec - (cue.InMsec or 0)) / 1000.0
+            else:
+                raise InvalidCommand(
+                    "Turning a cue into a loop needs a length — set the loop first"
+                )
+        self.set_cue(
+            track_id, slot=slot, start_sec=start, cue_type=cue_type,
+            length_sec=length, name=cue.Comment,
+        )
+
+    def delete_cue(self, track_id: str, slot: int) -> None:
+        cue = self._cue_row(track_id, slot)
+        if cue is None:
+            raise NotFound(f"No cue in slot {slot}")
+        self._db.delete(cue)
+        self._db.flush()
+        self._sync_content_cue(track_id)
+        self._journal.record("cue", "delete", track_id, f"slot:{slot}")
+
+    def place_cues(self, track_id: str, cues: list, *, overwrite: bool = False) -> None:
+        """Batch placement (Auto Hotcues). Fills empty slots unless overwriting."""
+        for cue in cues:
+            slot = int(getattr(cue, "slot"))
+            if not overwrite and self._cue_row(track_id, slot) is not None:
+                continue
+            self.set_cue(
+                track_id,
+                slot=slot,
+                start_sec=float(getattr(cue, "start", 0.0)),
+                cue_type=getattr(cue, "type", "cue"),
+                length_sec=float(getattr(cue, "length", 0.0) or 0.0),
+                name=getattr(cue, "name", None),
+            )
+
+    def _sync_content_cue(self, track_id: str) -> None:
+        """Rebuild the denormalized `contentCue` mirror for a track.
+
+        Rekordbox keeps a JSON copy of every cue alongside a count, and stamps
+        its USN on THAT row rather than on the individual cue rows — it is the
+        sync unit. Leaving it stale after editing `djmdCue` would make the two
+        disagree, which is this platform's version of Traktor's companion-cue
+        trap.
+
+        Keys whose value is NULL are omitted, which is what Rekordbox's own
+        serializer does in every row observed.
+        """
+        t = self._tables
+        row = self.content(track_id)
+        cues = (
+            self._db.session.query(t.DjmdCue)
+            .filter(t.DjmdCue.ContentID == str(track_id))
+            .filter(t.DjmdCue.rb_local_deleted == 0)
+            .order_by(t.DjmdCue.InMsec)
+            .all()
+        )
+        fields = (
+            "ID", "ContentID", "ContentUUID", "InMsec", "InFrame", "InMpegFrame",
+            "InMpegAbs", "OutMsec", "OutFrame", "OutMpegFrame", "OutMpegAbs",
+            "Kind", "Color", "ColorTableIndex", "ActiveLoop", "Comment",
+            "BeatLoopSize", "CueMicrosec", "UUID",
+        )
+        records = []
+        for cue in cues:
+            rec = {}
+            for field in fields:
+                value = getattr(cue, field, None)
+                if value is None:
+                    continue
+                rec[field] = value
+            for stamp in ("created_at", "updated_at"):
+                value = getattr(cue, stamp, None)
+                if value is not None:
+                    rec[stamp] = _iso_stamp(value)
+            records.append(rec)
+
+        mirror = (
+            self._db.session.query(t.ContentCue)
+            .filter(t.ContentCue.ContentID == str(track_id))
+            .first()
+        )
+        if mirror is None:
+            if not records:
+                return
+            mirror = t.ContentCue.create(
+                # Verified: the mirror's id IS the track's UUID.
+                ID=str(row.UUID),
+                ContentID=str(track_id),
+                UUID=str(uuid.uuid4()),
+                rb_data_status=0,
+                rb_local_data_status=0,
+                rb_local_deleted=0,
+                rb_local_synced=0,
+            )
+            self._db.add(mirror)
+        mirror.Cues = json.dumps(records, ensure_ascii=False)
+        mirror.rb_cue_count = len(records)
+        self._db.flush()

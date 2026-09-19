@@ -23,6 +23,21 @@ MEMORY_KIND = 0
 # Rekordbox has no fade-in/fade-out/load cues; those are Traktor-only.
 CUE_TYPES = ["cue", "loop"]
 
+# What Konduktor will WRITE, which is currently narrower than what it reads.
+#
+# A loop is projected and displayed correctly, but writing one is disabled: a
+# cue row carrying `OutMsec` does NOT land in the hot cue slot its `Kind` names.
+# Verified in Rekordbox 7 — a row written with `Kind=4` plus an out-point showed
+# up as a MEMORY cue with pad D left empty, while an identical row without an
+# out-point landed on pad B exactly as `Kind=2` predicts. Rekordbox's own 4-beat
+# loop on pad F (the 6th pad) stores `Kind=7`, so loops evidently use a different
+# slot encoding that has not been measured yet.
+#
+# Writing one anyway would silently create a MEMORY cue — which Konduktor
+# deliberately cannot edit or delete — on a platform with no version history.
+# Preserving a loop we cannot place is strictly better than misplacing it.
+WRITABLE_CUE_TYPES = ["cue"]
+
 
 def role_and_slot(kind: int | None) -> tuple[str, int | None]:
     """(role, slot) for a native ``Kind``."""

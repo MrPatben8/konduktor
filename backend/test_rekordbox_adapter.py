@@ -40,7 +40,7 @@ from konduktor.core.adapter import (  # noqa: E402
     NotFound,
     Unsupported,
 )
-from konduktor.core.model import GridMarker  # noqa: E402
+from konduktor.core.model import GridMarker, TrackCues  # noqa: E402
 
 failed = False
 
@@ -218,12 +218,16 @@ with tempfile.TemporaryDirectory() as d:
     check("with no read-only cause", caps.readonly_cause is None, str(caps.readonly_cause))
     check("per-feature flags still describe what Rekordbox CAN do",
           caps.cues.memory_cues and caps.grid.flexible)
-    check("cues are NOT editable yet (milestone 3)", caps.cues.editable is False)
-    check("the grid is NOT editable yet (milestone 3)", caps.grid.editable is False)
+    check("hot cues are editable", caps.cues.editable is True)
+    check("the grid is NOT editable yet (milestone 3b)", caps.grid.editable is False)
     check("8 hot cue slots, labelled by letter",
           caps.cues.hotcue_slots == 8 and caps.cues.slot_labels == "letter")
     check("memory cues are supported", caps.cues.memory_cues)
-    check("no Traktor-only cue types are claimed", caps.cues.types == ["cue", "loop"])
+    # Loops are READ but not WRITTEN — a cue row with an out-point does not land
+    # in the slot its Kind names (verified in Rekordbox), so offering it would
+    # silently create an uneditable memory cue.
+    check("only writable cue types are advertised", caps.cues.types == ["cue"],
+          str(caps.cues.types))
     # A loop is a cue with an out-point, NOT a separate bank — verified on a real
     # library, and the opposite of what the original plan assumed.
     check("a loop is a cue type, not a separate bank", caps.cues.loops == "cue_type")
@@ -244,10 +248,6 @@ with tempfile.TemporaryDirectory() as d:
     print("== the unimplemented stores still refuse, with a reason ==")
     commands = {
         "set_cover_art": lambda: adapter.set_cover_art(sample.id, b"", "image/jpeg"),
-        "set_cue": lambda: adapter.set_cue(sample.id, slot=1, start_sec=0.0, cue_type="cue"),
-        "set_cue_type": lambda: adapter.set_cue_type(sample.id, 1, "cue"),
-        "delete_cue": lambda: adapter.delete_cue(sample.id, 1),
-        "place_cues": lambda: adapter.place_cues(sample.id, []),
         "add_grid_marker": lambda: adapter.add_grid_marker(sample.id, 0.0),
         "move_grid_marker": lambda: adapter.move_grid_marker(sample.id, 0, 1.0),
         "set_grid_marker_bpm": lambda: adapter.set_grid_marker_bpm(sample.id, 0, 120.0),
@@ -307,6 +307,75 @@ with tempfile.TemporaryDirectory() as d:
           _raises(lambda: adapter.set_track_metadata("nope", {"title": "x"}), NotFound))
     check("unknown fields are ignored, never guessed at",
           adapter.set_track_metadata(writable_target.id, {"not_a_field": "x"}) is not None)
+
+    print("== hot cue writes ==")
+    cue_track = next((t for t in adapter.tracks if t.bpm), adapter.tracks[0])
+    tc = adapter.set_cue(cue_track.id, slot=6, start_sec=30.0, cue_type="cue", name="Probe")
+    placed = [c for c in tc.cues if c.slot == 6]
+    check("the command returns the refreshed cues", len(placed) == 1, str(len(placed)))
+    if placed:
+        check("the cue is where it was put", abs(placed[0].start - 30.0) < 0.001)
+        check("it is a hot cue with a slot", placed[0].role == "hotcue" and placed[0].slot == 6)
+        check("its name round-trips", placed[0].name == "Probe", str(placed[0].name))
+    check("writing a loop is refused until its slot encoding is known",
+          _raises(lambda: adapter.set_cue(cue_track.id, slot=7, start_sec=60.0,
+                                          cue_type="loop", length_sec=1.92), Unsupported))
+    # Reading one must still work: Rekordbox libraries contain loops and losing
+    # them from the projection would be worse than not being able to edit them.
+    looped = [
+        c
+        for t in adapter.tracks[:40]
+        for c in (adapter.track_cues(t.id) or TrackCues()).cues
+        if c.type == "loop"
+    ]
+    if looped:
+        check("existing loops are still projected, with their length",
+              all(c.length > 0 for c in looped), str([c.length for c in looped]))
+    # Replacing an occupied slot must not leave two cues in it.
+    tc = adapter.set_cue(cue_track.id, slot=6, start_sec=45.0, cue_type="cue")
+    in_six = [c for c in tc.cues if c.slot == 6]
+    check("re-setting a slot replaces rather than duplicates", len(in_six) == 1, str(len(in_six)))
+    if in_six:
+        check("and moves it", abs(in_six[0].start - 45.0) < 0.001)
+    tc = adapter.delete_cue(cue_track.id, 6)
+    check("a deleted slot is empty", not [c for c in tc.cues if c.slot == 6])
+    check("deleting an empty slot is NotFound",
+          _raises(lambda: adapter.delete_cue(cue_track.id, 6), NotFound))
+    check("a Traktor-only cue type is Unsupported",
+          _raises(lambda: adapter.set_cue(cue_track.id, slot=2, start_sec=1.0,
+                                          cue_type="fade_in"), Unsupported))
+    # Rekordbox is the ONLY platform with memory cues, so they stay
+    # preserved-but-uneditable under the two-platform promotion rule.
+    check("memory cues are shown but not writable",
+          _raises(lambda: adapter.set_cue(cue_track.id, slot=1, start_sec=1.0,
+                                          cue_type="cue", role="memory"), Unsupported))
+    check("slot 0 is rejected — it is the memory-cue encoding, not a bank slot",
+          _raises(lambda: adapter.set_cue(cue_track.id, slot=0, start_sec=1.0,
+                                          cue_type="cue"), InvalidCommand))
+    check("a negative position is rejected",
+          _raises(lambda: adapter.set_cue(cue_track.id, slot=2, start_sec=-1.0,
+                                          cue_type="cue"), InvalidCommand))
+
+    print("== saving warns but proceeds while Rekordbox is running ==")
+    # pyrekordbox's own commit() refuses outright if it sees a Rekordbox process.
+    # Konduktor's settled behaviour is to warn, not block — matching Traktor —
+    # and the library's check is process-wide, so it would otherwise refuse to
+    # write a temp copy while the user had a different library open.
+    from pyrekordbox.db6 import database as _rb_database
+
+    _real_pid = _rb_database.get_rekordbox_pid
+    _rb_database.get_rekordbox_pid = lambda *a, **kw: 4242  # pretend it is running
+    try:
+        adapter.set_track_metadata(sample.id, {"title": "Saved While Running"})
+        adapter.save()
+        check("a save completes with Rekordbox running", True)
+    except Exception as ex:  # noqa: BLE001
+        check("a save completes with Rekordbox running", False, f"{type(ex).__name__}: {ex}")
+    finally:
+        _rb_database.get_rekordbox_pid = _real_pid
+    check("and the edit really landed",
+          adapter.track(sample.id).title == "Saved While Running",
+          str(adapter.track(sample.id).title))
 
     print("== a cloud-synced library is refused permanently, not pending a milestone ==")
     # The one failure mode version history cannot undo: a local edit the sync

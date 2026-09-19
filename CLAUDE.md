@@ -59,8 +59,8 @@ Two independent apps that talk over HTTP:
     - `driver.py`/`discovery.py` — `can_open`, default-location detection, restore.
     - `beatgrid.py`, `locations.py`, `capabilities.py` — Traktor's grid/companion
       rules, LOCATION ↔ OS path conversion, and its capability set.
-  - `adapters/rekordbox/` — **track metadata + playlists writable; cues and the
-    beatgrid still read-only** (milestone 2).
+  - `adapters/rekordbox/` — **track metadata, playlists and hot cues writable;
+    the beatgrid still read-only** (milestones 2 and 3a).
     `master.db` is SQLCipher-encrypted SQLite, read via `pyrekordbox`. Every
     mutating command raises `Unsupported` and `capabilities()` advertises nothing
     as editable, so the UI never offers an edit. Three things differ from Traktor
@@ -74,7 +74,25 @@ Two independent apps that talk over HTTP:
       track has a BPM) that `track_cues()` corrects.
     - **Cues live in two places** that must agree: `djmdCue` rows and a JSON
       mirror in `contentCue.Cues` (+ `rb_cue_count`). Rekordbox stamps
-      `rb_local_usn` on `contentCue`, never on the cue rows.
+      `rb_local_usn` on `contentCue`, never on the cue rows. Every cue write ends
+      in `_sync_content_cue()`, which rebuilds the mirror from the rows — leaving
+      it stale is this platform's version of Traktor's companion-cue desync.
+      Field conventions are read off a real library, not guessed:
+      `InFrame`/`OutFrame` are the position in frames at **150 fps**, a cue's
+      `ContentUUID` and its mirror row's `ID` are both the **track's UUID**, an
+      uncoloured cue is `Color=-1, ColorTableIndex=NULL`, and a loop is
+      `Color=255, ColorTableIndex=0` with `BeatLoopSize = (beats << 16) | 1`.
+      **Memory cues stay preserved-but-uneditable** (Rekordbox is the only
+      platform with them — the two-platform promotion rule), and **saved loops
+      are read but not written**: verified in Rekordbox, a cue row carrying
+      `OutMsec` does NOT land in the hot cue slot its `Kind` names — it becomes a
+      memory cue — so writing one would silently create an object Konduktor
+      cannot then edit. `cue_types.WRITABLE_CUE_TYPES` is the narrower set.
+    - **Saving warns but does not block when Rekordbox is running.**
+      `pyrekordbox.commit()` refuses outright, and its check is process-wide
+      rather than per-file, so `RekordboxStore._commit()` suppresses that veto
+      and logs instead — otherwise a temp copy could not be written while the
+      user had a different library open.
     - **`djmdCue.Kind` is an OPAQUE slot id**: 0 = memory cue, N = hot cue slot N.
       Pads A and C store 1 and 3, but the 6th pad stored 7 — so the slot→letter
       mapping is NOT a plain index and is deliberately left to the UI.
@@ -350,15 +368,16 @@ that number and nothing else — everything derives from it:
 - ✅ Generic model + adapter interface (Traktor as the only adapter) — step 2 of
   the multi-platform plan. Backend, wire format and UI are all generic; nothing
   above `adapters/traktor/` knows what Traktor is.
-- 🟡 Rekordbox adapter — **read + metadata/playlist writes done** (milestones 1
-  and 2). A Rekordbox library opens, projects, browses and now accepts track
-  metadata and playlist edits, verified row-by-row by `test_rekordbox_fidelity.py`
-  and end to end through the API. Research is captured in
-  `.claude/handoffs/rekordbox-adapter.md` §8, incl. the verified result that
-  Rekordbox accepts Konduktor-written rows when USNs are maintained. Remaining
-  (milestone 3): the hand-written cue store (`djmdCue` + the `contentCue` JSON
-  mirror) and the ANLZ beatgrid store. **No version history on Rekordbox** —
-  accepted scope decision, see handoff §11.
+- 🟡 Rekordbox adapter — **read + metadata/playlist/hot-cue writes done**
+  (milestones 1, 2 and 3a). A Rekordbox library opens, projects, browses and
+  accepts track metadata, playlist and hot cue edits, verified row-by-row by
+  `test_rekordbox_fidelity.py` and end to end through the API. Research is
+  captured in `.claude/handoffs/rekordbox-adapter.md` §8, incl. the verified
+  result that Rekordbox accepts Konduktor-written rows when USNs are maintained.
+  Remaining (3b): the ANLZ beatgrid store — riskier, because `pyrekordbox`'s ANLZ
+  tags refuse to change the NUMBER of beats, so a grid rewrite means manipulating
+  the `construct` containers directly and calling `update_len()`. **No version
+  history on Rekordbox** — accepted scope decision, see handoff §11.
 - ⬜ Serato adapter; ⬜ export/conversion
 - ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 

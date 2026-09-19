@@ -51,6 +51,15 @@ class RekordboxAdapter:
             ]
         )
 
+    def _refresh_cues(self, track_id: str) -> TrackCues:
+        """Re-project a track AND return its fresh cues.
+
+        Every mutating cue/grid command ends here: the contract is that a command
+        returns the refreshed projection, so a route can never serve a stale one.
+        """
+        self._refresh(track_id)
+        return self.track_cues(track_id) or TrackCues()
+
     def _refresh(self, track_id: str) -> None:
         """Re-project one track after a command, so the UI cannot go stale.
 
@@ -238,6 +247,62 @@ class RekordboxAdapter:
         self._require_writable("Editing playlists")
         return self._store.set_playlist_entries(node_id, track_ids)
 
+    # ---- commands: cues ---------------------------------------------------
+    def _check_cue_type(self, cue_type: str) -> None:
+        if cue_type == "loop":
+            # Reading loops is fine; writing one is not. A cue row with an
+            # out-point does not land in the slot its Kind names — verified in
+            # Rekordbox — so it would silently become an uneditable memory cue.
+            raise Unsupported(
+                "Saved loops can be read but not yet written to Rekordbox libraries"
+            )
+        if cue_type not in caps.WRITABLE_CUE_TYPES:
+            raise Unsupported(f"Rekordbox has no cue type {cue_type!r}")
+
+    def set_cue(
+        self,
+        track_id: str,
+        *,
+        slot: int,
+        start_sec: float,
+        cue_type: str,
+        length_sec: float = 0.0,
+        role: str = "hotcue",
+        name: str | None = None,
+    ) -> TrackCues:
+        self._require_writable("Editing cues")
+        if role != "hotcue":
+            # Rekordbox is the ONLY platform with memory cues, so under the
+            # two-platform promotion rule they stay preserved-but-uneditable:
+            # they are projected and shown, never written.
+            raise Unsupported(
+                "Memory cues are shown but cannot be edited — only hot cues are writable"
+            )
+        self._check_cue_type(cue_type)
+        self._store.set_cue(
+            track_id, slot=slot, start_sec=start_sec, cue_type=cue_type,
+            length_sec=length_sec, name=name,
+        )
+        return self._refresh_cues(track_id)
+
+    def set_cue_type(self, track_id: str, slot: int, cue_type: str) -> TrackCues:
+        self._require_writable("Editing cues")
+        self._check_cue_type(cue_type)
+        self._store.set_cue_type(track_id, slot, cue_type)
+        return self._refresh_cues(track_id)
+
+    def delete_cue(self, track_id: str, slot: int) -> TrackCues:
+        self._require_writable("Deleting cues")
+        self._store.delete_cue(track_id, slot)
+        return self._refresh_cues(track_id)
+
+    def place_cues(self, track_id: str, cues: list, *, overwrite: bool = False) -> TrackCues:
+        self._require_writable("Placing cues")
+        for cue in cues:
+            self._check_cue_type(getattr(cue, "type", "cue"))
+        self._store.place_cues(track_id, cues, overwrite=overwrite)
+        return self._refresh_cues(track_id)
+
     # ---- save -------------------------------------------------------------
     @property
     def dirty(self) -> bool:
@@ -282,18 +347,6 @@ class RekordboxAdapter:
 
     def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
         return None
-
-    def set_cue(self, track_id: str, **kw) -> TrackCues:
-        self._refuse("Editing cues")
-
-    def set_cue_type(self, track_id: str, slot: int, cue_type: str) -> TrackCues:
-        self._refuse("Editing cues")
-
-    def delete_cue(self, track_id: str, slot: int) -> TrackCues:
-        self._refuse("Deleting cues")
-
-    def place_cues(self, track_id: str, cues: list, *, overwrite: bool = False) -> TrackCues:
-        self._refuse("Placing cues")
 
     def add_grid_marker(self, track_id: str, start_sec: float, bpm: float | None = None) -> TrackCues:
         self._refuse("Editing the beatgrid")
