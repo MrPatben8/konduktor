@@ -219,7 +219,8 @@ with tempfile.TemporaryDirectory() as d:
     check("per-feature flags still describe what Rekordbox CAN do",
           caps.cues.memory_cues and caps.grid.flexible)
     check("hot cues are editable", caps.cues.editable is True)
-    check("the grid is NOT editable yet (milestone 3b)", caps.grid.editable is False)
+    check("the grid is editable", caps.grid.editable is True)
+    check("but has no lock — Rekordbox has no such concept", caps.grid.lockable is False)
     check("8 hot cue slots, labelled by letter",
           caps.cues.hotcue_slots == 8 and caps.cues.slot_labels == "letter")
     check("memory cues are supported", caps.cues.memory_cues)
@@ -232,8 +233,6 @@ with tempfile.TemporaryDirectory() as d:
     # library, and the opposite of what the original plan assumed.
     check("a loop is a cue type, not a separate bank", caps.cues.loops == "cue_type")
     check("cue colour is a palette, not free RGB", caps.cues.color == "palette")
-    check("the grid is flexible but not editable yet",
-          caps.grid.flexible and not caps.grid.editable)
     check("the editable field set is advertised", bool(caps.tracks.editable_fields))
     # Rekordbox has no column for these; Traktor does. Mapping them onto its
     # Composer field would silently write the wrong thing.
@@ -245,16 +244,10 @@ with tempfile.TemporaryDirectory() as d:
           caps.save.overwrite_risk == "while_running")
     check("library label is master.db", caps.save.library_label == "master.db")
 
-    print("== the unimplemented stores still refuse, with a reason ==")
+    print("== what Rekordbox genuinely cannot do still refuses, with a reason ==")
     commands = {
         "set_cover_art": lambda: adapter.set_cover_art(sample.id, b"", "image/jpeg"),
-        "add_grid_marker": lambda: adapter.add_grid_marker(sample.id, 0.0),
-        "move_grid_marker": lambda: adapter.move_grid_marker(sample.id, 0, 1.0),
-        "set_grid_marker_bpm": lambda: adapter.set_grid_marker_bpm(sample.id, 0, 120.0),
-        "delete_grid_marker": lambda: adapter.delete_grid_marker(sample.id, 0),
-        "replace_grid": lambda: adapter.replace_grid(sample.id, []),
-        "set_analysed_grid": lambda: adapter.set_analysed_grid(sample.id, []),
-        "delete_grid": lambda: adapter.delete_grid(sample.id),
+        # Rekordbox genuinely has no per-track grid lock, unlike Traktor's LOCK.
         "set_grid_lock": lambda: adapter.set_grid_lock(sample.id, True),
         "remap_locations": lambda: adapter.remap_locations(None),
         # save() works now; snapshot() must not, because a Rekordbox library is
@@ -270,7 +263,7 @@ with tempfile.TemporaryDirectory() as d:
             pass
         except Exception as ex:  # noqa: BLE001 — anything else is the wrong error
             refused.append(f"{name} ({type(ex).__name__})")
-    check("every cue/grid command still raises Unsupported", not refused, ", ".join(refused))
+    check("each raises Unsupported rather than failing oddly", not refused, ", ".join(refused))
     check("refusing a command leaves the adapter clean", adapter.dirty is False)
 
     print("== metadata writes, including the foreign-key fields ==")
@@ -355,6 +348,57 @@ with tempfile.TemporaryDirectory() as d:
     check("a negative position is rejected",
           _raises(lambda: adapter.set_cue(cue_track.id, slot=2, start_sec=-1.0,
                                           cue_type="cue"), InvalidCommand))
+
+    print("== beatgrid edits ==")
+    grid_track = next((t for t in adapter.tracks if t.bpm), None)
+    if grid_track:
+        check("a gridded track starts with at least one marker",
+              len(adapter.track_cues(grid_track.id).grid_markers) >= 1)
+        # Put the grid into a KNOWN state first. Reading whatever the library
+        # happens to hold made this section depend on the user's own edits — it
+        # broke the moment the reference library gained a marker at 60s.
+        tc = adapter.replace_grid(grid_track.id, [(0.05, 120.0)])
+        check("the grid can be reset to a single known marker",
+              len(tc.grid_markers) == 1 and tc.grid_markers[0].bpm == 120.0,
+              str([(m.start, m.bpm) for m in tc.grid_markers]))
+        tc = adapter.set_grid_marker_bpm(grid_track.id, 0, 130.0)
+        check("retempo changes the marker", tc.grid_markers[0].bpm == 130.0,
+              str(tc.grid_markers[0].bpm))
+        # Rekordbox does NOT reconcile the BPM column with the grid — verified in
+        # the real app, where the deck showed the new tempo and the list the old.
+        check("the BPM column follows the first marker",
+              adapter.track(grid_track.id).bpm == 130.0,
+              str(adapter.track(grid_track.id).bpm))
+        tc = adapter.add_grid_marker(grid_track.id, 60.0, 140.0)
+        check("a second marker makes the grid flexible", len(tc.grid_markers) == 2,
+              str(len(tc.grid_markers)))
+        check("markers stay ordered by position",
+              tc.grid_markers[0].start < tc.grid_markers[1].start)
+        check("Rekordbox markers never carry a companion cue",
+              all(m.companion is None for m in tc.grid_markers))
+        # A move is clamped between neighbours so the list cannot reorder.
+        tc = adapter.move_grid_marker(grid_track.id, 1, 0.0)
+        check("moving a marker past its neighbour is clamped",
+              tc.grid_markers[1].start > tc.grid_markers[0].start,
+              f"{tc.grid_markers[0].start} / {tc.grid_markers[1].start}")
+        tc = adapter.delete_grid_marker(grid_track.id, 1)
+        check("a marker can be deleted", len(tc.grid_markers) == 1, str(len(tc.grid_markers)))
+        check("grid_marker_count follows the real grid",
+              adapter.track(grid_track.id).grid_marker_count == 1)
+        tc = adapter.delete_grid(grid_track.id)
+        check("the whole grid can be deleted", tc.grid_markers == [])
+        check("and the BPM column is cleared with it",
+              adapter.track(grid_track.id).bpm is None,
+              str(adapter.track(grid_track.id).bpm))
+        tc = adapter.replace_grid(grid_track.id, [(0.05, 128.0)])
+        check("replace_grid accepts (start, bpm) tuples from the route layer",
+              len(tc.grid_markers) == 1 and tc.grid_markers[0].bpm == 128.0)
+        check("a non-positive tempo is rejected",
+              _raises(lambda: adapter.set_grid_marker_bpm(grid_track.id, 0, 0), InvalidCommand))
+        check("an unknown marker index is NotFound",
+              _raises(lambda: adapter.set_grid_marker_bpm(grid_track.id, 9, 120.0), NotFound))
+        check("Rekordbox has no grid lock",
+              _raises(lambda: adapter.set_grid_lock(grid_track.id, True), Unsupported))
 
     print("== saving warns but proceeds while Rekordbox is running ==")
     # pyrekordbox's own commit() refuses outright if it sees a Rekordbox process.

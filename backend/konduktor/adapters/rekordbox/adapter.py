@@ -23,7 +23,7 @@ from pathlib import Path
 
 from ...core.adapter import Unsupported
 from ...core.capabilities import Capabilities
-from ...core.model import PlaylistNode, Track, TrackCues
+from ...core.model import GridMarker, PlaylistNode, Track, TrackCues
 from ...core.pathmap import PathMapping, common_dir_prefix
 from ...core.query import TrackIndex
 from . import capabilities as caps
@@ -303,6 +303,56 @@ class RekordboxAdapter:
         self._store.place_cues(track_id, cues, overwrite=overwrite)
         return self._refresh_cues(track_id)
 
+    # ---- commands: beatgrid -----------------------------------------------
+    def _markers_from(self, markers: list) -> list:
+        """Accept either GridMarkers or the (start, bpm) tuples routes send."""
+        out = []
+        for m in markers:
+            if isinstance(m, GridMarker):
+                out.append(m)
+            else:
+                start, bpm = m
+                out.append(GridMarker(start=float(start), bpm=float(bpm)))
+        return out
+
+    def add_grid_marker(self, track_id: str, start_sec: float, bpm: float | None = None) -> TrackCues:
+        self._require_writable("Editing the beatgrid")
+        self._store.add_grid_marker(track_id, start_sec, bpm)
+        return self._refresh_cues(track_id)
+
+    def move_grid_marker(self, track_id: str, index: int, start_sec: float) -> TrackCues:
+        self._require_writable("Editing the beatgrid")
+        self._store.move_grid_marker(track_id, index, start_sec)
+        return self._refresh_cues(track_id)
+
+    def set_grid_marker_bpm(self, track_id: str, index: int, bpm: float) -> TrackCues:
+        self._require_writable("Editing the beatgrid")
+        self._store.set_grid_marker_bpm(track_id, index, bpm)
+        return self._refresh_cues(track_id)
+
+    def delete_grid_marker(self, track_id: str, index: int) -> TrackCues:
+        self._require_writable("Editing the beatgrid")
+        self._store.delete_grid_marker(track_id, index)
+        return self._refresh_cues(track_id)
+
+    def replace_grid(self, track_id: str, markers: list) -> TrackCues:
+        self._require_writable("Editing the beatgrid")
+        self._store.replace_grid(track_id, self._markers_from(markers))
+        return self._refresh_cues(track_id)
+
+    def set_analysed_grid(self, track_id: str, markers: list) -> TrackCues:
+        """Write an analysis result the way Rekordbox's own analyser would.
+
+        Rekordbox pairs nothing with a grid marker — the companion cue is a
+        Traktor convention — so this is just a replace.
+        """
+        return self.replace_grid(track_id, markers)
+
+    def delete_grid(self, track_id: str) -> TrackCues:
+        self._require_writable("Deleting the beatgrid")
+        self._store.delete_grid(track_id)
+        return self._refresh_cues(track_id)
+
     # ---- save -------------------------------------------------------------
     @property
     def dirty(self) -> bool:
@@ -348,26 +398,6 @@ class RekordboxAdapter:
     def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
         return None
 
-    def add_grid_marker(self, track_id: str, start_sec: float, bpm: float | None = None) -> TrackCues:
-        self._refuse("Editing the beatgrid")
-
-    def move_grid_marker(self, track_id: str, index: int, start_sec: float) -> TrackCues:
-        self._refuse("Editing the beatgrid")
-
-    def set_grid_marker_bpm(self, track_id: str, index: int, bpm: float) -> TrackCues:
-        self._refuse("Editing the beatgrid")
-
-    def delete_grid_marker(self, track_id: str, index: int) -> TrackCues:
-        self._refuse("Editing the beatgrid")
-
-    def replace_grid(self, track_id: str, markers: list) -> TrackCues:
-        self._refuse("Editing the beatgrid")
-
-    def set_analysed_grid(self, track_id: str, markers: list) -> TrackCues:
-        self._refuse("Editing the beatgrid")
-
-    def delete_grid(self, track_id: str) -> TrackCues:
-        self._refuse("Editing the beatgrid")
-
     def set_grid_lock(self, track_id: str, locked: bool) -> TrackCues:
-        self._refuse("Locking the beatgrid")
+        # Rekordbox has no per-track grid lock; capabilities.grid.lockable says so.
+        raise Unsupported("Rekordbox has no beatgrid lock")

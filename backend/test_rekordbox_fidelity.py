@@ -317,5 +317,69 @@ with tempfile.TemporaryDirectory() as d:
               f"{mirror_row['rb_cue_count']} vs {len(records)}")
     adapter.close()
 
+    # ---- H: a grid write touches ONE tag of ONE file ---------------------
+    print("== H: a beatgrid write is localized to the .DAT's PQTZ tag ==")
+    from pyrekordbox.anlz import AnlzFile
+
+    adapter = RekordboxAdapter(work)  # phase G closed the previous one
+    grid_track = next((t for t in adapter.tracks if t.bpm), None)
+    if grid_track is None:
+        check("a gridded track exists to test with", False, "none found")
+    else:
+        rel = str(dump(work)["djmdContent"][grid_track.id]["AnalysisDataPath"]).lstrip("/")
+        dat = Path(d) / "share" / rel
+        ext = dat.with_suffix(".EXT")
+        two_ex = dat.with_suffix(".2EX")
+        before_dat = dat.read_bytes()
+        before_ext = ext.read_bytes() if ext.is_file() else None
+        before_2ex = two_ex.read_bytes() if two_ex.is_file() else None
+        before_db = dump(work)
+
+        adapter.set_grid_marker_bpm(grid_track.id, 0, 130.0)
+        # The save contract: an unsaved grid edit must not be on disk yet.
+        check("an unsaved grid edit has not touched the analysis file",
+              dat.read_bytes() == before_dat)
+        adapter.save()
+
+        check("the analysis file changed", dat.read_bytes() != before_dat)
+        # The extended grid carries undecoded bytes and is deliberately not
+        # written. Rekordbox was verified to read PQTZ and ignore this being stale.
+        if before_ext is not None:
+            check(".EXT is left untouched", ext.read_bytes() == before_ext)
+        if before_2ex is not None:
+            check(".2EX is left untouched", two_ex.read_bytes() == before_2ex)
+
+        # The real localization test: every OTHER tag in the rewritten .DAT must
+        # be byte-identical. This is the ANLZ analogue of "only edited objects
+        # diff", and it is what would catch a rebuild corrupting the file.
+        old_tags = {t.type: t.build() for t in AnlzFile.parse(before_dat).tags if t.type != "PQTZ"}
+        new_tags = {t.type: t.build() for t in AnlzFile.parse_file(str(dat)).tags if t.type != "PQTZ"}
+        check("the same tags are present afterwards",
+              set(old_tags) == set(new_tags), f"{sorted(old_tags)} vs {sorted(new_tags)}")
+        differing = [k for k in old_tags if k in new_tags and old_tags[k] != new_tags[k]]
+        check("every tag except PQTZ is byte-identical", not differing, ", ".join(differing))
+
+        reread = AnlzFile.parse_file(str(dat))
+        pqtz = next(t for t in reread.tags if t.type == "PQTZ")
+        check("the new tempo is really in the file",
+              abs(float(pqtz.bpms[0]) - 130.0) < 0.001, str(pqtz.bpms[0]))
+        check("the grid still covers the track",
+              len(pqtz.beats) > 1 and float(pqtz.times[-1]) > 0)
+
+        # The BPM column is Konduktor's to maintain: Rekordbox does not
+        # reconcile it with the grid (verified in the real app).
+        changes = diff(before_db, dump(work))
+        tables_touched = {t for t, _, _, _ in changes}
+        check("in the database, only the track's BPM and the counter move",
+              tables_touched == {"djmdContent", "agentRegistry"}, str(tables_touched))
+        content = [c for c in changes if c[0] == "djmdContent"]
+        if content and content[0][2] == "UPDATE":
+            fields = content[0][3]
+            check("only BPM and the row USN changed",
+                  set(fields) == {"BPM", "rb_local_usn"}, str(sorted(fields)))
+            check("BPM is stored x100", fields.get("BPM", (0, 0))[1] == 13000,
+                  str(fields.get("BPM")))
+        adapter.close()
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

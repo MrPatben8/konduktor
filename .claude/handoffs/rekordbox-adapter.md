@@ -924,3 +924,84 @@ auto-increment and keeping `masterPlaylists6.xml`'s timestamps in step — still
 runs as the library intends. `store.app_running` exposes the detection for
 warning the user rather than blocking them. A test pins the behaviour by faking
 a running process.
+
+### Milestone 3b progress: the grid can be written, but only half of it
+
+**The mechanical problem is solved.** `beatgrid.write_pqtz()` rebuilds a `.DAT`'s
+`PQTZ` entry list from scratch — including changing the number of beats, which
+`pyrekordbox`'s own setters refuse — by replacing `content.entries`, setting
+`entry_count`, and calling the tag's `update_len()`. Verified on a real file:
+resizing 374 → 367 beats produced exactly the expected byte-size delta, re-parsed
+correctly, and left **every other tag byte-identical**.
+
+**The blocker is `.EXT`.** The grid exists twice: `PQTZ` in `.DAT` and the
+"extended" `PQT2` in `.EXT`. `PQT2` carries a 2-byte-per-beat array whose second
+byte `pyrekordbox` literally names `unkown`, plus an undecoded `u3` field.
+Inspection did not crack it: the value drifts ~2.75 per beat with a jump at each
+bar boundary and must wrap within 8 bits, so it is neither a time nor a simple
+index. Writing guesses into it would corrupt real user data on a platform with no
+version history, so **`PQT2` is left untouched**.
+
+That leaves one empirical question, and it decides the whole feature:
+
+> **Does Rekordbox read the grid from `PQTZ` (`.DAT`) or from `PQT2` (`.EXT`)?**
+
+A test is staged: Demo Track 1's `PQTZ` rewritten to **half-time (64 BPM, 184
+beats)**, `.EXT` and `master.db` untouched, installed as a single-file copy.
+Half-time is chosen because it is unmistakable — beat markers at half density and
+a 64 BPM readout — rather than a subtle shift someone has to judge.
+
+- **If Rekordbox shows the half-time grid**: `PQTZ` is authoritative, and grid
+  editing is feasible. `PQT2` may still need attention for CDJ export, which is
+  out of scope anyway.
+- **If it shows the original 128 BPM grid**: `PQT2` wins, and grid editing stays
+  out of reach until someone decodes it. That is a legitimate result — Rekordbox
+  support would ship as library management + cues, with grid editing remaining a
+  Traktor feature.
+
+Note `djmdContent.BPM` is deliberately left at 128 in this test, so the library
+list and the deck disagreeing is itself a signal about which copy is read where.
+
+### Milestone 3b landed: the beatgrid writes
+
+**`PQTZ` is authoritative — verified in Rekordbox 7.** The staged half-time test
+showed the deck at 64 BPM with the grid correctly half-timed. Afterwards the
+`.DAT` was byte-identical to what Konduktor wrote, `.EXT` and `.2EX` were
+untouched, and Rekordbox did **not** reconcile `djmdContent.BPM`, which sat at
+128 while the deck showed 64.
+
+Three things follow, all now implemented:
+
+1. **Only `.DAT`'s `PQTZ` is written.** The stale extended grid in `.EXT` does
+   not trouble Rekordbox's own display; it would matter only for CDJ export,
+   which is out of scope.
+2. **`djmdContent.BPM` is Konduktor's to maintain**, mirroring the first marker —
+   the same relationship Traktor's `<TEMPO>` has to its first grid marker.
+   Without it the library list and the deck disagree.
+3. **Grid edits are buffered until `save()`.** ANLZ edits are file writes, so
+   applying them at command time would put an unsaved edit on disk and break the
+   save contract every other platform obeys. `save()` writes the files first and
+   commits the database second, so a failed file write leaves nothing committed.
+
+The full marker vocabulary works — add / move (clamped between neighbours) /
+retempo / delete / replace / delete-grid — including genuinely **flexible
+multi-tempo grids**, end to end through the HTTP API.
+
+Fidelity phase H is the safety net: an unsaved grid edit does not touch the file;
+`.EXT`/`.2EX` stay byte-identical; **every tag in the rewritten `.DAT` except
+`PQTZ` is byte-identical**; and in the database only `BPM` + the row USN + the
+counter move. Suite: **316 assertions**.
+
+### Remaining Rekordbox gaps
+
+- **Saved loops** — read but not written (§ above). Needs the slot encoding
+  measured: a 4-beat loop on pads D and E, then read the `Kind` values.
+- ~~A Konduktor-written FLEXIBLE grid has not been seen in Rekordbox.~~
+  **VERIFIED 2026-09-19**: Demo Track 1 written as 128 BPM dropping to 90 at
+  1:00 displayed exactly that in Rekordbox 7 — the deck's BPM readout followed
+  the tempo change at the marker. Multi-marker grids are confirmed end to end,
+  which is the last thing milestone 3 was waiting on.
+- **Cover art** — never investigated; `tracks.artwork` is false.
+- **`PQT2` is undecoded**, so the extended grid drifts out of step with `PQTZ`
+  after any Konduktor grid edit. Harmless for Rekordbox itself; would need
+  solving before any CDJ/USB export (currently rejected as out of scope).

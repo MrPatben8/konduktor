@@ -60,6 +60,9 @@ class RekordboxStore:
         self._mapping = PathMapping()
         self._grid_cache: dict[str, tuple[list[float], list[float]] | None] = {}
         self._journal = EditJournal()
+        # Grid edits buffered until save(): ANLZ files are written to disk, so
+        # applying them at command time would break the save contract.
+        self._pending_grids: dict[str, tuple[list, list, list]] = {}
         self._load()
 
     # ---- open ------------------------------------------------------------
@@ -445,6 +448,9 @@ class RekordboxStore:
         `capabilities.save.history` says so.
         """
         summary = self._journal.summary()
+        # Files first: if an analysis file cannot be written, nothing should have
+        # been committed to the database either.
+        self._flush_grids()
         self._commit()
         self._journal.clear()
         # Reads go through the same session, so nothing needs re-projecting from
@@ -719,3 +725,127 @@ class RekordboxStore:
         mirror.Cues = json.dumps(records, ensure_ascii=False)
         mirror.rb_cue_count = len(records)
         self._db.flush()
+
+    # ---- writes: the beatgrid ---------------------------------------------
+    #
+    # The grid lives in the track's ANLZ `.DAT` (`PQTZ`), not in the database.
+    # Verified in Rekordbox 7: it reads the grid and the deck's BPM readout from
+    # `PQTZ`, leaves a rewritten `.DAT` exactly as Konduktor wrote it, ignores
+    # the stale extended grid in `.EXT` — and does NOT reconcile
+    # `djmdContent.BPM`, which stayed at the old tempo while the deck showed the
+    # new one. So that column is Konduktor's to maintain.
+    #
+    # Edits are BUFFERED and the files are written on save(), so the grid obeys
+    # the same "edit in memory, Save writes to disk" contract as everything else
+    # — an unsaved grid change must not already be on disk.
+
+    def current_markers(self, track_id: str) -> list:
+        """The track's grid as a generic marker list (pending edits included)."""
+        from . import beatgrid as grid_math
+
+        grid = self.anlz_grid(track_id)
+        if grid is None:
+            return []
+        times, bpms = grid
+        return grid_math.markers_from_beats(times, bpms)
+
+    def track_duration(self, track_id: str) -> float:
+        """Seconds, for expanding markers back into beats."""
+        length = getattr(self.content(track_id), "Length", None)
+        if length:
+            return float(length)
+        grid = self.anlz_grid(track_id)
+        if grid and grid[0]:
+            return float(grid[0][-1]) + 1.0
+        return 0.0
+
+    def replace_grid(self, track_id: str, markers: list) -> None:
+        """Set the grid to exactly these markers. The one primitive; every
+        marker-level command is expressed as a read-modify-replace on top."""
+        from . import beatgrid as grid_math
+
+        for m in markers:
+            if m.bpm <= 0:
+                raise InvalidCommand(f"A beatgrid marker needs a positive tempo, got {m.bpm}")
+            if m.start < 0:
+                raise InvalidCommand("A beatgrid marker cannot be before the track starts")
+        ordered = sorted(markers, key=lambda m: m.start)
+        duration = self.track_duration(track_id)
+        beat_nums, bpms, times = grid_math.beats_from_markers(ordered, duration)
+        # Buffer as the same (times, bpms) shape the reader returns, so the
+        # projection needs no special case for an unsaved grid.
+        self._pending_grids[str(track_id)] = (beat_nums, bpms, times)
+        self._grid_cache[str(track_id)] = (times, bpms) if times else None
+        # TEMPO mirrors the first marker, exactly as Traktor's <TEMPO> does —
+        # Rekordbox will not do it for us.
+        row = self.content(track_id)
+        row.BPM = int(round(ordered[0].bpm * 100)) if ordered else 0
+        self._journal.record("grid", "replace" if ordered else "delete", track_id)
+
+    def delete_grid(self, track_id: str) -> None:
+        self.replace_grid(track_id, [])
+
+    def add_grid_marker(self, track_id: str, start_sec: float, bpm: float | None = None) -> None:
+        from ...core.model import GridMarker
+
+        markers = self.current_markers(track_id)
+        if bpm is None:
+            # Inherit the tempo governing this point, like Traktor's add does.
+            governing = [m for m in markers if m.start <= start_sec]
+            bpm = governing[-1].bpm if governing else (markers[0].bpm if markers else None)
+        if not bpm:
+            raise InvalidCommand("The first marker on an ungridded track needs a tempo")
+        if any(abs(m.start - start_sec) < 0.001 for m in markers):
+            raise InvalidCommand("There is already a marker here")
+        markers.append(GridMarker(start=float(start_sec), bpm=float(bpm)))
+        self.replace_grid(track_id, markers)
+
+    def _marker_at(self, track_id: str, index: int) -> tuple[list, int]:
+        markers = self.current_markers(track_id)
+        if not 0 <= index < len(markers):
+            raise NotFound(f"No grid marker {index}")
+        return markers, index
+
+    def move_grid_marker(self, track_id: str, index: int, start_sec: float) -> None:
+        markers, i = self._marker_at(track_id, index)
+        # Clamp between neighbours so the list cannot reorder under the caller.
+        low = markers[i - 1].start + 0.001 if i > 0 else 0.0
+        high = markers[i + 1].start - 0.001 if i + 1 < len(markers) else None
+        target = max(low, float(start_sec))
+        if high is not None:
+            target = min(target, high)
+        markers[i] = markers[i].model_copy(update={"start": target})
+        self.replace_grid(track_id, markers)
+
+    def set_grid_marker_bpm(self, track_id: str, index: int, bpm: float) -> None:
+        markers, i = self._marker_at(track_id, index)
+        if bpm <= 0:
+            raise InvalidCommand(f"A tempo must be positive, got {bpm}")
+        markers[i] = markers[i].model_copy(update={"bpm": float(bpm)})
+        self.replace_grid(track_id, markers)
+
+    def delete_grid_marker(self, track_id: str, index: int) -> None:
+        markers, i = self._marker_at(track_id, index)
+        del markers[i]
+        self.replace_grid(track_id, markers)
+
+    def _flush_grids(self) -> None:
+        """Write buffered grids into their ANLZ files. Called by save().
+
+        Only `.DAT`'s `PQTZ` is written — `.EXT`'s extended grid carries
+        undecoded bytes, and Rekordbox was verified to read the grid from
+        `PQTZ` and to be untroubled by the other being stale.
+        """
+        from . import beatgrid as grid_math
+
+        for track_id, (beat_nums, bpms, times) in list(self._pending_grids.items()):
+            rel = getattr(self.content(track_id), "AnalysisDataPath", None)
+            if not rel:
+                raise InvalidCommand(
+                    "This track has no analysis file, so it has nowhere to store a beatgrid"
+                )
+            path = self.path.parent / "share" / str(rel).lstrip("/\\")
+            if not path.is_file():
+                raise InvalidCommand(f"Analysis file is missing: {path}")
+            grid_math.write_pqtz(path, beat_nums, bpms, times)
+        self._pending_grids.clear()

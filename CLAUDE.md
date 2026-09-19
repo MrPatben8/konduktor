@@ -65,10 +65,25 @@ Two independent apps that talk over HTTP:
     mutating command raises `Unsupported` and `capabilities()` advertises nothing
     as editable, so the UI never offers an edit. Three things differ from Traktor
     and are the reason this adapter is not a copy of it:
-    - **The beatgrid is NOT in the database.** There is no grid table at all; it
+    - **The beatgrid is NOT in the database, and is written to ONE tag of ONE
+      file.** There is no grid table at all; it
       lives in per-track ANLZ analysis files as a `PQTZ` tag listing EVERY BEAT.
       `beatgrid.py` collapses those into the generic marker list on read and
-      expands them back on write. `store.anlz_grid()` parses them **lazily** —
+      expands them back on write. `write_pqtz()` rebuilds the entry list
+      directly — `pyrekordbox`'s own setters refuse to change the NUMBER of
+      beats, which every real edit does — then calls the tag's `update_len()`.
+      **Only `.DAT`'s `PQTZ` is written.** `.EXT` holds a second "extended" grid
+      (`PQT2`) whose per-beat byte `pyrekordbox` itself calls `unkown`, so
+      writing it would mean guessing at bytes in data with no version history.
+      Verified in Rekordbox 7: it reads the grid AND the deck's BPM from `PQTZ`,
+      leaves a Konduktor-written `.DAT` untouched, and is unbothered by the stale
+      `.EXT` (which would matter only for CDJ export — out of scope). It does
+      **not** reconcile `djmdContent.BPM`, so the adapter maintains that column
+      itself, mirroring the first marker exactly as Traktor's `<TEMPO>` does.
+      Grid edits are **buffered until `save()`** so ANLZ file writes obey the same
+      "edit in memory, Save writes to disk" contract as everything else; `save()`
+      writes the files BEFORE committing the database, so a failed file write
+      leaves nothing committed. `store.anlz_grid()` parses them **lazily** —
       ~1.4 ms each, i.e. ~12 s for a library of 8,500 if done at open — so
       `Track.grid_marker_count` carries a documented approximation (1 when the
       track has a BPM) that `track_cues()` corrects.
@@ -368,16 +383,18 @@ that number and nothing else — everything derives from it:
 - ✅ Generic model + adapter interface (Traktor as the only adapter) — step 2 of
   the multi-platform plan. Backend, wire format and UI are all generic; nothing
   above `adapters/traktor/` knows what Traktor is.
-- 🟡 Rekordbox adapter — **read + metadata/playlist/hot-cue writes done**
-  (milestones 1, 2 and 3a). A Rekordbox library opens, projects, browses and
-  accepts track metadata, playlist and hot cue edits, verified row-by-row by
-  `test_rekordbox_fidelity.py` and end to end through the API. Research is
-  captured in `.claude/handoffs/rekordbox-adapter.md` §8, incl. the verified
-  result that Rekordbox accepts Konduktor-written rows when USNs are maintained.
-  Remaining (3b): the ANLZ beatgrid store — riskier, because `pyrekordbox`'s ANLZ
-  tags refuse to change the NUMBER of beats, so a grid rewrite means manipulating
-  the `construct` containers directly and calling `update_len()`. **No version
-  history on Rekordbox** — accepted scope decision, see handoff §11.
+- 🟡 Rekordbox adapter — **read + metadata/playlist/hot-cue/beatgrid writes
+  done** (milestones 1–3). A Rekordbox library opens, projects, browses and
+  accepts track metadata, playlist, hot cue and beatgrid edits — including
+  flexible multi-tempo grids, confirmed rendering correctly in Rekordbox 7 —
+  verified row-by-row by
+  `test_rekordbox_fidelity.py`, end to end through the API, and in Rekordbox 7
+  itself. Research is captured in `.claude/handoffs/rekordbox-adapter.md` §8,
+  incl. the verified result that Rekordbox accepts Konduktor-written rows when
+  USNs are maintained. Remaining gaps: **saved loops** (a cue row with an
+  out-point does not land in the slot its `Kind` names — encoding unmeasured) and
+  **cover art**. **No version history on Rekordbox** — accepted scope decision,
+  see handoff §11.
 - ⬜ Serato adapter; ⬜ export/conversion
 - ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 

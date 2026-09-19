@@ -73,7 +73,10 @@ def capabilities_for(
             named=True,  # djmdCue.Comment
             loops="cue_type",
         ),
-        grid=GridCapabilities(editable=False, flexible=True, lockable=False),
+        # The grid is written into the track's ANLZ .DAT (PQTZ). Verified:
+        # Rekordbox reads the grid and its BPM readout from there, and leaves a
+        # Konduktor-written file alone. It has no per-track grid lock.
+        grid=GridCapabilities(editable=True, flexible=True, lockable=False),
         tracks=TrackCapabilities(
             rating_max=5,  # Rekordbox stores 0-5 directly, unlike Traktor's /51
             # Narrower than Traktor's: `producer` and `mix` have no Rekordbox

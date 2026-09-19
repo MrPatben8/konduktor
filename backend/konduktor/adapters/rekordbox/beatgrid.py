@@ -78,3 +78,51 @@ def beats_from_markers(
             n = n % 4 + 1
             t += step
     return beat_nums, bpms, times
+
+
+# ---- writing the analysis file ----------------------------------------------
+#
+# The grid lives in the ANLZ files, and only `.DAT`'s `PQTZ` tag is written here.
+# `.EXT` carries a second, "extended" grid (`PQT2`) whose per-beat byte and `u3`
+# field are NOT decoded — `pyrekordbox` itself calls the field `unkown` — so
+# rewriting it would mean guessing at bytes in real user data that has no version
+# history. Leaving it alone is the only safe option until it is decoded.
+#
+# `.DAT`/`.EXT` round-trip byte-identically through parse -> build (verified
+# across a whole library), which is what makes this checkable at all: a rebuild
+# must differ ONLY inside the tag we touched.
+
+
+def write_pqtz(path, beat_nums, bpms, times) -> bool:
+    """Replace the beat grid in an ANLZ `.DAT`, in place. True if written.
+
+    `pyrekordbox`'s own `PQTZAnlzTag.set*()` refuse to change the NUMBER of
+    beats ("only values of existing beats can be set"), and every real grid edit
+    changes it — so the entry list is rebuilt directly and the tag's own
+    `update_len()` recomputes `len_tag`. `check_parse()` then asserts the
+    declared count and the list agree before anything is written.
+    """
+    import construct
+    from pyrekordbox.anlz import AnlzFile
+
+    anlz = AnlzFile.parse_file(str(path))
+    tag = next((t for t in anlz.tags if t.type == "PQTZ"), None)
+    if tag is None:
+        return False
+    entries = construct.ListContainer()
+    for beat, bpm, t in zip(beat_nums, bpms, times):
+        entries.append(
+            construct.Container(
+                beat=int(beat),
+                tempo=int(round(bpm * 100)),  # BPM is stored x100
+                time=int(round(t * 1000)),  # seconds -> ms
+            )
+        )
+    tag.struct.content.entries = entries
+    tag.struct.content.entry_count = len(entries)
+    tag.update_len()
+    tag.check_parse()
+    data = anlz.build()
+    with open(path, "wb") as fh:
+        fh.write(data)
+    return True
