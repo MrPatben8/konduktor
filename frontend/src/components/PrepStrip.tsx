@@ -23,6 +23,13 @@ interface Props {
   onError?: (msg: string) => void
   /** Neutral/success feedback (e.g. Auto Hotcues result). */
   onNotify?: (kind: 'success' | 'error', msg: string) => void
+  /**
+   * The track came from a browsed DEVICE, not the loaded library, so its audio
+   * and cues must be read from the source endpoints. Every EDIT control is
+   * already inert here — a device's capabilities say `writable: false`, and the
+   * deck gates on those — so this only needs to redirect the two READS.
+   */
+  fromDevice?: boolean
 }
 
 function fmt(secs: number): string {
@@ -57,7 +64,7 @@ const LOOP_SIZES = [1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32]
  * Web Audio PlaybackEngine (seamless loops); the same decoded buffer feeds the
  * scratch engine and both waveform views.
  */
-export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) {
+export function PrepStrip({ track, playRequest = 0, onError, onNotify, fromDevice = false }: Props) {
   const qc = useQueryClient()
   const [playing, setPlaying] = useState(false)
   const [previewing, setPreviewing] = useState(false) // momentary hold-to-play active
@@ -214,7 +221,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     let cancelled = false
     setCols(null)
     setWaveStatus('loading')
-    analyzeWaveform(api.audioUrl(trackId))
+    analyzeWaveform(fromDevice ? api.sourceAudioUrl(trackId) : api.audioUrl(trackId))
       .then((res) => {
         if (cancelled) return
         setCols(res.cols)
@@ -245,7 +252,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     return () => {
       cancelled = true
     }
-  }, [trackId])
+  }, [trackId, fromDevice])
 
   // Fetch beatgrid + cue markers for the loaded track.
   useEffect(() => {
@@ -255,8 +262,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     }
     let cancelled = false
     setCueData(null)
-    api
-      .trackCues(trackId)
+    ;(fromDevice ? api.sourceTrackCues(trackId) : api.trackCues(trackId))
       .then((d) => {
         if (cancelled) return
         setCueData(d)
@@ -271,7 +277,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     return () => {
       cancelled = true
     }
-  }, [trackId])
+  }, [trackId, fromDevice])
 
   const toggle = () => {
     const eng = playbackRef.current

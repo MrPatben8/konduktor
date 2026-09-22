@@ -3,14 +3,30 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type PlaylistKind, type PlaylistNode } from '../api'
 import { useCaps } from '../lib/capabilities'
 import { SaveBar } from './SaveBar'
+import { DevicesSection } from './DevicesSection'
 
-export type Source = { kind: 'all' } | { kind: 'playlist'; id: string; name: string }
+/**
+ * Which view the main table is showing.
+ *
+ * `device*` variants are a browsed import SOURCE — a plugged-in stick — rather
+ * than the loaded collection. They are a view like any other, so the table, the
+ * toolbar and the deck need no special case; what differs is that a device is
+ * read-only, and that is carried by its CAPABILITIES rather than by this type,
+ * so no component has to ask "am I looking at a device?" before deciding what to
+ * offer.
+ */
+export type Source =
+  | { kind: 'all' }
+  | { kind: 'playlist'; id: string; name: string }
+  | { kind: 'device' }
+  | { kind: 'device-playlist'; id: string; name: string }
 
 interface Props {
   source: Source
   onSelect: (s: Source) => void
   onError: (msg: string) => void
   onOpenHistory: () => void
+  onImport: () => void
 }
 
 // Kind picks the icon; every behavioural question is answered by the node's own
@@ -170,7 +186,7 @@ function NodeRow({
   )
 }
 
-export function Sidebar({ source, onSelect, onError, onOpenHistory }: Props) {
+export function Sidebar({ source, onSelect, onError, onOpenHistory, onImport }: Props) {
   const qc = useQueryClient()
   // There is no per-node flag for "you may create a NEW playlist" — the node
   // flags describe existing nodes — so this is the library-level gate.
@@ -262,6 +278,13 @@ export function Sidebar({ source, onSelect, onError, onOpenHistory }: Props) {
           />
         ))}
       </div>
+
+      <DevicesSection
+        source={source}
+        onSelect={onSelect}
+        onError={onError}
+        onImport={onImport}
+      />
 
       <button
         onClick={onOpenHistory}

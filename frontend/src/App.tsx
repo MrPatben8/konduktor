@@ -20,6 +20,7 @@ import { EditTagsDialog } from './components/EditTagsDialog'
 import { PathMappingDialog } from './components/PathMappingDialog'
 import { HistoryPanel } from './components/HistoryPanel'
 import { PrepStrip } from './components/PrepStrip'
+import { ImportDialog } from './components/ImportDialog'
 
 function applyFilters(tracks: Track[], f: Filters): Track[] {
   const q = f.search.trim().toLowerCase()
@@ -55,6 +56,7 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false)
   const [prepTrack, setPrepTrack] = useState<Track | null>(null)
   const [playRequest, setPlayRequest] = useState(0) // bump → deck loads & auto-plays
+  const [importing, setImporting] = useState(false)
 
   const playTrack = useCallback((t: Track) => {
     setPrepTrack(t)
@@ -172,9 +174,72 @@ export default function App() {
     enabled: loaded && source.kind === 'playlist',
   })
 
+  // A browsed device. Separate queries and separate cache keys from the
+  // collection's: the two libraries can hold tracks with identical ids, and one
+  // shared key would serve a stick's track as if it were a collection track.
+  const viewingDevice = source.kind === 'device' || source.kind === 'device-playlist'
+  const deviceTracks = useQuery({
+    queryKey: ['source-tracks', 'all'],
+    queryFn: () => api.sourceTracks({ limit: 20000, sort: 'artist' }),
+    enabled: viewingDevice && source.kind === 'device',
+  })
+  const devicePlaylistTracks = useQuery({
+    queryKey: ['source-tracks', source.kind === 'device-playlist' ? source.id : null],
+    queryFn: () => api.sourcePlaylistTracks((source as { id: string }).id),
+    enabled: source.kind === 'device-playlist',
+  })
+  // The device's own capabilities — read-only — provided to the browsing half of
+  // the UI below. That is what makes every existing gate correct here without a
+  // single component asking whether it is looking at a device: inline editing,
+  // Edit Tags, the rating stars and all twelve deck edit handlers already gate
+  // on capabilities, and a device's say `writable: false`.
+  const deviceCaps = useQuery({
+    queryKey: ['source-capabilities'],
+    queryFn: api.sourceCapabilities,
+    enabled: viewingDevice,
+    staleTime: Infinity,
+  })
+  const openDevice = useQuery({ queryKey: ['source'], queryFn: api.source })
+
+  // What the VIEW can do, as opposed to what the loaded collection can do. While
+  // a device is being browsed these are its read-only capabilities, so the
+  // browsing half of the UI gates itself correctly with no new conditions.
+  // Falls back to the collection's until the device's resolve, so no frame
+  // renders without capabilities at all.
+  const viewCaps = viewingDevice
+    ? (deviceCaps.data ??
+      // Until the device's own capabilities arrive, assume READ-ONLY rather
+      // than falling back to the collection's. The fallback is the safe
+      // direction on purpose: guessing "writable" for one frame would offer an
+      // edit that, if taken, would be sent to the wrong library entirely.
+      { ...capabilities.data!, writable: false, readonly_cause: 'platform_incomplete' as const })
+    : capabilities.data!
+
+  const deviceLabel = openDevice.data?.label ?? 'device'
+  // One name for whatever is on screen, so the header and the status bar cannot
+  // disagree about what the user is looking at.
+  const viewName =
+    source.kind === 'all'
+      ? 'All Tracks'
+      : source.kind === 'device'
+        ? deviceLabel
+        : source.name
+
   const isAll = source.kind === 'all'
-  const tracks: Track[] = isAll ? (allTracks.data?.items ?? []) : (playlistTracks.data ?? [])
-  const loading = isAll ? allTracks.isLoading : playlistTracks.isLoading
+  const tracks: Track[] = viewingDevice
+    ? source.kind === 'device'
+      ? (deviceTracks.data?.items ?? [])
+      : (devicePlaylistTracks.data ?? [])
+    : isAll
+      ? (allTracks.data?.items ?? [])
+      : (playlistTracks.data ?? [])
+  const loading = viewingDevice
+    ? source.kind === 'device'
+      ? deviceTracks.isLoading
+      : devicePlaylistTracks.isLoading
+    : isAll
+      ? allTracks.isLoading
+      : playlistTracks.isLoading
   // Search / filters apply to both the library and playlists (the toolbar is
   // always visible). In a playlist a filtered view disables drag-reorder — see
   // `canReorder` below — so a partial order can't overwrite the full entry list.
@@ -301,8 +366,29 @@ export default function App() {
         />
       )}
 
+      {importing && (
+        <ImportDialog
+          playlistId={source.kind === 'device-playlist' ? source.id : null}
+          deviceLabel={deviceLabel}
+          onClose={() => setImporting(false)}
+          onDone={(msg) => {
+            setImporting(false)
+            notify('success', msg)
+          }}
+          onError={onError}
+        />
+      )}
+
       {/* Prep strip spans the top of the window; the library sits below it. */}
-      <PrepStrip track={prepTrack} playRequest={playRequest} onError={onError} onNotify={notify} />
+      <CapabilitiesContext.Provider value={viewCaps}>
+        <PrepStrip
+          track={prepTrack}
+          playRequest={playRequest}
+          onError={onError}
+          onNotify={notify}
+          fromDevice={viewingDevice}
+        />
+      </CapabilitiesContext.Provider>
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <Sidebar
@@ -310,8 +396,10 @@ export default function App() {
           onSelect={selectSource}
           onError={onError}
           onOpenHistory={() => setShowHistory(true)}
+          onImport={() => setImporting(true)}
         />
 
+        <CapabilitiesContext.Provider value={viewCaps}>
         <main className="relative flex min-w-0 flex-1 flex-col">
         {/* Search / filters / column settings — always visible. */}
         <Toolbar
@@ -322,21 +410,76 @@ export default function App() {
           onResetColumns={resetColumns}
           onOpenPathMapping={() => setShowPaths(true)}
         />
-        {!isAll && (
+        {(!isAll || viewingDevice) && (
           <div className="flex items-center gap-3 border-b border-line bg-ink-900 px-4 py-2">
-            <span className="text-[11px] text-accent">♫</span>
-            <span className="font-semibold text-text">{source.name}</span>
-            <span className="text-xs text-faint">
-              {filtersActive
-                ? `${filtered.length} of ${tracks.length} tracks · × to remove · clear the filter to reorder`
-                : `${tracks.length} tracks · drag ⠿ to reorder · × to remove`}
+            <span className={`text-[11px] ${viewingDevice ? 'text-gold' : 'text-accent'}`}>
+              {viewingDevice ? '⬒' : '♫'}
             </span>
+            <span className="font-semibold text-text">{viewName}</span>
+            {viewingDevice ? (
+              <>
+                <span className="text-xs text-faint">
+                  {filtersActive
+                    ? `${filtered.length} of ${tracks.length} tracks`
+                    : `${tracks.length} tracks`}
+                </span>
+                <span className="ml-auto flex items-center gap-2">
+                  <span className="rounded bg-ink-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gold">
+                    Device · read-only
+                  </span>
+                  <button
+                    onClick={() => setImporting(true)}
+                    className="rounded-md bg-accent px-2 py-1 text-xs font-medium text-ink-950 hover:brightness-110"
+                  >
+                    Import{source.kind === 'device-playlist' ? ' this playlist' : ' everything'}…
+                  </button>
+                </span>
+              </>
+            ) : (
+              <span className="text-xs text-faint">
+                {filtersActive
+                  ? `${filtered.length} of ${tracks.length} tracks · × to remove · clear the filter to reorder`
+                  : `${tracks.length} tracks · drag ⠿ to reorder · × to remove`}
+              </span>
+            )}
           </div>
         )}
 
         <div className="min-h-0 flex-1">
           {loading ? (
             <div className="flex h-full items-center justify-center text-muted">Loading…</div>
+          ) : viewingDevice ? (
+            /* A device uses the plain table, not the playlist one: a stick's
+               playlists cannot be reordered or have entries removed, so the
+               drag handle and the × would exist only to be inert. Selection is
+               omitted for the same reason — SelectionBar adds to the loaded
+               COLLECTION's playlists, and these ids belong to the device. */
+            filtered.length === 0 ? (
+              <div className="flex h-full flex-col items-center justify-center gap-1 text-muted">
+                <div className="text-lg">
+                  {tracks.length === 0 ? 'Nothing here' : 'No tracks match'}
+                </div>
+                <div className="text-sm text-faint">
+                  {tracks.length === 0
+                    ? 'This device has no tracks in view.'
+                    : 'Try clearing some filters.'}
+                </div>
+              </div>
+            ) : (
+              <TrackTable
+                tracks={filtered}
+                sorting={sorting}
+                onSortingChange={setSorting}
+                onRowContextMenu={(track, x, y) => setMenu({ track, x, y })}
+                onPlay={playTrack}
+                activeTrackId={prepTrack?.id ?? null}
+                columnVisibility={columnVisibility}
+                columnOrder={columnOrder}
+                columnSizing={columnSizing}
+                onColumnOrderChange={setColumnOrder}
+                onColumnSizingChange={setColumnSizing}
+              />
+            )
           ) : isAll ? (
             filtered.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-1 text-muted">
@@ -409,12 +552,13 @@ export default function App() {
         <StatusBar
           showing={filtered.length}
           total={tracks.length}
-          sourceName={isAll ? 'All Tracks' : source.name}
+          sourceName={viewName}
           loading={loading}
           collectionName={capabilities.data ? libraryName : null}
           onChangeCollection={() => setForcePicker(true)}
         />
         </main>
+        </CapabilitiesContext.Provider>
       </div>
     </div>
     </CapabilitiesContext.Provider>
