@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from . import __version__, history, prefs
 from .app_state import STATE
 from .core import auto_hotcues as ah
+from . import importer
 from .core import registry
 from .core.adapter import (
     AdapterError,
@@ -26,6 +27,7 @@ from .core.adapter import (
     Unsupported,
 )
 from .core.capabilities import Capabilities
+from .jobs import JOBS
 from .core.pathmap import PathMapping
 from .schemas import (
     AutoGridRequest,
@@ -47,6 +49,8 @@ from .schemas import (
     GridMarkerEdit,
     ReplaceGrid,
     HistoryEntry,
+    ImportRequest,
+    JobStatus,
     OpenCollection,
     OpenSource,
     PathMappingInfo,
@@ -833,3 +837,84 @@ def source_track_audio(track_id: str) -> FileResponse:
         raise HTTPException(404, f"Audio file not found: {path}")
     mime = _AUDIO_MIME.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(path, media_type=mime)
+
+
+# ---- import -----------------------------------------------------------
+#
+# The only operation in the app that can run for minutes, so it is the only one
+# that is a JOB rather than a request. See `jobs.py` for why that is polling and
+# threads rather than something fancier.
+
+
+def _import_plan(body: ImportRequest):
+    source, dest = require_source(), require_adapter()
+    destination = Path(body.destination).expanduser()
+    return source, dest, destination, importer.plan(
+        source,
+        dest,
+        destination,
+        track_ids=body.track_ids,
+        playlist_ids=body.playlist_ids,
+    )
+
+
+@app.post("/api/import/preview")
+def import_preview(body: ImportRequest) -> dict:
+    """What an import would do: counts, size, missing files, duplicates, space.
+
+    Computed fresh on every call and never stored — a stick can be re-exported
+    between the preview and the import, and a stale preview is worse than none.
+    """
+    _source, _dest, destination, plan = _import_plan(body)
+    return plan.as_dict(free_bytes=importer.free_bytes(destination))
+
+
+@app.post("/api/import", response_model=JobStatus)
+def start_import(body: ImportRequest) -> JobStatus:
+    """Start an import. Returns immediately; poll the job for progress."""
+    source, dest, destination, plan = _import_plan(body)
+    if not plan.importable:
+        raise HTTPException(400, "Nothing to import (no tracks, or none of their files exist)")
+    free = importer.free_bytes(destination)
+    if free is not None and free < plan.total_bytes + importer.SPACE_HEADROOM:
+        raise HTTPException(
+            400,
+            f"Not enough space: {plan.total_bytes / 1e9:.1f} GB needed, "
+            f"{free / 1e9:.1f} GB free at {destination}",
+        )
+    # One at a time: two concurrent imports would race on filename collisions and
+    # on the destination library's save.
+    if JOBS.active("import"):
+        raise HTTPException(409, "An import is already running")
+
+    folder_name = body.folder_name
+    if folder_name is None and STATE.source is not None:
+        folder_name = STATE.source.capabilities().save.library_label
+
+    job = JOBS.submit(
+        "import",
+        lambda handle: importer.run(source, dest, plan, handle, folder_name=folder_name),
+    )
+    return JobStatus(**job.as_dict())
+
+
+@app.get("/api/jobs/{job_id}", response_model=JobStatus)
+def job_status(job_id: str) -> JobStatus:
+    job = JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(404, f"No such job: {job_id}")
+    return JobStatus(**job.as_dict())
+
+
+@app.post("/api/jobs/{job_id}/cancel", response_model=JobStatus)
+def cancel_job(job_id: str) -> JobStatus:
+    """Ask a job to stop.
+
+    A REQUEST, not a kill: the job stops at its next checkpoint and cleans up
+    after itself, so the status stays "running" until it has actually done so.
+    """
+    job = JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(404, f"No such job: {job_id}")
+    JOBS.cancel(job_id)
+    return JobStatus(**job.as_dict())

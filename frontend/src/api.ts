@@ -250,6 +250,51 @@ export interface CollectionOptions {
 // never the fallback when nothing is loaded, and sharing a type would invite
 // components to treat the two as interchangeable.
 
+// ---- import ----
+//
+// Import is the only operation that can run for minutes, so it is the only one
+// that is a JOB rather than a request: start it, then poll the job.
+
+export interface ImportRequest {
+  /** Folder the audio is copied into. */
+  destination: string
+  /** Empty track_ids AND empty playlist_ids means the whole drive. */
+  track_ids?: string[]
+  playlist_ids?: string[]
+  /** Playlists land in a folder named this; null keeps them at the root. */
+  folder_name?: string | null
+}
+
+export interface ImportPreview {
+  tracks: number
+  importable: number
+  /** Titles whose audio file is not there — reported, then skipped. */
+  missing: string[]
+  /** Titles the collection already has by filename. A warning, not a block. */
+  duplicates: string[]
+  playlists: string[]
+  total_bytes: number
+  destination: string | null
+  free_bytes: number | null
+  enough_space: boolean | null
+}
+
+export type JobState = 'running' | 'done' | 'failed' | 'cancelled'
+
+export interface JobStatus {
+  id: string
+  kind: string
+  state: JobState
+  /** 0 until the job knows its size — show an indeterminate bar until positive. */
+  total: number
+  done: number
+  message: string
+  result: Record<string, unknown> | null
+  error: string | null
+  started_at: number
+  finished_at: number | null
+}
+
 export interface SourceCandidate {
   path: string
   /** What a person recognises, e.g. "OneLibrary — Hardy". */
@@ -509,6 +554,15 @@ export const api = {
   /** Audition a track off the stick before importing it. */
   sourceAudioUrl: (trackId: string) =>
     `${API_BASE}/api/source/tracks/audio?track_id=${encodeURIComponent(trackId)}`,
+  // ---- import ----
+  importPreview: (body: ImportRequest) => send<ImportPreview>('POST', '/api/import/preview', body),
+  /** Starts the job and returns immediately — poll `job()` for progress. */
+  startImport: (body: ImportRequest) => send<JobStatus>('POST', '/api/import', body),
+  job: (id: string) => getJSON<JobStatus>(`/api/jobs/${encodeURIComponent(id)}`),
+  /** A request, not a kill: the job stops at its next checkpoint and cleans up,
+   *  so expect `state` to stay 'running' for a moment after this resolves. */
+  cancelJob: (id: string) =>
+    send<JobStatus>('POST', `/api/jobs/${encodeURIComponent(id)}/cancel`),
   uploadArt: async (trackId: string, file: File) => {
     const fd = new FormData()
     fd.append('track_id', trackId)

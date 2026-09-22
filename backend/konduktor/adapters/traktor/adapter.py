@@ -116,6 +116,10 @@ class TraktorAdapter:
         with _translate():
             return self._store.create_playlist(name, parent_id)
 
+    def create_folder(self, name: str, parent_id: str | None = None) -> str:
+        with _translate():
+            return self._store.create_folder(name, parent_id)
+
     def rename_playlist(self, node_id: str, name: str) -> None:
         with _translate():
             self._store.rename_playlist(node_id, name)

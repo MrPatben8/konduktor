@@ -240,6 +240,42 @@ class TraktorStore:
             self.dirty = True
             return new_uuid
 
+    def create_folder(self, name: str, parent_id: str | None = None) -> str:
+        """Create a playlist FOLDER and return its synthetic id.
+
+        A folder has no UUID of its own in the NML — it is identified by its path
+        of names — so the id is built the same way `_to_model` builds it, and the
+        two must agree or the folder will be invisible to the very next call.
+
+        An existing folder of the same name in the same parent is RETURNED rather
+        than duplicated. Import creates a folder named after the drive, and a
+        second import from the same stick should land beside the first rather
+        than next to an identically-named twin.
+        """
+        with self._lock:
+            parent = self._find_folder(parent_id)
+            existing = next(
+                (
+                    c
+                    for c in self._children(parent)
+                    if (c.type or "FOLDER") == "FOLDER" and c.name == name
+                ),
+                None,
+            )
+            prefix = parent_id[len("fld:"):] if parent_id and parent_id.startswith("fld:") else ""
+            folder_id = "fld:" + "/".join([p for p in (prefix, name) if p])
+            if existing is not None:
+                return folder_id
+            if parent.subnodes is None:
+                parent.subnodes = Subnodestype(node=[], count=0)
+            parent.subnodes.node.append(
+                Nodetype(type="FOLDER", name=name, subnodes=Subnodestype(node=[], count=0))
+            )
+            parent.subnodes.count = len(parent.subnodes.node)
+            self._note("playlist-create-folder", name)
+            self.dirty = True
+            return folder_id
+
     def rename_playlist(self, playlist_uuid: str, name: str) -> None:
         with self._lock:
             node = self._find_playlist_node(playlist_uuid)

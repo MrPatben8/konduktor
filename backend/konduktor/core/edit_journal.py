@@ -126,20 +126,24 @@ class EditJournal:
         for c in self.changes:
             if c.scope == "playlist" and c.target:
                 pl_names.setdefault(c.op, []).append(c.target)
-        for op, verb in (
-            ("create", "created"),
-            ("rename", "renamed"),
-            ("delete", "deleted"),
-            ("entries", "reordered"),
+        # A folder is its own op so the message does not call it a playlist —
+        # "created playlists 'Hardy', 'demos'" reads as two playlists when one is
+        # the folder the other went into.
+        for op, verb, noun in (
+            ("create", "created", "playlist"),
+            ("create-folder", "created", "folder"),
+            ("rename", "renamed", "playlist"),
+            ("delete", "deleted", "playlist"),
+            ("entries", "reordered", "playlist"),
         ):
             names = pl_names.get(op, [])
             if not names:
                 continue
             if len(names) <= 2:
                 joined = ", ".join(f"'{n}'" for n in names)
-                parts.append(f"{verb} playlist{'' if len(names) == 1 else 's'} {joined}")
+                parts.append(f"{verb} {noun}{'' if len(names) == 1 else 's'} {joined}")
             else:
-                parts.append(f"{verb} {len(names)} playlists")
+                parts.append(f"{verb} {len(names)} {noun}s")
 
         # --- hotcues: net change in count, scoped by how many tracks were touched ---
         hc_add = hc_del = 0

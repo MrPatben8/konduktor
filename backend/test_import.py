@@ -14,10 +14,13 @@ guarding, and they pull in opposite directions:
 Runs against a temp copy of the real Traktor collection (gotcha 2: it is real,
 irreplaceable data) and the checked-in OneLibrary fixture drive.
 """
+import logging
 import os
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import warnings
 from difflib import unified_diff
 from pathlib import Path
@@ -271,6 +274,177 @@ state.close_source()
 check("closing releases the source", not state.source_loaded)
 check("but not the destination", state.loaded)
 check("closing twice is safe", state.close_source() is None)
+
+print("== folders ==")
+# Imported playlists land in a folder named after the drive, and the protocol had
+# no folder verb until this feature needed one.
+nml4, _, _ = fresh_collection()
+dest4 = TraktorAdapter(nml4)
+fid = dest4.create_folder("Hardy")
+check("a folder can be created", fid.startswith("fld:"), fid)
+# Re-importing the same stick must land BESIDE the first import, not next to an
+# identically-named twin.
+check("creating it again returns the same folder", dest4.create_folder("Hardy") == fid)
+pid = dest4.create_playlist("demos", fid)
+node = next((n for n in dest4.playlist_tree() if n.id == fid), None)
+check("the folder is in the tree", node is not None and node.kind == "folder")
+check("and the playlist is inside it",
+      node is not None and [c.name for c in node.children] == ["demos"])
+check("read-only sources refuse to make folders",
+      _raises(lambda: source.create_folder("x"), Unsupported))
+
+print("== the job registry ==")
+from konduktor.jobs import JobCancelled, JobRegistry  # noqa: E402
+
+reg = JobRegistry()
+job = reg.submit("test", lambda h: 41 + 1)
+for _ in range(200):
+    if job.finished:
+        break
+    time.sleep(0.01)
+check("a job runs and reports its result", job.state == "done" and job.result == 42)
+
+def boom(h):
+    raise RuntimeError("nope")
+
+
+# The registry logs a traceback for a failed job, which is right in production
+# and alarming in test output — a deliberate failure should not look like a
+# real one to someone scanning the suite.
+logging.getLogger("konduktor.jobs").setLevel(logging.CRITICAL)
+failing = reg.submit("test", boom)
+for _ in range(200):
+    if failing.finished:
+        break
+    time.sleep(0.01)
+check("a failing job is reported, not swallowed",
+      failing.state == "failed" and "nope" in (failing.error or ""))
+logging.getLogger("konduktor.jobs").setLevel(logging.NOTSET)
+
+# Cancel is a REQUEST: the job stops at its next checkpoint, so the state must
+# not flip until the work has actually unwound and cleaned up.
+started = threading.Event()
+
+def slow(h):
+    started.set()
+    while True:
+        h.raise_if_cancelled()
+        time.sleep(0.01)
+
+running = reg.submit("test", slow)
+started.wait(2)
+check("cancel is accepted while running", reg.cancel(running.id))
+for _ in range(400):
+    if running.finished:
+        break
+    time.sleep(0.01)
+check("and the job ends up cancelled", running.state == "cancelled")
+check("cancelling a finished job does nothing", not reg.cancel(running.id))
+check("cancelling an unknown job does nothing", not reg.cancel("nope"))
+
+print("== import: plan and run ==")
+from konduktor import importer  # noqa: E402
+
+nml5, music5, _ = fresh_collection()
+dest5 = TraktorAdapter(nml5)
+plan5 = importer.plan(source, dest5, music5)
+check("the plan covers the whole drive when nothing is selected", len(plan5.tracks) == 2)
+check("it finds the playlist", [n for _, n in plan5.playlists] == ["demos"])
+check("it sizes the copy", plan5.total_bytes > 0)
+check("nothing is missing", plan5.importable == plan5.tracks)
+
+# Selecting a playlist AUTO-INCLUDES its tracks, deduplicated.
+pl_id = importer._all_playlists(source)[0][0]
+plan_pl = importer.plan(source, dest5, music5, playlist_ids=[pl_id])
+check("selecting a playlist pulls in its tracks", len(plan_pl.tracks) == 2)
+plan_both = importer.plan(
+    source, dest5, music5, playlist_ids=[pl_id],
+    track_ids=[t.id for t in source.tracks],
+)
+check("a track in both a selection and a playlist is copied once",
+      len(plan_both.tracks) == 2, str(len(plan_both.tracks)))
+
+
+class _Handle:
+    """A JobHandle stand-in, so the import can be driven without a thread."""
+
+    def __init__(self, cancel_after=None):
+        self.messages = []
+        self.done = 0
+        self.total = 0
+        self._cancel_after = cancel_after
+        self.cancelled = False
+
+    def progress(self, done=None, total=None, message=None):
+        if done is not None:
+            self.done = done
+        if total is not None:
+            self.total = total
+        if message is not None:
+            self.messages.append(message)
+        if self._cancel_after is not None and self.done >= self._cancel_after:
+            self.cancelled = True
+
+    def raise_if_cancelled(self):
+        if self.cancelled:
+            raise JobCancelled()
+
+
+handle = _Handle()
+result = importer.run(source, dest5, plan5, handle, folder_name="Hardy")
+check("the import reports what it did", result["tracks"] == 2 and result["playlists"] == 1)
+check("progress reached the total", handle.total > 0 and handle.done == handle.total,
+      f"{handle.done}/{handle.total}")
+check("it said what it was doing", any("Copying" in m for m in handle.messages))
+check("the audio really was copied",
+      sorted(p.name for p in music5.iterdir()) == ["Demo Track 1.mp3", "Demo Track 2.mp3"])
+check("the tracks are in the collection", len(dest5.tracks) == 8485 + 2)
+tree5 = dest5.playlist_tree()
+folder = next((n for n in tree5 if n.name == "Hardy"), None)
+check("the playlist landed in a folder named after the drive",
+      folder is not None and [c.name for c in folder.children] == ["demos"])
+check("and the playlist has its tracks",
+      folder is not None and folder.children[0].count == 2)
+
+print("== import: cancelling rolls back ==")
+nml6, music6, original6 = fresh_collection()
+dest6 = TraktorAdapter(nml6)
+plan6 = importer.plan(source, dest6, music6)
+# Cancel mid-copy — which is the case that used to leave a half-written file
+# behind, because cleanup only covered COMPLETED copies.
+cancelling = _Handle(cancel_after=1)
+cancelled_ok = _raises(
+    lambda: importer.run(source, dest6, plan6, cancelling, folder_name="Hardy"),
+    JobCancelled,
+)
+check("a cancelled import raises rather than half-finishing", cancelled_ok)
+left = sorted(p.name for p in music6.iterdir()) if music6.exists() else []
+check("no audio is left orphaned, including the file being written", left == [], str(left))
+check("the collection on disk is untouched", nml6.read_bytes() == original6)
+check("and nothing was added in memory either", len(dest6.tracks) == 8485)
+# The retry must not have to suffix around debris from the cancelled run.
+retry = _Handle()
+importer.run(source, dest6, plan6, retry, folder_name="Hardy")
+check("a retry after a cancel copies under the original names",
+      sorted(p.name for p in music6.iterdir()) == ["Demo Track 1.mp3", "Demo Track 2.mp3"],
+      str(sorted(p.name for p in music6.iterdir())))
+
+print("== import: missing audio ==")
+nml7, music7, _ = fresh_collection()
+dest7 = TraktorAdapter(nml7)
+plan7 = importer.plan(source, dest7, music7)
+plan7.tracks[0].missing = True
+check("a missing file is excluded from the copy", len(plan7.importable) == 1)
+check("but still reported", len(plan7.as_dict()["missing"]) == 1)
+r7 = importer.run(source, dest7, plan7, _Handle(), folder_name="Hardy")
+check("the import proceeds without it", r7["tracks"] == 1 and r7["skipped_missing"] == 1)
+
+print("== import: duplicate detection ==")
+plan8 = importer.plan(source, dest5, music5)
+check("re-importing flags the tracks as already present",
+      all(t.duplicate for t in plan8.tracks), str([t.duplicate for t in plan8.tracks]))
+check("but does not refuse them — the user chose to add everything",
+      len(plan8.importable) == 2)
 
 print()
 print("RESULT:", "FAILED" if failed else "ALL PASSED")

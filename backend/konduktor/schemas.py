@@ -212,3 +212,32 @@ class SourceStatus(BaseModel):
 
 class OpenSource(BaseModel):
     path: str
+
+
+class ImportRequest(BaseModel):
+    """What to import, and where its audio should land.
+
+    Empty `track_ids` AND empty `playlist_ids` means the whole drive — an
+    explicit "import everything" rather than a mistake, matching the settled
+    export design's separate "export entire library" action.
+    """
+
+    destination: str  # folder the audio is copied into
+    track_ids: list[str] = []
+    playlist_ids: list[str] = []
+    # Playlists land in a folder named after the drive. Null keeps them at the
+    # root; the default is filled in from the source's label.
+    folder_name: str | None = None
+
+
+class JobStatus(BaseModel):
+    id: str
+    kind: str
+    state: str  # running | done | failed | cancelled
+    total: int
+    done: int
+    message: str
+    result: dict | None = None
+    error: str | None = None
+    started_at: float
+    finished_at: float | None = None

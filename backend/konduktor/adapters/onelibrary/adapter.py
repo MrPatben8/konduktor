@@ -251,6 +251,9 @@ class OneLibraryAdapter:
     def create_playlist(self, name: str, parent_id: str | None = None) -> str:
         self._refuse("Creating playlists")
 
+    def create_folder(self, name: str, parent_id: str | None = None) -> str:
+        self._refuse("Creating playlist folders")
+
     def rename_playlist(self, node_id: str, name: str) -> None:
         self._refuse("Renaming playlists")
 
