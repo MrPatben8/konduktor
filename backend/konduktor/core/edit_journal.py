@@ -62,8 +62,25 @@ class EditJournal:
         }
 
     def edited_tracks(self) -> set[str]:
-        """Tracks whose metadata or artwork changed."""
-        return {c.target for c in self.changes if c.scope == "track" and c.target}
+        """Tracks whose metadata or artwork changed.
+
+        Excludes tracks that were ADDED. They are not edits: nothing about them
+        changed, they simply did not exist before. Counting them here would both
+        mislabel the version-history message and drag them through the file-tag
+        sync, which has nothing to write for a track whose fields were never
+        touched.
+        """
+        return {
+            c.target
+            for c in self.changes
+            if c.scope == "track" and c.target and c.op != "add"
+        }
+
+    def added_tracks(self) -> set[str]:
+        """Tracks put into the library that it did not previously hold."""
+        return {
+            c.target for c in self.changes if c.scope == "track" and c.op == "add" and c.target
+        }
 
     def retarget(self, old_id: str, new_id: str) -> None:
         """Follow a track whose id changed (a path remap rewrites LOCATIONs, and
@@ -90,6 +107,14 @@ class EditJournal:
 
         def tracks(n: int) -> str:
             return f"{n} track{'' if n == 1 else 's'}"
+
+        # --- tracks added to the library (import) ---
+        # First, because it is the largest-grained thing that can have happened:
+        # "added 52 tracks" is the headline, and the cue/grid counts that follow
+        # are mostly describing those same tracks' imported prep.
+        n_added = len(self.added_tracks())
+        if n_added:
+            parts.append(f"added {tracks(n_added)}")
 
         # --- track metadata + cover art (already counted per-track) ---
         n_meta = len(self.edited_tracks() | (extra_tracks or set()))

@@ -34,6 +34,7 @@ from traktor_nml_utils.models.collection import (
     Entrytype,
     GridType,
     Infotype,
+    Locationtype,
     Nodetype,
     Playlisttype,
     Primarykeytype,
@@ -306,6 +307,80 @@ class TraktorStore:
                     continue  # unknown / read-only fields are ignored
                 self._journal.record("track", "set", track_id, k)
             self.dirty = True
+
+    # ---- adding tracks --------------------------------------------------
+    def add_entry(self, track, audio_path: Path) -> str:
+        """Append a brand-new ENTRY for `audio_path` and return its track id.
+
+        The one place Konduktor builds a collection entry instead of editing one
+        Traktor wrote. Two rules make that safe:
+
+          * **Append only.** The new ENTRY goes on the end of COLLECTION and
+            nothing else is touched, so every existing entry still renders the
+            bytes it was parsed from. `test_save_fidelity.py` checks exactly
+            that rather than trusting it.
+          * **The primary key must be free.** Traktor keys playlist entries on
+            ``volume+dir+file``, so two ENTRYs sharing one is a corrupt
+            collection, not a duplicate track. Importing copies audio to a fresh
+            filename, which is what keeps repeat imports honest.
+
+        Deliberately left empty: ``audio_id`` (Traktor's analysis fingerprint)
+        and ``loudness``. Both are outputs of Traktor's own analysis and cannot
+        be computed here; Traktor re-analyses a track that has none. Writing a
+        plausible-looking fingerprint would be inventing data.
+        """
+        with self._lock:
+            volume, dir_, file = os_path_to_location(Path(audio_path))
+            key = f"{volume}{dir_}{file}"
+            if key in self._entry_by_key:
+                raise PlaylistError(
+                    f"The collection already has an entry for {audio_path}"
+                )
+
+            info = Infotype(
+                genre=getattr(track, "genre", None) or None,
+                label=getattr(track, "label", None) or None,
+                comment=getattr(track, "comment", None) or None,
+                remixer=getattr(track, "remixer", None) or None,
+                producer=getattr(track, "producer", None) or None,
+                mix=getattr(track, "mix", None) or None,
+                key=getattr(track, "key", None) or None,
+                bitrate=getattr(track, "bitrate", None) or None,
+                playcount=getattr(track, "playcount", None) or None,
+                release_date=getattr(track, "release_date", None) or None,
+                import_date=getattr(track, "import_date", None) or None,
+                # Traktor's RANKING is stars x 51; an unrated track has no
+                # attribute at all rather than a zero.
+                ranking=(max(0, min(5, int(getattr(track, "rating", 0) or 0))) * 51) or None,
+                playtime=getattr(track, "length", None) or None,
+            )
+            album = None
+            if getattr(track, "album", None):
+                album = Albumtype(title=track.album)
+
+            bpm = getattr(track, "bpm", None)
+            entry = Entrytype(
+                location=Locationtype(volume=volume, dir=dir_, file=file),
+                title=getattr(track, "title", None) or None,
+                artist=getattr(track, "artist", None) or None,
+                album=album,
+                info=info,
+                # TEMPO mirrors the first grid marker. It is set here from the
+                # projected BPM so a track with no grid still shows a tempo;
+                # `replace_grid` overwrites it from the markers when they land.
+                tempo=Tempotype(bpm=float(bpm)) if bpm else None,
+                cue_v2=[],
+            )
+            self._nml.collection.entry.append(entry)
+            self._entry_by_key[key] = entry
+            # `<COLLECTION ENTRIES="N">` is a real count Traktor writes and
+            # reads, not decoration. No existing command changes how many
+            # entries there are, so nothing has ever had to maintain it —
+            # leaving it stale is a corrupt file that still looks well-formed.
+            self._nml.collection.entries = len(self._nml.collection.entry)
+            self._note("track", "add", key)
+            self.dirty = True
+            return key
 
     def iter_entries(self):
         """Every collection ENTRY in document order.

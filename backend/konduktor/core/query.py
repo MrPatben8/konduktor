@@ -38,6 +38,25 @@ class TrackIndex:
     def get(self, track_id: str) -> Track | None:
         return self.by_key.get(track_id)
 
+    def add(self, track: Track) -> None:
+        """Put a track the projection has never seen into it.
+
+        `replace` deliberately ignores an unknown id — it exists to refresh, and
+        silently inventing a track would hide a bug. Adding is a different
+        intent and needs saying out loud, which is why importing a track needs
+        this rather than being able to reuse `replace`.
+
+        An id that is already present is refreshed instead of duplicated:
+        `by_key` could not represent two, so appending would desynchronise it
+        from `tracks`.
+        """
+        with self._lock:
+            if track.id in self.by_key:
+                self.replace(track)
+                return
+            self.tracks.append(track)
+            self.by_key[track.id] = track
+
     def replace(self, track: Track) -> None:
         """Refresh one track's projection in place.
 

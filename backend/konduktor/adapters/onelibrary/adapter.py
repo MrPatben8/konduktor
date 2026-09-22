@@ -236,6 +236,9 @@ class OneLibraryAdapter:
     def _refuse(self, what: str):
         raise Unsupported(self._readonly_reason(what))
 
+    def add_tracks(self, items: list) -> list[str]:
+        self._refuse("Adding tracks")
+
     def set_track_metadata(self, track_id: str, fields: dict) -> Track | None:
         self._refuse("Editing track metadata")
 

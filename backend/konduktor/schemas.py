@@ -180,3 +180,35 @@ from .core.model import (  # noqa: E402,F401
     TrackCues,
     TrackPage,
 )
+
+
+# ---- import sources ---------------------------------------------------
+#
+# A SOURCE is a library being read FROM — a plugged-in OneLibrary stick whose
+# tracks are about to be imported. It is deliberately not a `CollectionStatus`:
+# a source is never saved, never edited and never the fallback when nothing is
+# loaded, so reusing the loaded-library shape would invite routes to treat the
+# two as interchangeable.
+
+
+class SourceCandidate(BaseModel):
+    """A removable library Konduktor can currently see."""
+
+    path: str
+    label: str  # what a person recognises, e.g. "OneLibrary — Hardy"
+    platform: str
+    tracks: int | None = None  # None until it is opened; a probe would be slow
+    modified: float | None = None
+
+
+class SourceStatus(BaseModel):
+    loaded: bool
+    path: str | None = None
+    label: str | None = None
+    platform: str | None = None
+    tracks: int | None = None
+    playlists: int | None = None
+
+
+class OpenSource(BaseModel):
+    path: str

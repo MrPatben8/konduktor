@@ -48,6 +48,7 @@ from .schemas import (
     ReplaceGrid,
     HistoryEntry,
     OpenCollection,
+    OpenSource,
     PathMappingInfo,
     PlaylistNode,
     PrefixSuggestions,
@@ -56,6 +57,8 @@ from .schemas import (
     RenamePlaylist,
     SaveResult,
     SetEntries,
+    SourceCandidate,
+    SourceStatus,
     SetCue,
     SetCueType,
     SetGridLock,
@@ -666,3 +669,167 @@ def clear_history() -> dict:
     require_adapter()
     history.clear_history(STATE.path)
     return {"status": "cleared"}
+
+
+# ---- import sources ---------------------------------------------------
+#
+# A SOURCE is a library being read FROM, open alongside the loaded one. Its
+# routes are read-only by construction: there is no source equivalent of any
+# command, so no route here can be confused about which library it targets.
+
+
+def require_source() -> LibraryAdapter:
+    """The open source, or a 409."""
+    if not STATE.source_loaded:
+        raise HTTPException(409, "No source library open")
+    assert STATE.source is not None
+    return STATE.source
+
+
+def _source_status() -> SourceStatus:
+    if not STATE.source_loaded:
+        return SourceStatus(loaded=False)
+    source = STATE.source
+    caps = source.capabilities()
+    return SourceStatus(
+        loaded=True,
+        path=str(STATE.source_path),
+        label=caps.save.library_label,
+        platform=caps.platform,
+        tracks=len(source.tracks),
+        playlists=source.playlist_count(),
+    )
+
+
+@app.get("/api/sources", response_model=list[SourceCandidate])
+def sources() -> list[SourceCandidate]:
+    """Every removable library plugged in right now.
+
+    Unlike `/api/library/options`, this genuinely changes between two calls a
+    second apart — a stick is whatever is mounted — so the UI is expected to
+    poll it rather than read it once at startup.
+
+    Only read-only platforms are offered. A source is a thing to import FROM,
+    and a writable library appearing here would invite someone to open their own
+    collection as a source of itself.
+    """
+    out: list[SourceCandidate] = []
+    for driver in registry.drivers():
+        try:
+            found = driver.detect()
+        except OSError:
+            continue
+        for candidate in found:
+            path = Path(candidate["path"])
+            # Removable libraries are the ones discovery finds by scanning mount
+            # points. Ask the driver rather than hard-coding which platform that
+            # is, so a future Serato-on-a-stick needs no change here.
+            if not getattr(driver, "removable", False):
+                continue
+            out.append(
+                SourceCandidate(
+                    path=str(path),
+                    label=candidate.get("label") or path.name,
+                    platform=driver.platform,
+                    modified=candidate.get("modified"),
+                )
+            )
+    return out
+
+
+@app.get("/api/source", response_model=SourceStatus)
+def source_status() -> SourceStatus:
+    return _source_status()
+
+
+@app.post("/api/source/open", response_model=SourceStatus)
+def open_source(body: OpenSource) -> SourceStatus:
+    path = Path(body.path).expanduser()
+    # NOT `is_file()`, unlike opening a collection: a OneLibrary source is a
+    # DRIVE, so the thing the user picks is a directory.
+    if not path.exists():
+        raise HTTPException(400, f"Not found: {path}")
+    try:
+        STATE.open_source(path)
+    except ValueError as ex:
+        raise HTTPException(400, str(ex))
+    except AdapterError as ex:
+        raise HTTPException(400, f"Not a library Konduktor can read: {ex}")
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(400, f"Could not open that source: {ex}")
+    return _source_status()
+
+
+@app.delete("/api/source", response_model=SourceStatus)
+def close_source() -> SourceStatus:
+    """Close the source and release its file handle.
+
+    Worth calling rather than leaving to chance: the source is on a removable
+    drive, and a held handle is what stops a stick ejecting.
+    """
+    STATE.close_source()
+    return _source_status()
+
+
+@app.get("/api/source/capabilities", response_model=Capabilities)
+def source_capabilities() -> Capabilities:
+    return require_source().capabilities()
+
+
+@app.get("/api/source/tracks", response_model=TrackPage)
+def source_tracks(
+    q: str | None = None,
+    genre: str | None = None,
+    key: str | None = None,
+    bpm_min: float | None = None,
+    bpm_max: float | None = None,
+    rating_min: int | None = Query(None, ge=0, le=5),
+    has_cues: bool | None = None,
+    sort: str = "artist",
+    order: str = Query("asc", pattern="^(asc|desc)$"),
+    limit: int = Query(100, ge=1, le=20000),
+    offset: int = Query(0, ge=0),
+) -> TrackPage:
+    return require_source().query_tracks(
+        q=q, genre=genre, key=key, bpm_min=bpm_min, bpm_max=bpm_max,
+        rating_min=rating_min, has_cues=has_cues, sort=sort, order=order,
+        limit=limit, offset=offset,
+    )
+
+
+@app.get("/api/source/playlists", response_model=list[PlaylistNode])
+def source_playlists() -> list[PlaylistNode]:
+    return require_source().playlist_tree()
+
+
+@app.get("/api/source/playlists/{playlist_id}/tracks", response_model=list[Track])
+def source_playlist_tracks(playlist_id: str) -> list[Track]:
+    tracks = require_source().playlist_tracks(playlist_id)
+    if tracks is None:
+        raise HTTPException(404, f"Playlist not found: {playlist_id}")
+    return tracks
+
+
+@app.get("/api/source/tracks/cues", response_model=TrackCues)
+def source_track_cues(track_id: str) -> TrackCues:
+    cues = require_source().track_cues(track_id)
+    if cues is None:
+        raise HTTPException(404, "Track not found")
+    return cues
+
+
+@app.get("/api/source/tracks/audio")
+def source_track_audio(track_id: str) -> FileResponse:
+    """Stream a track's audio straight off the source drive.
+
+    So the deck can audition a track BEFORE importing it, which is most of the
+    reason the stick is browsable in the ordinary table rather than in a picker
+    dialog.
+    """
+    path = require_source().audio_path(track_id)
+    if path is None:
+        raise HTTPException(404, "Track not found")
+    if not path.exists():
+        raise HTTPException(404, f"Audio file not found: {path}")
+    mime = _AUDIO_MIME.get(path.suffix.lower(), "application/octet-stream")
+    return FileResponse(path, media_type=mime)

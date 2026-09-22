@@ -14,6 +14,11 @@ log = logging.getLogger(__name__)
 class OneLibraryDriver:
     platform = "onelibrary"
     display_name = "OneLibrary"
+    # This platform's libraries live on plugged-in drives rather than at a
+    # fixed path, so `detect()` genuinely changes between calls and the app
+    # offers them as IMPORT SOURCES. Declared rather than inferred from the
+    # platform name, so a future Serato-on-a-stick needs no change upstream.
+    removable = True
     suffixes = (".db",)
     library_label = "exportLibrary.db"
 

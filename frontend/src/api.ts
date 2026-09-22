@@ -242,6 +242,33 @@ export interface CollectionOptions {
   recent: CollectionCandidate | null // last opened (may no longer exist)
 }
 
+// ---- import sources ----
+//
+// A SOURCE is a library being read FROM — a plugged-in OneLibrary stick whose
+// tracks are about to be imported — open alongside the loaded collection. It is
+// deliberately NOT a CollectionStatus: a source is never saved, never edited and
+// never the fallback when nothing is loaded, and sharing a type would invite
+// components to treat the two as interchangeable.
+
+export interface SourceCandidate {
+  path: string
+  /** What a person recognises, e.g. "OneLibrary — Hardy". */
+  label: string
+  platform: Platform
+  /** Null until it is opened; probing every drive would be slow. */
+  tracks: number | null
+  modified: number | null
+}
+
+export interface SourceStatus {
+  loaded: boolean
+  path: string | null
+  label: string | null
+  platform: Platform | null
+  tracks: number | null
+  playlists: number | null
+}
+
 export interface FsEntry {
   name: string
   path: string
@@ -463,6 +490,25 @@ export const api = {
     send<TrackCues>('DELETE', `/api/tracks/grid?track_id=${encodeURIComponent(trackId)}`),
   setGridLock: (trackId: string, locked: boolean) =>
     send<TrackCues>('PATCH', '/api/tracks/grid/lock', { track_id: trackId, locked }),
+  // ---- import sources ----
+  // `sources()` genuinely changes between calls — a stick is whatever is
+  // mounted — so callers are expected to poll it rather than read it once.
+  sources: () => getJSON<SourceCandidate[]>('/api/sources'),
+  source: () => getJSON<SourceStatus>('/api/source'),
+  openSource: (path: string) => send<SourceStatus>('POST', '/api/source/open', { path }),
+  /** Releases the drive's file handle — without this a stick will not eject. */
+  closeSource: () => send<SourceStatus>('DELETE', '/api/source'),
+  sourceCapabilities: () => getJSON<Capabilities>('/api/source/capabilities'),
+  sourceTracks: (query: TrackQuery = {}) =>
+    getJSON<TrackPage>(`/api/source/tracks${qs(query as Record<string, unknown>)}`),
+  sourcePlaylists: () => getJSON<PlaylistNode[]>('/api/source/playlists'),
+  sourcePlaylistTracks: (id: string) =>
+    getJSON<Track[]>(`/api/source/playlists/${encodeURIComponent(id)}/tracks`),
+  sourceTrackCues: (trackId: string) =>
+    getJSON<TrackCues>(`/api/source/tracks/cues?track_id=${encodeURIComponent(trackId)}`),
+  /** Audition a track off the stick before importing it. */
+  sourceAudioUrl: (trackId: string) =>
+    `${API_BASE}/api/source/tracks/audio?track_id=${encodeURIComponent(trackId)}`,
   uploadArt: async (trackId: string, file: File) => {
     const fd = new FormData()
     fd.append('track_id', trackId)

@@ -49,6 +49,31 @@ class SaveOutcome:
     tag_results: list = field(default_factory=list)
 
 
+@dataclass
+class NewTrack:
+    """A track to ADD to a library, described generically.
+
+    Import is the first operation that puts a track into a library that never
+    had one, so it needs a way to say "here is a track" without naming a
+    platform. That is all this is: the generic projection of a track, plus the
+    audio file it should point at.
+
+      * `track` carries the metadata. **Its `id` is ignored** — an id belongs to
+        the library that holds the track, and this one comes from somewhere
+        else. The receiving adapter assigns its own and returns it.
+      * `cues` is optional because a track can be imported without prep, and
+        because a platform may hold the track but not (yet) its cues.
+      * `audio_path` is a path on THIS machine that must already exist. Copying
+        the audio is the caller's job, deliberately: an adapter's business is
+        the library, and a file copy that failed halfway is not something a
+        library write should be discovering.
+    """
+
+    track: Track
+    audio_path: Path
+    cues: TrackCues | None = None
+
+
 class AdapterError(Exception):
     """Base for every failure an adapter reports to the HTTP layer."""
 
@@ -96,6 +121,15 @@ class LibraryAdapter(Protocol):
     def rename_playlist(self, node_id: str, name: str) -> None: ...
     def delete_playlist(self, node_id: str) -> None: ...
     def set_playlist_entries(self, node_id: str, track_ids: list[str]) -> int: ...
+
+    # ---- commands: adding tracks ----------------------------------------
+    # The ONLY command that creates a track rather than editing one, and the
+    # one place the "retained native model" rule is stretched: everywhere else
+    # the write target was parsed from a real file, which is what makes the
+    # fidelity guarantee hold. A new entry has no parsed original, so the rule
+    # becomes "an added entry must not perturb any existing one" — which is
+    # what `test_save_fidelity.py` checks rather than taking on trust.
+    def add_tracks(self, items: list["NewTrack"]) -> list[str]: ...
 
     # ---- commands: track metadata / art ---------------------------------
     def set_track_metadata(self, track_id: str, fields: dict) -> Track | None: ...
@@ -149,6 +183,11 @@ class LibraryDriver(Protocol):
     platform: str
     display_name: str
     suffixes: tuple[str, ...]
+    # True when this platform's libraries live on plugged-in media rather than at
+    # a fixed path — so `detect()` genuinely changes between calls, and the app
+    # can offer them as import SOURCES. Optional, and False for a platform that
+    # does not set it, because most keep one library in a known place.
+    removable: bool
 
     def can_open(self, path: Path) -> bool: ...
     def open(self, path: Path) -> LibraryAdapter: ...

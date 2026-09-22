@@ -146,6 +146,100 @@ class TraktorAdapter:
     def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
         return self._store.cover_art(track_id)
 
+    # ---- adding tracks ----------------------------------------------------
+    def add_tracks(self, items: list) -> list[str]:
+        """Add tracks that came from somewhere else, with their prep.
+
+        Two steps, and the split is the point. The store creates a bare ENTRY —
+        the only genuinely new code — and then the track's cues and grid are
+        written by **replaying the ordinary commands** onto it. So an imported
+        track's beatgrid goes in through the same `replace_grid` that the deck's
+        Reset button uses, and inherits its companion-cue handling, its TEMPO
+        mirroring and its tests, rather than growing a second implementation
+        that would drift.
+
+        Lossiness follows the settled rule — degrade to the nearest equivalent,
+        drop only where none exists:
+
+          * **Memory cues become hot cues in spare slots.** Traktor has no
+            memory cues, and every Traktor cue occupies a slot. Filling the
+            leftovers preserves the positions a DJ actually marked; when the
+            bank is full the rest are dropped, because there is nowhere left.
+          * **Cue colour is dropped.** Traktor derives a cue's colour from its
+            type, so a free RGB value has nowhere to go.
+
+        Returns the new track ids, in the order the items were given.
+        """
+        added: list[str] = []
+        for item in items:
+            audio = Path(item.audio_path)
+            if not audio.is_file():
+                raise InvalidCommand(f"No audio file at {audio}")
+            with _translate():
+                track_id = self._store.add_entry(item.track, audio)
+            # Into the projection BEFORE the cues are replayed: those go through
+            # the ordinary commands, and those look the track up by id.
+            entry = self._store.model_entry(track_id)
+            self._index.add(projection.to_track(entry))
+            added.append(track_id)
+            if item.cues is not None:
+                self._apply_imported_cues(track_id, item.cues)
+            self._refresh(track_id)
+        return added
+
+    def _apply_imported_cues(self, track_id: str, cues) -> None:
+        """Replay a generic TrackCues onto a freshly added entry."""
+        markers = [(m.start, m.bpm) for m in (cues.grid_markers or [])]
+        if markers:
+            # `replace_grid`, NOT `set_analysed_grid`. The latter also places
+            # Traktor's beat-1 companion cue, and that is wrong twice over here:
+            # it invents a cue the source never had (companions are a Traktor
+            # convention, and the project's rule is to follow them but never
+            # invent one outside Auto Grid), and it occupies pad A — which
+            # silently displaced the imported track's own pad A cue.
+            self.replace_grid(track_id, markers)
+
+        slots = self.capabilities().cues.hotcue_slots
+        taken = {c.slot for c in self.track_cues(track_id).cues if c.slot is not None}
+        hotcues = [c for c in (cues.cues or []) if c.role == "hotcue" and c.slot is not None]
+
+        # Hot cues keep the pad they were on wherever that pad is free, because
+        # muscle memory is most of what a hot cue layout IS.
+        displaced: list = []
+        for cue in sorted(hotcues, key=lambda c: c.slot):
+            if cue.slot in taken or not (0 <= cue.slot < slots):
+                displaced.append(cue)
+                continue
+            self._place_imported_cue(track_id, cue.slot, cue)
+            taken.add(cue.slot)
+
+        # Everything without a pad of its own competes for what is left: memory
+        # cues, which Traktor has no equivalent for, and any hot cue whose pad
+        # was already occupied. Earliest first, so that when the bank runs out
+        # it is the late cues that are lost rather than an arbitrary set — and
+        # a displaced hot cue is moved rather than dropped, because losing one
+        # silently is much worse than having it turn up on the wrong pad.
+        leftovers = displaced + [c for c in (cues.cues or []) if c.role != "hotcue"]
+        spare = (s for s in range(slots) if s not in taken)
+        for cue in sorted(leftovers, key=lambda c: c.start):
+            slot = next(spare, None)
+            if slot is None:
+                break  # bank full: the rest are dropped, per the lossiness rule
+            self._place_imported_cue(track_id, slot, cue)
+
+    def _place_imported_cue(self, track_id: str, slot: int, cue) -> None:
+        cue_type = "loop" if getattr(cue, "length", 0) else "cue"
+        if cue_type not in CUE_TYPE_TO_NATIVE:
+            return
+        self.set_cue(
+            track_id,
+            slot=slot,
+            start_sec=cue.start,
+            cue_type=cue_type,
+            length_sec=getattr(cue, "length", 0.0) or 0.0,
+            name=getattr(cue, "name", None),
+        )
+
     # ---- cues -------------------------------------------------------------
     def _native_cue_type(self, cue_type: str) -> int:
         native = CUE_TYPE_TO_NATIVE.get(cue_type)

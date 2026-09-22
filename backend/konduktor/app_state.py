@@ -1,8 +1,20 @@
-"""The one loaded library, and the version-history bookkeeping around saving it.
+"""The loaded library, and the version-history bookkeeping around saving it.
 
-Exactly one library is open at a time: that keeps every edit and every save
-unambiguous about what it targets, and it is why the adapter can own its own
-projection without anyone asking which library a command meant.
+Exactly one library is open **for editing** at a time: that keeps every edit and
+every save unambiguous about what it targets, and it is why the adapter can own
+its own projection without anyone asking which library a command meant.
+
+A **source** may be open alongside it, and only alongside it. A source is a
+library being read FROM — a plugged-in OneLibrary stick whose tracks are about to
+be imported — and it is deliberately not symmetrical with the loaded library:
+
+  * it is **never written**, so no command can be ambiguous about its target;
+  * it is **never saved**, so version history has nothing to disambiguate;
+  * it is **never the fallback** when nothing is loaded — a source with no
+    destination is a browser, not a library, and the routes say so.
+
+That asymmetry is what keeps "exactly one library is open" true in the sense that
+mattered: there is still exactly one thing a command can mean.
 
 Version history lives here rather than in the adapter. An adapter's job is to
 write its own format faithfully; knowing that Konduktor keeps a git-backed
@@ -27,10 +39,52 @@ class AppState:
     def __init__(self) -> None:
         self.path: Path | None = None
         self.adapter: LibraryAdapter | None = None
+        # The library being read FROM, if any. Read-only by contract; see the
+        # module docstring for why it is not symmetrical with `adapter`.
+        self.source_path: Path | None = None
+        self.source: LibraryAdapter | None = None
 
     @property
     def loaded(self) -> bool:
         return self.adapter is not None
+
+    @property
+    def source_loaded(self) -> bool:
+        return self.source is not None
+
+    # ---- the source library ---------------------------------------------
+    def open_source(self, path: Path) -> None:
+        """Open a library to read from, alongside the loaded one.
+
+        Refuses a source that is not read-only. Nothing downstream sends it a
+        command, but "this is only ever read" is the assumption the whole slot
+        rests on, and an adapter is the thing that knows whether it is true —
+        so it is asserted here rather than assumed everywhere else.
+        """
+        adapter = registry.open_library(path)
+        if adapter.capabilities().writable:
+            if hasattr(adapter, "close"):
+                try:
+                    adapter.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            raise ValueError(
+                f"{path} is a writable library; only read-only sources "
+                "(such as a OneLibrary drive) can be opened as a source"
+            )
+        self.close_source()
+        self.source_path, self.source = path, adapter
+
+    def close_source(self) -> None:
+        """Release the source. Load-bearing: a source lives on a REMOVABLE drive,
+        and a held file handle is what stops a stick ejecting."""
+        previous, self.source = self.source, None
+        self.source_path = None
+        if previous is not None and hasattr(previous, "close"):
+            try:
+                previous.close()
+            except Exception:  # noqa: BLE001 — a failed close must not block
+                pass
 
     def open(self, path: Path) -> None:
         # The registry picks the adapter by probing the file, not by extension —

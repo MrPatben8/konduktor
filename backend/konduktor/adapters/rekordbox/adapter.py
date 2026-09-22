@@ -385,6 +385,14 @@ class RekordboxAdapter:
         if self._cloud_synced:
             raise Unsupported(self._readonly_reason(what))
 
+    def add_tracks(self, items: list) -> list[str]:
+        # Not a refusal in principle — Rekordbox could receive imported
+        # tracks — but adding one means a djmdContent row, its lookup-table
+        # foreign keys, a USN, and an ANLZ file built from scratch, which
+        # is unexplored (see the export handoff). Traktor is the only
+        # import target for now.
+        self._refuse("Adding tracks")
+
     def set_cover_art(self, track_id: str, data: bytes, mime: str) -> None:
         self._refuse("Editing cover art")
 
