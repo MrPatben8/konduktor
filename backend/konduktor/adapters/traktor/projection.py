@@ -74,11 +74,18 @@ def _rating_stars(ranking) -> int:
 def to_track(e) -> Track:
     info = e.info
     loc = e.location
-    cues = e.cue_v2 or []
+    # "Is this a cue?" must mean the same here as in `to_track_cues`, which
+    # skips grid markers — a marker is projected as a beatgrid marker, not a
+    # cue. Counting the raw CUE_V2 list instead made the library table report
+    # every track as having one more cue than the deck showed, and made the
+    # "has cues: no" filter match nothing, since a gridded track always had at
+    # least one. The same class of bug as the Rekordbox hotcue miscount: one
+    # question, two answers.
+    markers = beatgrid.grid_markers(e)
+    cues = [c for c in (e.cue_v2 or []) if getattr(c, "grid", None) is None]
     hotcues = sum(
         1 for c in cues if c.hotcue is not None and c.hotcue >= 0
     )
-    markers = beatgrid.grid_markers(e)
     wheel, mode = parse_key(info.key if info else None)
     return Track(
         id=primary_key(loc) if loc else (e.title or ""),

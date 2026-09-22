@@ -317,6 +317,12 @@ serialization path.** It enforces:
   Konduktor wrote. Pins the drive-relative path resolution, the `PCOB`/`PCO2`
   merge, and — cross-checked against the same cues in `master.db` — the dense
   ANLZ slot numbering, which is the thing most likely to be silently wrong.
+- `test_import.py` — the import feature end to end: a drive's tracks into a temp
+  copy of the real collection. Asserts the prep survives (hot cues keep their
+  PAD, memory cues fill spare ones, the flexible grid crosses intact, no
+  companion cue is invented), that the existing 8,485 entries render
+  byte-identically, that the job registry runs/fails/cancels, and that a
+  cancelled import leaves **no orphaned audio and an untouched collection**.
 - `test_layering.py` — `core/` imports nothing platform-specific, and no adapter
   imports another platform's library (checked on real imports via AST, so merely
   naming a platform in a comment is fine). Rekordbox and OneLibrary deliberately
@@ -443,6 +449,40 @@ that number and nothing else — everything derives from it:
   incl. the verified result that Rekordbox accepts Konduktor-written rows when
   USNs are maintained. Remaining gap: **cover art**. **No version history on Rekordbox** — accepted scope decision,
   see handoff §11.
+- ✅ **Import a OneLibrary stick into Traktor** — done end to end. A plugged-in
+  drive appears under **Devices** in the sidebar, browses in the ordinary table
+  and deck (audio streams off the stick so a track can be auditioned before
+  importing), and imports into the loaded collection: audio copied, cues and
+  flexible beatgrids translated, playlists recreated in a folder named after the
+  drive. Verified in Traktor 4.5 itself. Three pieces worth knowing:
+  - **`add_tracks` is the protocol's only CREATING verb** (`core/adapter.py`,
+    `NewTrack`). Everywhere else the write target was parsed from a real file,
+    which is what makes the byte-fidelity guarantee hold; here the rule becomes
+    "an added entry must not perturb any existing one", which `test_import.py`
+    checks on rendered bytes — exactly one line changes, the one carrying
+    `<COLLECTION ENTRIES="N">`, whose count the store now maintains. The store
+    creates a bare `ENTRY` and the cues/grid are written by **replaying the
+    ordinary commands**, so an import inherits `replace_grid`'s companion
+    handling and tests instead of growing a second implementation.
+    `AUDIO_ID` and `LOUDNESS` are left empty — they are Traktor's own analysis
+    outputs and cannot be computed; **verified that Traktor loads and plays such
+    entries** and re-analyses them.
+  - **`jobs.py` + `importer.py`** — the app's first long-running operation.
+    Thread per job, polling, cooperative cancel; deliberately not asyncio or SSE.
+    **Ordering is the safety property**: audio copies first and the library is
+    written last, so a cancel leaves the collection untouched and removes what it
+    copied (including the file being written — cleaning up only COMPLETED copies
+    left debris the retry then suffixed around). Export will reuse this.
+  - **The UI gates itself through capabilities, not conditions.** Browsing a
+    device swaps the `CapabilitiesContext` for the device's own read-only set, so
+    inline editing, Edit Tags, rating stars and all 12 deck handlers go inert
+    with **no component learning what a device is**. The Sidebar sits outside
+    that swap so `SaveBar` still saves collection edits. While a device's
+    capabilities load the fallback is read-only, never the collection's —
+    guessing "writable" for one frame would offer an edit bound for the wrong
+    library. Lossiness follows the settled rule: memory cues become hot cues in
+    spare pads (earliest first), cue colour is dropped (Traktor derives it from
+    type).
 - 🟡 OneLibrary adapter — **read-only, done**. A OneLibrary USB drive opens,
   projects, browses and searches: tracks, playlists, hot cues, memory cues, loops
   and flexible beatgrids. Built as the readable SOURCE half of a future

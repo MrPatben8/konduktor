@@ -189,5 +189,33 @@ with tempfile.TemporaryDirectory() as d:
     placed = next((c for c in adapter.track_cues(tid).cues if c.slot == free[0]), None)
     check("batch-placed cue exists with its name", placed is not None and placed.name == "Drop")
 
+print("== the counts in the table match the deck ==")
+# "Is this a cue?" is asked in two places — `to_track` for the library table and
+# `to_track_cues` for the deck — and they must give the same answer. They did
+# not: `to_track` counted the raw CUE_V2 list, which includes GRID MARKERS, so
+# every gridded track reported one cue too many and the "has cues: no" filter
+# could never match one. Checked across many tracks, not one, because the bug
+# only shows on a track that has a grid.
+mismatched = []
+for t in adapter.tracks[:150]:
+    tc = adapter.track_cues(t.id)
+    if tc is None:
+        continue
+    if t.cue_count != len(tc.cues) or t.grid_marker_count != len(tc.grid_markers):
+        mismatched.append(
+            f"{t.title!r}: table {t.cue_count}/{t.grid_marker_count} "
+            f"vs deck {len(tc.cues)}/{len(tc.grid_markers)}"
+        )
+check("cue and marker counts agree with the projected cues",
+      not mismatched, "; ".join(mismatched[:3]))
+# The specific confusion, stated directly: a grid marker is not a cue.
+gridded = next((t for t in adapter.tracks if t.grid_marker_count > 0), None)
+check("a track with a grid exists to test against", gridded is not None)
+if gridded is not None:
+    cues = adapter.track_cues(gridded.id)
+    check("no grid marker is projected as a cue",
+          all(c.type != "grid" for c in cues.cues) and
+          gridded.cue_count == len(cues.cues))
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)
