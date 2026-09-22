@@ -131,6 +131,39 @@ Two independent apps that talk over HTTP:
     `close()` disposes the SQLAlchemy engine, not just the session — otherwise
     the OS file handle stays open and `master.db` cannot be replaced. `AppState`
     closes the previous adapter when opening a new library.
+  - `adapters/onelibrary/` — **read-only.** The cross-vendor USB export format
+    (AlphaTheta + Algoriddim + Native Instruments), read by CDJ-class hardware.
+    Built as the source half of a future "import a stick into Traktor" feature.
+    Full research, incl. the schema, is in
+    [.claude/handoffs/onelibrary-adapter.md](.claude/handoffs/onelibrary-adapter.md);
+    the four things that make it unlike the Rekordbox adapter:
+    - **The library is a REMOVABLE DRIVE, not a file in a known place.** So
+      `discovery.py` scans mount points rather than probing fixed paths, and
+      `layout.py` owns the on-drive layout (`PIONEER/rekordbox/exportLibrary.db`,
+      analysis under `PIONEER/USBANLZ/P0<xx>/<8 hex>/`). Every stored path is
+      **drive-relative with a leading slash** — `/Contents/…/x.mp3` — which is
+      NOT an absolute host path: joining it naively discards the mount point and
+      silently yields `/Contents/…`, which looks like an empty drive rather than
+      a path bug. `DriveLayout.resolve()` is the only place that join happens.
+      A track's id is that drive-relative path, not `content_id`, which rekordbox
+      renumbers from 1 on every re-export.
+    - **Cues are NOT in the `cue` table**, which rekordbox exports empty; they are
+      in the ANLZ files. `PCOB` is **split by pad** (`.DAT` holds 1–3, `.EXT` holds
+      4 and up — reading only the `.DAT` silently loses pads D–H), and `PCO2` in
+      the `.EXT` holds the complete set plus RGB colour and comments. `PCO2` wins,
+      `PCOB` is the fallback, both merge across files first.
+    - **The slot numbering differs from `master.db`.** `djmdCue.Kind` is a sparse
+      bank that skips 4; ANLZ `hot_cue` is a **dense 1-based index** (pad D is
+      `Kind` 5 but `hot_cue` 4), and 0 means memory cue. Measured by aligning the
+      same five cues in both representations. Reuse the Rekordbox mapping here and
+      every cue from pad D on lands one pad too far along. Times are **ms**, not
+      150 fps frames; `loop_time` is `0xFFFFFFFF` (not 0) when there is no loop.
+    - **Analysis files are parsed lazily** — `.DAT` ~2 ms but `.EXT` ~23 ms, so
+      eager parsing would cost ~23 s on a 1,000-track drive. Cue and marker counts
+      are therefore approximate in the library table and corrected by
+      `track_cues()`. The `PQTZ` beatgrid is the same tag as Rekordbox's, and the
+      collapse rule is **shared by import** rather than copied — two definitions of
+      "when does a tempo change start a marker" would drift silently.
   - `app_state.py` — the one loaded library, and the **version-history commit**.
     History is app-level: the adapter returns the bytes it wrote plus a summary,
     and `AppState.save()` versions them. Every write path must go through it.
@@ -276,9 +309,19 @@ serialization path.** It enforces:
   changes exactly two — the track and `agentRegistry.localUpdateCount` — with the
   counter up by one and the edited row stamped with it; edits are invisible on
   disk until save; and playlist create/fill/rename/delete round-trip.
+- `test_onelibrary_adapter.py` — the third adapter against the same contract.
+  Unlike the Rekordbox tests it needs **nothing installed and nothing plugged
+  in**: it runs against `fixtures/onelibrary/`, a real rekordbox 7 export trimmed
+  to fixture size (its README says what was removed; the database is untouched).
+  So the expected values are checked against bytes *rekordbox* wrote, not bytes
+  Konduktor wrote. Pins the drive-relative path resolution, the `PCOB`/`PCO2`
+  merge, and — cross-checked against the same cues in `master.db` — the dense
+  ANLZ slot numbering, which is the thing most likely to be silently wrong.
 - `test_layering.py` — `core/` imports nothing platform-specific, and no adapter
   imports another platform's library (checked on real imports via AST, so merely
-  naming a platform in a comment is fine).
+  naming a platform in a comment is fine). Rekordbox and OneLibrary deliberately
+  **share** `pyrekordbox`: the rule is "no adapter reaches for a rival vendor's
+  library", and a shared dependency is not a breach.
 
 Also validate the backend interactively at `http://localhost:8000/docs` and the
 frontend at `http://localhost:5173`.
@@ -289,6 +332,12 @@ frontend at `http://localhost:5173`.
    stale and **cannot parse Traktor Pro 4 (NML v20)** files — its strict parser
    dies on the v4 `<GRID>` element inside `CUE_V2`. `requirements.txt` pins the
    GitHub `master` (v4.0.0). Do not "simplify" this to a plain PyPI pin.
+   **`pyrekordbox` is now the same situation**: PyPI's latest (0.4.4) has no
+   `devicelib_plus`, which is the OneLibrary (`exportLibrary.db`) reader, so
+   `requirements.txt` pins the GitHub master. That upgrade renamed `db6` →
+   `masterdb` and `tables` → `models` and moved `BLOB` out of `db6.database`;
+   the Rekordbox adapter uses the new names. `db6` still works as a deprecated
+   alias and is **removed in 0.6.0**.
 2. **The collection is real, irreplaceable data — protect it.** Every save
    writes a timestamped `.bak` first (into a `backups/` folder next to the
    collection). When testing writes, point `KONDUKTOR_NML` at a COPY. Warn the
@@ -394,10 +443,21 @@ that number and nothing else — everything derives from it:
   incl. the verified result that Rekordbox accepts Konduktor-written rows when
   USNs are maintained. Remaining gap: **cover art**. **No version history on Rekordbox** — accepted scope decision,
   see handoff §11.
+- 🟡 OneLibrary adapter — **read-only, done**. A OneLibrary USB drive opens,
+  projects, browses and searches: tracks, playlists, hot cues, memory cues, loops
+  and flexible beatgrids. Built as the readable SOURCE half of a future
+  **"import a OneLibrary stick into a Traktor library"** feature, which is the
+  motivating use case. Everything unknown about the format is on the write side
+  (the `cue` table's MPEG seek columns, the waveform tags a CDJ draws from, the
+  update counters), so read-only is a deliberate boundary rather than an
+  unfinished one. All research — including the schema, which has no public spec —
+  is in [.claude/handoffs/onelibrary-adapter.md](.claude/handoffs/onelibrary-adapter.md).
 - ⬜ **Export/conversion** — next up, brought forward ahead of Serato. Design is
   settled in the discussion doc; current state, the architectural gap (no adapter
   can create a library from nothing) and the landmines are written up in
-  [.claude/handoffs/export.md](.claude/handoffs/export.md).
+  [.claude/handoffs/export.md](.claude/handoffs/export.md). Note the OneLibrary
+  work already demonstrated creating an `exportLibrary.db` from nothing, and
+  `fixtures/onelibrary/schema.sql` is the DDL to do it with.
 - ⬜ Serato adapter
 - ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 

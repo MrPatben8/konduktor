@@ -230,10 +230,34 @@ with tempfile.TemporaryDirectory() as d:
     walk(tree)
     check("no internal Rekordbox playlist is exposed",
           all(i not in ("100000", "200000") for i in ids), str(ids))
-    check("nothing claims to be editable", not any(
-        n.can_rename or n.can_delete or n.can_add_tracks or n.can_reorder
-        for n in tree
-    ))
+    # Per-node flags must follow the node's KIND, not the library's writability
+    # alone: a folder holds no tracks and a smart playlist has no static entry
+    # list, so offering "add tracks" on either would be a control that cannot
+    # work. (This assertion used to read "nothing claims to be editable", which
+    # was left over from the read-only milestone and had been passing only
+    # because the reference library happened to contain no user playlists.)
+    def flags_match_kind(n):
+        if n.kind == "playlist":
+            return n.can_add_tracks and n.can_reorder and n.selectable
+        return not n.can_add_tracks and not n.can_reorder and not n.selectable
+
+    all_nodes: list = []
+
+    def collect(nodes):
+        for n in nodes:
+            all_nodes.append(n)
+            collect(n.children)
+
+    collect(tree)
+    bad = [f"{n.name!r} ({n.kind})" for n in all_nodes if not flags_match_kind(n)]
+    check("per-node flags follow the node's kind", not bad, "; ".join(bad[:3]))
+    check("only folders may contain children",
+          all(n.can_contain_children == (n.kind == "folder") for n in all_nodes))
+    # Playlists became writable in milestone 2, so on a non-cloud library the
+    # tree must NOT be inert — that is what the UI gates its controls on.
+    if all_nodes and not adapter.cloud_synced:
+        check("a writable library offers playlist editing",
+              any(n.can_rename and n.can_delete for n in all_nodes))
 
     print("== capabilities gate the UI ==")
     caps = adapter.capabilities()
@@ -450,7 +474,7 @@ with tempfile.TemporaryDirectory() as d:
     # Konduktor's settled behaviour is to warn, not block — matching Traktor —
     # and the library's check is process-wide, so it would otherwise refuse to
     # write a temp copy while the user had a different library open.
-    from pyrekordbox.db6 import database as _rb_database
+    from pyrekordbox.masterdb import database as _rb_database
 
     _real_pid = _rb_database.get_rekordbox_pid
     _rb_database.get_rekordbox_pid = lambda *a, **kw: 4242  # pretend it is running
@@ -473,7 +497,7 @@ with tempfile.TemporaryDirectory() as d:
     synced = Path(d) / "synced.db"
     shutil.copy2(work, synced)
     import sqlcipher3.dbapi2 as sqlcipher
-    from pyrekordbox.db6.database import BLOB
+    from pyrekordbox.masterdb.database import BLOB
     from pyrekordbox.utils import deobfuscate
 
     con = sqlcipher.connect(str(synced))

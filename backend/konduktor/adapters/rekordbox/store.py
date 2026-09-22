@@ -68,12 +68,12 @@ class RekordboxStore:
 
     # ---- open ------------------------------------------------------------
     def _load(self) -> None:
-        from pyrekordbox import Rekordbox6Database
-        from pyrekordbox.db6 import tables
+        from pyrekordbox.masterdb import MasterDatabase
+        from pyrekordbox.masterdb import models as tables
 
         self._tables = tables
         try:
-            self._db = Rekordbox6Database(path=str(self.path), unlock=True)
+            self._db = MasterDatabase(path=str(self.path), unlock=True)
         except Exception as ex:  # noqa: BLE001 — surfaced as a clean 4xx
             raise LibraryNotSupported(f"Could not open Rekordbox library: {ex}") from ex
         self._grid_cache.clear()
@@ -208,7 +208,7 @@ class RekordboxStore:
         Sync") in the same table at reserved ids. They are not the user's and
         showing them in the sidebar would be noise.
         """
-        from pyrekordbox.db6.database import SPECIAL_PLAYLIST_IDS
+        from pyrekordbox.masterdb.database import SPECIAL_PLAYLIST_IDS
 
         t = self._tables
         return [
@@ -480,7 +480,7 @@ class RekordboxStore:
         timestamps in step — still runs as the library intends. Duplicating that
         body here would silently drift from it on upgrade.
         """
-        from pyrekordbox.db6 import database as rb_database
+        from pyrekordbox.masterdb import database as rb_database
 
         if rb_database.get_rekordbox_pid():
             log.warning(
@@ -508,7 +508,7 @@ class RekordboxStore:
     def app_running(self) -> bool:
         """Whether a Rekordbox process is up — for warning the user, not blocking."""
         try:
-            from pyrekordbox.db6 import database as rb_database
+            from pyrekordbox.masterdb import database as rb_database
 
             return bool(rb_database.get_rekordbox_pid())
         except Exception:  # noqa: BLE001 — detection must never break a save

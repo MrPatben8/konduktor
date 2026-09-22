@@ -49,7 +49,18 @@ check("the Traktor store is where traktor_nml_utils lives", "traktor_nml_utils" 
 # No adapter may import another platform's library. That is the rule that keeps
 # the packages independently removable, and it is checked on real imports (AST)
 # rather than on text, so merely NAMING another platform in a comment is fine.
-NATIVE = {"traktor": "traktor_nml_utils", "rekordbox": "pyrekordbox"}
+# OneLibrary shares Rekordbox's native library: both are AlphaTheta formats
+# read through pyrekordbox. That makes the map non-injective, which is fine —
+# the rule being enforced is "no adapter reaches for a RIVAL vendor's library",
+# and a shared dependency is not a layering breach. (The OneLibrary adapter
+# also imports the Rekordbox adapter's ANLZ beatgrid helper on purpose: one
+# definition of "when does a tempo change start a new marker" is worth more
+# than two packages that can be deleted independently.)
+NATIVE = {
+    "traktor": "traktor_nml_utils",
+    "rekordbox": "pyrekordbox",
+    "onelibrary": "pyrekordbox",
+}
 
 
 def imported_modules(path):
@@ -66,7 +77,10 @@ for platform, module in NATIVE.items():
     pkg = CORE.parent / "adapters" / platform
     if not pkg.is_dir():
         continue
-    foreign = {m for p_, m in NATIVE.items() if p_ != platform}
+    # Subtract the adapter's OWN module: two adapters may legitimately share a
+    # native library (Rekordbox and OneLibrary both use pyrekordbox), and
+    # without this every shared dependency reads as a foreign one.
+    foreign = {m for p_, m in NATIVE.items() if p_ != platform} - {module}
     strays = []
     for src in sorted(pkg.rglob("*.py")):
         for name in imported_modules(src):

@@ -46,7 +46,7 @@ def check(label, cond, detail=""):
 def dump(db_path: Path) -> dict:
     """Every row of every table, keyed by primary key."""
     import sqlcipher3.dbapi2 as sqlcipher
-    from pyrekordbox.db6.database import BLOB
+    from pyrekordbox.masterdb.database import BLOB
     from pyrekordbox.utils import deobfuscate
 
     con = sqlcipher.connect(str(db_path))

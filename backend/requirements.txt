@@ -19,4 +19,13 @@ scikit-learn>=1.5
 traktor-nml-utils @ git+https://github.com/MrPatben8/traktor-nml-utils.git
 # Rekordbox (master.db is SQLCipher-encrypted SQLite + per-track ANLZ analysis
 # files). Both ship prebuilt Python 3.14 wheels — no Rust/OpenSSL source build.
-pyrekordbox>=0.4.4
+#
+# FROM GITHUB, NOT PyPI — the same situation as traktor-nml-utils above, and for
+# the same kind of reason. PyPI's latest (0.4.4) has no `devicelib_plus`, which
+# is the OneLibrary (`exportLibrary.db`) reader the OneLibrary adapter is built
+# on; it exists only on master. Do not "simplify" this back to a version pin.
+#
+# The upgrade also renames `db6` to `masterdb`. `db6` still works as a
+# deprecated alias and is removed in 0.6.0, so the Rekordbox adapter keeps
+# running as-is — but that rename is the thing to fix before taking 0.6.
+pyrekordbox @ git+https://github.com/dylanljones/pyrekordbox.git

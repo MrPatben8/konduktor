@@ -41,7 +41,7 @@ class RekordboxDriver:
     def _has_rekordbox_schema(path: Path) -> bool:
         try:
             import sqlcipher3.dbapi2 as sqlcipher
-            from pyrekordbox.db6.database import BLOB
+            from pyrekordbox.masterdb.database import BLOB
             from pyrekordbox.utils import deobfuscate
         except ImportError:  # pragma: no cover — dependency missing
             return False

@@ -137,7 +137,7 @@ class RekordboxAdapter:
     # ---- playlists -------------------------------------------------------
     def playlist_tree(self) -> list[PlaylistNode]:
         """Rekordbox stores the tree as a flat table with ``ParentID`` links."""
-        from pyrekordbox.db6 import tables
+        from pyrekordbox.masterdb import models as tables
 
         rows = self._store.playlists()
         folder = int(tables.PlaylistType.FOLDER)
