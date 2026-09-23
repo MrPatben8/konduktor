@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type ImportPreview, type JobStatus } from '../api'
+import { FolderPicker } from './FolderPicker'
 
 /**
  * Import a browsed device into the loaded collection.
@@ -32,15 +33,36 @@ interface Props {
 
 export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError }: Props) {
   const qc = useQueryClient()
-  const [destination, setDestination] = useState('')
+  // The BASE folder, and whether to put this device's audio in its own
+  // subfolder of it. Kept apart rather than as one path because they are two
+  // different decisions: where your music lives, and how one import is filed
+  // inside it. Joining them for display would make the toggle look like it was
+  // editing the folder you picked.
+  const [baseFolder, setBaseFolder] = useState('')
+  const [useSubfolder, setUseSubfolder] = useState(true)
+  const [browsing, setBrowsing] = useState(false)
   const [job, setJob] = useState<JobStatus | null>(null)
   const [starting, setStarting] = useState(false)
   const pollRef = useRef<number | null>(null)
 
-  // A sensible default the user can override. `~` is expanded server-side.
+  // Both come from prefs, so the choice survives the dialog closing. `~` is
+  // expanded server-side, so the default needs no knowledge of the home path.
+  const prefs = useQuery({ queryKey: ['prefs'], queryFn: api.getPrefs })
+  const prefsLoaded = prefs.isSuccess
   useEffect(() => {
-    if (!destination) setDestination(`~/Music/Konduktor Imports/${deviceLabel}`)
-  }, [deviceLabel, destination])
+    if (!prefsLoaded || baseFolder) return
+    const p = prefs.data as { importFolder?: string; importSubfolder?: boolean }
+    setBaseFolder(p?.importFolder || '~/Music/Konduktor Imports')
+    if (typeof p?.importSubfolder === 'boolean') setUseSubfolder(p.importSubfolder)
+  }, [prefsLoaded, prefs.data, baseFolder])
+
+  const remember = (patch: Record<string, unknown>) => {
+    api.patchPrefs(patch).catch(() => {
+      /* best-effort: a failed pref write must not block an import */
+    })
+  }
+
+  const destination = useSubfolder && baseFolder ? `${baseFolder}/${deviceLabel}` : baseFolder
 
   const body = {
     destination,
@@ -120,6 +142,17 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
   const pct = job && job.total > 0 ? Math.min(100, (job.done / job.total) * 100) : null
 
   return (
+    <>
+    {browsing && (
+      <FolderPicker
+        value={baseFolder}
+        onChange={(path) => {
+          setBaseFolder(path)
+          remember({ importFolder: path })
+        }}
+        onClose={() => setBrowsing(false)}
+      />
+    )}
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
       <div className="w-full max-w-lg rounded-lg border border-line bg-ink-900 shadow-xl">
         <div className="border-b border-line px-5 py-3">
@@ -132,14 +165,44 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
         <div className="space-y-4 px-5 py-4 text-sm">
           {!job && (
             <>
-              <label className="block">
+              <div>
                 <span className="mb-1 block text-xs text-muted">Copy audio into</span>
-                <input
-                  value={destination}
-                  onChange={(e) => setDestination(e.target.value)}
-                  className="w-full rounded-md border border-line bg-ink-950 px-2 py-1.5 text-sm text-text outline-none focus:border-accent"
-                />
-              </label>
+                <div className="flex items-center gap-2">
+                  <span
+                    title={baseFolder}
+                    className="min-w-0 flex-1 truncate rounded-md border border-line bg-ink-950 px-2 py-1.5 font-mono text-xs text-text"
+                    dir="rtl"
+                  >
+                    {baseFolder || 'Loading…'}
+                  </span>
+                  <button
+                    onClick={() => setBrowsing(true)}
+                    className="shrink-0 rounded-md border border-line px-3 py-1.5 text-sm text-muted hover:text-text"
+                  >
+                    Browse…
+                  </button>
+                </div>
+
+                <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-muted">
+                  <input
+                    type="checkbox"
+                    checked={useSubfolder}
+                    onChange={(e) => {
+                      setUseSubfolder(e.target.checked)
+                      remember({ importSubfolder: e.target.checked })
+                    }}
+                    className="accent-accent"
+                  />
+                  Put them in a “{deviceLabel}” subfolder
+                </label>
+
+                {/* The resolved path, always visible: the toggle changes where
+                    files actually land, and that should never have to be
+                    inferred from a checkbox. */}
+                <div className="mt-1 truncate font-mono text-[11px] text-faint" dir="rtl">
+                  {destination}
+                </div>
+              </div>
 
               {preview.isLoading && <div className="text-faint">Checking…</div>}
               {preview.isError && (
@@ -259,5 +322,6 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
         </div>
       </div>
     </div>
+    </>
   )
 }
