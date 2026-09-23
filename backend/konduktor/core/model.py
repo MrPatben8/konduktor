@@ -177,13 +177,23 @@ class LibraryInfo(BaseModel):
 
 
 class PlatformOption(BaseModel):
-    """A platform the picker can offer before any library is open."""
+    """A platform the picker can offer before any library is open.
+
+    Facts only, never finished sentences: `lib/platformCopy.ts` composes the
+    wording. The distinction that matters is `removable` — a platform with no
+    library found is "not installed" for Traktor and "nothing plugged in" for
+    OneLibrary, and only the driver knows which of those is true.
+    """
 
     platform: str
     name: str
     library_label: str
     selects: Literal["file", "directory"] = "file"
     installed: bool = False
+    #: How many libraries this platform has right now; `installed` is `found > 0`.
+    found: int = 0
+    #: The library lives on a plugged-in drive, so `found` changes between calls.
+    removable: bool = False
 
 
 class RemapSample(BaseModel):

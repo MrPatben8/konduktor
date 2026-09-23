@@ -129,29 +129,46 @@ def collection_status() -> CollectionStatus:
 @app.post("/api/library/open", response_model=CollectionStatus)
 def open_collection(body: OpenCollection) -> CollectionStatus:
     path = Path(body.path).expanduser()
-    if not path.exists() or not path.is_file():
-        raise HTTPException(400, f"File not found: {path}")
+    # Deliberately NOT `is_file()`. A library is a file on some platforms and a
+    # DIRECTORY on others — OneLibrary's is the drive, Serato's will be a
+    # `_Serato_` folder — and which shapes are valid is the driver's business.
+    # This checks only that the path is there at all; `can_open()` decides.
+    if not path.exists():
+        raise HTTPException(400, f"Not found: {path}")
     try:
         STATE.open(path)
     except AdapterError as ex:
         raise HTTPException(400, f"Not a valid collection: {ex}")
     except Exception as ex:  # noqa: BLE001
         raise HTTPException(400, f"Could not open that collection: {ex}")
-    prefs.set_last_collection(str(path))
+    prefs.set_last_collection(str(path), require_adapter().capabilities().platform)
     return collection_status()
 
 
 @app.get("/api/library/options", response_model=CollectionOptions)
-def collection_options() -> CollectionOptions:
-    """Startup shortcuts for the picker: the best auto-detected Traktor
-    collection and the last one opened (may no longer exist → exists=False)."""
-    detected = registry.detect_all()
-    auto = CollectionCandidate(**detected[0]) if detected else None
+def collection_options(platform: str | None = None) -> CollectionOptions:
+    """Startup shortcuts for the picker, scoped to one platform.
+
+    Scoped because the picker asks which platform first, and both shortcuts are
+    only meaningful inside that answer: unscoped, "auto" meant "whatever the
+    first-registered driver happened to find" — so a plugged-in USB stick could
+    be offered as the user's collection — and "last opened" could name a library
+    of the platform they had just declined.
+
+    `recent` may no longer exist (→ `exists=False`), which the picker shows
+    rather than hides: a library that has moved is worth saying so about.
+    """
+    detected = registry.detect_for(platform) if platform else registry.detect_all()
+    candidates = [CollectionCandidate(**d) for d in detected]
     recent = None
-    last = prefs.get_last_collection()
+    last = prefs.get_last_collection(platform)
     if last:
         recent = CollectionCandidate(**registry.describe(Path(last)))
-    return CollectionOptions(auto=auto, recent=recent)
+    return CollectionOptions(
+        auto=candidates[0] if candidates else None,
+        detected=candidates,
+        recent=recent,
+    )
 
 
 @app.get("/api/library/path-mapping", response_model=PathMappingInfo)
@@ -229,12 +246,19 @@ def patch_prefs(patch: dict) -> dict:
 
 
 @app.get("/api/fs/list", response_model=FsListing)
-def fs_list(path: str | None = None) -> FsListing:
-    """List directories and .nml files for the in-app file browser."""
+def fs_list(path: str | None = None, platform: str | None = None) -> FsListing:
+    """List directories and openable library files for the in-app file browser.
+
+    `platform` narrows the files to that platform's own: a Traktor browse that
+    also listed `master.db` would be offering a file the chosen adapter cannot
+    open. A platform whose library is a directory contributes no suffixes at
+    all, so its browse shows folders only.
+    """
     base = Path(path).expanduser() if path else Path.home()
     if not base.exists() or not base.is_dir():
         base = Path.home()
     base = base.resolve()
+    suffixes = registry.browsable_suffixes(platform)
     dirs: list[FsEntry] = []
     files: list[FsEntry] = []
     try:
@@ -244,7 +268,7 @@ def fs_list(path: str | None = None) -> FsListing:
             try:
                 if entry.is_dir():
                     dirs.append(FsEntry(name=entry.name, path=str(entry)))
-                elif entry.suffix.lower() in registry.browsable_suffixes():
+                elif entry.suffix.lower() in suffixes:
                     files.append(FsEntry(name=entry.name, path=str(entry)))
             except OSError:
                 continue
@@ -267,12 +291,22 @@ def health() -> dict:
 def _library_info() -> LibraryInfo:
     """Identity of the loaded library, for display and for composing warnings."""
     caps = require_adapter().capabilities()
+    path = Path(str(STATE.path))
+    # A library's on-screen name is the driver's to give when it cares: a drive
+    # has one library reachable by two valid paths, and the filename would name
+    # it differently depending on which one the user happened to pick.
+    driver = next((d for d in registry.drivers() if d.platform == caps.platform), None)
+    namer = getattr(driver, "display_name_for", None)
+    try:
+        display_name = namer(path) if namer else path.name
+    except OSError:
+        display_name = path.name
     return LibraryInfo(
         platform=caps.platform,
         name=caps.save.app_name,
         library_label=caps.save.library_label,
         path=str(STATE.path),
-        display_name=Path(str(STATE.path)).name,
+        display_name=display_name,
         version=caps.version,
     )
 
@@ -293,10 +327,17 @@ def platforms() -> list[PlatformOption]:
                 platform=d.platform,
                 name=d.display_name,
                 library_label=getattr(d, "library_label", ""),
-                selects="file",
+                selects=getattr(d, "selects", "file"),
                 installed=bool(found),
+                found=len(found),
+                removable=bool(getattr(d, "removable", False)),
             )
         )
+    # Registration order is an import-order accident, and this list is a MENU —
+    # it must not reshuffle itself between two launches. Sorted so the platforms
+    # that keep a library in a known place come before the ones that are a
+    # plugged-in drive, which is the real distinction a chooser is making.
+    out.sort(key=lambda o: (o.removable, o.name.lower()))
     return out
 
 

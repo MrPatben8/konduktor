@@ -192,8 +192,19 @@ class LibraryDriver(Protocol):
     # can offer them as import SOURCES. Optional, and False for a platform that
     # does not set it, because most keep one library in a known place.
     removable: bool
+    # Whether a user picks a FILE or a DIRECTORY for this platform. Both exist:
+    # Traktor's library is `collection.nml`, OneLibrary's is the drive, and
+    # Serato's will be a `_Serato_` folder. The file browser and the open route
+    # both read this rather than assuming everything is a file. Defaults to
+    # "file" for a driver that does not set it.
+    selects: str
 
     def can_open(self, path: Path) -> bool: ...
     def open(self, path: Path) -> LibraryAdapter: ...
+    # OPTIONAL. What to call an opened library on screen. Only the adapter can
+    # answer for a platform where one library has more than one valid path —
+    # the filename is otherwise assumed, and that assumption is wrong for a
+    # library that is a drive. Omitted means "the path's own name".
+    def display_name_for(self, path: Path) -> str: ...
     def detect(self) -> list: ...
     def describe(self, path: Path) -> object: ...

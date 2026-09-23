@@ -25,6 +25,14 @@ def drivers() -> list[LibraryDriver]:
     return list(_DRIVERS)
 
 
+def driver_by_platform(platform: str) -> LibraryDriver:
+    """The driver for a platform name, e.g. ``"traktor"``."""
+    for d in _DRIVERS:
+        if d.platform == platform:
+            return d
+    raise LibraryNotSupported(f"No adapter registered for platform {platform!r}")
+
+
 def driver_for(path: Path) -> LibraryDriver:
     """The first registered driver that recognises `path`."""
     for d in _DRIVERS:
@@ -64,6 +72,21 @@ def describe(path: Path) -> dict:
     }
 
 
+def detect_for(platform: str) -> list:
+    """Every library one platform has right now, best first.
+
+    The picker asks which platform FIRST, so detection is scoped to the answer.
+    Unscoped detection (``detect_all``) concatenates drivers in registration
+    order, which made "the best candidate" mean "whatever the first-registered
+    driver found" — with a removable drive registered first, a plugged-in stick
+    could be offered as the user's collection.
+    """
+    try:
+        return driver_by_platform(platform).detect()
+    except (LibraryNotSupported, OSError):
+        return []
+
+
 def detect_all() -> list:
     """Every library found in the platforms' default install locations."""
     out: list = []
@@ -75,10 +98,21 @@ def detect_all() -> list:
     return out
 
 
-def browsable_suffixes() -> tuple[str, ...]:
-    """File extensions the in-app browser should show, across all platforms."""
+def browsable_suffixes(platform: str | None = None) -> tuple[str, ...]:
+    """File extensions the in-app browser should show, for one platform or all.
+
+    A platform that selects a DIRECTORY contributes nothing, even though it has
+    suffixes: its libraries are not the thing a user picks, so listing them
+    would offer a file the browser's Open cannot act on.
+    """
+    try:
+        targets = [driver_by_platform(platform)] if platform else _DRIVERS
+    except LibraryNotSupported:
+        targets = []
     seen: list[str] = []
-    for d in _DRIVERS:
+    for d in targets:
+        if getattr(d, "selects", "file") != "file":
+            continue
         for suffix in d.suffixes:
             if suffix not in seen:
                 seen.append(suffix)

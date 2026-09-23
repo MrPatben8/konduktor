@@ -12,6 +12,7 @@ class TraktorDriver:
     display_name = "Traktor"
     suffixes = (".nml",)
     library_label = "collection.nml"
+    selects = "file"
 
     def can_open(self, path: Path) -> bool:
         """Recognise an NML without parsing 14 MB of it."""

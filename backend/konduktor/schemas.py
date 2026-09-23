@@ -126,6 +126,12 @@ class CollectionCandidate(BaseModel):
 
 class CollectionOptions(BaseModel):
     auto: CollectionCandidate | None = None  # best auto-detected (latest version)
+    # EVERY library detected, best first. `auto` is simply the first of these.
+    # Carried in full because one platform can genuinely have several at once —
+    # two Traktor versions installed, or two sticks plugged in — and silently
+    # anointing one of them is how the old single-candidate route could open a
+    # USB drive as the user's collection.
+    detected: list[CollectionCandidate] = []
     recent: CollectionCandidate | None = None  # last opened (from userprefs)
 
 

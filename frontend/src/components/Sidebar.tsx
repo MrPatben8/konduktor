@@ -27,6 +27,7 @@ interface Props {
   onError: (msg: string) => void
   onOpenHistory: () => void
   onImport: () => void
+  onSwitchLibrary: () => void
 }
 
 // Kind picks the icon; every behavioural question is answered by the node's own
@@ -186,8 +187,31 @@ function NodeRow({
   )
 }
 
-export function Sidebar({ source, onSelect, onError, onOpenHistory, onImport }: Props) {
+export function Sidebar({
+  source,
+  onSelect,
+  onError,
+  onOpenHistory,
+  onImport,
+  onSwitchLibrary,
+}: Props) {
   const qc = useQueryClient()
+  // Both share a cache entry with App and SaveBar, so the header never
+  // disagrees with what is loaded or with whether it has been saved.
+  const library = useQuery({ queryKey: ['collection'], queryFn: api.collection }).data?.library
+  const dirty = useQuery({ queryKey: ['state'], queryFn: api.state }).data?.dirty ?? false
+
+  // Switching library throws away every unsaved edit — the adapter holds them in
+  // its native model, and opening another library replaces it. Worth a confirm:
+  // until now there was no way to switch at all, so this hazard is new.
+  const switchLibrary = () => {
+    if (
+      dirty &&
+      !confirm('You have unsaved changes. Opening a different library will discard them.')
+    )
+      return
+    onSwitchLibrary()
+  }
   // There is no per-node flag for "you may create a NEW playlist" — the node
   // flags describe existing nodes — so this is the library-level gate.
   const canCreate = useCaps().writable
@@ -216,6 +240,30 @@ export function Sidebar({ source, onSelect, onError, onOpenHistory, onImport }: 
 
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-line bg-ink-900">
+      {/* Which library is open — and the way to open a different one. Until
+          this existed the picker was a one-way door: it ran once at startup and
+          nothing could summon it again, so changing library meant restarting.
+          It doubles as the only place the app says what it currently has open. */}
+      <button
+        onClick={switchLibrary}
+        title={library ? `${library.path} — click to open a different library` : undefined}
+        className="group flex items-center gap-2 border-b border-line px-3 py-2.5 text-left hover:bg-ink-800"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium text-text">
+            {library?.display_name ?? 'No library'}
+          </div>
+          <div className="truncate text-[11px] text-faint">
+            {library
+              ? `${library.name}${library.version ? ` ${library.version}` : ''}`
+              : 'Choose one'}
+          </div>
+        </div>
+        <span className="shrink-0 text-xs text-faint transition-colors group-hover:text-accent">
+          ⇄
+        </span>
+      </button>
+
       <div className="px-2 pt-3">
         <button
           onClick={() => onSelect({ kind: 'all' })}

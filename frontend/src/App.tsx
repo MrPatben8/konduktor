@@ -397,6 +397,7 @@ export default function App() {
           onError={onError}
           onOpenHistory={() => setShowHistory(true)}
           onImport={() => setImporting(true)}
+          onSwitchLibrary={() => setForcePicker(true)}
         />
 
         <CapabilitiesContext.Provider value={viewCaps}>

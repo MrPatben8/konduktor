@@ -212,8 +212,14 @@ export interface PlatformOption {
   platform: Platform
   name: string
   library_label: string
+  /** Whether picking this platform's library means picking a file or a folder. */
   selects: 'file' | 'directory'
   installed: boolean
+  /** How many libraries this platform has right now; `installed` is `found > 0`. */
+  found: number
+  /** The library lives on plugged-in media, so `found` changes between calls —
+   *  and `found === 0` means "nothing plugged in", not "not installed". */
+  removable: boolean
 }
 
 export interface EditState {
@@ -238,7 +244,11 @@ export interface CollectionCandidate {
 }
 
 export interface CollectionOptions {
-  auto: CollectionCandidate | null // best auto-detected (latest Traktor version)
+  auto: CollectionCandidate | null // best auto-detected; the first of `detected`
+  /** EVERY library detected for the platform, best first. One platform can
+   *  genuinely have several at once — two Traktor versions, two sticks — and
+   *  the picker offers the choice rather than anointing one. */
+  detected: CollectionCandidate[]
   recent: CollectionCandidate | null // last opened (may no longer exist)
 }
 
@@ -416,9 +426,12 @@ export const api = {
   collection: () => getJSON<CollectionStatus>('/api/library'),
   openCollection: (path: string) =>
     send<CollectionStatus>('POST', '/api/library/open', { path }),
-  collectionOptions: () => getJSON<CollectionOptions>('/api/library/options'),
-  listDir: (path?: string) =>
-    getJSON<FsListing>(`/api/fs/list${path ? `?path=${encodeURIComponent(path)}` : ''}`),
+  // Both take the chosen platform, because the picker asks for it FIRST: the
+  // shortcuts and the browsable files are only meaningful inside that answer.
+  collectionOptions: (platform?: string) =>
+    getJSON<CollectionOptions>(`/api/library/options${qs({ platform })}`),
+  listDir: (path?: string, platform?: string) =>
+    getJSON<FsListing>(`/api/fs/list${qs({ path, platform })}`),
 
   // ---- path remapping (per-collection OS-path prefix translation) ----
   getPathMapping: () => getJSON<PathMapping>('/api/library/path-mapping'),

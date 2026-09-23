@@ -17,6 +17,7 @@ class RekordboxDriver:
     display_name = "Rekordbox"
     suffixes = (".db",)
     library_label = "master.db"
+    selects = "file"
 
     def can_open(self, path: Path) -> bool:
         """Recognise an encrypted Rekordbox database.

@@ -168,7 +168,8 @@ Two independent apps that talk over HTTP:
     History is app-level: the adapter returns the bytes it wrote plus a summary,
     and `AppState.save()` versions them. Every write path must go through it.
   - `prefs.py` — persisted user prefs (`userprefs.json` in the per-OS app-data
-    dir). Last-opened collection, library column layout, prep-deck zoom. Best-effort.
+    dir). Last-opened collection (global AND per-platform), library column
+    layout, prep-deck zoom, import destination. Best-effort.
   - `schemas.py` — HTTP request bodies + envelopes; re-exports `core.model`.
   - `main.py` — thin FastAPI routes (all under `/api`), talking only to the
     adapter. Starts **unloaded**; the library is chosen at runtime via
@@ -176,6 +177,17 @@ Two independent apps that talk over HTTP:
     `GET /api/capabilities` feeds the UI's gating; `GET /api/fs/list` powers the
     file browser; `GET`/`PATCH /api/prefs` persist UI prefs. Setting
     `KONDUKTOR_NML` auto-loads on startup (dev/tests).
+    The picker's three routes are all **scoped by `?platform=`**, because it
+    asks which platform first: `/api/platforms` (the pre-load equivalent of
+    capabilities — reports `selects`, `removable` and `found`, sorted so a menu
+    does not reshuffle between launches), `/api/library/options` (that
+    platform's detections + its own last-opened) and `/api/fs/list` (that
+    platform's suffixes; a directory-selecting platform contributes none, so its
+    browse shows folders only). `/api/library/open` checks `exists()`, **not
+    `is_file()`** — which shapes are valid is `can_open()`'s business, and a
+    OneLibrary library is a drive. `prefs` keeps last-opened **per platform**:
+    offering a Rekordbox `master.db` to someone who just chose Traktor is an
+    offer that cannot be taken.
 - **`frontend/`** — React + TypeScript + Vite. A dark, virtualized track
   explorer. Entry: [frontend/src/App.tsx](frontend/src/App.tsx).
   - `api.ts` — typed client + all API types. **Generic, not Traktor-shaped**:
@@ -192,8 +204,21 @@ Two independent apps that talk over HTTP:
     adapter supplies (`app_name`, `library_label`, `overwrite_risk`), so
     "Close Traktor before saving — it overwrites collection.nml on exit" stays
     specific without being hard-coded. Never put finished sentences in the API.
-  - `components/` — `CollectionPicker` (startup chooser: Automatic / Open last /
-    Find manually — the last reveals a file browser), `Sidebar` (playlist tree +
+  - `components/` — `CollectionPicker` (**two steps: which PLATFORM, then which
+    library** — Automatic / Open last / Find manually, the last revealing a file
+    browser. The platform comes first because every later answer depends on it:
+    asked the other way round, "Automatic" had to guess ACROSS platforms and did
+    it by adapter registration order, so a plugged-in stick could be opened as
+    the user's collection. Scoping removes that by construction rather than by
+    ranking candidates better. Nothing is remembered between launches — the
+    platform list is where every session starts. `selects` decides whether the
+    browser offers files or a folder to confirm, because a library is a file on
+    some platforms and a DIRECTORY on others), `Sidebar` (a header naming the
+    open library, which is also the only way to switch to another one — the
+    picker used to be a one-way door with `forcePicker` never set, so changing
+    library meant restarting; switching confirms first when there are unsaved
+    edits, since the adapter holds them in a native model that opening another
+    library replaces — plus the playlist tree +
     create/rename/delete), `SaveBar`, `Toolbar` (search/filters + `ColumnsMenu`),
     `TrackTable` (All Tracks — TanStack Table + **virtualized** grid; per-row play
     button, configurable columns, inline double-click editing) and `PlaylistTable`
@@ -323,6 +348,14 @@ serialization path.** It enforces:
   companion cue is invented), that the existing 8,485 entries render
   byte-identically, that the job registry runs/fails/cancels, and that a
   cancelled import leaves **no orphaned audio and an untouched collection**.
+- `test_picker.py` — the picker's routes. Pins the scoping, because the bug it
+  replaced was invisible: `/api/library/options` flattened every driver's
+  detections and returned `[0]`, so a plugged-in USB stick could be offered as
+  the user's collection and nothing failed — it just opened the wrong library.
+  Also pins that a drive is named the same whichever of its two valid paths was
+  opened. Needs nothing installed: every assertion is about the SHAPE of the
+  answer, and prefs are redirected to a temp file so a test can never rewrite
+  the user's last-opened library.
 - `test_layering.py` — `core/` imports nothing platform-specific, and no adapter
   imports another platform's library (checked on real imports via AST, so merely
   naming a platform in a comment is fine). Rekordbox and OneLibrary deliberately

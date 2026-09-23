@@ -21,6 +21,11 @@ class OneLibraryDriver:
     removable = True
     suffixes = (".db",)
     library_label = "exportLibrary.db"
+    # What a user PICKS is the mount point, not the database buried three levels
+    # down inside it — `DriveLayout.locate()` accepts either, but only one of
+    # them is a thing anybody browses to. The file browser reads this to offer
+    # folders rather than files.
+    selects = "directory"
 
     def can_open(self, path: Path) -> bool:
         """Recognise a OneLibrary drive, by layout and then by schema.
@@ -76,6 +81,17 @@ class OneLibraryDriver:
 
     def describe(self, path: Path) -> dict:
         return discovery.describe(path)
+
+    def display_name_for(self, path: Path) -> str:
+        """What to call this library on screen: the DRIVE's name.
+
+        The filename is not a stable answer here. A OneLibrary library can be
+        opened by its mount point OR by the database three levels inside it —
+        `DriveLayout.locate()` accepts both on purpose — so the same stick would
+        be "Hardy" opened one way and "exportLibrary.db" opened the other.
+        """
+        layout = DriveLayout.locate(Path(path))
+        return layout.root.name if layout is not None else Path(path).name
 
     def restore(self, path: Path, data: bytes) -> None:
         """Not supported: a drive is a database plus analysis files plus audio.
