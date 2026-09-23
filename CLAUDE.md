@@ -70,7 +70,10 @@ Two independent apps that talk over HTTP:
     - `beatgrid.py`, `locations.py`, `capabilities.py` — Traktor's grid/companion
       rules, LOCATION ↔ OS path conversion, and its capability set.
   - `adapters/rekordbox/` — **track metadata, playlists and hot cues writable;
-    the beatgrid still read-only** (milestones 2 and 3a).
+    the beatgrid still read-only** (milestones 2 and 3a). Also home to
+    `anlz_writer.py`, which BUILDS analysis files from nothing — Pioneer's format,
+    not one product's, so the OneLibrary exporter borrows it the same way it
+    already borrows `beatgrid`.
     `master.db` is SQLCipher-encrypted SQLite, read via `pyrekordbox`. Every
     mutating command raises `Unsupported` and `capabilities()` advertises nothing
     as editable, so the UI never offers an edit. Three things differ from Traktor
@@ -443,6 +446,15 @@ serialization path.** It enforces:
   its own files and leaves the user's alone; a cancel leaves no library file and
   **no audio at all**, including the file being written; a missing source file is
   skipped rather than fatal.
+- `test_export_pioneer.py` — the two Pioneer targets against the same contract.
+  Harder than Traktor's in a way that test cannot cover: each writes a database
+  PLUS per-track analysis files, so "the library" is no longer one path, and the
+  prep survives a real change of representation rather than a re-render. Pins the
+  three crossings that fail SILENTLY — the key is CONVERTED not copied, hot cues
+  keep their PAD across the dense-vs-sparse slot difference, and a flexible
+  multi-tempo grid survives expansion to per-beat and collapse back. Both are read
+  back with Konduktor's own adapters, which is the strongest check short of the
+  hardware: the reader was written against real rekordbox output.
 - `test_library_id.py` — the property no other suite covers: **a library that
   moves keeps its identity**. Also that two libraries in one folder stay two, a
   removable library is never written beside, an unwritable location falls back
@@ -644,6 +656,44 @@ that number and nothing else — everything derives from it:
   is a folder-deletion hazard, so an export writes a `.konduktor-export.json`
   manifest and **refuses to clear any folder that lacks one** — Konduktor only
   ever deletes what Konduktor wrote.
+  **All three targets are now writable from nothing** (2026-09-23). The UI needed
+  **no change at all** — `/api/export-targets` reads the exporter registry, so
+  registering one is what makes a platform selectable. Three things were measured
+  rather than assumed, each contradicting the handoff's expectation:
+  - **ANLZ analysis files CAN be created from scratch.** The handoff called this
+    unexplored and a likely blocker. `adapters/rekordbox/anlz_writer.py` builds
+    them; both Pioneer targets need one per track. Two traps: `AnlzTag.content`
+    is a construct **Switch** (pass the structure, not bytes), and the cue-entry
+    structs `AnlzCuePoint`/`AnlzCuePoint2` **cannot be built at all** — each
+    declares `"type"` twice, once as a magic `Const` and once as the cue kind, so
+    parsing works (the second overwrites) and building cannot. Cue entries are
+    therefore packed by hand, and the whole FILE is assembled here too, because
+    `AnlzFile.build()` re-builds every tag through those same structs.
+  - **`Base.metadata.create_all()` does NOT reproduce Rekordbox's schema.** The
+    ORM models 37 tables where a real `master.db` has 47, and marks columns NOT
+    NULL that Rekordbox leaves nullable (`agentRegistry.id_1` caught it). So
+    `fixtures/rekordbox/schema.sql` is the real DDL, plus `seed.sql` for the
+    scaffolding rows `add_content` requires — `djmdDevice`/`djmdProperty` are
+    deliberately NOT in the fixture, since they carry the machine's name and
+    UUIDs; those are generated fresh per export.
+  - **The two Pioneer key blobs are different.** `masterdb`'s key and
+    `devicelib_plus`'s are not the same string; mixing them up yields a database
+    Rekordbox cannot open.
+  `adapters/onelibrary/export.py` writes a whole drive (`PIONEER/rekordbox/
+  exportLibrary.db` from the checked-in DDL, plus ANLZ under `PIONEER/USBANLZ/`,
+  paths drive-relative). `adapters/rekordbox/export.py` writes a `master.db` and
+  **replays cues through the ordinary `RekordboxAdapter.set_cue`**, so it inherits
+  `_sync_content_cue`, the sparse `Kind` bank and their tests rather than
+  redefining them; its ANLZ files go under a **`share/` directory beside
+  `master.db`**, which is what `AnalysisDataPath` is rooted at — write them at the
+  library root and the grid silently reads back empty.
+  **Key notation crosses via the wheel**, never by copying the string:
+  `projection.render_key()` is the inverse of `parse_key`, shared by both Pioneer
+  targets, so Traktor's `"10m"` becomes `"Cm"` rather than a literal `"10m"` in a
+  Pioneer library. **Caveat**: `djmdContent.FolderPath` is an ABSOLUTE host path,
+  so unlike Traktor and OneLibrary a Rekordbox export is not portable by copying
+  the folder. Still unwritten and documented as unknown: OneLibrary's waveform
+  tags and the `cue` table's MPEG seek columns.
   **Step 5 done**: `exporter.py` — plan, mirrored copy, manifest, rollback — on
   `jobs.py`, plus `POST /api/exports/{id}/preview` and `/run`, and the
   `ExportRunDialog`. Three properties it is built around: audio is copied FIRST

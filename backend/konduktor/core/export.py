@@ -76,6 +76,28 @@ class ExportPayload:
     name: str = "Export"
 
 
+@dataclass
+class WrittenLibrary:
+    """What an exporter put on disk.
+
+    A list rather than one path because a library is not always one file: a
+    Traktor export is a single `collection.nml`, but Rekordbox and OneLibrary
+    each write a database PLUS a per-track analysis file. The runner records all
+    of them in its manifest, and a re-export clears exactly that list — so an
+    exporter that under-reports leaves orphans behind that the next export
+    cannot clean up.
+    """
+
+    #: The library file itself, for the manifest and for telling the user.
+    library: Path
+    #: Everything else written, e.g. analysis files. Excludes `library`.
+    extra: list[Path] = field(default_factory=list)
+
+    @property
+    def all_paths(self) -> list[Path]:
+        return [self.library, *self.extra]
+
+
 @runtime_checkable
 class LibraryExporter(Protocol):
     """Writes one platform's library, from nothing. Stateless."""
@@ -88,12 +110,15 @@ class LibraryExporter(Protocol):
         """What this target can represent — STATIC, with no library to read."""
         ...
 
-    def write(self, payload: ExportPayload, destination: Path) -> Path:
-        """Write a complete library into `destination`; return the file written.
+    def write(self, payload: ExportPayload, destination: Path) -> WrittenLibrary:
+        """Write a complete library into `destination`; report what it wrote.
 
         The destination exists and already holds the copied audio. Raises rather
         than writing something partial: a library file is the last thing an
         export produces, so its absence is what marks an export unfinished.
+
+        Everything written must be reported, not just the library — the runner's
+        manifest is what lets a re-export clear its own output and nothing else.
         """
         ...
 

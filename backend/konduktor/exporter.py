@@ -336,7 +336,7 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle) -> dict:
 
         handle.raise_if_cancelled()
         handle.progress(message=f"Writing the {export_set.target} library…")
-        library = exporter.write(
+        written = exporter.write(
             ExportPayload(
                 name=export_set.name,
                 tracks=payload_tracks,
@@ -344,12 +344,18 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle) -> dict:
             ),
             destination,
         )
-        created.append(library)
+        # Everything the exporter reported, not just the library: a target can
+        # write a database PLUS a per-track analysis file, and anything left out
+        # here is an orphan the next re-export cannot clear.
+        created.extend(written.all_paths)
 
+        library = written.library
         _write_manifest(
             destination,
-            library=library.name,
-            files=[str(p.relative_to(destination)) for p in created if p != library],
+            library=str(library.relative_to(destination)),
+            files=sorted(
+                {str(p.relative_to(destination)) for p in created if p != library}
+            ),
             name=export_set.name,
         )
         return {

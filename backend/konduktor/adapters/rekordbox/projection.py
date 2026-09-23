@@ -42,6 +42,30 @@ def parse_key(key: str | None) -> tuple[int | None, str | None]:
     return (n, "minor" if minor else "major") if n else (None, None)
 
 
+# The inverse, for EXPORT. A track arriving from Traktor carries `key` as
+# Traktor's own display string ("10m") and `key_wheel`/`key_mode` as the parsed
+# position — so writing the string verbatim into a Pioneer library would show
+# "10m" where the deck expects "Abm". Rendering from the wheel is the only
+# correct crossing. Shared with the OneLibrary exporter: same vendor, same
+# notation, and two tables would drift.
+_MINOR_NAMES = {v: k for k, v in reversed(list(_CAMELOT_MINOR.items()))}
+_MAJOR_NAMES = {v: k for k, v in reversed(list(_CAMELOT_MAJOR.items()))}
+
+
+def render_key(wheel: int | None, mode: str | None) -> str | None:
+    """A Pioneer-style key name ("Abm", "F") for a Camelot position + mode.
+
+    Returns None when the position is unknown, which is honest: a made-up key is
+    worse than a blank one, and Pioneer software shows blanks without complaint.
+    """
+    if not wheel or not (1 <= wheel <= 12):
+        return None
+    if mode == "minor":
+        name = _MINOR_NAMES.get(wheel)
+        return f"{name}m" if name else None
+    return _MAJOR_NAMES.get(wheel)
+
+
 def _iso_date(value) -> str | None:
     """Rekordbox already stores ISO-ish 'YYYY-MM-DD'; blanks become None."""
     if not value:

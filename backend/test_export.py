@@ -42,8 +42,14 @@ exporter = core_export.for_platform("traktor")
 
 print("== the target declares itself without a library to read ==")
 check("traktor is a target", exporter is not None)
-check("rekordbox is NOT", core_export.for_platform("rekordbox") is None)
-check("onelibrary is NOT", core_export.for_platform("onelibrary") is None)
+# All three platforms Konduktor can OPEN can now also be written from nothing.
+# The two registries stay separate anyway: they answer different questions, and
+# a future read-only platform would be in one and not the other.
+check("so are rekordbox and onelibrary",
+      core_export.for_platform("rekordbox") is not None
+      and core_export.for_platform("onelibrary") is not None)
+check("a platform with no exporter is not a target",
+      core_export.for_platform("serato") is None)
 caps = exporter.capabilities()
 check("static capabilities answer with no path", caps.platform == "traktor" and caps.writable)
 check("and describe the FORMAT, not an instance", caps.cues.hotcue_slots == 8)
@@ -73,7 +79,9 @@ payload = ExportPayload(
         ExportPlaylist(name="Warmup", track_ids=[cued.id], folders=["House", "Slow"]),
     ],
 )
-written = exporter.write(payload, dest)
+result = exporter.write(payload, dest)
+written = result.library
+check("the exporter reports what it wrote", result.all_paths == [written])
 text = written.read_text(encoding="utf-8")
 
 print("== the skeleton is what Traktor writes ==")
@@ -169,7 +177,7 @@ check("hot cues keep their PAD, not just their position", out_hot == src_hot,
       f"{out_hot} vs {src_hot}")
 
 print("== writing twice into the same folder replaces, never appends ==")
-again = exporter.write(payload, dest)
+again = exporter.write(payload, dest).library
 check("the entry count did not double",
       f'<COLLECTION ENTRIES="{len(chosen)}">' in again.read_text(encoding="utf-8"))
 check("and the tree did not duplicate",

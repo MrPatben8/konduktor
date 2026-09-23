@@ -35,7 +35,7 @@ import logging
 from pathlib import Path
 
 from ...core.adapter import NewTrack
-from ...core.export import ExportPayload
+from ...core.export import ExportPayload, WrittenLibrary
 from .adapter import TraktorAdapter
 from .capabilities import capabilities_for
 
@@ -79,7 +79,7 @@ class TraktorExporter:
             ],
         )
 
-    def write(self, payload: ExportPayload, destination: Path) -> Path:
+    def write(self, payload: ExportPayload, destination: Path) -> WrittenLibrary:
         destination = Path(destination)
         destination.mkdir(parents=True, exist_ok=True)
         library = destination / self.library_filename
@@ -100,7 +100,8 @@ class TraktorExporter:
 
         self._write_playlists(adapter, payload, moved)
         adapter.save()
-        return library
+        # One file; nothing else to report.
+        return WrittenLibrary(library=library)
 
     def _write_playlists(self, adapter, payload: ExportPayload, moved: dict) -> None:
         """Recreate the tree under one folder named after the export.
