@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from . import __version__, exporter, exports, history, prefs
 from .app_state import STATE
 from .core import auto_hotcues as ah
+from .core import grid_detect
 from . import importer
 from .core import export as core_export
 from .core import places, registry
@@ -855,9 +856,11 @@ def auto_hotcues(body: AutoHotcuesRequest) -> TrackCues:
 
 @app.post("/api/tracks/grid/auto", response_model=TrackCues)
 def auto_grid(body: AutoGridRequest) -> TrackCues:
-    """Detect tempo + first beat and build a beatgrid: sets BPM, sets hotcue 1
-    (slot 0) to the first beat, and anchors the grid to that position. Octave
-    (half/double) errors are left for the user to fix with the ×2/÷2 controls."""
+    """Detect tempo + first beat and build a beatgrid (see `core/grid_detect`).
+
+    One constant-tempo marker, written the way the platform's own analyser would
+    (on Traktor that also sets hotcue 1 to the first beat). Octave (half/double)
+    ambiguity in halftime genres is left for the ×2 / ÷2 controls."""
     a = require_adapter()
     if a.track(body.track_id) is None:
         raise HTTPException(404, "Track not found")
@@ -865,12 +868,12 @@ def auto_grid(body: AutoGridRequest) -> TrackCues:
     if path is None or not path.exists():
         raise HTTPException(400, "Audio file not found (is the drive mounted?)")
     try:
-        bpm, first_beat = ah.detect_grid(str(path))
+        found = grid_detect.detect_grid(str(path))
     except Exception as ex:  # analysis is best-effort; never 500 the UI
         raise HTTPException(400, f"Analysis failed: {ex}")
     # "Analysed", not "replace": each platform writes an analysis result in its
     # own shape (Traktor pairs the first marker with a beat-1 cue).
-    return a.set_analysed_grid(body.track_id, [(first_beat, bpm)])
+    return a.set_analysed_grid(body.track_id, [(found.anchor, found.bpm)])
 
 
 @app.patch("/api/tracks/cue", response_model=TrackCues)

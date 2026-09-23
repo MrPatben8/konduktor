@@ -47,6 +47,20 @@ Two independent apps that talk over HTTP:
     - `registry.py` — adapter selection by **`can_open()` probe**, not extension
       (Rekordbox is a `.db`, Serato is a directory).
     - `audio_tags.py`, `pathmap.py`, `auto_hotcues.py` — format-agnostic helpers.
+    - `grid_detect.py` — **beatgrid detection** (the deck's Analyze button,
+      `POST /api/tracks/grid/auto`). Fits ONE constant tempo + anchor to the whole
+      track rather than tracking beats: `librosa.beat.beat_track`, which it
+      replaced, quantises tempo to 23 ms frames and can only return 117.45 /
+      123.05 / 129.20 / 136.00 between 115 and 140 BPM. Timing comes from a
+      1–8 kHz attack band, and which attack is the beat from whether a kick's
+      low end follows it — each band alone lost a real track to an off-beat hat
+      or a syncopated bassline. Positions are in the **decoded audio's** time
+      base (libsndfile = CoreAudio to the sample on MP3). **Rekordbox's grids sit
+      a constant ~25 ms later on lossy files** and at 0 on WAV — a platform
+      time-base difference, deliberately NOT corrected here; Traktor's is
+      unmeasured. `backend/bench_grid_detect.py` scores it against any library's
+      single-marker grids and reports that constant separately from detection
+      error (29 Rekordbox references: old 1/29 BPMs, new 27/29).
     - `places.py` — where a person keeps things on THIS computer: the user's own
       folders (via `platformdirs` — hardcoding is wrong on every OS differently:
       `~/Videos` is `Movies` on macOS, Linux's are user-configurable localised
@@ -416,6 +430,12 @@ serialization path.** It enforces:
   companion cue is invented), that the existing 8,485 entries render
   byte-identically, that the job registry runs/fails/cancels, and that a
   cancelled import leaves **no orphaned audio and an untouched collection**.
+- `test_grid_detect.py` — beatgrid detection on **synthetic** audio, so the
+  tempo and first beat are known rather than borrowed from another analyser:
+  exact integer and non-integer BPMs, the 125 BPM the old detector could not
+  return, octave choice, and the loud off-beat hat and syncopated bassline that
+  each fooled one band on real music. Accuracy on REAL music is
+  `bench_grid_detect.py`'s job (not in `run_tests.sh`: it needs audio).
 - `test_picker.py` — the picker's routes. Pins the scoping, because the bug it
   replaced was invisible: `/api/library/options` flattened every driver's
   detections and returned `[0]`, so a plugged-in USB stick could be offered as
