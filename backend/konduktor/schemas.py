@@ -190,6 +190,24 @@ class ExportContents(BaseModel):
     destination_conflict: str | None = None
 
 
+class ExportPreview(BaseModel):
+    """What an export would do if run now. Computed fresh; never stored."""
+
+    tracks: int = 0
+    exportable: int = 0
+    missing: list[str] = []
+    playlists: list[str] = []
+    total_bytes: int = 0
+    destination: str | None = None
+    free_bytes: int | None = None
+    enough_space: bool | None = None
+    #: A FACT, not a sentence — the UI words it. One of `destination_not_empty`,
+    #: `nothing_to_export`, `unsupported_target`, or null when it can run.
+    blocked: str | None = None
+    #: The destination already holds a Konduktor export, which will be replaced.
+    replacing: bool = False
+
+
 class FsPlace(BaseModel):
     """A shortcut in the file browser's sidebar.
 

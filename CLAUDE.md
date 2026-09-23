@@ -436,6 +436,13 @@ serialization path.** It enforces:
   at the gig. Also that a flexible multi-marker grid and hot-cue PADS survive,
   grids are not locked, loose tracks get their "Other" playlist, and re-exporting
   into the same folder replaces rather than appends.
+  It then runs a real export end to end (the source library is built with the
+  exporter itself, so its LOCATIONs point at audio that exists) and pins the
+  safety rules with teeth: a folder Konduktor did NOT write is refused, and
+  `run()` refuses a blocked plan even when called directly; a re-export replaces
+  its own files and leaves the user's alone; a cancel leaves no library file and
+  **no audio at all**, including the file being written; a missing source file is
+  skipped rather than fatal.
 - `test_library_id.py` — the property no other suite covers: **a library that
   moves keeps its identity**. Also that two libraries in one folder stay two, a
   removable library is never written beside, an unwritable location falls back
@@ -637,6 +644,30 @@ that number and nothing else — everything derives from it:
   is a folder-deletion hazard, so an export writes a `.konduktor-export.json`
   manifest and **refuses to clear any folder that lacks one** — Konduktor only
   ever deletes what Konduktor wrote.
+  **Step 5 done**: `exporter.py` — plan, mirrored copy, manifest, rollback — on
+  `jobs.py`, plus `POST /api/exports/{id}/preview` and `/run`, and the
+  `ExportRunDialog`. Three properties it is built around: audio is copied FIRST
+  and the library written LAST, so a cancel leaves **no** library file and its
+  absence is what marks an export unfinished; rollback registers each file
+  BEFORE writing it, so the in-flight copy is cleaned up too; and the **manifest**
+  (`.konduktor-export.json`) means clearing removes exactly what the last export
+  wrote, so a file the user put in the folder survives a re-export. Audio mirrors
+  the source tree **relative to `common_dir_prefix`** — mirroring absolute paths
+  would put the user's home directory on the stick, and relative paths make
+  filename collisions impossible. A destination Konduktor did not write is
+  **refused, not confirmed**: there is no "do it anyway".
+  **Step 4 done**: `core/export.py` (the `LibraryExporter` protocol, its own
+  registry, and the strictly-generic `ExportPayload` — so a Rekordbox collection
+  exports to Traktor with no exporter knowing Rekordbox exists) and
+  `adapters/traktor/export.py`. The writer **creates then replays**: it writes a
+  minimal valid NML skeleton, opens a `TraktorAdapter` on it and populates it
+  with the ordinary commands. That amends the original design note, which
+  rejected create-then-replay on the grounds that the write target must always be
+  a native model parsed from a real file — here it literally is, a skeleton
+  Konduktor just wrote, and the alternative was a second definition of "Track +
+  cues + grid → ENTRY" that would drift from `add_entry` and inherit none of its
+  tests. Exporters declare **static** capabilities: no instance, no path, because
+  the library being described does not exist yet.
   **Steps 1–3 done**: `library_id.py`; `exports.py` + 10 routes + `api.ts`; and
   the UI (`ExportsSection`, `ExportDialog`, export views in `App`, "Add to…" on
   `SelectionBar`, the track context menu and each sidebar playlist row).

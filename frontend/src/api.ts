@@ -364,6 +364,22 @@ export interface ExportContents {
   destination_conflict: string | null
 }
 
+/** What an export would do if run now. Computed fresh every time. */
+export interface ExportPreview {
+  tracks: number
+  exportable: number
+  missing: string[]
+  playlists: string[]
+  total_bytes: number
+  destination: string | null
+  free_bytes: number | null
+  enough_space: boolean | null
+  /** A FACT, not a sentence — the UI words it. Null when the export can run. */
+  blocked: 'destination_not_empty' | 'nothing_to_export' | 'unsupported_target' | null
+  /** The destination already holds a Konduktor export, which will be replaced. */
+  replacing: boolean
+}
+
 export interface FsPlace {
   /** Groups the row and picks its icon. Never a finished sentence. */
   kind: 'home' | 'music' | 'desktop' | 'documents' | 'downloads' | 'volume' | 'library'
@@ -518,6 +534,10 @@ export const api = {
   // reason rather than hiding them — an absent option reads as a missing
   // feature, a disabled one reads as a roadmap.
   exportTargets: () => getJSON<PlatformOption[]>('/api/export-targets'),
+  exportPreview: (id: string) =>
+    send<ExportPreview>('POST', `/api/exports/${encodeURIComponent(id)}/preview`, {}),
+  runExport: (id: string) =>
+    send<JobStatus>('POST', `/api/exports/${encodeURIComponent(id)}/run`, {}),
 
   // ---- path remapping (per-collection OS-path prefix translation) ----
   getPathMapping: () => getJSON<PathMapping>('/api/library/path-mapping'),

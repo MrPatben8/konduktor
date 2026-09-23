@@ -13,10 +13,11 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import __version__, exports, history, prefs
+from . import __version__, exporter, exports, history, prefs
 from .app_state import STATE
 from .core import auto_hotcues as ah
 from . import importer
+from .core import export as core_export
 from .core import places, registry
 from .core.adapter import (
     AdapterError,
@@ -48,6 +49,7 @@ from .schemas import (
     ExportPlaylistOut,
     ExportSetMembers,
     ExportSetOut,
+    ExportPreview,
     FsEntry,
     FsListing,
     FsPlace,
@@ -498,15 +500,40 @@ def export_playlist_tracks(set_id: str, playlist_id: str) -> list[Track]:
     return tracks
 
 
+@app.post("/api/exports/{set_id}/preview", response_model=ExportPreview)
+def preview_export(set_id: str) -> ExportPreview:
+    """What this export would do, right now. Never cached — the set is live."""
+    found = _require_set(set_id)
+    built = exporter.plan(require_adapter(), found)
+    return ExportPreview(**built.as_dict(exporter.space_for(built)))
+
+
+@app.post("/api/exports/{set_id}/run", response_model=JobStatus)
+def run_export(set_id: str) -> JobStatus:
+    """Start the export on a background thread; poll `/api/jobs/{id}`.
+
+    Planned again HERE rather than trusting whatever the preview showed: a
+    playlist can be edited, a file deleted or a drive unplugged between looking
+    and clicking, and the plan carries the destination-safety check.
+    """
+    found = _require_set(set_id)
+    adapter = require_adapter()
+    built = exporter.plan(adapter, found)
+    if built.blocked:
+        raise HTTPException(409, built.blocked)
+    job = JOBS.submit("export", lambda handle: exporter.run(adapter, found, built, handle))
+    return JobStatus(**job.as_dict())
+
+
 def _export_targets() -> set[str]:
     """Platforms Konduktor can write a NEW library for.
 
-    Deliberately narrower than the platforms it can OPEN. Reading a library and
-    creating one from nothing are different capabilities, and only Traktor has
-    the second today — a Rekordbox target needs a from-scratch SQLCipher
-    master.db plus generated ANLZ analysis files.
+    Asked of the exporter registry rather than hard-coded: reading a library and
+    creating one from nothing are different capabilities, and a platform can
+    have the first without the second. Registering an exporter is what makes a
+    platform a target, so this cannot drift from what actually exists.
     """
-    return {"traktor"}
+    return core_export.targets()
 
 
 @app.get("/api/export-targets", response_model=list[PlatformOption])

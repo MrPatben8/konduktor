@@ -205,8 +205,14 @@ def _unique_target(folder: Path, name: str, taken: set[str]) -> Path:
     return folder / candidate
 
 
-def _copy(src: Path, dst: Path, handle: JobHandle, on_bytes) -> None:
-    """Copy a file, checking for cancellation between chunks."""
+def copy_file(src: Path, dst: Path, handle: JobHandle, on_bytes) -> None:
+    """Copy a file, checking for cancellation between chunks.
+
+    Public because export copies audio the same way and for the same reason: a
+    second chunked-copy loop would be a second place for the cancel check to be
+    forgotten, and a forgotten cancel check is invisible until someone tries to
+    stop a multi-gigabyte copy.
+    """
     with src.open("rb") as fin, dst.open("wb") as fout:
         while True:
             handle.raise_if_cancelled()
@@ -259,7 +265,7 @@ def run(source, dest, plan: ImportPlan, handle: JobHandle, *, folder_name: str |
             assert planned.source_path is not None
             target = _unique_target(destination, planned.source_path.name, taken)
             created.append(target)  # registered BEFORE the write, so a cancel
-            _copy(planned.source_path, target, handle, bump)  # mid-file is cleaned
+            copy_file(planned.source_path, target, handle, bump)  # mid-file is cleaned
             copied.append((planned, target))
 
         handle.raise_if_cancelled()

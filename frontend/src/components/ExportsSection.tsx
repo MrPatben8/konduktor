@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type ExportSet } from '../api'
 import { ExportDialog } from './ExportDialog'
+import { ExportRunDialog } from './ExportRunDialog'
 import type { Source } from './Sidebar'
 
 /**
@@ -29,6 +30,7 @@ interface Props {
 export function ExportsSection({ source, onSelect, onDone, onError }: Props) {
   const qc = useQueryClient()
   const [dialog, setDialog] = useState<{ editing: ExportSet | null } | null>(null)
+  const [running, setRunning] = useState<ExportSet | null>(null)
 
   const sets = useQuery({ queryKey: ['exports'], queryFn: api.exports })
 
@@ -65,6 +67,15 @@ export function ExportsSection({ source, onSelect, onDone, onError }: Props) {
         />
       )}
 
+      {running && (
+        <ExportRunDialog
+          set={running}
+          onClose={() => setRunning(null)}
+          onDone={onDone}
+          onError={onError}
+        />
+      )}
+
       <div className="mt-3 flex items-center justify-between px-4">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-faint">
           Exports
@@ -91,6 +102,7 @@ export function ExportsSection({ source, onSelect, onDone, onError }: Props) {
             source={source}
             onSelect={onSelect}
             onEdit={() => setDialog({ editing: set })}
+            onRun={() => setRunning(set)}
             onDelete={() => {
               // Deleting a set never touches its destination folder — the files
               // already exported are the user's, not Konduktor's to clean up.
@@ -110,6 +122,7 @@ function ExportRow({
   source,
   onSelect,
   onEdit,
+  onRun,
   onDelete,
   onError,
 }: {
@@ -117,6 +130,7 @@ function ExportRow({
   source: Source
   onSelect: (s: Source) => void
   onEdit: () => void
+  onRun: () => void
   onDelete: () => void
   onError: (msg: string) => void
 }) {
@@ -267,6 +281,16 @@ function ExportRow({
             <div style={{ paddingLeft: 24 }} className="py-1 pr-2 text-[11px] text-faint">
               Empty — select tracks and use “Add to…”.
             </div>
+          )}
+
+          {!!data?.tracks && (
+            <button
+              onClick={onRun}
+              style={{ marginLeft: 24 }}
+              className="mb-1 mt-1 rounded-md bg-accent px-2 py-1 text-xs font-medium text-ink-950 hover:brightness-110"
+            >
+              Export {data.tracks} track{data.tracks === 1 ? '' : 's'}…
+            </button>
           )}
         </>
       )}
