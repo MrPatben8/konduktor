@@ -13,7 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import __version__, history, prefs
+from . import __version__, exports, history, prefs
 from .app_state import STATE
 from .core import auto_hotcues as ah
 from . import importer
@@ -43,9 +43,15 @@ from .schemas import (
     EditTrack,
     Facets,
     FileTagOutcome,
+    CreateExportSet,
+    ExportContents,
+    ExportPlaylistOut,
+    ExportSetMembers,
+    ExportSetOut,
     FsEntry,
     FsListing,
     FsPlace,
+    UpdateExportSet,
     AddGridMarker,
     GridMarkerEdit,
     ReplaceGrid,
@@ -225,9 +231,24 @@ def remap_paths(body: PathMappingInfo) -> RemapResult:
     mapping = PathMapping.make(body.from_, body.to)
     if mapping.empty:
         raise HTTPException(400, "Both a `from` and `to` prefix are required")
-    count = require_adapter().remap_locations(mapping)
+    adapter = require_adapter()
+    # A Traktor track id IS its location, so a remap renames every matching id.
+    # Snapshot before/after and follow them, or every export set referencing a
+    # remapped track would dangle — and dangle SILENTLY, still looking curated
+    # while quietly exporting fewer tracks than it says.
+    before = {t.id: t.filepath for t in adapter.tracks() if t.filepath}
+    count = adapter.remap_locations(mapping)
     if count == 0:
         return RemapResult(rewritten=0, commit=None)
+    after = {t.filepath: t.id for t in adapter.tracks() if t.filepath}
+    moved = {
+        old_id: after[str(mapping.apply(Path(old_path)))]
+        for old_id, old_path in before.items()
+        if str(mapping.apply(Path(old_path))) in after
+        and after[str(mapping.apply(Path(old_path)))] != old_id
+    }
+    if moved and STATE.library_id:
+        exports.retarget(STATE.library_id, moved)
     # Through AppState, not the adapter: this is the one route besides /api/save
     # that writes, and skipping it would leave a gap in the version history.
     _outcome, commit = STATE.save()
@@ -319,6 +340,177 @@ def fs_list(path: str | None = None, platform: str | None = None) -> FsListing:
     return FsListing(
         path=str(base), parent=parent, home=str(Path.home()), dirs=dirs, files=files
     )
+
+
+# ---- export sets -------------------------------------------------------------
+#
+# Curation, not library data: a set is Konduktor's own record of what to export,
+# where to, and for which platform. Every route is scoped to the LOADED library
+# by its stable id, so opening a different collection shows a different shelf and
+# moving a collection does not orphan the sets built against it.
+
+
+def _require_library_id() -> str:
+    require_adapter()
+    if STATE.library_id is None:  # pragma: no cover — loaded implies an id
+        raise HTTPException(409, "No library is loaded")
+    return STATE.library_id
+
+
+def _require_set(set_id: str):
+    found = exports.get(_require_library_id(), set_id)
+    if found is None:
+        raise HTTPException(404, f"No export called {set_id}")
+    return found
+
+
+@app.get("/api/exports", response_model=list[ExportSetOut])
+def list_exports() -> list[ExportSetOut]:
+    return [ExportSetOut(**s.as_dict()) for s in exports.all_sets(_require_library_id())]
+
+
+@app.post("/api/exports", response_model=ExportSetOut)
+def create_export(body: CreateExportSet) -> ExportSetOut:
+    if not body.destination.strip():
+        raise HTTPException(400, "An export needs a destination folder")
+    # Only platforms that can actually be WRITTEN may be targets. Gating here as
+    # well as in the UI, because a set persists: one created against a target
+    # that later stops being supported would otherwise fail at export time.
+    if body.target not in _export_targets():
+        raise HTTPException(422, f"Konduktor cannot export to {body.target} yet")
+    created = exports.create(
+        _require_library_id(),
+        name=body.name,
+        target=body.target,
+        destination=body.destination,
+    )
+    return ExportSetOut(**created.as_dict())
+
+
+@app.patch("/api/exports/{set_id}", response_model=ExportSetOut)
+def update_export(set_id: str, body: UpdateExportSet) -> ExportSetOut:
+    _require_set(set_id)
+    if body.target is not None and body.target not in _export_targets():
+        raise HTTPException(422, f"Konduktor cannot export to {body.target} yet")
+    updated = exports.update(
+        _require_library_id(),
+        set_id,
+        name=body.name,
+        target=body.target,
+        destination=body.destination,
+    )
+    return ExportSetOut(**updated.as_dict())
+
+
+@app.delete("/api/exports/{set_id}")
+def delete_export(set_id: str) -> dict:
+    """Forget a set. Deliberately does NOT touch anything at its destination."""
+    _require_set(set_id)
+    return {"deleted": exports.delete(_require_library_id(), set_id)}
+
+
+@app.post("/api/exports/{set_id}/add", response_model=ExportSetOut)
+def add_to_export(set_id: str, body: ExportSetMembers) -> ExportSetOut:
+    _require_set(set_id)
+    updated = exports.add(
+        _require_library_id(), set_id,
+        track_ids=body.track_ids, playlist_ids=body.playlist_ids,
+    )
+    return ExportSetOut(**updated.as_dict())
+
+
+@app.post("/api/exports/{set_id}/remove", response_model=ExportSetOut)
+def remove_from_export(set_id: str, body: ExportSetMembers) -> ExportSetOut:
+    """Remove loose tracks and/or WHOLE playlists.
+
+    There is no per-track removal inside a referenced playlist: the reference is
+    live, so honouring both would need an exclusion list — hidden state silently
+    deciding what a future export contains. For a subset, add the tracks instead.
+    """
+    _require_set(set_id)
+    updated = exports.remove(
+        _require_library_id(), set_id,
+        track_ids=body.track_ids, playlist_ids=body.playlist_ids,
+    )
+    return ExportSetOut(**updated.as_dict())
+
+
+@app.get("/api/exports/{set_id}/contents", response_model=ExportContents)
+def export_contents(set_id: str) -> ExportContents:
+    """What the set holds right now. Computed every call, never cached."""
+    found = _require_set(set_id)
+    resolved = exports.resolve(require_adapter(), found)
+    return ExportContents(
+        playlists=[
+            ExportPlaylistOut(id=p.id, name=p.name, missing=p.missing, count=len(p.track_ids))
+            for p in resolved.playlists
+        ],
+        loose=len(resolved.loose_track_ids),
+        tracks=len(resolved.track_ids),
+        dangling=resolved.dangling_track_ids,
+        destination_conflict=exports.destination_conflict(
+            _require_library_id(), found.destination, ignore=set_id
+        ),
+    )
+
+
+@app.get("/api/exports/{set_id}/tracks", response_model=list[Track])
+def export_tracks(set_id: str) -> list[Track]:
+    """Every track the export would carry, deduped — the set's root view."""
+    found = _require_set(set_id)
+    adapter = require_adapter()
+    resolved = exports.resolve(adapter, found)
+    return [t for t in (adapter.track(tid) for tid in resolved.track_ids) if t is not None]
+
+
+@app.get("/api/exports/{set_id}/playlists/{playlist_id}/tracks", response_model=list[Track])
+def export_playlist_tracks(set_id: str, playlist_id: str) -> list[Track]:
+    """One included playlist, as it stands now.
+
+    Read straight from the library rather than from the set, which is the live
+    reference doing its job: what ships is whatever the playlist holds today.
+    """
+    found = _require_set(set_id)
+    if playlist_id not in found.playlist_ids:
+        raise HTTPException(404, "That playlist is not in this export")
+    tracks = require_adapter().playlist_tracks(playlist_id)
+    if tracks is None:
+        raise HTTPException(404, "That playlist no longer exists")
+    return tracks
+
+
+def _export_targets() -> set[str]:
+    """Platforms Konduktor can write a NEW library for.
+
+    Deliberately narrower than the platforms it can OPEN. Reading a library and
+    creating one from nothing are different capabilities, and only Traktor has
+    the second today — a Rekordbox target needs a from-scratch SQLCipher
+    master.db plus generated ANLZ analysis files.
+    """
+    return {"traktor"}
+
+
+@app.get("/api/export-targets", response_model=list[PlatformOption])
+def export_targets() -> list[PlatformOption]:
+    """Every platform, flagged by whether it can be an export TARGET.
+
+    Returns the unsupported ones too, with `installed=False` standing for "not a
+    target yet", so the UI can show them disabled with a reason. A silently
+    absent option reads as a missing feature; a disabled one reads as a roadmap.
+    """
+    supported = _export_targets()
+    return [
+        PlatformOption(
+            platform=d.platform,
+            name=d.display_name,
+            library_label=getattr(d, "library_label", ""),
+            selects="directory",   # an export destination is always a folder
+            installed=d.platform in supported,
+            found=0,
+            removable=bool(getattr(d, "removable", False)),
+        )
+        for d in registry.drivers()
+    ]
 
 
 # ---- health / state ---------------------------------------------------

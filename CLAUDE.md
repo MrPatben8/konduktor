@@ -177,6 +177,33 @@ Two independent apps that talk over HTTP:
   - `app_state.py` — the one loaded library, and the **version-history commit**.
     History is app-level: the adapter returns the bytes it wrote plus a summary,
     and `AppState.save()` versions them. Every write path must go through it.
+  - `library_id.py` — a **stable identity for a library that survives it being
+    moved**. Everything else keys off the OS path (`history` hashes it, `prefs`
+    stores it), which is fine for things a user shrugs at losing and NOT fine for
+    export sets, which are curated work holding references into one library. Two
+    halves, only the first authoritative: a hidden `.konduktor-library.json`
+    **sidecar beside the library**, which moves with it, plus a disposable
+    `libraries.json` index in app-data. The id is **random** — deriving it from
+    the path defeats the point and from the contents would change on every save.
+    The sidecar is keyed **by filename**, because one folder can hold two
+    libraries and a single id per folder would hand both the same identity.
+    A **removable** library gets no sidecar (writing to a user's USB stick for
+    Konduktor's bookkeeping is not a trade worth making) and falls back to a
+    path-derived id that `is_durable()` reports honestly. Writing beside the
+    library is not a new intrusion — saves already create `backups/` there.
+  - `exports.py` — **export sets**: a named, persisted slice of the library bound
+    to a destination. Konduktor's OWN data, never written into the user's library
+    (a Traktor collection has nowhere to put it, and it would live in a file
+    Traktor rewrites). Three rules shape it: references are **LIVE** (a set
+    stores playlist *ids*, resolved at export time, so `resolve()` is computed on
+    every call and NEVER cached); a playlist is **removable only as a whole**
+    (a live reference plus per-track removal needs an exclusion list, i.e. hidden
+    state silently deciding what a future export contains); and it is **keyed by
+    `library_id`**, not path. `resolve()` dedupes across playlists and loose
+    tracks — one track, one file copy — and SURFACES what is gone rather than
+    dropping it, because a gig stick quietly missing four tracks is this
+    feature's worst failure. `retarget()` follows ids through a path remap, which
+    `/api/library/remap-paths` calls with a before/after snapshot.
   - `prefs.py` — persisted user prefs (`userprefs.json` in the per-OS app-data
     dir). Last-opened collection (global AND per-platform), library column
     layout, prep-deck zoom, import destination. Best-effort.
@@ -384,6 +411,17 @@ serialization path.** It enforces:
   as a drive, and that the adapter and the browser share ONE mount scanner. Needs nothing installed: every assertion is about the SHAPE of the
   answer, and prefs are redirected to a temp file so a test can never rewrite
   the user's last-opened library.
+- `test_exports.py` — export sets against a temp copy of the real collection.
+  Pins the things that would fail SILENTLY: a live reference picks up a playlist
+  edited AFTER curation; contents dedupe across playlists and loose tracks; a
+  deleted playlist or track is surfaced, not dropped; sets are per-library; two
+  sets sharing a destination are caught (an export clears its destination, so the
+  second would wipe the first); and deleting a set never touches its folder.
+- `test_library_id.py` — the property no other suite covers: **a library that
+  moves keeps its identity**. Also that two libraries in one folder stay two, a
+  removable library is never written beside, an unwritable location falls back
+  rather than failing, and `paths.write_json` is atomic (curated user work, so
+  `prefs.py`'s best-effort "any I/O error degrades to no prefs" is NOT adequate).
 - `test_layering.py` — `core/` imports nothing platform-specific, and no adapter
   imports another platform's library (checked on real imports via AST, so merely
   naming a platform in a comment is fine). Rekordbox and OneLibrary deliberately
@@ -553,12 +591,38 @@ that number and nothing else — everything derives from it:
   update counters), so read-only is a deliberate boundary rather than an
   unfinished one. All research — including the schema, which has no public spec —
   is in [.claude/handoffs/onelibrary-adapter.md](.claude/handoffs/onelibrary-adapter.md).
-- ⬜ **Export/conversion** — next up, brought forward ahead of Serato. Design is
-  settled in the discussion doc; current state, the architectural gap (no adapter
-  can create a library from nothing) and the landmines are written up in
-  [.claude/handoffs/export.md](.claude/handoffs/export.md). Note the OneLibrary
-  work already demonstrated creating an `exportLibrary.db` from nothing, and
-  `fixtures/onelibrary/schema.sql` is the DDL to do it with.
+- 🟡 **Export/conversion** — **in progress.** Both the design AND the user flow
+  are settled; see
+  [the export discussion doc](.claude/discussions/discuss-export-implementation-2026-09-22.md),
+  whose 2026-09-23 section is the current one, plus
+  [.claude/handoffs/export.md](.claude/handoffs/export.md) for the landmines.
+  An **export** is a named, persisted object in the sidebar carrying its name,
+  target platform and destination; tracks and playlists are added to it; an
+  Export button copies the audio and writes the library. Settled: **Traktor-only
+  target** for v1, source is whatever library is loaded, **mirror the source
+  folder structure** (so filename collisions cannot happen), playlists are **live
+  links removable only as a whole**, re-export **clears the destination first**,
+  cancel **rolls back**, key notation **mirrors the source**, grids are **not
+  locked**, no whole-library export.
+  Verified against the real collection: Traktor stores `VOLUME="Hardy"` plus a
+  **volume-relative** `DIR`, never a host path — so a USB export is portable by
+  construction, and the `.nml` cannot be written until the destination is known.
+  Also settled: loose tracks land in an **"Other" playlist**, playlist folders
+  are preserved, and the export is a **standalone `collection.nml`** the user
+  swaps into a Traktor install — so it needs the full skeleton, verified from the
+  real file: `<NML VERSION="20">`, `<HEAD>`, `<COLLECTION ENTRIES>`,
+  `<SETS ENTRIES="0">`, `<PLAYLISTS>` wrapping a `$ROOT` FOLDER node with a
+  `SUBNODES COUNT`, and `<INDEXING><SORTING_INFO PATH="$COLLECTION">`. There is
+  **no `<MUSICFOLDERS>` element**, so it is not required.
+  **Safety**: "clear the destination first" plus "the user picks the destination"
+  is a folder-deletion hazard, so an export writes a `.konduktor-export.json`
+  manifest and **refuses to clear any folder that lacks one** — Konduktor only
+  ever deletes what Konduktor wrote.
+  **Steps 1–2 done**: `library_id.py`, then `exports.py` + 10 routes + `api.ts`.
+  Next: the UI, then `core/exporter.py` + the Traktor writer on top of `jobs.py`
+  and `importer.py`'s copy machinery. Note the OneLibrary work already demonstrated
+  creating an `exportLibrary.db` from nothing, and `fixtures/onelibrary/schema.sql`
+  is the DDL to do it with.
 - ⬜ Serato adapter
 - ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 

@@ -135,6 +135,61 @@ class CollectionOptions(BaseModel):
     recent: CollectionCandidate | None = None  # last opened (from userprefs)
 
 
+# ---- export sets -------------------------------------------------------------
+#
+# Konduktor's own data, never written into the user's library, and keyed by the
+# library's stable ID rather than its path. See `exports.py`.
+
+
+class ExportSetOut(BaseModel):
+    id: str
+    name: str
+    target: str          # platform id of the export TARGET
+    destination: str
+    playlist_ids: list[str] = []
+    track_ids: list[str] = []   # loose tracks only
+    created: float = 0.0
+    modified: float = 0.0
+
+
+class CreateExportSet(BaseModel):
+    name: str
+    target: str = "traktor"
+    destination: str
+
+
+class UpdateExportSet(BaseModel):
+    name: str | None = None
+    target: str | None = None
+    destination: str | None = None
+
+
+class ExportSetMembers(BaseModel):
+    track_ids: list[str] = []
+    playlist_ids: list[str] = []
+
+
+class ExportPlaylistOut(BaseModel):
+    id: str
+    name: str
+    #: The playlist has been deleted since it was added to the set.
+    missing: bool = False
+    count: int = 0
+
+
+class ExportContents(BaseModel):
+    """What a set holds RIGHT NOW. Never cached — the references are live."""
+
+    playlists: list[ExportPlaylistOut] = []
+    loose: int = 0
+    #: Deduped across playlists and loose tracks: one track, one file copy.
+    tracks: int = 0
+    #: Track ids the library no longer has, surfaced rather than dropped.
+    dangling: list[str] = []
+    #: Another set already writes to this destination, and an export CLEARS it.
+    destination_conflict: str | None = None
+
+
 class FsPlace(BaseModel):
     """A shortcut in the file browser's sidebar.
 

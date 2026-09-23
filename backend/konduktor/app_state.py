@@ -27,7 +27,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import __version__, adapters, history, prefs  # noqa: F401 — registers adapters
+from . import __version__, adapters, history, library_id, prefs  # noqa: F401 — registers adapters
 from .core import registry
 from .core.adapter import LibraryAdapter
 from .core.pathmap import PathMapping
@@ -39,6 +39,10 @@ class AppState:
     def __init__(self) -> None:
         self.path: Path | None = None
         self.adapter: LibraryAdapter | None = None
+        # This library's stable identity, which survives it being moved. What
+        # export sets are keyed by; see `library_id.py` for why a path is not
+        # good enough for curated user work.
+        self.library_id: str | None = None
         # The library being read FROM, if any. Read-only by contract; see the
         # module docstring for why it is not symmetrical with `adapter`.
         self.source_path: Path | None = None
@@ -110,6 +114,19 @@ class AppState:
         if saved:
             adapter.set_path_mapping(PathMapping.make(saved["from"], saved["to"]))
         self.path, self.adapter = path, adapter
+        caps = adapter.capabilities()
+        # No sidecar beside a removable library: writing to a user's USB stick to
+        # satisfy Konduktor's own bookkeeping is not a trade worth making. Those
+        # get a path-derived id instead, which `is_durable()` reports honestly.
+        driver = next(
+            (d for d in registry.drivers() if d.platform == caps.platform), None
+        )
+        self.library_id = library_id.for_path(
+            path,
+            platform=caps.platform,
+            label=Path(str(path)).name,
+            sidecar=not getattr(driver, "removable", False),
+        )
         # Version history: record an "as I found it" baseline (deduped, so
         # re-opening an unchanged library is a no-op). Best-effort.
         history.ensure_baseline(path)

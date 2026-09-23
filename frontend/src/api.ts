@@ -324,6 +324,46 @@ export interface SourceStatus {
   playlists: number | null
 }
 
+// ---- export sets ----
+//
+// Konduktor's own curation, never written into the user's library, and keyed by
+// the library's stable ID rather than its path — so moving a collection does not
+// orphan the sets built against it.
+
+export interface ExportSet {
+  id: string
+  name: string
+  /** Platform id of the export TARGET, e.g. "traktor". */
+  target: string
+  destination: string
+  playlist_ids: string[]
+  /** LOOSE tracks only — tracks a referenced playlist supplies are not listed. */
+  track_ids: string[]
+  created: number
+  modified: number
+}
+
+export interface ExportPlaylist {
+  id: string
+  name: string
+  /** Deleted from the library since it was added to the set. */
+  missing: boolean
+  count: number
+}
+
+/** What a set holds RIGHT NOW. Never cache it: the references are live, so a
+ *  playlist edited after curation changes what this returns. */
+export interface ExportContents {
+  playlists: ExportPlaylist[]
+  loose: number
+  /** Deduped across playlists and loose tracks: one track, one file copy. */
+  tracks: number
+  /** Track ids the library no longer has. Shown, never silently dropped. */
+  dangling: string[]
+  /** Another set already writes here, and an export CLEARS its destination. */
+  destination_conflict: string | null
+}
+
 export interface FsPlace {
   /** Groups the row and picks its icon. Never a finished sentence. */
   kind: 'home' | 'music' | 'desktop' | 'documents' | 'downloads' | 'volume' | 'library'
@@ -441,6 +481,38 @@ export const api = {
     getJSON<FsListing>(`/api/fs/list${qs({ path, platform })}`),
   // Re-asked rather than cached: drives come and go while a dialog is open.
   places: (platform?: string) => getJSON<FsPlace[]>(`/api/fs/places${qs({ platform })}`),
+
+  // ---- export sets ----
+  //
+  // All scoped to the LOADED library on the server, by its stable id, so
+  // nothing here has to carry which collection it means.
+  exports: () => getJSON<ExportSet[]>('/api/exports'),
+  createExport: (body: { name: string; target: string; destination: string }) =>
+    send<ExportSet>('POST', '/api/exports', body),
+  updateExport: (id: string, body: Partial<Pick<ExportSet, 'name' | 'target' | 'destination'>>) =>
+    send<ExportSet>('PATCH', `/api/exports/${encodeURIComponent(id)}`, body),
+  deleteExport: (id: string) =>
+    send<{ deleted: boolean }>('DELETE', `/api/exports/${encodeURIComponent(id)}`),
+  addToExport: (id: string, body: { track_ids?: string[]; playlist_ids?: string[] }) =>
+    send<ExportSet>('POST', `/api/exports/${encodeURIComponent(id)}/add`, body),
+  // Removes LOOSE tracks and WHOLE playlists. There is deliberately no way to
+  // remove one track from a referenced playlist: the reference is live, so that
+  // would need an exclusion list — hidden state deciding future exports.
+  removeFromExport: (id: string, body: { track_ids?: string[]; playlist_ids?: string[] }) =>
+    send<ExportSet>('POST', `/api/exports/${encodeURIComponent(id)}/remove`, body),
+  exportContents: (id: string) =>
+    getJSON<ExportContents>(`/api/exports/${encodeURIComponent(id)}/contents`),
+  exportTracks: (id: string) =>
+    getJSON<Track[]>(`/api/exports/${encodeURIComponent(id)}/tracks`),
+  exportPlaylistTracks: (id: string, playlistId: string) =>
+    getJSON<Track[]>(
+      `/api/exports/${encodeURIComponent(id)}/playlists/${encodeURIComponent(playlistId)}/tracks`,
+    ),
+  // Every platform, with `installed` standing for "can be an export target".
+  // Unsupported ones are returned too, so the UI shows them disabled with a
+  // reason rather than hiding them — an absent option reads as a missing
+  // feature, a disabled one reads as a roadmap.
+  exportTargets: () => getJSON<PlatformOption[]>('/api/export-targets'),
 
   // ---- path remapping (per-collection OS-path prefix translation) ----
   getPathMapping: () => getJSON<PathMapping>('/api/library/path-mapping'),
