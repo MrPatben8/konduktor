@@ -463,6 +463,25 @@ def export_tracks(set_id: str) -> list[Track]:
     return [t for t in (adapter.track(tid) for tid in resolved.track_ids) if t is not None]
 
 
+@app.get("/api/exports/{set_id}/loose", response_model=list[Track])
+def export_loose_tracks(set_id: str) -> list[Track]:
+    """Only the LOOSE tracks — the ones added individually.
+
+    A separate route rather than a filter on the root view, because the two are
+    genuinely different questions: the root is everything this export would ship
+    (playlists included, deduped), and this is the "Other" bucket that becomes
+    its own playlist in the exported library. A track added loosely AND supplied
+    by a referenced playlist appears in both, which is honest — it is in the
+    loose list, and that is what the count beside "Other" reports.
+    """
+    found = _require_set(set_id)
+    adapter = require_adapter()
+    resolved = exports.resolve(adapter, found)
+    return [
+        t for t in (adapter.track(tid) for tid in resolved.loose_track_ids) if t is not None
+    ]
+
+
 @app.get("/api/exports/{set_id}/playlists/{playlist_id}/tracks", response_model=list[Track])
 def export_playlist_tracks(set_id: str, playlist_id: str) -> list[Track]:
     """One included playlist, as it stands now.

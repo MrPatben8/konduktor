@@ -174,6 +174,39 @@ export default function App() {
     enabled: loaded && source.kind === 'playlist',
   })
 
+  // An export set being browsed. Its tracks ARE collection tracks — an export is
+  // a slice of the loaded library, not another library — so these share the
+  // collection's capabilities and stay fully editable, unlike a device.
+  const viewingExport =
+    source.kind === 'export' ||
+    source.kind === 'export-playlist' ||
+    source.kind === 'export-other'
+  const exportTracks = useQuery({
+    queryKey: ['export-tracks', source.kind === 'export' ? source.id : null],
+    queryFn: () => api.exportTracks((source as { id: string }).id),
+    enabled: source.kind === 'export',
+  })
+  const exportPlaylistTracks = useQuery({
+    queryKey: [
+      'export-playlist-tracks',
+      source.kind === 'export-playlist' ? source.exportId : null,
+      source.kind === 'export-playlist' ? source.id : null,
+    ],
+    queryFn: () =>
+      api.exportPlaylistTracks(
+        (source as { exportId: string }).exportId,
+        (source as { id: string }).id,
+      ),
+    enabled: source.kind === 'export-playlist',
+  })
+  // The loose tracks only. A separate query, not a filter on the root view: the
+  // root is everything the export would ship, which is a different answer.
+  const exportLooseTracks = useQuery({
+    queryKey: ['export-loose', source.kind === 'export-other' ? source.exportId : null],
+    queryFn: () => api.exportLooseTracks((source as { exportId: string }).exportId),
+    enabled: source.kind === 'export-other',
+  })
+
   // A browsed device. Separate queries and separate cache keys from the
   // collection's: the two libraries can hold tracks with identical ids, and one
   // shared key would serve a stick's track as if it were a collection track.
@@ -200,6 +233,42 @@ export default function App() {
     staleTime: Infinity,
   })
   const openDevice = useQuery({ queryKey: ['source'], queryFn: api.source })
+  const exportSets = useQuery({ queryKey: ['exports'], queryFn: api.exports, enabled: loaded })
+
+  // Export membership. Both are no-ops on the library itself, so neither dirties
+  // it nor touches version history — an export set is Konduktor's own data.
+  const refreshExport = useCallback(
+    (id: string) => {
+      qc.invalidateQueries({ queryKey: ['export-contents', id] })
+      qc.invalidateQueries({ queryKey: ['export-tracks', id] })
+      qc.invalidateQueries({ queryKey: ['export-loose', id] })
+    },
+    [qc],
+  )
+  const addToExport = useCallback(
+    async (id: string, ids: string[]) => {
+      try {
+        await api.addToExport(id, { track_ids: ids })
+        refreshExport(id)
+        const name = exportSets.data?.find((s) => s.id === id)?.name ?? 'export'
+        notify('success', `Added ${ids.length} track${ids.length === 1 ? '' : 's'} to ${name}`)
+      } catch (e) {
+        onError((e as Error).message)
+      }
+    },
+    [refreshExport, exportSets.data, notify, onError],
+  )
+  const removeFromExport = useCallback(
+    async (id: string, ids: string[]) => {
+      try {
+        await api.removeFromExport(id, { track_ids: ids })
+        refreshExport(id)
+      } catch (e) {
+        onError((e as Error).message)
+      }
+    },
+    [refreshExport, onError],
+  )
 
   // What the VIEW can do, as opposed to what the loaded collection can do. While
   // a device is being browsed these are its read-only capabilities, so the
@@ -230,16 +299,28 @@ export default function App() {
     ? source.kind === 'device'
       ? (deviceTracks.data?.items ?? [])
       : (devicePlaylistTracks.data ?? [])
-    : isAll
-      ? (allTracks.data?.items ?? [])
-      : (playlistTracks.data ?? [])
+    : viewingExport
+      ? source.kind === 'export'
+        ? (exportTracks.data ?? [])
+        : source.kind === 'export-other'
+          ? (exportLooseTracks.data ?? [])
+          : (exportPlaylistTracks.data ?? [])
+      : isAll
+        ? (allTracks.data?.items ?? [])
+        : (playlistTracks.data ?? [])
   const loading = viewingDevice
     ? source.kind === 'device'
       ? deviceTracks.isLoading
       : devicePlaylistTracks.isLoading
-    : isAll
-      ? allTracks.isLoading
-      : playlistTracks.isLoading
+    : viewingExport
+      ? source.kind === 'export'
+        ? exportTracks.isLoading
+        : source.kind === 'export-other'
+          ? exportLooseTracks.isLoading
+          : exportPlaylistTracks.isLoading
+      : isAll
+        ? allTracks.isLoading
+        : playlistTracks.isLoading
   // Search / filters apply to both the library and playlists (the toolbar is
   // always visible). In a playlist a filtered view disables drag-reorder — see
   // `canReorder` below — so a partial order can't overwrite the full entry list.
@@ -339,6 +420,28 @@ export default function App() {
             ...(canEdit
               ? [{ label: 'Edit Tags…', onClick: () => setEditing(menu.track) }]
               : []),
+            // Adding to an export touches no library data, so it is offered even
+            // on a read-only one — an export is Konduktor's own curation.
+            ...(exportSets.data ?? []).map((set) => ({
+              label: `Add to “${set.name}”`,
+              onClick: () => addToExport(set.id, [menu.track.id]),
+            })),
+            // Only on the export's ROOT view. Inside a referenced playlist there
+            // is nothing to remove: the reference is live, and per-track removal
+            // would need an exclusion list — hidden state deciding what a future
+            // export contains. Remove the whole playlist, or add tracks instead.
+            ...(source.kind === 'export' || source.kind === 'export-other'
+              ? [
+                  {
+                    label: 'Remove from this export',
+                    onClick: () =>
+                      removeFromExport(
+                        source.kind === 'export' ? source.id : source.exportId,
+                        [menu.track.id],
+                      ),
+                  },
+                ]
+              : []),
           ]}
           onClose={() => setMenu(null)}
         />
@@ -398,6 +501,7 @@ export default function App() {
           onOpenHistory={() => setShowHistory(true)}
           onImport={() => setImporting(true)}
           onSwitchLibrary={() => setForcePicker(true)}
+          onDone={(msg) => notify('success', msg)}
         />
 
         <CapabilitiesContext.Provider value={viewCaps}>
@@ -413,11 +517,33 @@ export default function App() {
         />
         {(!isAll || viewingDevice) && (
           <div className="flex items-center gap-3 border-b border-line bg-ink-900 px-4 py-2">
-            <span className={`text-[11px] ${viewingDevice ? 'text-gold' : 'text-accent'}`}>
-              {viewingDevice ? '⬒' : '♫'}
+            <span
+              className={`text-[11px] ${
+                viewingDevice ? 'text-gold' : viewingExport ? 'text-gold' : 'text-accent'
+              }`}
+            >
+              {viewingDevice ? '⬒' : viewingExport ? (source.kind === 'export' ? '◈' : '♫') : '♫'}
             </span>
             <span className="font-semibold text-text">{viewName}</span>
-            {viewingDevice ? (
+            {viewingExport ? (
+              <>
+                <span className="text-xs text-faint">
+                  {filtersActive
+                    ? `${filtered.length} of ${tracks.length} tracks`
+                    : `${tracks.length} tracks`}
+                  {source.kind === 'export'
+                    ? ' · everything this export would ship'
+                    : source.kind === 'export-other'
+                      ? ' · added individually — these become an “Other” playlist'
+                      : ' · live — what ships is whatever this playlist holds at export time'}
+                </span>
+                <span className="ml-auto flex items-center gap-2">
+                  <span className="rounded bg-ink-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gold">
+                    Export
+                  </span>
+                </span>
+              </>
+            ) : viewingDevice ? (
               <>
                 <span className="text-xs text-faint">
                   {filtersActive
@@ -449,6 +575,45 @@ export default function App() {
         <div className="min-h-0 flex-1">
           {loading ? (
             <div className="flex h-full items-center justify-center text-muted">Loading…</div>
+          ) : viewingExport ? (
+            /* An export uses the plain table, NOT the playlist one. The playlist
+               table's × removes a track from the user's REAL playlist — same
+               pixels, opposite meaning — and an export's own removal is offered
+               through the context menu instead, on its root view only.
+               Selection stays on, so "Add to…" works from inside an export. */
+            filtered.length === 0 ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 text-muted">
+                <div className="text-lg">
+                  {tracks.length === 0 ? 'Nothing in this export yet' : 'No tracks match'}
+                </div>
+                <div className="text-sm text-faint">
+                  {tracks.length === 0
+                    ? 'Select tracks in All Tracks and use “Add to…”, or add a whole playlist.'
+                    : 'Try clearing some filters.'}
+                </div>
+              </div>
+            ) : (
+              <TrackTable
+                tracks={filtered}
+                sorting={sorting}
+                onSortingChange={setSorting}
+                selection={{
+                  selected,
+                  onToggle: toggle,
+                  onToggleAll: toggleAll,
+                  allSelected: selected.size > 0 && selected.size === filtered.length,
+                }}
+                onRowContextMenu={(track, x, y) => setMenu({ track, x, y })}
+                onPlay={playTrack}
+                onEditField={canEdit ? editField : undefined}
+                activeTrackId={prepTrack?.id ?? null}
+                columnVisibility={columnVisibility}
+                columnOrder={columnOrder}
+                columnSizing={columnSizing}
+                onColumnOrderChange={setColumnOrder}
+                onColumnSizingChange={setColumnSizing}
+              />
+            )
           ) : viewingDevice ? (
             /* A device uses the plain table, not the playlist one: a stick's
                playlists cannot be reordered or have entries removed, so the
@@ -539,7 +704,9 @@ export default function App() {
             />
           )}
 
-          {isAll && (
+          {/* Also inside an export: its rows ARE collection tracks, so "Add
+              to…" means the same thing there as in All Tracks. */}
+          {(isAll || viewingExport) && (
             <SelectionBar
               count={selected.size}
               trackIds={[...selected]}

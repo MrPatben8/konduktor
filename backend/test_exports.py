@@ -106,6 +106,19 @@ check("the total is the union, not the sum",
       len(deduped) == len(set(deduped)) and len(deduped) >= len(playlist_tracks))
 exports.remove(LIB, s1.id, track_ids=[playlist_tracks[0]])
 
+# The bug this replaced: the "Other" row selected the export ROOT, so clicking
+# it showed every track the export would ship instead of only the loose ones.
+# Three views, three genuinely different questions.
+loose_view = exports.resolve(adapter, exports.get(LIB, s1.id)).loose_track_ids
+root_view = exports.resolve(adapter, exports.get(LIB, s1.id)).track_ids
+check("Other holds only the individually-added tracks",
+      loose_view == exports.get(LIB, s1.id).track_ids, loose_view)
+check("which is NOT the same as the root view",
+      loose_view != root_view and set(loose_view) < set(root_view),
+      f"{len(loose_view)} vs {len(root_view)}")
+check("and the playlist's tracks are absent from it",
+      not (set(loose_view) & set(playlist_tracks)))
+
 print("== what is gone is SURFACED, never silently dropped ==")
 exports.add(LIB, s1.id, track_ids=["Macintosh HD/:nowhere/:ghost.mp3"])
 gone = exports.resolve(adapter, exports.get(LIB, s1.id))

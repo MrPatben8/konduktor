@@ -258,7 +258,18 @@ Two independent apps that talk over HTTP:
     library or commit an import destination. It polls, because drives come and
     go while a dialog is open, and the volatile Drives group is LAST so an
     appearing drive cannot shift the rows above a moving cursor),
-    `CollectionPicker` (**two steps: which PLATFORM, then which
+    `ExportsSection` + `ExportDialog` (**exports in the sidebar** — each a
+    named, persisted slice of the library bound to a destination. An export
+    expands to show its referenced playlists, whose counts come from `contents`
+    recomputed on every read, because the references are LIVE. Two deliberate
+    omissions: a referenced playlist has **no per-track remove** — that would
+    need an exclusion list, i.e. hidden state deciding future exports — and an
+    export's views use `TrackTable`, **never `PlaylistTable`**, whose `×` removes
+    from the user's REAL playlist: same pixels, opposite meaning. Removal from an
+    export is on the context menu, and only on its root view. Adding is not gated
+    on the library being writable, since an export set is Konduktor's own data.
+    `ExportDialog` shows unsupported targets **disabled with a reason** rather
+    than hiding them), `CollectionPicker` (**two steps: which PLATFORM, then which
     library** — Automatic / Open last / Find manually, the last revealing a file
     browser. The platform comes first because every later answer depends on it:
     asked the other way round, "Automatic" had to guess ACROSS platforms and did
@@ -618,9 +629,12 @@ that number and nothing else — everything derives from it:
   is a folder-deletion hazard, so an export writes a `.konduktor-export.json`
   manifest and **refuses to clear any folder that lacks one** — Konduktor only
   ever deletes what Konduktor wrote.
-  **Steps 1–2 done**: `library_id.py`, then `exports.py` + 10 routes + `api.ts`.
-  Next: the UI, then `core/exporter.py` + the Traktor writer on top of `jobs.py`
-  and `importer.py`'s copy machinery. Note the OneLibrary work already demonstrated
+  **Steps 1–3 done**: `library_id.py`; `exports.py` + 10 routes + `api.ts`; and
+  the UI (`ExportsSection`, `ExportDialog`, export views in `App`, "Add to…" on
+  `SelectionBar`, the track context menu and each sidebar playlist row).
+  Next: `core/exporter.py` + the Traktor writer, and the export run itself on top
+  of `jobs.py` and `importer.py`'s copy machinery — **there is no Export button
+  yet**, since nothing can be written. Note the OneLibrary work already demonstrated
   creating an `exportLibrary.db` from nothing, and `fixtures/onelibrary/schema.sql`
   is the DDL to do it with.
 - ⬜ Serato adapter

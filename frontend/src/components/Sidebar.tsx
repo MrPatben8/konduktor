@@ -4,6 +4,7 @@ import { api, type PlaylistKind, type PlaylistNode } from '../api'
 import { useCaps } from '../lib/capabilities'
 import { SaveBar } from './SaveBar'
 import { DevicesSection } from './DevicesSection'
+import { ExportsSection } from './ExportsSection'
 
 /**
  * Which view the main table is showing.
@@ -20,6 +21,15 @@ export type Source =
   | { kind: 'playlist'; id: string; name: string }
   | { kind: 'device' }
   | { kind: 'device-playlist'; id: string; name: string }
+  // An export set. `export` is its root — every track it would ship, deduped —
+  // and `export-playlist` is one referenced playlist inside it, read live from
+  // the library rather than from the set, which is the reference doing its job.
+  | { kind: 'export'; id: string; name: string }
+  | { kind: 'export-playlist'; exportId: string; id: string; name: string }
+  // The loose tracks — those added individually rather than via a playlist.
+  // A view of its own, NOT the export root: the root is everything the export
+  // would ship, which is a different question and a different answer.
+  | { kind: 'export-other'; exportId: string; name: string }
 
 interface Props {
   source: Source
@@ -28,10 +38,17 @@ interface Props {
   onOpenHistory: () => void
   onImport: () => void
   onSwitchLibrary: () => void
+  onDone: (msg: string) => void
 }
 
 // Kind picks the icon; every behavioural question is answered by the node's own
 // flags, so nothing here infers what a node can do from what it is called.
+/** Every selectable playlist at or under a node, in tree order. */
+function playlistIdsUnder(node: PlaylistNode): string[] {
+  const here = node.kind === 'folder' ? [] : [node.id]
+  return [...here, ...(node.children ?? []).flatMap(playlistIdsUnder)]
+}
+
 const icons: Record<PlaylistKind, string> = {
   folder: '▸',
   playlist: '♫',
@@ -54,7 +71,23 @@ function NodeRow({
   const qc = useQueryClient()
   const [open, setOpen] = useState(true)
   const [renaming, setRenaming] = useState(false)
+  const [adding, setAdding] = useState(false)
   const [draft, setDraft] = useState(node.name)
+  const exportSets = useQuery({ queryKey: ['exports'], queryFn: api.exports }).data ?? []
+
+  // A FOLDER contributes its nested playlists; a playlist contributes itself.
+  // Folders are flattened here rather than stored as a folder reference: the
+  // export stores playlist ids, and a folder is a shape in the tree, not a
+  // thing with tracks.
+  const addToExport = useMutation({
+    mutationFn: (setId: string) =>
+      api.addToExport(setId, { playlist_ids: playlistIdsUnder(node) }),
+    onSuccess: (_r, setId) => {
+      qc.invalidateQueries({ queryKey: ['export-contents', setId] })
+      qc.invalidateQueries({ queryKey: ['export-tracks', setId] })
+    },
+    onError: (e: Error) => onError(e.message),
+  })
   const isFolder = node.kind === 'folder'
   const selected = source.kind === 'playlist' && source.id === node.id
   const selectable = node.selectable
@@ -136,6 +169,37 @@ function NodeRow({
         {/* Each action gates on ITS OWN flag: a platform may allow renaming but
             not deleting. The count shows either way — it is information, not an
             action, and hiding it on a read-only library loses real data. */}
+        {/* Add this playlist (or folder) to an export. Not gated on the
+            library being writable: an export set is Konduktor's own curation
+            and adding to one changes nothing in the user's library. */}
+        {!renaming && exportSets.length > 0 && (
+          <div className="relative shrink-0">
+            <button
+              title="Add to an export"
+              onClick={() => setAdding((a) => !a)}
+              className="hidden rounded px-1 text-xs text-faint hover:text-gold group-hover:block"
+            >
+              ◈
+            </button>
+            {adding && (
+              <div className="absolute right-0 top-full z-30 mt-1 w-48 rounded-md border border-line bg-ink-850 p-1 shadow-2xl">
+                {exportSets.map((set) => (
+                  <button
+                    key={set.id}
+                    onClick={() => {
+                      setAdding(false)
+                      addToExport.mutate(set.id)
+                    }}
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted hover:bg-ink-800 hover:text-text"
+                  >
+                    <span className="shrink-0 text-[11px] text-gold">◈</span>
+                    <span className="truncate">{set.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {!renaming && node.can_rename && (
           <button
             title="Rename"
@@ -194,6 +258,7 @@ export function Sidebar({
   onOpenHistory,
   onImport,
   onSwitchLibrary,
+  onDone,
 }: Props) {
   const qc = useQueryClient()
   // Both share a cache entry with App and SaveBar, so the header never
@@ -326,6 +391,8 @@ export function Sidebar({
           />
         ))}
       </div>
+
+      <ExportsSection source={source} onSelect={onSelect} onDone={onDone} onError={onError} />
 
       <DevicesSection
         source={source}

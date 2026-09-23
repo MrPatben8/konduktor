@@ -504,6 +504,11 @@ export const api = {
     getJSON<ExportContents>(`/api/exports/${encodeURIComponent(id)}/contents`),
   exportTracks: (id: string) =>
     getJSON<Track[]>(`/api/exports/${encodeURIComponent(id)}/tracks`),
+  // Only the tracks added individually — the "Other" bucket, which becomes its
+  // own playlist in the exported library. Not a filter on exportTracks: that one
+  // is everything the export would ship, playlists included and deduped.
+  exportLooseTracks: (id: string) =>
+    getJSON<Track[]>(`/api/exports/${encodeURIComponent(id)}/loose`),
   exportPlaylistTracks: (id: string, playlistId: string) =>
     getJSON<Track[]>(
       `/api/exports/${encodeURIComponent(id)}/playlists/${encodeURIComponent(playlistId)}/tracks`,
