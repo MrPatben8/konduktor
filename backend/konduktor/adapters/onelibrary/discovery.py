@@ -14,47 +14,15 @@ app feel broken.
 from __future__ import annotations
 
 import logging
-import os
-import string
-import sys
 from pathlib import Path
 
+# Where this OS mounts drives is not adapter knowledge — the file browser needs
+# the same answer, and two scanners would drift. It grew here because this is
+# the platform whose libraries ARE drives; it lives in core now.
+from ...core.places import mount_points as _mount_points
 from .layout import DriveLayout
 
 log = logging.getLogger(__name__)
-
-
-def _mount_points() -> list[Path]:
-    """Plausible removable-media mount points for this OS."""
-    out: list[Path] = []
-    if sys.platform == "darwin":
-        out.append(Path("/Volumes"))
-    elif sys.platform.startswith("linux"):
-        out.extend([Path("/media"), Path("/mnt"), Path("/run/media")])
-        user = os.environ.get("USER")
-        if user:
-            out.append(Path("/media") / user)
-            out.append(Path("/run/media") / user)
-
-    roots: list[Path] = []
-    for base in out:
-        try:
-            if not base.is_dir():
-                continue
-            roots.extend(p for p in base.iterdir() if p.is_dir())
-        except OSError:
-            continue
-
-    if sys.platform == "win32":
-        # No mount-point directory to list: check the drive letters directly.
-        for letter in string.ascii_uppercase:
-            drive = Path(f"{letter}:\\")
-            try:
-                if drive.is_dir():
-                    roots.append(drive)
-            except OSError:
-                continue
-    return roots
 
 
 def describe(path: Path) -> dict:

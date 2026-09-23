@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api, type CollectionCandidate, type CollectionStatus, type PlatformOption } from '../api'
+import { FileBrowser, useFsListing } from './FileBrowser'
 import { browsePrompt, platformAvailability } from '../lib/platformCopy'
 
 /**
@@ -79,18 +80,15 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
     enabled: !!platform,
   })
 
-  const listing = useQuery({
-    queryKey: ['fs', dir ?? '~', platform?.platform],
-    queryFn: () => api.listDir(dir, platform?.platform),
-    enabled: step === 'browse',
-  })
+  // Shares FileBrowser's query, so the confirm row below cannot disagree with
+  // what is on screen about where the user is standing.
+  const here = useFsListing(dir, platform?.platform).data?.path ?? ''
 
   const open = useMutation({
     mutationFn: (path: string) => api.openCollection(path),
     onSuccess: (status) => onOpened(status),
   })
 
-  const data = listing.data
   const opt = options.data
   const auto = opt?.auto ?? null
   const recent = opt?.recent ?? null
@@ -257,82 +255,33 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
         ) : (
           /* ---- Step 3: browse for it ---- */
           <>
-            {/* Path bar */}
-            <div className="flex items-center gap-2 border-b border-line bg-ink-850 px-4 py-2">
-              <button
-                title="Home"
-                onClick={() => setDir(data?.home)}
-                className="rounded px-2 py-1 text-sm text-muted hover:bg-ink-800 hover:text-text"
-              >
-                ⌂
-              </button>
-              <button
-                title="Up one level"
-                disabled={!data?.parent}
-                onClick={() => data?.parent && setDir(data.parent)}
-                className="rounded px-2 py-1 text-sm text-muted hover:bg-ink-800 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                ↑
-              </button>
-              <span className="truncate font-mono text-xs text-faint" dir="rtl">
-                {data?.path ?? 'Loading…'}
-              </span>
-            </div>
-
-            {/* Listing. Files are filtered server-side to this platform's own,
-                so a Traktor browse never offers a master.db it cannot open — and
-                a drive-selecting platform gets no files at all. */}
-            <div className="min-h-0 flex-1 overflow-y-auto p-2">
-              {listing.isLoading && <div className="p-4 text-sm text-faint">Loading…</div>}
-              {data && data.dirs.length === 0 && data.files.length === 0 && (
-                <div className="p-4 text-sm text-faint">
-                  {picksDirectory ? 'No folders here.' : 'Nothing openable here.'}
-                </div>
-              )}
-              {data?.dirs.map((d) => (
-                <button
-                  key={d.path}
-                  onClick={() => setDir(d.path)}
-                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-muted hover:bg-ink-800 hover:text-text"
-                >
-                  <span className="text-faint">📁</span>
-                  <span className="truncate">{d.name}</span>
-                </button>
-              ))}
-              {data?.files.map((f) => (
-                <button
-                  key={f.path}
-                  onClick={() => open.mutate(f.path)}
-                  disabled={open.isPending}
-                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-text hover:bg-accent-soft"
-                >
-                  <span className="text-accent">♫</span>
-                  <span className="truncate">{f.name}</span>
-                  <span className="ml-auto text-[10px] uppercase tracking-wider text-faint">
-                    open
-                  </span>
-                </button>
-              ))}
-            </div>
-
-            {/* Confirm-the-folder bar, for a platform whose library IS a folder.
-                There is nothing in the listing to click, so the target is the
-                place you have navigated to. */}
-            {picksDirectory && (
-              <div className="flex items-center gap-2 border-t border-line px-4 py-2">
-                <span className="min-w-0 flex-1 truncate text-xs text-faint">
-                  Open <span className="font-mono text-muted">{data?.path ?? '…'}</span> as a{' '}
-                  {platform!.name} library
-                </span>
-                <button
-                  disabled={!data?.path || open.isPending}
-                  onClick={() => data?.path && open.mutate(data.path)}
-                  className="shrink-0 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-ink-950 hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {open.isPending ? 'Opening…' : 'Open this folder'}
-                </button>
-              </div>
-            )}
+            <FileBrowser
+              mode={picksDirectory ? 'directory' : 'file'}
+              platform={platform!.platform}
+              path={dir}
+              onNavigate={setDir}
+              onPickFile={(p) => open.mutate(p)}
+              footer={
+                /* Confirm-the-folder bar, for a platform whose library IS a
+                   folder. There is nothing in the listing to click, so the
+                   target is the place you have navigated to. */
+                picksDirectory ? (
+                  <div className="flex items-center gap-2 border-t border-line px-4 py-2">
+                    <span className="min-w-0 flex-1 truncate text-xs text-faint">
+                      Open <span className="font-mono text-muted">{here || '…'}</span> as a{' '}
+                      {platform!.name} library
+                    </span>
+                    <button
+                      disabled={!here || open.isPending}
+                      onClick={() => here && open.mutate(here)}
+                      className="shrink-0 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-ink-950 hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {open.isPending ? 'Opening…' : 'Open this folder'}
+                    </button>
+                  </div>
+                ) : null
+              }
+            />
 
             {/* Manual path + errors */}
             <div className="border-t border-line px-4 py-3">

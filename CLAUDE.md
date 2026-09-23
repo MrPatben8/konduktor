@@ -47,6 +47,16 @@ Two independent apps that talk over HTTP:
     - `registry.py` — adapter selection by **`can_open()` probe**, not extension
       (Rekordbox is a `.db`, Serato is a directory).
     - `audio_tags.py`, `pathmap.py`, `auto_hotcues.py` — format-agnostic helpers.
+    - `places.py` — where a person keeps things on THIS computer: the user's own
+      folders (via `platformdirs` — hardcoding is wrong on every OS differently:
+      `~/Videos` is `Movies` on macOS, Linux's are user-configurable localised
+      XDG dirs, and Windows Known Folders are routinely relocated by OneDrive)
+      and mounted volumes. The mount scanner lives here rather than in the
+      OneLibrary adapter, where it grew: "where does this OS mount things" is
+      not adapter knowledge, the file browser needs the same answer, and two
+      scanners would drift. `is_boot_volume()` compares **st_dev against `/`**,
+      not the name, because macOS lists the startup disk in `/Volumes` next to
+      real removable media and `Macintosh HD` is only its default name.
   - `adapters/traktor/` — everything that knows NML exists.
     - `store.py` (`TraktorStore`) — the retained native model: owns the parsed
       dataclass NML, applies every edit, renders + saves. See "Write path".
@@ -183,7 +193,12 @@ Two independent apps that talk over HTTP:
     does not reshuffle between launches), `/api/library/options` (that
     platform's detections + its own last-opened) and `/api/fs/list` (that
     platform's suffixes; a directory-selecting platform contributes none, so its
-    browse shows folders only). `/api/library/open` checks `exists()`, **not
+    browse shows folders only) and `/api/fs/places` (the browser's sidebar —
+    the user's folders, then drives, plus that platform's own location when it
+    keeps one at a fixed path; a place that does not exist is **omitted, never
+    disabled**, since a greyed-out Music folder reads as breakage where its
+    absence reads as an accurate description of the machine).
+    `/api/library/open` checks `exists()`, **not
     `is_file()`** — which shapes are valid is `can_open()`'s business, and a
     OneLibrary library is a drive. `prefs` keeps last-opened **per platform**:
     offering a Rekordbox `master.db` to someone who just chose Traktor is an
@@ -204,7 +219,19 @@ Two independent apps that talk over HTTP:
     adapter supplies (`app_name`, `library_label`, `overwrite_risk`), so
     "Close Traktor before saving — it overwrites collection.nml on exit" stays
     specific without being hard-coded. Never put finished sentences in the API.
-  - `components/` — `CollectionPicker` (**two steps: which PLATFORM, then which
+  - `components/` — `FileBrowser` (**the one file browser**: places rail + path
+    bar + listing, `mode: 'file' | 'directory'`. Deliberately NOT the chrome or
+    the confirm footer — its two callers frame it very differently, one as a step
+    inside a full-screen card and one as a modal over the import dialog, and a
+    shared wrapper would put a modal inside a modal. `path` is controlled,
+    because the caller needs to know where you are standing to label its footer;
+    `useFsListing()` is exported so the caller reads the RESOLVED path through
+    the same query key rather than being told it by an effect. The rail
+    **navigates, never selects** — one click there must not be able to open a
+    library or commit an import destination. It polls, because drives come and
+    go while a dialog is open, and the volatile Drives group is LAST so an
+    appearing drive cannot shift the rows above a moving cursor),
+    `CollectionPicker` (**two steps: which PLATFORM, then which
     library** — Automatic / Open last / Find manually, the last revealing a file
     browser. The platform comes first because every later answer depends on it:
     asked the other way round, "Automatic" had to guess ACROSS platforms and did
@@ -353,7 +380,8 @@ serialization path.** It enforces:
   detections and returned `[0]`, so a plugged-in USB stick could be offered as
   the user's collection and nothing failed — it just opened the wrong library.
   Also pins that a drive is named the same whichever of its two valid paths was
-  opened. Needs nothing installed: every assertion is about the SHAPE of the
+  opened, that every offered place exists, that the boot volume is not offered
+  as a drive, and that the adapter and the browser share ONE mount scanner. Needs nothing installed: every assertion is about the SHAPE of the
   answer, and prefs are redirected to a temp file so a test can never rewrite
   the user's last-opened library.
 - `test_layering.py` — `core/` imports nothing platform-specific, and no adapter

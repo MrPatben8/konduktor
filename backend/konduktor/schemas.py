@@ -135,6 +135,19 @@ class CollectionOptions(BaseModel):
     recent: CollectionCandidate | None = None  # last opened (from userprefs)
 
 
+class FsPlace(BaseModel):
+    """A shortcut in the file browser's sidebar.
+
+    `kind` groups it and picks its icon; it is never a finished sentence, and
+    the browser decides what "volume" looks like. A place is always a DIRECTORY
+    that exists right now — one that does not is omitted rather than disabled.
+    """
+
+    kind: str  # home | music | desktop | documents | downloads | volume | library
+    name: str
+    path: str
+
+
 class FsEntry(BaseModel):
     name: str
     path: str

@@ -17,7 +17,7 @@ from . import __version__, history, prefs
 from .app_state import STATE
 from .core import auto_hotcues as ah
 from . import importer
-from .core import registry
+from .core import places, registry
 from .core.adapter import (
     AdapterError,
     InvalidCommand,
@@ -45,6 +45,7 @@ from .schemas import (
     FileTagOutcome,
     FsEntry,
     FsListing,
+    FsPlace,
     AddGridMarker,
     GridMarkerEdit,
     ReplaceGrid,
@@ -243,6 +244,46 @@ def get_prefs() -> dict:
 def patch_prefs(patch: dict) -> dict:
     """Shallow-merge the given keys into the stored prefs; returns the result."""
     return prefs.update_prefs(patch)
+
+
+@app.get("/api/fs/places", response_model=list[FsPlace])
+def fs_places(platform: str | None = None) -> list[FsPlace]:
+    """Sidebar shortcuts for the file browser: the user's folders, then drives.
+
+    Answered by the server because only it can stat a filesystem, and re-asked
+    by the client rather than cached: drives come and go while a dialog is open,
+    and a browser that exists to find a stick you just plugged in has to show it.
+
+    `platform` adds that platform's own default location, which is the likeliest
+    destination when browsing for one of its libraries. Only for platforms whose
+    library sits at a fixed path — a removable one's libraries ARE the drives,
+    which are already listed.
+    """
+    out = [FsPlace(**p) for p in places.user_places()]
+    out += [FsPlace(**p) for p in places.volume_places()]
+    if platform:
+        try:
+            driver = registry.driver_by_platform(platform)
+        except LibraryNotSupported:
+            driver = None
+        if driver is not None and not getattr(driver, "removable", False):
+            seen = {p.path for p in out}
+            try:
+                found = driver.detect()
+            except OSError:
+                found = []
+            for candidate in found:
+                # The place is the folder CONTAINING the library, because a
+                # place is somewhere you navigate to, not something you pick.
+                folder = Path(candidate["path"]).parent
+                if str(folder) in seen or not folder.is_dir():
+                    continue
+                seen.add(str(folder))
+                out.append(
+                    FsPlace(kind="library", name=candidate.get("label") or folder.name,
+                            path=str(folder))
+                )
+    return out
 
 
 @app.get("/api/fs/list", response_model=FsListing)

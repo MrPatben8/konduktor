@@ -324,6 +324,13 @@ export interface SourceStatus {
   playlists: number | null
 }
 
+export interface FsPlace {
+  /** Groups the row and picks its icon. Never a finished sentence. */
+  kind: 'home' | 'music' | 'desktop' | 'documents' | 'downloads' | 'volume' | 'library'
+  name: string
+  path: string
+}
+
 export interface FsEntry {
   name: string
   path: string
@@ -432,6 +439,8 @@ export const api = {
     getJSON<CollectionOptions>(`/api/library/options${qs({ platform })}`),
   listDir: (path?: string, platform?: string) =>
     getJSON<FsListing>(`/api/fs/list${qs({ path, platform })}`),
+  // Re-asked rather than cached: drives come and go while a dialog is open.
+  places: (platform?: string) => getJSON<FsPlace[]>(`/api/fs/places${qs({ platform })}`),
 
   // ---- path remapping (per-collection OS-path prefix translation) ----
   getPathMapping: () => getJSON<PathMapping>('/api/library/path-mapping'),
