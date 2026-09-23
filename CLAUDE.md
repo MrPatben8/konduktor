@@ -428,6 +428,14 @@ serialization path.** It enforces:
   deleted playlist or track is surfaced, not dropped; sets are per-library; two
   sets sharing a destination are caught (an export clears its destination, so the
   second would wipe the first); and deleting a set never touches its folder.
+- `test_export.py` — writing a Traktor collection from NOTHING. There is no
+  original here, so the guarantee differs from `test_save_fidelity.py`'s: the
+  result must be a collection Traktor would have written. Pins the skeleton, and
+  above all that **`<LOCATION>` is volume-relative** — an export writing host
+  paths would work perfectly on the machine that made it and resolve to nothing
+  at the gig. Also that a flexible multi-marker grid and hot-cue PADS survive,
+  grids are not locked, loose tracks get their "Other" playlist, and re-exporting
+  into the same folder replaces rather than appends.
 - `test_library_id.py` — the property no other suite covers: **a library that
   moves keeps its identity**. Also that two libraries in one folder stay two, a
   removable library is never written beside, an unwritable location falls back
