@@ -88,7 +88,7 @@ AutoCueEvent = Literal[
     "build_3", "drop_3", "breakdown_3",
     "outro", "last_beat",
 ]
-AutoCueStatus = Literal["placed", "not_found", "out_of_range", "occupied", "protected"]
+AutoCueStatus = Literal["placed", "not_found", "out_of_range", "occupied", "protected", "duplicate"]
 
 
 class AutoCueSlot(BaseModel):
@@ -111,6 +111,7 @@ class AutoCueOutcome(BaseModel):
     status: AutoCueStatus
     start: float | None = None  # seconds, when placed
     name: str | None = None
+    duplicate_of: int | None = None  # for "duplicate": the slot that got this beat
 
 
 

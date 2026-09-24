@@ -90,9 +90,6 @@ export function drawCues(
   const flagH = Math.round(14 * dpr)
   const half = Math.floor(lineW / 2)
   for (const cue of cues) {
-    // A grid marker's companion cue is drawn by drawBeatgrid; painting it here
-    // too would stack a flag on top of every marker line.
-    if (cue.grid_marker != null) continue
     const color = cueColor(cue)
     const x = Math.round(timeToX(cue.start))
 

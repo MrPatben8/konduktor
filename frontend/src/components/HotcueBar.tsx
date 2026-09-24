@@ -13,7 +13,6 @@ interface Props {
 }
 
 const READONLY_LABELS: Record<string, string> = {
-  beatgrid_companion: 'Beatgrid marker — managed by the grid controls',
   platform_managed: 'Managed by the DJ app — not editable here',
 }
 
@@ -25,10 +24,8 @@ const READONLY_LABELS: Record<string, string> = {
  * can implement momentary "cue preview" (play while held). Press creates when
  * empty and jumps/triggers when assigned; release ends any preview.
  *
- * A slot may be held by a grid marker's companion cue (Traktor writes one beside
- * most of its own markers). Those belong to the beatgrid, so they are shown with
- * the marker colour and a ⊞ instead of a number, and pressing one only seeks —
- * the backend refuses hotcue edits on them, and showing that up front is better
+ * A cue the adapter will not edit (`editable: false`) shows a lock and only
+ * seeks; the backend would refuse the edit, and showing that up front is better
  * than surfacing the refusal as an error.
  */
 export function HotcueBar({

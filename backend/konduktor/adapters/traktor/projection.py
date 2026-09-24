@@ -123,8 +123,9 @@ def to_track_cues(entry) -> TrackCues:
 
     The beatgrid is the FULL ordered marker list — a constant grid is a list of
     length one. Grid markers themselves are not cues; their companion cues are,
-    because they occupy real hotcue slots, and each is tagged with the marker it
-    belongs to so the UI can show it as beatgrid-owned rather than editable.
+    because they occupy real hotcue slots. Each is tagged with the marker it sits
+    on, but is an ordinary, editable hotcue: Traktor 4 keeps a beatgrid without
+    one, so nothing depends on it staying put.
     """
     markers = beatgrid.grid_markers(entry)
     comps = beatgrid.companions(entry)
@@ -156,10 +157,8 @@ def to_track_cues(entry) -> TrackCues:
                 length=(c.len or 0.0) / 1000.0,
                 slot=slot,
                 color=c.color,
-                # A grid marker's companion belongs to the beatgrid: the store
-                # refuses hotcue commands on it, so say so up front.
-                editable=marker is None,
-                readonly_reason="beatgrid_companion" if marker is not None else None,
+                editable=True,
+                readonly_reason=None,
                 grid_marker=marker,
             )
         )

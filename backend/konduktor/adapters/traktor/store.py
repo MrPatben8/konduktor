@@ -468,21 +468,6 @@ class TraktorStore:
             raise PlaylistError(f"Track not found: {track_id}")
         return entry
 
-    @staticmethod
-    def _reject_if_companion(entry: Entrytype, slot: int) -> None:
-        """Refuse to touch a slot held by a grid marker's companion cue.
-
-        Traktor pairs most grid markers with a white cue in a real hotcue slot.
-        Overwriting, retyping or deleting one desyncs it from its marker, so the
-        beatgrid commands own these slots — move or delete the marker instead.
-        """
-        cue = next((c for c in (entry.cue_v2 or []) if c.hotcue == slot), None)
-        if cue is not None and beatgrid.is_companion(entry, cue):
-            raise PlaylistError(
-                f"Hotcue {slot + 1} belongs to a beatgrid marker — "
-                "move or delete the marker instead"
-            )
-
     def set_hotcue(
         self,
         track_id: str,
@@ -502,7 +487,6 @@ class TraktorStore:
             raise PlaylistError(f"Unsupported cue type: {cue_type}")
         with self._lock:
             entry = self._entry_or_raise(track_id)
-            self._reject_if_companion(entry, slot)
             start_ms = max(0.0, start_sec * 1000.0)  # Traktor stores START/LEN in ms
             len_ms = max(0.0, length_sec * 1000.0)
             existing = next(
@@ -547,13 +531,8 @@ class TraktorStore:
             occupied = {
                 c.hotcue for c in (entry.cue_v2 or []) if c.hotcue is not None and c.hotcue >= 0
             }
-            # Companion slots belong to the beatgrid — never fill them, even
-            # with overwrite=True (occupied alone only guards them while False).
-            protected = {
-                c.hotcue for c in beatgrid.companions(entry).values() if c.hotcue is not None
-            }
         for spec in specs:
-            if spec.slot in protected or (not overwrite and spec.slot in occupied):
+            if not overwrite and spec.slot in occupied:
                 continue
             self.set_hotcue(
                 track_id,
@@ -570,7 +549,6 @@ class TraktorStore:
             raise PlaylistError(f"Unsupported cue type: {cue_type}")
         with self._lock:
             entry = self._entry_or_raise(track_id)
-            self._reject_if_companion(entry, slot)
             cue = next((c for c in (entry.cue_v2 or []) if c.hotcue == slot), None)
             if cue is None:
                 raise PlaylistError(f"Hotcue {slot} is not set")
@@ -581,7 +559,6 @@ class TraktorStore:
     def delete_hotcue(self, track_id: str, slot: int) -> None:
         with self._lock:
             entry = self._entry_or_raise(track_id)
-            self._reject_if_companion(entry, slot)
             before = entry.cue_v2 or []
             entry.cue_v2 = [c for c in before if c.hotcue != slot]
             if len(entry.cue_v2) != len(before):  # only count an actual removal

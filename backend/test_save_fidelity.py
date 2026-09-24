@@ -594,55 +594,65 @@ with tempfile.TemporaryDirectory() as d:
     check("I: delete_grid keeps TEMPO", e3.tempo is not None and e3.tempo.bpm == orig_tempo)
 
 
-# ---- Invariant J: companion cues are protected from hotcue edits -------
-print("== J. grid companion cues cannot be clobbered by hotcue commands ==")
+# ---- Invariant J: companion cues are ordinary, editable hotcues ---------
+# Traktor 4 keeps a beatgrid without its white beat-1 cue, so the cue is not
+# the grid's to protect: every hotcue command works on it, and none of them may
+# touch the grid marker it happened to sit on.
+print("== J. grid companion cues are editable, and editing one leaves the grid alone ==")
 with tempfile.TemporaryDirectory() as d:
     work = Path(d) / "collection.nml"
     shutil.copy2(REAL, work)
-    original = work.read_bytes()
 
-    store = TraktorStore(work)
-    entry = next(
-        e for e in store._nml.collection.entry if bg.companions(e).get(0) is not None
-    )
-    track_id = f"{entry.location.volume or ''}{entry.location.dir or ''}{entry.location.file or ''}"
-    slot = bg.companions(entry)[0].hotcue
+    def fresh():
+        st = TraktorStore(work)
+        e = next(e for e in st._nml.collection.entry if bg.companions(e).get(0) is not None)
+        tid = f"{e.location.volume or ''}{e.location.dir or ''}{e.location.file or ''}"
+        return st, tid, bg.companions(e)[0].hotcue, [(m.start, m.grid.bpm) for m in bg.grid_markers(e)]
 
     for label, fn in [
-        ("set_hotcue", lambda: store.set_hotcue(track_id, slot, 5.0, 0)),
-        ("set_hotcue_type", lambda: store.set_hotcue_type(track_id, slot, 1)),
-        ("delete_hotcue", lambda: store.delete_hotcue(track_id, slot)),
+        ("set_hotcue moves it", lambda st, tid, slot: st.set_hotcue(tid, slot, 5.0, 0)),
+        ("set_hotcue_type retypes it", lambda st, tid, slot: st.set_hotcue_type(tid, slot, 1)),
+        ("delete_hotcue deletes it", lambda st, tid, slot: st.delete_hotcue(tid, slot)),
     ]:
+        store, track_id, slot, grid_before = fresh()
         try:
-            fn()
-            check(f"J: {label} refuses a companion slot", False, "no error raised")
-        except PlaylistError:
-            check(f"J: {label} refuses a companion slot", True)
+            fn(store, track_id, slot)
+            ok = True
+        except PlaylistError as ex:
+            ok = False
+            check(f"J: {label}", False, str(ex))
+        if ok:
+            e = store.model_entry(track_id)
+            check(f"J: {label}", store.dirty is True)
+            check(f"J: …and the grid is unchanged ({label.split()[0]})",
+                  [(m.start, m.grid.bpm) for m in bg.grid_markers(e)] == grid_before)
+            check(f"J: …and it is no longer the marker's companion ({label.split()[0]})",
+                  0 not in bg.companions(e))
 
-    check("J: refusals leave the store clean", store.dirty is False)
-    store.save()
-    check("J: save after refusals is byte-identical", work.read_bytes() == original)
+    store, track_id, slot, _ = fresh()
+    from konduktor.adapters.traktor.projection import to_track_cues
+    proj = to_track_cues(store.model_entry(track_id))
+    comp_cue = next(c for c in proj.cues if c.slot == slot)
+    check("J: the projection offers it as editable",
+          comp_cue.editable is True and comp_cue.readonly_reason is None)
 
-    # The guard must be narrow: a free slot in the same track still works.
-    used = {c.hotcue for c in (entry.cue_v2 or []) if c.hotcue is not None and c.hotcue >= 0}
-    free = next(s_ for s_ in range(8) if s_ not in used)
-    store.set_hotcue(track_id, free, 12.0, 0)
-    check("J: a non-companion slot is still editable", store.dirty is True)
-
-    # Auto Hotcues must skip companion slots even when told to overwrite.
-    store2 = TraktorStore(work)
+    # Auto Hotcues treats it like any other occupied slot.
     spec = type("S", (), {"slot": slot, "start": 42.0, "name": "X", "type": 0, "length": 0.0})()
-    store2.place_hotcues(track_id, [spec], overwrite=True)
-    e2 = store2.model_entry(track_id)
-    comp = bg.companions(e2).get(0)
-    check("J: place_hotcues(overwrite) skips a companion slot",
-          comp is not None and abs(comp.start - 42_000.0) > 1)
+    store.place_hotcues(track_id, [spec])
+    e = store.model_entry(track_id)
+    check("J: place_hotcues leaves it alone without overwrite",
+          bg.companions(e).get(0) is not None)
+    store.place_hotcues(track_id, [spec], overwrite=True)
+    e = store.model_entry(track_id)
+    check("J: place_hotcues(overwrite) replaces it",
+          any(c.hotcue == slot and abs(c.start - 42_000.0) < 1 for c in (e.cue_v2 or [])))
 
-    # Deleting the grid releases the slot it was holding.
-    store2.delete_grid(track_id)
-    e2 = store2.model_entry(track_id)
+    # Deleting the grid still removes a companion that is still on its marker.
+    store, track_id, slot, _ = fresh()
+    store.delete_grid(track_id)
+    e = store.model_entry(track_id)
     check("J: delete_grid frees the companion's hotcue slot",
-          not any(c.hotcue == slot for c in (e2.cue_v2 or [])))
+          not any(c.hotcue == slot for c in (e.cue_v2 or [])))
 
 
 # ---- Invariant K: real flexible grids project correctly (read-only) ----

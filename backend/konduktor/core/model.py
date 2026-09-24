@@ -131,7 +131,7 @@ class CuePoint(BaseModel):
     # False when the adapter refuses commands on this cue — the UI gates on THIS
     # rather than on any platform-specific reason.
     editable: bool = True
-    readonly_reason: Literal["beatgrid_companion", "platform_managed"] | None = None
+    readonly_reason: Literal["platform_managed"] | None = None
     # Index of the grid marker this cue mirrors, where the platform pairs them.
     # A display hint only; None on platforms that do not.
     grid_marker: int | None = None

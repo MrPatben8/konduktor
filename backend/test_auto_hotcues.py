@@ -154,6 +154,25 @@ check("an occupied slot is left alone by default", out[4].status == ah.OCCUPIED)
 check("…and replaced when overwrite is asked for", out[5].status == ah.PLACED)
 check("a protected cue is never replaced, even with overwrite", out[6].status == ah.PROTECTED)
 
+print("== plan: two slots on the same beat get ONE cue, in the lower slot ==")
+dup = fake_structure({"drop_1": 128, "breakdown_1": 112, "build_2": 112})
+out = {o.slot: o for o in ah.plan(dup, [
+    R(3, "breakdown_1"),
+    R(4, "build_2"),                 # the same beat as slot 3, by a different event
+    R(5, "drop_1", -16),             # …and again, by an offset (128 - 16 = 112)
+    R(6, "drop_1", -15),             # one beat later: a different beat, placed
+], existing={})}
+check("the lower slot keeps the beat", out[3].status == ah.PLACED)
+check("a higher slot on the same beat is skipped", out[4].status == ah.DUPLICATE and out[4].duplicate_of == 3, str(out[4]))
+check("…whichever event or offset got it there", out[5].status == ah.DUPLICATE and out[5].duplicate_of == 3, str(out[5]))
+check("one beat apart is not a duplicate", out[6].status == ah.PLACED)
+rev = {o.slot: o.status for o in ah.plan(dup, [R(4, "build_2"), R(3, "breakdown_1")], existing={})}
+check("lower slot wins whatever order the request lists them in",
+      rev == {3: ah.PLACED, 4: ah.DUPLICATE}, str(rev))
+kept = {o.slot: o.status for o in ah.plan(dup, [R(3, "breakdown_1"), R(4, "build_2")], existing={3: True})}
+check("a slot that is NOT placed (occupied) does not claim its beat",
+      kept == {3: ah.OCCUPIED, 4: ah.PLACED}, str(kept))
+
 flex = structure.Structure(beats=np.r_[np.arange(0, 10, 0.5), np.arange(10, 30, 1.0)], bar0=0, n_bars=10, duration=30)
 flex.events = {"drop_1": 24}  # beat 24 is at 14 s (20 beats at 0.5 s, then 4 at 1.0 s)
 o = ah.plan(flex, [R(0, "drop_1", -8)], {})[0]
@@ -198,6 +217,13 @@ with tempfile.TemporaryDirectory() as d:
             r2 = c.post("/api/tracks/cue/auto", json={"track_id": tid, "slots": [{"slot": f1, "event": "drop_1"}]})
             check("running again leaves the now-occupied slot alone",
                   r2.status_code == 200 and r2.json()["outcomes"][0]["status"] == "occupied", r2.text[:200])
+        f3, f4 = free_slots(a.track_cues(tid))[:2]
+        r = c.post("/api/tracks/cue/auto", json={"track_id": tid, "slots": [
+            {"slot": f3, "event": "first_beat"}, {"slot": f4, "event": "drop_1", "offset_beats": -64},
+        ]})
+        oc = {o["slot"]: o for o in r.json()["outcomes"]} if r.status_code == 200 else {}
+        check("the route reports a same-beat slot as a duplicate of the lower one",
+              oc.get(f4, {}).get("status") == "duplicate" and oc[f4]["duplicate_of"] == f3, r.text[:300])
         r = c.post("/api/tracks/cue/auto", json={"track_id": tid, "slots": [{"slot": f0, "event": "drop_1"}, {"slot": f0, "event": "outro"}]})
         check("a slot requested twice is refused", r.status_code == 400)
         r = c.post("/api/tracks/cue/auto", json={"track_id": tid, "slots": [{"slot": f0, "event": "the_best_bit"}]})

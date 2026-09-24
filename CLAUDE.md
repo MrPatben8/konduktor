@@ -53,8 +53,10 @@ Two independent apps that talk over HTTP:
       `breakdown_n` for n ≤ 3, `outro`, `last_beat`) plus an offset in BEATS;
       `structure.analyse` finds the events, `auto_hotcues.plan` resolves the
       template and reports an outcome per slot (`placed` / `not_found` /
-      `out_of_range` / `occupied` / `protected`) — "this track has no third drop"
-      is an answer, not a silent gap. How it finds them:
+      `out_of_range` / `occupied` / `protected` / `duplicate`) — "this track has
+      no third drop" is an answer, not a silent gap. Two slots resolving to the
+      same BEAT INDEX get one cue, in the lower slot (decided in slot order, so
+      request order cannot change who wins). How it finds them:
       - **Everything is per bar ON THE TRACK'S GRID**, bar 1 = the first marker
         (Traktor's convention). Bar-1 detection from audio was tried: it never
         beat that rule, because DJ tracks start on a downbeat.
@@ -429,8 +431,9 @@ serialization path.** It enforces:
   that `<ENTRY>`** (C); a **hotcue create is localized + round-trips** with
   START stored in ms (D); a **grid-marker edit is localized + round-trips** (E);
   **flexible (multi-marker) grids** add/move/delete reversibly, `delete_grid`
-  leaves no companion debris (I); **companion cues are protected** from hotcue
-  commands (J); and real flexible grids in the collection project correctly (K).
+  leaves no companion debris (I); **companion cues are ordinary editable
+  hotcues** — move/retype/delete work and never touch the grid marker (J); and
+  real flexible grids in the collection project correctly (K).
   The guard that catches serialization regressions like the lxml reformatting bug.
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched.
@@ -570,7 +573,11 @@ frontend at `http://localhost:5173`.
     marker with a white (`COLOR="#FFFFFF"`) `TYPE="0"` cue at the same position,
     which occupies a **real hotcue slot** — but 60 of 7970 markers have none.
     Konduktor follows them, keeps them in sync, and **never invents one** (except
-    `place_grid_companion`, used only by Auto Grid). The `#FFFFFF` test is
+    `place_grid_companion`, used only by Auto Grid). They are **not locked**:
+    Traktor 4 keeps a beatgrid without one, so a companion is an ordinary hotcue
+    the user may move, retype or delete — doing so simply ends the pairing
+    (it is no longer a white cue on a marker), and the grid is untouched. Grid
+    edits still drag or delete a companion that is still paired. The `#FFFFFF` test is
     load-bearing: 49 uncoloured cues and 18 *loops* also sit within 1 ms of a
     marker and must not be dragged or deleted. `backend/konduktor/beatgrid.py`
     is the single shared definition of all of this.
@@ -817,8 +824,8 @@ diff — no COLLECTION splicing needed.
   `delete_hotcue` removes a slot. (The adapter exposes these generically as
   `set_cue`/`set_cue_type`/`delete_cue`, taking a `cue_type` STRING — `cue`,
   `fade_in`, `fade_out`, `load`, `loop` — which the Traktor adapter maps to the
-  integers below.) Hotcue commands **refuse a slot held by a grid
-  marker's companion cue** (see "Beatgrid"). Beatgrid commands are marker-level:
+  integers below.) A grid marker's companion cue is an ordinary hotcue to these
+  commands (see "Beatgrid"). Beatgrid commands are marker-level:
   `add_grid_marker` (inherits the governing tempo when no BPM is given),
   `move_grid_marker` (clamped between its neighbours, drags the companion),
   `set_grid_marker_bpm` (also serves ×2 / ÷2, which retempo the governing marker

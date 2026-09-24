@@ -648,12 +648,6 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify, fromDevic
   const onSlotPress = async (slot: number) => {
     if (!track) return
     const cue = hotcueAt(slot)
-    // A grid marker's companion cue holds this slot. It belongs to the beatgrid,
-    // so pressing it only seeks — never create, retype, select or preview.
-    if (cue?.grid_marker != null) {
-      seekManual(cue.start)
-      return
-    }
     if (!cue) {
       if (refuseCueEdit()) return
       try {
@@ -710,8 +704,12 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify, fromDevic
     const placed = by('placed').length
     const missing = [...by('not_found'), ...by('out_of_range')].map((o) => eventLabel(o.event))
     const kept = by('occupied').length + by('protected').length
+    const dupes = by('duplicate').map(
+      (o) => `${slotLabel(o.slot)} (same beat as ${slotLabel(o.duplicate_of ?? o.slot)})`,
+    )
     const parts = [`Placed ${placed} hotcue${placed === 1 ? '' : 's'}`]
     if (missing.length) parts.push(`not in this track: ${missing.join(', ')}`)
+    if (dupes.length) parts.push(`skipped ${dupes.join(', ')}`)
     if (kept) parts.push(`${kept} occupied slot${kept === 1 ? '' : 's'} kept`)
     onNotify?.(placed ? 'success' : 'error', parts.join(' · '))
   }
@@ -740,7 +738,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify, fromDevic
   const deleteHotcueSlot = async (slot: number) => {
     const existing = hotcueAt(slot)
     if (!track || !existing) return // nothing to remove in an empty slot
-    if (existing.grid_marker != null) return // beatgrid-owned: delete the marker instead
+    if (!existing.editable) return // the adapter would refuse it
     if (refuseCueEdit()) return
     try {
       applyCueEdit(await api.deleteCue(track.id, slot))

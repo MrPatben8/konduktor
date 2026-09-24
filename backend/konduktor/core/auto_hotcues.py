@@ -42,6 +42,7 @@ NOT_FOUND = "not_found"        # the track has no such event (e.g. no third drop
 OUT_OF_RANGE = "out_of_range"  # the offset moves it before the start / past the end
 OCCUPIED = "occupied"          # the slot holds a cue and overwrite was not asked for
 PROTECTED = "protected"        # the slot holds a cue the adapter will not replace
+DUPLICATE = "duplicate"        # a lower slot is already getting a cue on this beat
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class SlotOutcome:
     status: str
     start: float | None = None
     name: str | None = None
+    duplicate_of: int | None = None  # the slot that got this beat, for DUPLICATE
 
 
 def cue_name(event: str, offset_beats: int) -> str:
@@ -75,11 +77,19 @@ def plan(
     """Decide every requested slot.
 
     ``existing`` maps each occupied slot to whether its cue is EDITABLE — a
-    non-editable one (a Traktor grid marker's companion) is never replaced, even
+    non-editable one (a cue the platform manages itself) is never replaced, even
     when overwrite is ticked, because the adapter would refuse it anyway.
+
+    Two slots that resolve to the SAME BEAT get one cue, in the lower slot: a
+    second pad on the same beat is a wasted pad, and it happens by construction
+    (Build 2 is Breakdown 1 when two drops are close). Slots are decided in slot
+    order so "lower wins" holds whatever order the request lists them in, and
+    the comparison is on the beat INDEX — exact, where comparing seconds would
+    need a tolerance.
     """
     out: list[SlotOutcome] = []
-    for r in requests:
+    taken: dict[int, int] = {}  # beat index -> the slot placing a cue there
+    for r in sorted(requests, key=lambda r: r.slot):
         if r.slot in existing and not existing[r.slot]:
             out.append(SlotOutcome(r.slot, r.event, PROTECTED))
             continue
@@ -90,9 +100,14 @@ def plan(
         if beat is None:
             out.append(SlotOutcome(r.slot, r.event, NOT_FOUND))
             continue
-        t = structure.beat_time(beat + r.offset_beats)
+        index = beat + r.offset_beats
+        t = structure.beat_time(index)
         if t < 0 or t >= structure.duration:
             out.append(SlotOutcome(r.slot, r.event, OUT_OF_RANGE))
             continue
+        if index in taken:
+            out.append(SlotOutcome(r.slot, r.event, DUPLICATE, duplicate_of=taken[index]))
+            continue
+        taken[index] = r.slot
         out.append(SlotOutcome(r.slot, r.event, PLACED, round(t, 4), cue_name(r.event, r.offset_beats)))
     return out

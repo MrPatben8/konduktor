@@ -823,9 +823,10 @@ def auto_hotcues(body: AutoHotcuesRequest) -> AutoHotcuesResult:
 
     Each requested slot is bound to an event (``drop_1``, ``outro``, …) plus an
     offset in beats. Every slot reports an outcome — placed, not found, out of
-    range, occupied (a cue is there and overwrite was not asked for) or
-    protected (a cue the adapter will not replace) — so the UI can say which
-    events this track does not have. Requires a beatgrid.
+    range, occupied (a cue is there and overwrite was not asked for), protected
+    (a cue the adapter will not replace) or duplicate (a lower slot already got
+    that beat) — so the UI can say which events this track does not have.
+    Requires a beatgrid.
     """
     a = require_adapter()
     cues = a.track_cues(body.track_id)
