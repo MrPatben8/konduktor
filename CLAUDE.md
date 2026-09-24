@@ -46,7 +46,36 @@ Two independent apps that talk over HTTP:
       when a path remap changes track ids. Recording `before` keeps undo cheap later.
     - `registry.py` — adapter selection by **`can_open()` probe**, not extension
       (Rekordbox is a `.db`, Serato is a directory).
-    - `audio_tags.py`, `pathmap.py`, `auto_hotcues.py` — format-agnostic helpers.
+    - `audio_tags.py`, `pathmap.py` — format-agnostic helpers.
+    - `structure.py` + `auto_hotcues.py` — **Auto Hotcues** (the deck's ✨ Auto
+      button → `AutoCueDialog` → `POST /api/tracks/cue/auto`). The user binds each
+      slot to an EVENT (`first_beat`, `intro_end`, `build_n`, `drop_n`,
+      `breakdown_n` for n ≤ 3, `outro`, `last_beat`) plus an offset in BEATS;
+      `structure.analyse` finds the events, `auto_hotcues.plan` resolves the
+      template and reports an outcome per slot (`placed` / `not_found` /
+      `out_of_range` / `occupied` / `protected`) — "this track has no third drop"
+      is an answer, not a silent gap. How it finds them:
+      - **Everything is per bar ON THE TRACK'S GRID**, bar 1 = the first marker
+        (Traktor's convention). Bar-1 detection from audio was tried: it never
+        beat that rule, because DJ tracks start on a downbeat.
+      - Per-bar kick / bass / loudness / brightness + MFCC, then an **exact DP
+        segmentation whose boundary price depends on bar position** (cheap on
+        ×8, dearer on ×4, very dear elsewhere) — the phrase bias lives in the
+        objective, not in a snap afterwards.
+      - **A drop is a high section entered from a low one**, not a loud one: a
+        house intro is often as loud as its drop. A breakdown is where a drop
+        ends when another drop follows; the end of the last one is the outro's.
+      - Kick is the grid detector's sharp low-band onset, NOT on- vs off-beat
+        energy (a house bassline lives on the off-beat), and "high" does not
+        require a kick (drum & bass has none on every beat).
+      Measured against the phrase analysis Rekordbox stores for 12 local
+      "High"-mood tracks (PSSI; the previous detector's cues scored below a cue
+      every 16 bars): drops 81% on the exact bar (22/27), breakdowns 80%
+      (12/15), outro 42% within 4 bars — `backend/bench_structure.py` reruns
+      it. Rekordbox's own "Up" spans the whole pre-drop groove where a DJ's
+      build is the last 8–16 bars, so build scores against it are not
+      meaningful. Halftime tracks inherit the grid's octave: at 174 a "bar" is
+      half a musical bar.
     - `grid_detect.py` — **beatgrid detection** (the deck's Analyze button,
       `POST /api/tracks/grid/auto`). Fits ONE constant tempo + anchor to the whole
       track rather than tracking beats: `librosa.beat.beat_track`, which it
@@ -313,6 +342,10 @@ Two independent apps that talk over HTTP:
     array (`NO_SORTING`): a controlled `state.sorting` that's a fresh `[]` each
     render with no `onSortingChange` makes TanStack Table re-sync its internal
     state every commit → infinite re-render loop. Keep that reference stable.
+    `AutoCueDialog` (the Auto Hotcues slot template: event + beat offset per
+    slot, a per-slot Replace tick for occupied slots — never remembered, since
+    overwriting is a decision about THIS track — and the template itself
+    persisted as `autoCueTemplate` in userprefs),
     `SelectionBar` (bulk add-to-playlist), `ContextMenu` + `EditTagsDialog`
     (right-click → multi-field metadata + album-art edit), `StatusBar`,
     `RatingStars` (read-only, or click-to-set when given `onChange`), `Toast`,
@@ -436,6 +469,12 @@ serialization path.** It enforces:
   return, octave choice, and the loud off-beat hat and syncopated bassline that
   each fooled one band on real music. Accuracy on REAL music is
   `bench_grid_detect.py`'s job (not in `run_tests.sh`: it needs audio).
+- `test_auto_hotcues.py` — Auto Hotcues in three layers: `structure.analyse`
+  on SYNTHETIC audio with known sections (the intro with a kick is not a drop;
+  no breakdown after the last drop), `plan`'s outcomes and beat-counted offsets
+  (across a tempo change), and the ROUTE end to end on a temp copy of the real
+  collection — the previous implementation's route returned 500 on every call
+  for a week while its helper's tests passed.
 - `test_picker.py` — the picker's routes. Pins the scoping, because the bug it
   replaced was invisible: `/api/library/options` flattened every driver's
   detections and returned `[0]`, so a plugged-in USB stick could be offered as

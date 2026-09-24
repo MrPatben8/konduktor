@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from . import __version__, exporter, exports, history, prefs
 from .app_state import STATE
 from .core import auto_hotcues as ah
-from .core import grid_detect
+from .core import grid_detect, structure
 from . import importer
 from .core import export as core_export
 from .core import places, registry
@@ -33,8 +33,10 @@ from .jobs import JOBS
 from .core.pathmap import PathMapping
 from .schemas import (
     AutoGridRequest,
+    AutoCueOutcome,
     AutoHotcue,
     AutoHotcuesRequest,
+    AutoHotcuesResult,
     CollectionCandidate,
     CollectionOptions,
     CollectionStatus,
@@ -815,43 +817,58 @@ def create_cue(body: SetCue) -> TrackCues:
     )
 
 
-@app.post("/api/tracks/cue/auto", response_model=TrackCues)
-def auto_hotcues(body: AutoHotcuesRequest) -> TrackCues:
-    """Analyze the track's audio and place structural hotcues into empty slots.
+@app.post("/api/tracks/cue/auto", response_model=AutoHotcuesResult)
+def auto_hotcues(body: AutoHotcuesRequest) -> AutoHotcuesResult:
+    """Analyse the track's structure on its beatgrid and place the template.
 
-    Detects section boundaries (librosa Laplacian segmentation), snaps them to
-    the track's beatgrid phrases, names them positionally, and places up to
-    MAX_HOTCUES into empty slots only (never overwrites). Requires a beatgrid."""
+    Each requested slot is bound to an event (``drop_1``, ``outro``, …) plus an
+    offset in beats. Every slot reports an outcome — placed, not found, out of
+    range, occupied (a cue is there and overwrite was not asked for) or
+    protected (a cue the adapter will not replace) — so the UI can say which
+    events this track does not have. Requires a beatgrid.
+    """
     a = require_adapter()
     cues = a.track_cues(body.track_id)
     if cues is None:
         raise HTTPException(404, "Track not found")
     if not cues.grid_markers:
         raise HTTPException(400, "Set a beatgrid before using Auto Hotcues")
+    slots = a.capabilities().cues.hotcue_slots
+    seen: set[int] = set()
+    for r in body.slots:
+        if not 0 <= r.slot < slots:
+            raise HTTPException(400, f"Slot {r.slot} is outside this library's {slots} hotcues")
+        if r.slot in seen:
+            raise HTTPException(400, f"Slot {r.slot} is requested twice")
+        seen.add(r.slot)
     path = a.audio_path(body.track_id)
     if path is None or not path.exists():
         raise HTTPException(400, "Audio file not found (is the drive mounted?)")
 
     try:
-        boundaries, duration = ah.detect_boundaries(str(path))
+        found = structure.analyse(str(path), [(m.start, m.bpm) for m in cues.grid_markers])
     except Exception as ex:  # analysis is best-effort; never 500 the UI
         raise HTTPException(400, f"Analysis failed: {ex}")
 
-    slots = a.capabilities().cues.hotcue_slots
-    occupied = {c.hotcue for c in cues.cues if c.hotcue is not None and c.hotcue >= 0}
-    free = [s for s in range(slots) if s not in occupied]
-    existing_times = [c.start for c in cues.cues if c.hotcue is not None and c.hotcue >= 0]
-    specs = ah.select_hotcues(
-        boundaries,
-        markers=[(m.start, m.bpm) for m in cues.grid_markers],
-        duration=duration,
-        free_slots=free,
-        existing_times=existing_times,
-        max_cues=body.max_cues or slots,
+    existing = {c.slot: c.editable for c in cues.cues if c.role == "hotcue" and c.slot is not None}
+    outcomes = ah.plan(
+        found,
+        [ah.SlotRequest(r.slot, r.event, r.offset_beats, r.overwrite) for r in body.slots],
+        existing,
     )
-    if not specs:
-        return cues  # no confident structure / no free slots — leave untouched
-    return a.place_cues(body.track_id, [AutoHotcue(**s) for s in specs])
+    placed = [o for o in outcomes if o.status == ah.PLACED]
+    if placed:
+        # overwrite=True is safe: `plan` only passes an occupied slot when the
+        # user ticked it, and the adapter still refuses a protected one.
+        cues = a.place_cues(
+            body.track_id,
+            [AutoHotcue(slot=o.slot, start=o.start, name=o.name) for o in placed],
+            overwrite=True,
+        )
+    return AutoHotcuesResult(
+        cues=cues,
+        outcomes=[AutoCueOutcome(**vars(o)) for o in outcomes],
+    )
 
 
 @app.post("/api/tracks/grid/auto", response_model=TrackCues)

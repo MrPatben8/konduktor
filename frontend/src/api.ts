@@ -146,6 +146,42 @@ export interface TrackCues {
   cues: CuePoint[]
 }
 
+/** A structural event an Auto Hotcues slot can be bound to (`core/structure.py`
+ *  EVENTS; keep in lockstep with `schemas.AutoCueEvent`). */
+export type AutoCueEvent =
+  | 'first_beat' | 'intro_end'
+  | 'build_1' | 'drop_1' | 'breakdown_1'
+  | 'build_2' | 'drop_2' | 'breakdown_2'
+  | 'build_3' | 'drop_3' | 'breakdown_3'
+  | 'outro' | 'last_beat'
+
+export interface AutoCueSlot {
+  slot: number
+  event: AutoCueEvent
+  offset_beats: number
+  /** Replace a cue already in this slot. */
+  overwrite: boolean
+}
+
+/** What happened to one requested slot. `not_found`: the track has no such
+ *  event (e.g. no third drop); `out_of_range`: the offset moves it outside the
+ *  track; `occupied`: a cue is there and overwrite was off; `protected`: a cue
+ *  the adapter will not replace (a grid marker's). */
+export type AutoCueStatus = 'placed' | 'not_found' | 'out_of_range' | 'occupied' | 'protected'
+
+export interface AutoCueOutcome {
+  slot: number
+  event: AutoCueEvent
+  status: AutoCueStatus
+  start: number | null
+  name: string | null
+}
+
+export interface AutoHotcuesResult {
+  cues: TrackCues
+  outcomes: AutoCueOutcome[]
+}
+
 export interface CueCapabilities {
   /** Whether cues can be created or changed. Symmetric with grid.editable: a
    *  platform can be writable overall while its cue store is not implemented. */
@@ -615,11 +651,12 @@ export const api = {
       length,
       name,
     }),
-  // Backend analyses the audio and places structural hotcues into empty slots.
-  autoCues: (trackId: string, maxCues?: number) =>
-    send<TrackCues>('POST', '/api/tracks/cue/auto', {
+  // Analyses the track's structure on its beatgrid and places the template:
+  // one event (+ offset in beats) per slot. Every slot reports an outcome.
+  autoCues: (trackId: string, slots: AutoCueSlot[]) =>
+    send<AutoHotcuesResult>('POST', '/api/tracks/cue/auto', {
       track_id: trackId,
-      max_cues: maxCues,
+      slots,
     }),
   // Backend detects tempo + first beat: sets BPM, hotcue 1, and grid anchor.
   autoGrid: (trackId: string) =>

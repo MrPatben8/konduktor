@@ -1,6 +1,8 @@
 """API response models (Pydantic)."""
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from .core.capabilities import CueRole, CueType
@@ -79,9 +81,37 @@ class SetCue(BaseModel):
     color: str | None = None
 
 
+AutoCueEvent = Literal[
+    "first_beat", "intro_end",
+    "build_1", "drop_1", "breakdown_1",
+    "build_2", "drop_2", "breakdown_2",
+    "build_3", "drop_3", "breakdown_3",
+    "outro", "last_beat",
+]
+AutoCueStatus = Literal["placed", "not_found", "out_of_range", "occupied", "protected"]
+
+
+class AutoCueSlot(BaseModel):
+    """One row of the Auto Hotcues template: bind a slot to a structural event."""
+
+    slot: int
+    event: AutoCueEvent
+    offset_beats: int = 0
+    overwrite: bool = False  # replace a cue already in this slot
+
+
 class AutoHotcuesRequest(BaseModel):
     track_id: str
-    max_cues: int | None = None  # defaults to MAX_HOTCUES (8) server-side
+    slots: list[AutoCueSlot]
+
+
+class AutoCueOutcome(BaseModel):
+    slot: int
+    event: AutoCueEvent
+    status: AutoCueStatus
+    start: float | None = None  # seconds, when placed
+    name: str | None = None
+
 
 
 class AutoGridRequest(BaseModel):
@@ -272,6 +302,13 @@ from .core.model import (  # noqa: E402,F401
     TrackCues,
     TrackPage,
 )
+
+
+class AutoHotcuesResult(BaseModel):
+    """The refreshed cues, plus what happened to every requested slot."""
+
+    cues: TrackCues
+    outcomes: list[AutoCueOutcome]
 
 
 # ---- import sources ---------------------------------------------------

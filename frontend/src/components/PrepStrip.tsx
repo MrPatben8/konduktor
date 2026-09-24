@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type CueType, type GridMarker, type Track, type TrackCues } from '../api'
+import {
+  api,
+  type AutoHotcuesResult,
+  type CuePoint,
+  type CueType,
+  type GridMarker,
+  type Track,
+  type TrackCues,
+} from '../api'
 import { buildBeatGrid, GRID_EPS } from '../lib/beatgrid'
 import { slotLabeller, useCaps } from '../lib/capabilities'
 import { CUE_TYPE_LABELS } from '../lib/cues'
@@ -8,6 +16,7 @@ import { readOnlyShort, readOnlyNotice } from '../lib/platformCopy'
 import { analyzeWaveform, type WaveColumn } from '../lib/waveform'
 import { ScratchEngine } from '../lib/scratchEngine'
 import { PlaybackEngine } from '../lib/playbackEngine'
+import { AutoCueDialog, eventLabel } from './AutoCueDialog'
 import { BeatJumpControls, BEAT_JUMP_SIZES } from './BeatJumpControls'
 import { GridControls } from './GridControls'
 import { HotcueBar } from './HotcueBar'
@@ -99,7 +108,6 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify, fromDevic
   const engagedRef = useRef(false) // scratch engine is dragging or coasting
   const pendingPlayRef = useRef(false) // a play was requested; start once ready
   const loadedIdRef = useRef<string | null>(null) // trackId whose buffer is loaded
-  const [autoBusy, setAutoBusy] = useState(false)
   const [gridBusy, setGridBusy] = useState(false)
   // Active momentary "cue preview": a hotcue OR the CUE button held while paused
   // plays from its point and stops on release, unless `latched` (play pressed
@@ -681,35 +689,31 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify, fromDevic
   // Hotcue slot released (mouse/touch up, or key up). Ends its momentary preview.
   const onSlotRelease = (slot: number) => endPreview(`hc:${slot}`)
 
-  // Auto Hotcues: the backend analyses the track's audio (librosa structural
-  // segmentation), snaps boundaries to the beatgrid, and fills empty slots only.
-  // Requires a beatgrid (button disabled otherwise).
+  // Auto Hotcues: the button opens the slot-template dialog; the backend finds
+  // the track's structure on its beatgrid and places the template. Requires a
+  // beatgrid (button disabled otherwise) — every event is a bar on it.
   const canAutoCue = grid != null
-  const runAutoHotcues = async () => {
-    if (!track || !canAutoCue || autoBusy) return
+  const [autoOpen, setAutoOpen] = useState(false)
+  const openAutoHotcues = () => {
+    if (!track || !canAutoCue) return
     if (refuseCueEdit()) return
-    const hotcueCount = (c: TrackCues | null) =>
-      c?.cues.filter((x) => x.role === 'hotcue' && x.slot != null).length ?? 0
-    if (hotcueCount(cueData) >= slotCount) {
-      onError?.(`No free hotcue slots (${slotCount} of ${slotCount} used) — delete some first`)
-      return
-    }
-    setAutoBusy(true)
-    try {
-      const before = hotcueCount(cueData)
-      const fresh = await api.autoCues(track.id)
-      applyCueEdit(fresh)
-      const placed = Math.max(0, hotcueCount(fresh) - before)
-      if (placed === 0) {
-        onNotify?.('error', 'No clear structure found — no hotcues placed')
-      } else {
-        onNotify?.('success', `Placed ${placed} auto hotcue${placed === 1 ? '' : 's'}`)
-      }
-    } catch (e) {
-      onError?.((e as Error).message)
-    } finally {
-      setAutoBusy(false)
-    }
+    setAutoOpen(true)
+  }
+  const existingHotcues = useMemo(() => {
+    const m = new Map<number, CuePoint>()
+    for (const c of cueData?.cues ?? []) if (c.role === 'hotcue' && c.slot != null) m.set(c.slot, c)
+    return m
+  }, [cueData])
+  const autoHotcuesDone = (result: AutoHotcuesResult) => {
+    applyCueEdit(result.cues)
+    const by = (st: string) => result.outcomes.filter((o) => o.status === st)
+    const placed = by('placed').length
+    const missing = [...by('not_found'), ...by('out_of_range')].map((o) => eventLabel(o.event))
+    const kept = by('occupied').length + by('protected').length
+    const parts = [`Placed ${placed} hotcue${placed === 1 ? '' : 's'}`]
+    if (missing.length) parts.push(`not in this track: ${missing.join(', ')}`)
+    if (kept) parts.push(`${kept} occupied slot${kept === 1 ? '' : 's'} kept`)
+    onNotify?.(placed ? 'success' : 'error', parts.join(' · '))
   }
 
   const changeSelectedType = async (type: CueType) => {
@@ -1144,16 +1148,16 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify, fromDevic
                 )}
               </div>
               <button
-                onClick={runAutoHotcues}
-                disabled={!canAutoCue || autoBusy}
+                onClick={openAutoHotcues}
+                disabled={!canAutoCue}
                 title={
                   canAutoCue
-                    ? 'Auto-place hotcues at detected phrase boundaries (empty slots only)'
+                    ? 'Place hotcues on the track\'s drops, breakdowns and other sections'
                     : 'Set a beatgrid first'
                 }
                 className="flex w-16 items-center justify-center gap-1 bg-ink-900 text-[11px] font-semibold uppercase tracking-wider text-muted transition-colors hover:bg-ink-800 hover:text-accent disabled:opacity-30 disabled:hover:bg-ink-900 disabled:hover:text-muted"
               >
-                {autoBusy ? '…' : '✨ Auto'}
+                ✨ Auto
               </button>
               <button
                 onClick={deleteSelected}
@@ -1167,6 +1171,17 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify, fromDevic
           </>
         )}
       </div>
+      {autoOpen && track && (
+        <AutoCueDialog
+          track={track}
+          slotCount={slotCount}
+          slotLabel={slotLabel}
+          existing={existingHotcues}
+          onClose={() => setAutoOpen(false)}
+          onDone={autoHotcuesDone}
+          onError={(msg) => onError?.(msg)}
+        />
+      )}
     </div>
   )
 }

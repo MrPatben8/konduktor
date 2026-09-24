@@ -385,50 +385,9 @@ with tempfile.TemporaryDirectory() as d:
             c is not None and abs(c.start - (30000.0 + i * 10000)) < 1,
         )
 
-# ---- Invariant G: select_hotcues placement logic (pure, no audio) ------
-print("== G. select_hotcues: phrase-snap, empty-slots, names, existing-cue avoidance ==")
-from konduktor.core import auto_hotcues as ah  # noqa: E402
-
-# 128 BPM => beat 0.46875s, 16-bar phrase = 30.0s exactly; marker at 0.0.
-BPM, ANCHOR, DUR = 128.0, 0.0, 300.0
-GRID = [(ANCHOR, BPM)]  # a constant grid is a one-marker list
-# Raw boundaries near (but not exactly on) phrase multiples + a fragmented pair.
-raw = [(0.3, 0.2), (29.4, 0.5), (30.6, 0.55), (61.0, 0.9), (150.0, 0.3), (270.2, 0.25)]
-specs = ah.select_hotcues(
-    raw, markers=GRID, duration=DUR,
-    free_slots=[2, 3, 4, 5, 6, 7], existing_times=[], max_cues=8,
-)
-starts = [s["start"] for s in specs]
-check("snaps to 30s phrase grid", all(abs(round(t / 30.0) * 30.0 - t) < 0.01 for t in starts), str(starts))
-check("fragmented 29.4/30.6 merge to one boundary (30.0)", starts.count(30.0) == 1, str(starts))
-check("only free slots used, in ascending order", [s["slot"] for s in specs] == sorted(s["slot"] for s in specs) and set(s["slot"] for s in specs) <= {2, 3, 4, 5, 6, 7})
-check("first cue named Intro", specs and specs[0]["name"] == "Intro")
-check("last cue named Outro", specs and specs[-1]["name"] == "Outro")
-check("names are unique (ordinal de-dupe)", len({s["name"] for s in specs}) == len(specs), str([s["name"] for s in specs]))
-
-# A hotcue already sitting on the 60s phrase must not get a duplicate.
-specs2 = ah.select_hotcues(
-    raw, markers=GRID, duration=DUR,
-    free_slots=[0, 1, 2, 3, 4, 5, 6, 7], existing_times=[60.0], max_cues=8,
-)
-check("boundary colliding with an existing hotcue is dropped", 60.0 not in [s["start"] for s in specs2], str([s["start"] for s in specs2]))
-
-# No free slots => nothing placed.
-check("no free slots => empty result", ah.select_hotcues(raw, markers=GRID, duration=DUR, free_slots=[], existing_times=[], max_cues=8) == [])
-
-# Flexible grid: each segment snaps to ITS OWN phrase length. Segment 2 starts
-# at 120s at 120 BPM => 16-bar phrase = 32.0s, so points there land on 120+k*32.
-FLEX = [(0.0, 128.0), (120.0, 120.0)]
-flex_specs = ah.select_hotcues(
-    [(29.4, 0.5), (61.0, 0.9), (152.5, 0.4), (215.0, 0.3)],
-    markers=FLEX, duration=DUR, free_slots=[0, 1, 2, 3, 4, 5, 6, 7],
-    existing_times=[], max_cues=8,
-)
-flex_starts = [s_["start"] for s_ in flex_specs]
-check("flexible grid: pre-seam points snap to the 30s phrase",
-      all(abs(round(t / 30.0) * 30.0 - t) < 0.01 for t in flex_starts if t < 120.0), str(flex_starts))
-check("flexible grid: post-seam points snap to that segment's 32s phrase",
-      all(abs(120.0 + round((t - 120.0) / 32.0) * 32.0 - t) < 0.01 for t in flex_starts if t >= 120.0), str(flex_starts))
+# ---- Invariant G: moved -------------------------------------------------
+# Auto Hotcues' placement logic is tested in test_auto_hotcues.py, which also
+# covers its structure analysis and its route.
 
 # ---- Invariant H: path write-back is localized + round-trips -----------
 print("== H. remap_locations rewrites LOCATIONs (+ playlist keys), localized, round-trips ==")
