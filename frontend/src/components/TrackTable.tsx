@@ -47,11 +47,13 @@ const ROW_HEIGHT = 44
 // every commit → infinite re-render loop. Playlists never sort, so share one array.
 const NO_SORTING: SortingState = []
 
+/** Row selection, Finder-style: click selects one row, Cmd/Ctrl+click toggles,
+ *  Shift+click selects a range from the anchor (the last row clicked without
+ *  Shift) in the table's SORTED order. The table owns the anchor; the caller
+ *  owns the set. */
 interface Selection {
   selected: Set<string>
-  onToggle: (id: string) => void
-  onToggleAll: () => void
-  allSelected: boolean
+  onChange: (next: Set<string>) => void
 }
 
 interface CommonProps {
@@ -194,7 +196,6 @@ function HeaderRow({
   lead,
   trail,
   hasPlay,
-  selection,
 }: {
   headers: Header<Track, unknown>[]
   sensors: ReturnType<typeof useSensors>
@@ -202,7 +203,6 @@ function HeaderRow({
   lead?: boolean // playlist drag-handle spacer
   trail?: boolean // playlist remove spacer
   hasPlay: boolean
-  selection?: Selection
 }) {
   // True while (and just after) a column is being reordered, so the trailing
   // click a drag emits is swallowed instead of toggling the sort.
@@ -225,19 +225,7 @@ function HeaderRow({
     >
       <div className="sticky top-0 z-10 flex border-b border-line bg-ink-850">
         {lead && <span className="w-8 shrink-0" />}
-        {selection ? (
-          <span className="flex w-10 shrink-0 items-center justify-center">
-            <input
-              type="checkbox"
-              checked={selection.allSelected}
-              onChange={selection.onToggleAll}
-              className="accent-accent"
-              title="Select all"
-            />
-          </span>
-        ) : (
-          <span className="w-10 shrink-0" />
-        )}
+        <span className="w-10 shrink-0" />
         {hasPlay && <span className="w-9 shrink-0" />}
         <SortableContext
           items={headers.map((h) => h.column.id)}
@@ -311,15 +299,96 @@ export function TrackTable({
     onColumnOrderChange(arrayMove(columnOrder, from, to))
   }
 
+  // Range selection runs from the anchor; arrow keys move from the lead (the
+  // row most recently clicked or arrowed to). Both are ids, not indices, so a
+  // re-sort keeps them on the same track.
+  const anchorRef = useRef<string | null>(null)
+  const leadRef = useRef<string | null>(null)
+  const indexOf = (id: string | null) => (id == null ? -1 : rows.findIndex((r) => r.original.id === id))
+  const rangeIds = (a: number, b: number) =>
+    rows.slice(Math.min(a, b), Math.max(a, b) + 1).map((r) => r.original.id)
+
+  const selectOnly = (index: number) => {
+    const id = rows[index].original.id
+    anchorRef.current = leadRef.current = id
+    selection?.onChange(new Set([id]))
+  }
+
+  const clickRow = (index: number, e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => {
+    if (!selection) return
+    const id = rows[index].original.id
+    const toggle = e.metaKey || e.ctrlKey
+    const anchor = indexOf(anchorRef.current)
+    if (e.shiftKey && anchor >= 0) {
+      const range = rangeIds(anchor, index)
+      selection.onChange(toggle ? new Set([...selection.selected, ...range]) : new Set(range))
+      leadRef.current = id
+    } else if (toggle) {
+      const next = new Set(selection.selected)
+      next.has(id) ? next.delete(id) : next.add(id)
+      anchorRef.current = leadRef.current = id
+      selection.onChange(next)
+    } else {
+      selectOnly(index)
+    }
+  }
+
+  // Keyboard: ↑/↓ move the selection (Shift extends it), Cmd/Ctrl+A selects
+  // every visible row, Esc clears. Read through a ref so the listener is
+  // attached once. ←/→, Space, C and digits belong to the deck (PrepStrip).
+  const keysRef = useRef<(e: KeyboardEvent) => void>(() => {})
+  keysRef.current = (e) => {
+    if (!selection || rows.length === 0) return
+    const t = e.target as HTMLElement | null
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
+    // A dialog or menu on top owns the keyboard (and its own Esc).
+    if (document.querySelector('[aria-modal="true"], [role="menu"]')) return
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.code === 'KeyA') {
+      e.preventDefault()
+      selection.onChange(new Set(rows.map((r) => r.original.id)))
+      return
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+    if (e.key === 'Escape') {
+      if (selection.selected.size > 0) selection.onChange(new Set())
+      return
+    }
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+    e.preventDefault()
+    const lead = indexOf(leadRef.current)
+    const step = e.key === 'ArrowDown' ? 1 : -1
+    const next = lead < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, lead + step))
+    const anchor = indexOf(anchorRef.current)
+    if (e.shiftKey && anchor >= 0) {
+      leadRef.current = rows[next].original.id
+      selection.onChange(new Set(rangeIds(anchor, next)))
+    } else {
+      selectOnly(next)
+    }
+    virtualizer.scrollToIndex(next)
+  }
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keysRef.current(e)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   return (
-    <div ref={parentRef} className="h-full overflow-auto">
+    <div
+      ref={parentRef}
+      className="h-full overflow-auto"
+      onClick={(e) => {
+        // A click in the empty space below the rows clears the selection.
+        const t = e.target as HTMLElement
+        if (selection && !t.closest('[data-row]') && !t.closest('.sticky')) selection.onChange(new Set())
+      }}
+    >
       <div style={{ width: totalWidth, minWidth: '100%' }}>
         <HeaderRow
           headers={headers}
           sensors={sensors}
           onColumnDragEnd={onColumnDragEnd}
           hasPlay={hasPlay}
-          selection={selection}
         />
         <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
           {virtualRows.map((vr) => {
@@ -329,30 +398,28 @@ export function TrackTable({
             return (
               <div
                 key={row.id}
+                data-row
                 className={`group absolute left-0 flex items-center border-b border-ink-850 text-sm ${
                   isSelected ? 'bg-accent-soft/50' : 'hover:bg-ink-850'
                 }`}
                 style={{ top: 0, transform: `translateY(${vr.start}px)`, height: vr.size, width: '100%' }}
+                onMouseDown={(e) => {
+                  // Shift/Cmd-click would otherwise also select page text.
+                  if (selection && (e.shiftKey || e.metaKey || e.ctrlKey)) e.preventDefault()
+                }}
+                onClick={(e) => selection && clickRow(vr.index, e)}
                 onContextMenu={(e) => {
                   if (!onRowContextMenu) return
                   e.preventDefault()
+                  // Right-clicking outside the selection retargets it, so the
+                  // menu always acts on what is highlighted.
+                  if (selection && !isSelected) selectOnly(vr.index)
                   onRowContextMenu(row.original, e.clientX, e.clientY)
                 }}
               >
-                {selection ? (
-                  <span className="flex w-10 shrink-0 items-center justify-center">
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      onChange={() => selection.onToggle(row.original.id)}
-                      className="accent-accent"
-                    />
-                  </span>
-                ) : (
-                  <span className="w-10 shrink-0 pr-2 text-right text-xs tabular-nums text-faint">
-                    {vr.index + 1}
-                  </span>
-                )}
+                <span className="w-10 shrink-0 pr-2 text-right text-xs tabular-nums text-faint">
+                  {vr.index + 1}
+                </span>
                 {hasPlay && (
                   <span className="flex w-9 shrink-0 items-center justify-center">
                     {onPlay && <PlayButton track={row.original} isActive={isActive} onPlay={onPlay} />}

@@ -97,7 +97,7 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6"
+      aria-modal="true" className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6"
       onClick={onClose}
     >
       <div

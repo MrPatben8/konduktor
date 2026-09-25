@@ -50,7 +50,9 @@ export default function App() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [toast, setToast] = useState<ToastMsg | null>(null)
   const [forcePicker, setForcePicker] = useState(false)
-  const [menu, setMenu] = useState<{ track: Track; x: number; y: number } | null>(null)
+  // `ids` is what the menu acts on: the whole selection when the clicked row is
+  // part of it, otherwise just that row.
+  const [menu, setMenu] = useState<{ track: Track; ids: string[]; x: number; y: number } | null>(null)
   const [editing, setEditing] = useState<Track | null>(null)
   const [showPaths, setShowPaths] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
@@ -394,16 +396,16 @@ export default function App() {
     setSelected(new Set())
   }
 
-  const toggle = (id: string) =>
-    setSelected((prev) => {
-      const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
-      return next
+  // TrackTable retargets the selection to a right-clicked row outside it
+  // before calling this, but that state update has not landed yet — so the
+  // same rule is applied here to decide what the menu acts on.
+  const openMenu = (track: Track, x: number, y: number, selectable: boolean) =>
+    setMenu({
+      track,
+      ids: selectable && selected.has(track.id) ? [...selected] : [track.id],
+      x,
+      y,
     })
-  const toggleAll = () =>
-    setSelected((prev) =>
-      prev.size === filtered.length ? new Set() : new Set(filtered.map((t) => t.id)),
-    )
 
   return (
     <CapabilitiesContext.Provider value={capabilities.data!}>
@@ -411,20 +413,26 @@ export default function App() {
       <Toast toast={toast} onClose={() => setToast(null)} />
       {menu && (
         <ContextMenu
+          // Remount per opening: a right-click on another row while a menu is
+          // open must not be caught by the old menu's dismiss listener.
+          key={`${menu.track.id}:${menu.x}:${menu.y}`}
           x={menu.x}
           y={menu.y}
           items={[
-            { label: 'Load to Deck', onClick: () => setPrepTrack(menu.track) },
+            // Single-track actions are hidden, not disabled, for a multi-selection.
+            ...(menu.ids.length === 1
+              ? [{ label: 'Load to Deck', onClick: () => setPrepTrack(menu.track) }]
+              : []),
             // Offering "Edit Tags…" on a read-only library would open a dialog
             // whose every save is refused, so it is not offered at all.
-            ...(canEdit
+            ...(canEdit && menu.ids.length === 1
               ? [{ label: 'Edit Tags…', onClick: () => setEditing(menu.track) }]
               : []),
             // Adding to an export touches no library data, so it is offered even
             // on a read-only one — an export is Konduktor's own curation.
             ...(exportSets.data ?? []).map((set) => ({
               label: `Add to “${set.name}”`,
-              onClick: () => addToExport(set.id, [menu.track.id]),
+              onClick: () => addToExport(set.id, menu.ids),
             })),
             // Only on the export's ROOT view. Inside a referenced playlist there
             // is nothing to remove: the reference is live, and per-track removal
@@ -437,7 +445,7 @@ export default function App() {
                     onClick: () =>
                       removeFromExport(
                         source.kind === 'export' ? source.id : source.exportId,
-                        [menu.track.id],
+                        menu.ids,
                       ),
                   },
                 ]
@@ -597,13 +605,8 @@ export default function App() {
                 tracks={filtered}
                 sorting={sorting}
                 onSortingChange={setSorting}
-                selection={{
-                  selected,
-                  onToggle: toggle,
-                  onToggleAll: toggleAll,
-                  allSelected: selected.size > 0 && selected.size === filtered.length,
-                }}
-                onRowContextMenu={(track, x, y) => setMenu({ track, x, y })}
+                selection={{ selected, onChange: setSelected }}
+                onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
                 onPlay={playTrack}
                 onEditField={canEdit ? editField : undefined}
                 activeTrackId={prepTrack?.id ?? null}
@@ -636,7 +639,7 @@ export default function App() {
                 tracks={filtered}
                 sorting={sorting}
                 onSortingChange={setSorting}
-                onRowContextMenu={(track, x, y) => setMenu({ track, x, y })}
+                onRowContextMenu={(track, x, y) => openMenu(track, x, y, false)}
                 onPlay={playTrack}
                 activeTrackId={prepTrack?.id ?? null}
                 columnVisibility={columnVisibility}
@@ -657,13 +660,8 @@ export default function App() {
                 tracks={filtered}
                 sorting={sorting}
                 onSortingChange={setSorting}
-                selection={{
-                  selected,
-                  onToggle: toggle,
-                  onToggleAll: toggleAll,
-                  allSelected: selected.size > 0 && selected.size === filtered.length,
-                }}
-                onRowContextMenu={(track, x, y) => setMenu({ track, x, y })}
+                selection={{ selected, onChange: setSelected }}
+                onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
                 onPlay={playTrack}
                 onEditField={canEdit ? editField : undefined}
                 activeTrackId={prepTrack?.id ?? null}
@@ -689,7 +687,7 @@ export default function App() {
           ) : (
             <PlaylistTable
               tracks={filtered}
-              onRowContextMenu={(track, x, y) => setMenu({ track, x, y })}
+              onRowContextMenu={(track, x, y) => openMenu(track, x, y, false)}
               onPlay={playTrack}
               onEditField={canEdit ? editField : undefined}
               activeTrackId={prepTrack?.id ?? null}

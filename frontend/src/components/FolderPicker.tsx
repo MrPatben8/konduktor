@@ -31,7 +31,7 @@ export function FolderPicker({ value, onChange, onClose }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
+    <div aria-modal="true" className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
       <div className="flex h-[70vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-line bg-ink-900 shadow-xl">
         <div className="border-b border-line px-5 py-3">
           <h2 className="text-sm font-semibold text-text">Choose a folder</h2>

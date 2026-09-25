@@ -148,7 +148,7 @@ export function UpdateCheck() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+      aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
       onClick={close}
     >
       <div

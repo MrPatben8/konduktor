@@ -334,7 +334,12 @@ Two independent apps that talk over HTTP:
     library replaces — plus the playlist tree +
     create/rename/delete), `SaveBar`, `Toolbar` (search/filters + `ColumnsMenu`),
     `TrackTable` (All Tracks — TanStack Table + **virtualized** grid; per-row play
-    button, configurable columns, inline double-click editing) and `PlaylistTable`
+    button, configurable columns, inline double-click editing, and **Finder-style
+    row selection** — click / Cmd-Ctrl+click / Shift+click over the SORTED rows,
+    ↑/↓ (Shift extends), Cmd/Ctrl+A, Esc; shortcuts stand down while an
+    `aria-modal` dialog or `role="menu"` is open, so new dialogs need
+    `aria-modal="true"`. Right-click acts on the whole selection; single-track
+    items are hidden for a multi-selection) and `PlaylistTable`
     (playlists — same columns/cells/play/inline-edit via shared `HeaderRow`/
     `RowCells`/`PlayButton`, so the two views look identical, PLUS dnd-kit
     drag-to-reorder + a remove button, header sorting disabled so the manual order

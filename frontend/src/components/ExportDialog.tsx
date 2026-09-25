@@ -67,7 +67,7 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
           onClose={() => setBrowsing(false)}
         />
       )}
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
         <div className="w-full max-w-lg rounded-lg border border-line bg-ink-900 shadow-xl">
           <div className="border-b border-line px-5 py-3">
             <h2 className="text-sm font-semibold text-text">

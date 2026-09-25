@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 
 export interface MenuItem {
   label: string
@@ -15,9 +15,15 @@ interface Props {
 
 // Lightweight fixed-position menu. Closes on outside click, scroll, or Escape.
 export function ContextMenu({ x, y, items, onClose }: Props) {
+  // Read through a ref so the listeners are attached ONCE. Callers pass an
+  // inline `onClose`; if the effect depended on it, a click that re-renders the
+  // parent (e.g. selecting a row) would detach the listeners before the
+  // window's click handler ran, and the menu would never close.
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
   useEffect(() => {
-    const close = () => onClose()
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    const close = () => onCloseRef.current()
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onCloseRef.current()
     // Defer attaching outside-dismiss listeners by a tick so the very
     // right-click/click that opened the menu can't immediately close it.
     const id = setTimeout(() => {
@@ -33,10 +39,11 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
       window.removeEventListener('scroll', close, true)
       window.removeEventListener('keydown', onKey)
     }
-  }, [onClose])
+  }, [])
 
   return (
     <div
+      role="menu"
       className="fixed z-50 min-w-[160px] overflow-hidden rounded-lg border border-line bg-ink-850 py-1 shadow-2xl"
       style={{ top: Math.min(y, window.innerHeight - 100), left: Math.min(x, window.innerWidth - 180) }}
       onClick={(e) => e.stopPropagation()}

@@ -130,7 +130,7 @@ export function AutoCueDialog({ track, slotCount, slotLabel, existing, onClose, 
   }
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6" onClick={() => !busy && onClose()}>
+    <div aria-modal="true" className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6" onClick={() => !busy && onClose()}>
       <div
         className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-line bg-ink-900 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
