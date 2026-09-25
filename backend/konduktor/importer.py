@@ -11,13 +11,22 @@ already exist when it reaches the destination, because a file copy that failed
 halfway is not something a library write should be discovering.
 
 Scope, chosen deliberately: **everything is added as a new entry**. Nothing is
-matched against tracks the destination already holds, so there is no merge policy
-and no cross-platform identity problem. Re-importing the same stick duplicates,
-and a preview warns about that rather than preventing it.
+matched against tracks the destination already holds by metadata, so there is no
+merge policy and no cross-platform identity problem. Re-importing the same stick
+duplicates, and a preview warns about that rather than preventing it.
+
+The one match that IS made is by **file**: a source file the destination already
+points at is never added again. Copying never hits that (it writes a fresh
+path), but **referencing in place** does — the folder browser can add
+`~/Music/x.mp3` to a collection that already holds it — and on Traktor two
+entries for one path share a primary key, which is a corrupt collection rather
+than a duplicate track. Such a file maps to the EXISTING track instead, so a
+playlist or export it was headed for still gets it.
 """
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +55,9 @@ class PlannedTrack:
     # True when the destination already holds a track with this filename. Only a
     # warning: the user chose "add everything as new entries".
     duplicate: bool = False
+    # The destination's own id for this exact file, when it already holds it.
+    # Not added again; it stands in for the new id wherever one is needed.
+    existing_id: str | None = None
 
 
 @dataclass
@@ -56,7 +68,11 @@ class ImportPlan:
 
     @property
     def importable(self) -> list[PlannedTrack]:
-        return [t for t in self.tracks if not t.missing]
+        return [t for t in self.tracks if not t.missing and t.existing_id is None]
+
+    @property
+    def existing(self) -> list[PlannedTrack]:
+        return [t for t in self.tracks if t.existing_id is not None]
 
     @property
     def total_bytes(self) -> int:
@@ -68,6 +84,7 @@ class ImportPlan:
             "importable": len(self.importable),
             "missing": [t.title for t in self.tracks if t.missing],
             "duplicates": [t.title for t in self.tracks if t.duplicate],
+            "existing": [t.title for t in self.existing],
             "playlists": [name for _, name in self.playlists],
             "total_bytes": self.total_bytes,
             "destination": str(self.destination) if self.destination else None,
@@ -88,7 +105,29 @@ def _existing_filenames(dest) -> set[str]:
     return out
 
 
-def plan(source, dest, destination: Path, *, track_ids=None, playlist_ids=None) -> ImportPlan:
+def _key(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
+def _existing_files(dest) -> dict[str, str]:
+    """Every audio file the destination points at → its track id.
+
+    Resolved through the adapter's own `audio_path`, which is the only answer
+    that includes the volume and the active path mapping; the projected
+    `filepath` is a display string and is not good enough to match on.
+    """
+    out: dict[str, str] = {}
+    for track in dest.tracks:
+        try:
+            path = dest.audio_path(track.id)
+        except Exception:  # noqa: BLE001
+            path = None
+        if path is not None:
+            out.setdefault(_key(path), track.id)
+    return out
+
+
+def plan(source, dest, destination: Path | None, *, track_ids=None, playlist_ids=None) -> ImportPlan:
     """Work out what an import would do, WITHOUT doing any of it.
 
     Computed fresh every time and never stored. Playlist membership on the source
@@ -126,6 +165,7 @@ def plan(source, dest, destination: Path, *, track_ids=None, playlist_ids=None) 
             plan.playlists.append((node_id, name))
 
     existing = _existing_filenames(dest)
+    held = _existing_files(dest)
     for track_id in wanted:
         track = source.track(track_id)
         if track is None:
@@ -140,7 +180,8 @@ def plan(source, dest, destination: Path, *, track_ids=None, playlist_ids=None) 
         try:
             if path is not None and path.is_file():
                 planned.size = path.stat().st_size
-                planned.duplicate = path.name.lower() in existing
+                planned.existing_id = held.get(_key(path))
+                planned.duplicate = planned.existing_id is None and path.name.lower() in existing
             else:
                 planned.missing = True
         except OSError:
@@ -224,7 +265,16 @@ def copy_file(src: Path, dst: Path, handle: JobHandle, on_bytes) -> None:
     shutil.copystat(src, dst, follow_symlinks=True)
 
 
-def run(source, dest, plan: ImportPlan, handle: JobHandle, *, folder_name: str | None = None) -> dict:
+def run(
+    source,
+    dest,
+    plan: ImportPlan,
+    handle: JobHandle,
+    *,
+    folder_name: str | None = None,
+    reference: bool = False,
+    into_playlist: str | None = None,
+) -> dict:
     """Perform the import. Returns a summary dict for the job result.
 
     Ordering is the safety property. Audio is copied FIRST and the library is
@@ -235,10 +285,16 @@ def run(source, dest, plan: ImportPlan, handle: JobHandle, *, folder_name: str |
     This is a COMMITTED action — it saves at the end — rather than an in-memory
     edit the Save button flushes. A multi-gigabyte copy is not a pending tweak,
     and audio on disk with unsaved entries pointing at it is the worst of both.
+
+    `reference` adds each file WHERE IT IS instead of copying it, so there is no
+    destination and nothing to roll back. `into_playlist` appends every planned
+    track — the new ones and those the destination already held — to one of the
+    destination's playlists before the save, so both land in one commit.
     """
     destination = plan.destination
-    assert destination is not None
-    destination.mkdir(parents=True, exist_ok=True)
+    if not reference:
+        assert destination is not None
+        destination.mkdir(parents=True, exist_ok=True)
 
     importable = plan.importable
     total = plan.total_bytes or len(importable)
@@ -261,8 +317,11 @@ def run(source, dest, plan: ImportPlan, handle: JobHandle, *, folder_name: str |
     try:
         for planned in importable:
             handle.raise_if_cancelled()
-            handle.progress(message=f"Copying {planned.title}")
             assert planned.source_path is not None
+            if reference:
+                copied.append((planned, planned.source_path))
+                continue
+            handle.progress(message=f"Copying {planned.title}")
             target = _unique_target(destination, planned.source_path.name, taken)
             created.append(target)  # registered BEFORE the write, so a cancel
             copy_file(planned.source_path, target, handle, bump)  # mid-file is cleaned
@@ -288,6 +347,17 @@ def run(source, dest, plan: ImportPlan, handle: JobHandle, *, folder_name: str |
             planned.track_id: new_id
             for (planned, _), new_id in zip(copied, new_ids)
         }
+        by_source.update({t.track_id: t.existing_id for t in plan.existing})
+        # Every planned track's id in the destination, in plan order.
+        all_ids = [by_source[t.track_id] for t in plan.tracks if t.track_id in by_source]
+
+        if into_playlist is not None:
+            handle.progress(message="Adding to the playlist…")
+            current = dest.playlist_entries(into_playlist) or []
+            have = set(current)
+            dest.set_playlist_entries(
+                into_playlist, current + [i for i in all_ids if i not in have]
+            )
 
         playlists_made = _rebuild_playlists(
             source, dest, plan, by_source, folder_name, handle
@@ -297,9 +367,11 @@ def run(source, dest, plan: ImportPlan, handle: JobHandle, *, folder_name: str |
         outcome, _commit = _save(dest)
         return {
             "tracks": len(new_ids),
+            "track_ids": all_ids,
+            "already_held": len(plan.existing),
             "playlists": playlists_made,
-            "skipped_missing": len(plan.tracks) - len(importable),
-            "destination": str(destination),
+            "skipped_missing": len([t for t in plan.tracks if t.missing]),
+            "destination": str(destination) if destination else None,
             "summary": getattr(outcome, "summary", ""),
         }
     except BaseException:

@@ -223,7 +223,7 @@ export interface SaveCapabilities {
 }
 
 /** Why a library cannot be edited. A fact — lib/platformCopy.ts words it. */
-export type ReadonlyCause = 'platform_incomplete' | 'cloud_synced'
+export type ReadonlyCause = 'platform_incomplete' | 'cloud_synced' | 'not_in_library'
 
 export interface Capabilities {
   platform: Platform
@@ -245,6 +245,8 @@ export interface Capabilities {
     media_kinds: MediaKind[]
     /** Tracks can be removed from the library (audio files are never touched). */
     removable: boolean
+    /** Lower-case suffixes this library can hold — what a browsed folder lists. */
+    audio_formats: string[]
     artwork: boolean
     artwork_note: string | null
   }
@@ -335,11 +337,51 @@ export interface ImportPreview {
   missing: string[]
   /** Titles the collection already has by filename. A warning, not a block. */
   duplicates: string[]
+  /** Titles whose exact FILE the collection already holds: not added again,
+   *  but still put in the playlist/export being added to. */
+  existing: string[]
   playlists: string[]
   total_bytes: number
   destination: string | null
   free_bytes: number | null
   enough_space: boolean | null
+}
+
+// ---- drives and folders ----
+//
+// The sidebar's Devices and Local Storage trees. A browsed folder is read-only
+// and is not a library: its files are projected as tracks (id = absolute path)
+// so the ordinary table and deck show them, and adding goes through import.
+
+export interface Drive {
+  name: string
+  path: string
+  /** `local` = boot disk or a drive built in; anything uncertain is external. */
+  kind: 'local' | 'external'
+  /** The OneLibrary library on this drive, if it carries one. */
+  library: SourceCandidate | null
+}
+
+export interface FolderTracks {
+  path: string
+  tracks: Track[]
+  /** Ids of the files the collection already points at. */
+  in_collection: string[]
+  /** On an external drive — referencing in place would go missing on unplug. */
+  removable: boolean
+}
+
+export interface FolderAddRequest {
+  track_ids: string[]
+  mode: 'copy' | 'reference'
+  /** Required for `copy`. */
+  destination?: string | null
+  playlist_id?: string | null
+  export_id?: string | null
+}
+
+export interface FolderAddPreview extends ImportPreview {
+  removable: boolean
 }
 
 export type JobState = 'running' | 'done' | 'failed' | 'cancelled'
@@ -770,6 +812,20 @@ export const api = {
   /** Audition a track off the stick before importing it. */
   sourceAudioUrl: (trackId: string) =>
     `${API_BASE}/api/source/tracks/audio?track_id=${encodeURIComponent(trackId)}`,
+  // ---- drives and folders ----
+  drives: () => getJSON<Drive[]>('/api/fs/drives'),
+  folders: (path: string) => getJSON<FsEntry[]>(`/api/fs/folders?path=${encodeURIComponent(path)}`),
+  folderTracks: (path: string) =>
+    getJSON<FolderTracks>(`/api/folder/tracks?path=${encodeURIComponent(path)}`),
+  folderCapabilities: (path: string) =>
+    getJSON<Capabilities>(`/api/folder/capabilities?path=${encodeURIComponent(path)}`),
+  folderTrackCues: (trackId: string) =>
+    getJSON<TrackCues>(`/api/folder/tracks/cues?track_id=${encodeURIComponent(trackId)}`),
+  folderAudioUrl: (trackId: string) =>
+    `${API_BASE}/api/folder/tracks/audio?track_id=${encodeURIComponent(trackId)}`,
+  folderAddPreview: (body: FolderAddRequest) =>
+    send<FolderAddPreview>('POST', '/api/folder/add/preview', body),
+  folderAdd: (body: FolderAddRequest) => send<JobStatus>('POST', '/api/folder/add', body),
   // ---- import ----
   importPreview: (body: ImportRequest) => send<ImportPreview>('POST', '/api/import/preview', body),
   /** Starts the job and returns immediately — poll `job()` for progress. */
@@ -787,4 +843,23 @@ export const api = {
     if (!res.ok) throw new Error(`Cover upload failed (${res.status})`)
     return res.json()
   },
+}
+
+/**
+ * Which library a track in view belongs to. Ids are only unique WITHIN one —
+ * a device's track and a collection track can share an id — so anything that
+ * fetches by id must know which one it is asking.
+ */
+export type TrackOrigin = 'collection' | 'device' | 'folder'
+
+export function trackAudioUrl(origin: TrackOrigin, trackId: string): string {
+  if (origin === 'device') return api.sourceAudioUrl(trackId)
+  if (origin === 'folder') return api.folderAudioUrl(trackId)
+  return api.audioUrl(trackId)
+}
+
+export function trackCuesFor(origin: TrackOrigin, trackId: string): Promise<TrackCues> {
+  if (origin === 'device') return api.sourceTrackCues(trackId)
+  if (origin === 'folder') return api.folderTrackCues(trackId)
+  return api.trackCues(trackId)
 }

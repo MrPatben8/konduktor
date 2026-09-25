@@ -108,7 +108,22 @@ Two independent apps that talk over HTTP:
       `is_os_housekeeping()` names what an OS writes into a folder by itself
       (`.Spotlight-V100`, `.Trashes`, `._*`, `System Volume Information`, …), so
       the export's "is this folder empty?" check does not refuse a stick's root
-      just because a Mac has mounted it once.
+      just because a Mac has mounted it once. `drives()` splits drives into
+      `local` (the boot disk at `/`, never its `/Volumes` alias, plus internal
+      drives per `diskutil`, cached per mount) and `external` — **anything
+      uncertain is external**, so a stick is never presented as a safe place to
+      reference tracks from; mounted `.dmg`s are dropped. `is_hidden()` reads
+      macOS's hidden FLAG (as Finder does), not a list of names.
+    - `folder.py` — **a folder of loose audio files read as a read-only
+      source** (`FolderSource`), for the sidebar's Files trees. NOT a
+      registered driver: `can_open("any directory")` would make every folder a
+      library to the picker. **This folder only** (the tree reaches
+      subfolders), **track id = absolute path**, tags read once per folder
+      mtime by `FolderScanner` — which is also the audio route's gatekeeper:
+      only a file a scan found is streamed, so `/api/folder/tracks/audio` cannot
+      read an arbitrary path. Tagged keys are deliberately dropped (every
+      notation there is). The listed suffixes are the collection's
+      `tracks.audio_formats` capability.
   - `adapters/traktor/` — everything that knows NML exists.
     - `store.py` (`TraktorStore`) — the retained native model: owns the parsed
       dataclass NML, applies every edit, renders + saves. See "Write path".
@@ -229,6 +244,15 @@ Two independent apps that talk over HTTP:
       `track_cues()`. The `PQTZ` beatgrid is the same tag as Rekordbox's, and the
       collapse rule is **shared by import** rather than copied — two definitions of
       "when does a tempo change start a marker" would drift silently.
+  - `importer.py` also serves the folder add: `reference=True` adds each file
+    where it is (nothing to copy or roll back), and every planned file the
+    destination already points at (matched on `audio_path`, never the display
+    `filepath`) maps to its EXISTING id instead of being added again.
+    **`PrepStrip` takes `origin`** (`collection`/`device`/`folder`), recorded
+    with the deck's track in `App` — the deck follows its TRACK's library, not
+    the view's, so browsing elsewhere cannot point it at endpoints that do not
+    know the track. `trackAudioUrl`/`trackCuesFor` in `api.ts` are the one place
+    that choice is made.
   - `app_state.py` — the one loaded library, and the **version-history commit**.
     History is app-level: the adapter returns the bytes it wrote plus a summary,
     and `AppState.save()` versions them. Every write path must go through it.
@@ -325,7 +349,20 @@ Two independent apps that talk over HTTP:
     view. Adding is not gated
     on the library being writable, since an export set is Konduktor's own data.
     `ExportDialog` shows unsupported targets **disabled with a reason** rather
-    than hiding them), `CollectionPicker` (**two steps: which PLATFORM, then which
+    than hiding them), `DevicesSection` (**every drive**, polled from
+    `/api/fs/drives`: external ones under Devices, the computer's own under an
+    expandable Local Storage. A drive carrying a OneLibrary library opens as a
+    device as before, and EVERY drive has a lazily-fetched **Files** tree;
+    clicking a folder is the `folder` source kind — its audio in the ordinary
+    table, read-only via `readonly_cause: 'not_in_library'`, with files the
+    collection already holds checked off in the # column (`TrackTable`'s
+    `marked`). Capped at 40% of the sidebar and self-scrolling so a deep tree
+    gives way before the playlists do) + `AddFilesDialog` (copy vs. leave in
+    place is **asked every time with nothing preselected** — the answer depends
+    on the drive — and warns that a referenced file on an external drive goes
+    missing on unplug. A playlist/export target adds to the collection first
+    and says so; it runs through `importer.run(reference=…, into_playlist=…)`),
+    `CollectionPicker` (**two steps: which PLATFORM, then which
     library** — Automatic / Open last / Find manually, the last revealing a file
     browser. The platform comes first because every later answer depends on it:
     asked the other way round, "Automatic" had to guess ACROSS platforms and did
@@ -562,6 +599,13 @@ serialization path.** It enforces:
   track spans rows in several tables plus ANLZ files, and which Rekordbox
   expects deleted together is unmeasured). The journal records it as
   `track/remove`, NOT an edit — otherwise history would read "edited 40 tracks".
+- `test_folders.py` — the Files trees and adding loose files, through the
+  routes, on generated FLACs and a temp copy of the collection: a folder lists
+  only the visible audio DIRECTLY in it; the audio route refuses anything a
+  scan did not find; **a file the collection already points at is never added
+  twice** (on Traktor that would be two ENTRYs sharing a primary key — a corrupt
+  collection) but still reaches the playlist/export it was headed for; "copy"
+  points the entry at the copy and "reference" at the original.
 - `test_picker.py` — the picker's routes. Pins the scoping, because the bug it
   replaced was invisible: `/api/library/options` flattened every driver's
   detections and returned `[0]`, so a plugged-in USB stick could be offered as

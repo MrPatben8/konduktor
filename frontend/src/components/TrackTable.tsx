@@ -11,6 +11,7 @@ import {
   type VisibilityState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { Icon } from '../lib/icons'
 import { useCaps } from '../lib/capabilities'
 import {
   DndContext,
@@ -64,6 +65,9 @@ interface Props {
   /** The row-number column shows these (a playlist's own 1-based positions)
    *  instead of the row's place in the current view. */
   positions?: Map<string, number>
+  /** Rows to flag in the # column with a check and this tooltip — a browsed
+   *  folder uses it for files the collection already holds. */
+  marked?: { ids: Set<string>; title: string }
   /** A view with a manual order. `enabled` is false while a sort or filter is
    *  active: reordering a partial or re-sorted list would lose the real order. */
   reorder?: { enabled: boolean; onReorder: (ids: string[]) => void }
@@ -263,6 +267,7 @@ export function TrackTable({
   onColumnSizingChange,
   selection,
   positions,
+  marked,
   reorder,
   onRemove,
   onRowContextMenu,
@@ -569,7 +574,13 @@ export function TrackTable({
                 }}
               >
                 <span className="w-10 shrink-0 pr-2 text-right text-xs tabular-nums text-faint">
-                  {positions?.get(row.original.id) ?? vr.index + 1}
+                  {marked?.ids.has(row.original.id) ? (
+                    <span title={marked.title} className="inline-flex text-mint">
+                      <Icon name="check" size={13} />
+                    </span>
+                  ) : (
+                    (positions?.get(row.original.id) ?? vr.index + 1)
+                  )}
                 </span>
                 {hasPlay && (
                   <span className="flex w-9 shrink-0 items-center justify-center">

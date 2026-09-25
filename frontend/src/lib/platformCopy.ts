@@ -53,6 +53,8 @@ export function readOnlyNotice(caps: Capabilities): string | null {
   switch (caps.readonly_cause) {
     case 'cloud_synced':
       return `This ${caps.save.app_name} library is synced with ${caps.save.app_name} Cloud, so Konduktor will not write to it — an edit it did not make could break syncing on your other devices.`
+    case 'not_in_library':
+      return 'This file is not in your collection yet — add it to edit its tags, cues or beatgrid.'
     case 'platform_incomplete':
     default:
       return `Konduktor can read ${caps.save.app_name} libraries but cannot save changes to them yet.`
@@ -62,6 +64,7 @@ export function readOnlyNotice(caps: Capabilities): string | null {
 /** Compact form for a badge or a disabled control's tooltip. */
 export function readOnlyShort(caps: Capabilities): string | null {
   if (caps.writable) return null
+  if (caps.readonly_cause === 'not_in_library') return 'Not in collection'
   return caps.readonly_cause === 'cloud_synced' ? 'Read-only · cloud-synced' : 'Read-only'
 }
 

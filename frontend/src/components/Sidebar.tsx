@@ -27,6 +27,9 @@ export type Source =
   | { kind: 'playlist'; id: string; name: string }
   | { kind: 'device' }
   | { kind: 'device-playlist'; id: string; name: string }
+  // A folder of loose files on any drive, browsed from a Files tree. Its tracks
+  // are not in any library until added, so the view is read-only.
+  | { kind: 'folder'; path: string; name: string }
   // An export set. `export` is its root — every track it would ship, deduped —
   // and `export-playlist` is one referenced playlist inside it, read live from
   // the library rather than from the set, which is the reference doing its job.
@@ -557,7 +560,7 @@ export function Sidebar({
       {/* Right-click here (below the rows) creates at the top level; rows
           stop the event so they get their own menu. */}
       <div
-        className="mt-1 flex-1 overflow-y-auto px-2 pb-4"
+        className="mt-1 min-h-24 flex-1 overflow-y-auto px-2 pb-4"
         onContextMenu={(e) => openMenu(e, createItems(null))}
       >
         {draft?.parentId === null && <DraftRow draft={draft} depth={0} actions={actions} />}

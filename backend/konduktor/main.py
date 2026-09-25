@@ -20,6 +20,7 @@ from .core import grid_detect, structure
 from . import importer
 from .core import export as core_export
 from .core import places, registry
+from .core.folder import FolderScanner, FolderSource
 from .core.adapter import (
     AdapterError,
     InvalidCommand,
@@ -56,6 +57,9 @@ from .schemas import (
     ExportSetMembers,
     ExportSetOut,
     ExportPreview,
+    Drive,
+    FolderAddRequest,
+    FolderTracks,
     FsEntry,
     FsListing,
     FsPlace,
@@ -1400,6 +1404,185 @@ def source_track_audio(track_id: str) -> FileResponse:
         raise HTTPException(404, f"Audio file not found: {path}")
     mime = _AUDIO_MIME.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(path, media_type=mime)
+
+
+# ---- drives and folders -----------------------------------------------
+#
+# The sidebar's Devices and Local Storage trees. Browsing a folder is READ-ONLY
+# and needs no library of its own: the files are projected as tracks for the
+# table and deck, and adding them goes through the ordinary importer.
+
+FOLDERS = FolderScanner()
+
+
+def _drive_of(path: Path, drives: list[dict]) -> dict | None:
+    """The drive `path` lives on: the longest drive root that contains it."""
+    best = None
+    for d in drives:
+        root = Path(d["path"])
+        try:
+            path.relative_to(root)
+        except ValueError:
+            continue
+        if best is None or len(root.parts) > len(Path(best["path"]).parts):
+            best = d
+    return best
+
+
+@app.get("/api/fs/drives", response_model=list[Drive])
+def fs_drives() -> list[Drive]:
+    """Every drive, with the OneLibrary library on it where there is one.
+
+    Polled, like `/api/sources`, because drives come and go while the app is
+    open. Cheap after the first call: which drives are internal is cached per
+    mount, since asking the OS is a subprocess on macOS.
+    """
+    found = places.drives()
+    libraries = sources()
+    out = [Drive(**d) for d in found]
+    externals = [d for d in found if d["path"] != "/"]
+    for lib in libraries:
+        home = _drive_of(Path(lib.path), externals)
+        if home is None:
+            continue
+        for drive in out:
+            if drive.path == home["path"]:
+                drive.library = lib
+    return out
+
+
+@app.get("/api/fs/folders", response_model=list[FsEntry])
+def fs_folders(path: str) -> list[FsEntry]:
+    """The visible folders directly inside `path` — one level of a Files tree."""
+    base = Path(path).expanduser()
+    if not base.is_dir():
+        raise HTTPException(404, f"Not a folder: {base}")
+    return [FsEntry(name=p.name, path=str(p)) for p in places.subfolders(base)]
+
+
+def _formats() -> list[str]:
+    return require_adapter().capabilities().tracks.audio_formats
+
+
+@app.get("/api/folder/tracks", response_model=FolderTracks)
+def folder_tracks(path: str) -> FolderTracks:
+    """The audio files directly inside a folder, and which are already held."""
+    base = Path(path).expanduser()
+    if not base.is_dir():
+        raise HTTPException(404, f"Not a folder: {base}")
+    source = FOLDERS.scan(base, _formats())
+    held = importer._existing_files(require_adapter())
+    drive = _drive_of(base, places.drives())
+    return FolderTracks(
+        path=str(base),
+        tracks=source.tracks,
+        in_collection=[t.id for t in source.tracks if importer._key(Path(t.id)) in held],
+        removable=drive is None or drive["kind"] == "external",
+    )
+
+
+def _folder_track(track_id: str) -> FolderSource:
+    # Only a file a scan found. This is what keeps the audio route from being a
+    # way to read any path on the disk.
+    source = FOLDERS.source_for_file(track_id)
+    if source is None:
+        raise HTTPException(404, "Track not found — browse to its folder first")
+    return source
+
+
+@app.get("/api/folder/capabilities", response_model=Capabilities)
+def folder_capabilities(path: str) -> Capabilities:
+    from .core.folder import capabilities_for
+
+    return capabilities_for(Path(path))
+
+
+@app.get("/api/folder/tracks/cues", response_model=TrackCues)
+def folder_track_cues(track_id: str) -> TrackCues:
+    cues = _folder_track(track_id).track_cues(track_id)
+    assert cues is not None
+    return cues
+
+
+@app.get("/api/folder/tracks/audio")
+def folder_track_audio(track_id: str) -> FileResponse:
+    path = _folder_track(track_id).audio_path(track_id)
+    if path is None or not path.is_file():
+        raise HTTPException(404, "Audio file not found")
+    mime = _AUDIO_MIME.get(path.suffix.lower(), "application/octet-stream")
+    return FileResponse(path, media_type=mime)
+
+
+def _folder_add_plan(body: FolderAddRequest):
+    dest = require_adapter()
+    tracks = []
+    for track_id in body.track_ids:
+        track = _folder_track(track_id).track(track_id)
+        if track is not None:
+            tracks.append(track)
+    if not tracks:
+        raise HTTPException(400, "No tracks to add")
+    # One source across however many folders the ids came from.
+    source = FolderSource(Path(tracks[0].id).parent, tracks)
+    destination = None
+    if body.mode == "copy":
+        if not body.destination:
+            raise HTTPException(400, "Copying needs a destination folder")
+        destination = Path(body.destination).expanduser()
+    if body.playlist_id is not None and dest.playlist_entries(body.playlist_id) is None:
+        raise HTTPException(404, f"Playlist not found: {body.playlist_id}")
+    if body.export_id is not None:
+        if STATE.library_id is None or exports.get(STATE.library_id, body.export_id) is None:
+            raise HTTPException(404, f"Export not found: {body.export_id}")
+    return source, dest, destination, importer.plan(
+        source, dest, destination, track_ids=[t.id for t in tracks]
+    )
+
+
+@app.post("/api/folder/add/preview")
+def folder_add_preview(body: FolderAddRequest) -> dict:
+    _source, _dest, destination, plan = _folder_add_plan(body)
+    out = plan.as_dict(free_bytes=importer.free_bytes(destination) if destination else None)
+    if body.mode == "reference":
+        # Nothing is copied, so there is no size to fit anywhere.
+        out.update(total_bytes=0, free_bytes=None, enough_space=None)
+    drive = _drive_of(Path(body.track_ids[0]), places.drives()) if body.track_ids else None
+    out["removable"] = drive is None or drive["kind"] == "external"
+    return out
+
+
+@app.post("/api/folder/add", response_model=JobStatus)
+def folder_add(body: FolderAddRequest) -> JobStatus:
+    """Add browsed files to the collection. A job, like import: copying can be long."""
+    source, dest, destination, plan = _folder_add_plan(body)
+    if not plan.importable and not plan.existing:
+        raise HTTPException(400, "Nothing to add (none of those files exist)")
+    if body.mode == "copy":
+        free = importer.free_bytes(destination)
+        if free is not None and free < plan.total_bytes + importer.SPACE_HEADROOM:
+            raise HTTPException(
+                400,
+                f"Not enough space: {plan.total_bytes / 1e9:.1f} GB needed, "
+                f"{free / 1e9:.1f} GB free at {destination}",
+            )
+    if JOBS.active("import"):
+        raise HTTPException(409, "An import is already running")
+    library = STATE.library_id
+
+    def work(handle):
+        result = importer.run(
+            source, dest, plan, handle,
+            reference=body.mode == "reference",
+            into_playlist=body.playlist_id,
+        )
+        # Export sets are Konduktor's own data, not the library's, so they are
+        # updated after the library has been saved rather than inside it.
+        if body.export_id is not None and library is not None:
+            exports.add(library, body.export_id, track_ids=result["track_ids"])
+        return result
+
+    job = JOBS.submit("import", work)
+    return JobStatus(**job.as_dict())
 
 
 # ---- import -----------------------------------------------------------

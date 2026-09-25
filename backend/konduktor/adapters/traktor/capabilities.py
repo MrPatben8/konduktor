@@ -60,6 +60,9 @@ def capabilities_for(path: Path, editable_fields: list[str]) -> Capabilities:
             editable_fields=sorted(editable_fields),
             media_kinds=["audio", "stem"],
             removable=True,
+            # `.mp4` covers stem files (`.stem.mp4`). Traktor also reads WMA,
+            # but only on Windows, and a file added on one OS must play on both.
+            audio_formats=[".mp3", ".wav", ".aif", ".aiff", ".flac", ".m4a", ".mp4", ".ogg"],
             artwork=True,
             artwork_note=(
                 "Traktor caches its own cover thumbnail, so a replaced image may "

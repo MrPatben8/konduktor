@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnSizingState, SortingState, VisibilityState } from '@tanstack/react-table'
 import { CapabilitiesContext, slotLabeller } from './lib/capabilities'
 import { writeHint } from './lib/platformCopy'
-import { api, type CueBatchResult, type GridBatchResult, type AutoCueSlot, type PlaylistNode, type Track } from './api'
+import { api, type CueBatchResult, type GridBatchResult, type AutoCueSlot, type PlaylistNode, type Track, type TrackOrigin } from './api'
 import {
   COLUMN_MENU,
   DEFAULT_COLUMN_ORDER,
@@ -24,6 +24,7 @@ import { PathMappingDialog } from './components/PathMappingDialog'
 import { HistoryPanel } from './components/HistoryPanel'
 import { PrepStrip } from './components/PrepStrip'
 import { ImportDialog } from './components/ImportDialog'
+import { AddFilesDialog, type AddTarget } from './components/AddFilesDialog'
 import { Icon } from './lib/icons'
 
 function applyFilters(tracks: Track[], f: Filters): Track[] {
@@ -63,6 +64,14 @@ export default function App() {
   const [showPaths, setShowPaths] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [prepTrack, setPrepTrack] = useState<Track | null>(null)
+  // Which library the DECK's track came from — not the view's. Browsing to a
+  // playlist while a device or folder track is loaded must not switch the deck
+  // to endpoints that do not know that track.
+  const [prepOrigin, setPrepOrigin] = useState<TrackOrigin>('collection')
+  // The view's origin, read by the load callbacks below (defined before it).
+  const viewOriginRef = useRef<TrackOrigin>('collection')
+  // Browsed files being added to the collection (and maybe a playlist/export).
+  const [adding, setAdding] = useState<{ ids: string[]; target: AddTarget | null } | null>(null)
   const [playRequest, setPlayRequest] = useState(0) // bump → deck loads & auto-plays
   const [importing, setImporting] = useState(false)
   // Batch analysis (grid, or Auto Hotcues): a confirm step, then the running
@@ -79,10 +88,17 @@ export default function App() {
   // Every Remove ▸ action (and the playlist Delete key) confirms first.
   const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null)
 
-  const playTrack = useCallback((t: Track) => {
+  const loadTrack = useCallback((t: Track) => {
     setPrepTrack(t)
-    setPlayRequest((n) => n + 1)
+    setPrepOrigin(viewOriginRef.current)
   }, [])
+  const playTrack = useCallback(
+    (t: Track) => {
+      loadTrack(t)
+      setPlayRequest((n) => n + 1)
+    },
+    [loadTrack],
+  )
 
   // ---- configurable library columns (persisted to userprefs.json) ----
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(DEFAULT_COLUMN_VISIBILITY)
@@ -250,9 +266,34 @@ export default function App() {
   const deviceCaps = useQuery({
     queryKey: ['source-capabilities'],
     queryFn: api.sourceCapabilities,
-    enabled: viewingDevice,
+    enabled: viewingDevice || prepOrigin === 'device',
     staleTime: Infinity,
   })
+
+  // A browsed folder of loose files. Read-only like a device, for the same
+  // reason: its track ids (absolute paths) are not collection tracks.
+  const viewingFolder = source.kind === 'folder'
+  const folderPath = source.kind === 'folder' ? source.path : null
+  const folderView = useQuery({
+    queryKey: ['folder-tracks', folderPath],
+    queryFn: () => api.folderTracks(folderPath!),
+    enabled: loaded && viewingFolder,
+  })
+  const folderCaps = useQuery({
+    queryKey: ['folder-capabilities', folderPath],
+    queryFn: () => api.folderCapabilities(folderPath!),
+    enabled: loaded && viewingFolder,
+    staleTime: Infinity,
+  })
+  const heldInFolder = useMemo(
+    () => new Set(folderView.data?.in_collection ?? []),
+    [folderView.data],
+  )
+  viewOriginRef.current = viewingDevice ? 'device' : viewingFolder ? 'folder' : 'collection'
+  // Tracks in view belong to ANOTHER library (a device) or to none (a folder),
+  // so no collection command may be offered on them: their ids mean nothing to
+  // the collection's routes.
+  const viewForeign = viewingDevice || viewingFolder
   const openDevice = useQuery({ queryKey: ['source'], queryFn: api.source })
   const exportSets = useQuery({ queryKey: ['exports'], queryFn: api.exports, enabled: loaded })
   const playlists = useQuery({ queryKey: ['playlists'], queryFn: api.playlists, enabled: loaded })
@@ -320,14 +361,21 @@ export default function App() {
   // browsing half of the UI gates itself correctly with no new conditions.
   // Falls back to the collection's until the device's resolve, so no frame
   // renders without capabilities at all.
-  const viewCaps = viewingDevice
-    ? (deviceCaps.data ??
-      // Until the device's own capabilities arrive, assume READ-ONLY rather
-      // than falling back to the collection's. The fallback is the safe
-      // direction on purpose: guessing "writable" for one frame would offer an
-      // edit that, if taken, would be sent to the wrong library entirely.
-      { ...capabilities.data!, writable: false, readonly_cause: 'platform_incomplete' as const })
-    : capabilities.data!
+  // Until a device's or folder's own capabilities arrive, assume READ-ONLY
+  // rather than falling back to the collection's. The fallback is the safe
+  // direction on purpose: guessing "writable" for one frame would offer an edit
+  // that, if taken, would be sent to the wrong library entirely.
+  const readOnlyCaps = (cause: 'platform_incomplete' | 'not_in_library') =>
+    capabilities.data ? { ...capabilities.data, writable: false, readonly_cause: cause } : capabilities.data!
+  const capsFor = (origin: TrackOrigin) =>
+    origin === 'device'
+      ? (deviceCaps.data ?? readOnlyCaps('platform_incomplete'))
+      : origin === 'folder'
+        ? (folderCaps.data ?? readOnlyCaps('not_in_library'))
+        : capabilities.data!
+  const viewCaps = capsFor(viewOriginRef.current)
+  // The deck follows its TRACK's library, not the view's.
+  const deckCaps = capsFor(prepOrigin)
 
   const deviceLabel = openDevice.data?.label ?? 'device'
   // One name for whatever is on screen, so the header and the status bar cannot
@@ -340,7 +388,9 @@ export default function App() {
         : source.name
 
   const isAll = source.kind === 'all'
-  const tracks: Track[] = viewingDevice
+  const tracks: Track[] = viewingFolder
+    ? (folderView.data?.tracks ?? [])
+    : viewingDevice
     ? source.kind === 'device'
       ? (deviceTracks.data?.items ?? [])
       : (devicePlaylistTracks.data ?? [])
@@ -353,7 +403,9 @@ export default function App() {
       : isAll
         ? (allTracks.data?.items ?? [])
         : (playlistTracks.data ?? [])
-  const loading = viewingDevice
+  const loading = viewingFolder
+    ? folderView.isLoading
+    : viewingDevice
     ? source.kind === 'device'
       ? deviceTracks.isLoading
       : devicePlaylistTracks.isLoading
@@ -567,7 +619,7 @@ export default function App() {
       void runGridAnalysis(ids, false)
     }
   }
-  const canAnalyzeGrid = canEdit && !viewingDevice && !!capabilities.data?.grid.editable
+  const canAnalyzeGrid = canEdit && !viewForeign && !!capabilities.data?.grid.editable
 
   const startCueBatch = (ids: string[]) => {
     const byId = new Map(tracks.map((t) => [t.id, t]))
@@ -580,7 +632,7 @@ export default function App() {
     setBatchCancelling(false)
     setBatchJob({ id: job.id, kind: 'cues' })
   }
-  const canAutoCue = canEdit && !viewingDevice && (capabilities.data?.cues.hotcue_slots ?? 0) > 0
+  const canAutoCue = canEdit && !viewForeign && (capabilities.data?.cues.hotcue_slots ?? 0) > 0
 
   // ---- Remove ▸ -----------------------------------------------------------
   const nTracks = (n: number) => `${n} track${n === 1 ? '' : 's'}`
@@ -720,9 +772,9 @@ export default function App() {
         }),
     })
 
-  const canClearGrids = canEdit && !viewingDevice && !!capabilities.data?.grid.editable
+  const canClearGrids = canEdit && !viewForeign && !!capabilities.data?.grid.editable
   const canClearCues = canAutoCue
-  const canRemoveTracks = canEdit && !viewingDevice && !!capabilities.data?.tracks.removable
+  const canRemoveTracks = canEdit && !viewForeign && !!capabilities.data?.tracks.removable
   const exportRootId =
     source.kind === 'export' ? source.id : source.kind === 'export-other' ? source.exportId : null
   const removeItems = (ids: string[]): MenuItem[] => [
@@ -769,6 +821,23 @@ export default function App() {
     ]
   }
 
+  // The same targets as "Add to", but each opens the add dialog: a loose file
+  // has to join the collection before a playlist or export can hold it.
+  const folderAddToItems = (ids: string[]): MenuItem[] => [
+    { heading: 'Playlists', empty: addablePlaylists.length ? undefined : 'No playlists' },
+    ...addablePlaylists.map((p) => ({
+      label: p.name,
+      hint: String(p.count),
+      onClick: () => setAdding({ ids, target: { kind: 'playlist' as const, id: p.id, name: p.name } }),
+    })),
+    { heading: 'Exports', empty: exportSets.data?.length ? undefined : 'No exports yet' },
+    ...(exportSets.data ?? []).map((set) => ({
+      label: set.name,
+      icon: <Icon name="export" size={13} />,
+      onClick: () => setAdding({ ids, target: { kind: 'export' as const, id: set.id, name: set.name } }),
+    })),
+  ]
+
   return (
     <CapabilitiesContext.Provider value={capabilities.data!}>
     {/* Floating glass panels with gaps between them: the ambient backdrop
@@ -785,11 +854,11 @@ export default function App() {
           items={[
             // Single-track actions are hidden, not disabled, for a multi-selection.
             ...(menu.ids.length === 1
-              ? [{ label: 'Load to Deck', onClick: () => setPrepTrack(menu.track) }]
+              ? [{ label: 'Load to Deck', onClick: () => loadTrack(menu.track) }]
               : []),
             // Offering "Edit Tags…" on a read-only library would open a dialog
             // whose every save is refused, so it is not offered at all.
-            ...(canEdit && menu.ids.length === 1
+            ...(canEdit && !viewForeign && menu.ids.length === 1
               ? [{ label: 'Edit Tags…', onClick: () => setEditing(menu.track) }]
               : []),
             ...(canAnalyzeGrid
@@ -815,8 +884,17 @@ export default function App() {
                 ]
               : []),
             // A device's track ids belong to the stick, not the collection, so
-            // there is nothing they could be added to.
-            ...(viewingDevice ? [] : [{ label: 'Add to', submenu: addToItems(menu.ids) }]),
+            // there is nothing they could be added to. A folder's files CAN be
+            // added — through the add dialog, which puts them in the
+            // collection first.
+            ...(viewingFolder
+              ? [
+                  { label: 'Add to Collection…', onClick: () => setAdding({ ids: menu.ids, target: null }) },
+                  { label: 'Add to', submenu: folderAddToItems(menu.ids) },
+                ]
+              : viewingDevice
+                ? []
+                : [{ label: 'Add to', submenu: addToItems(menu.ids) }]),
             ...(() => {
               const items = removeItems(menu.ids)
               return items.length ? [{ label: 'Remove', submenu: items }] : []
@@ -901,14 +979,27 @@ export default function App() {
         />
       )}
 
+      {adding && (
+        <AddFilesDialog
+          trackIds={adding.ids}
+          target={adding.target}
+          onClose={() => setAdding(null)}
+          onDone={(msg) => {
+            setAdding(null)
+            notify('success', msg)
+          }}
+          onError={onError}
+        />
+      )}
+
       {/* Prep strip spans the top of the window; the library sits below it. */}
-      <CapabilitiesContext.Provider value={viewCaps}>
+      <CapabilitiesContext.Provider value={deckCaps}>
         <PrepStrip
           track={prepTrack}
           playRequest={playRequest}
           onError={onError}
           onNotify={notify}
-          fromDevice={viewingDevice}
+          origin={prepOrigin}
           cuesRefresh={cuesRefresh}
         />
       </CapabilitiesContext.Provider>
@@ -932,20 +1023,61 @@ export default function App() {
           filters={filters}
           onChange={setFilters}
         />
-        {(!isAll || viewingDevice) && (
+        {(!isAll || viewForeign) && (
           <div className="flex items-center gap-3 border-b border-line px-4 py-2">
             <span
               className={`flex ${
-                viewingDevice ? 'text-gold' : viewingExport ? 'text-gold' : 'text-accent'
+                viewingDevice || viewingFolder ? 'text-gold' : viewingExport ? 'text-gold' : 'text-accent'
               }`}
             >
               <Icon
-                name={viewingDevice ? 'drive' : viewingExport && source.kind === 'export' ? 'export' : 'playlist'}
+                name={
+                  viewingDevice
+                    ? 'drive'
+                    : viewingFolder
+                      ? 'folderOpen'
+                      : viewingExport && source.kind === 'export'
+                        ? 'export'
+                        : 'playlist'
+                }
                 size={15}
               />
             </span>
-            <span className="font-semibold text-text">{viewName}</span>
-            {viewingExport ? (
+            <span className="font-semibold text-text" title={folderPath ?? undefined}>{viewName}</span>
+            {viewingFolder ? (
+              <>
+                <span className="text-xs text-faint">
+                  {filtersActive
+                    ? `${filtered.length} of ${tracks.length} files`
+                    : `${tracks.length} file${tracks.length === 1 ? '' : 's'}`}
+                  {heldInFolder.size > 0 && ` · ${heldInFolder.size} already in your collection`}
+                  {' · this folder only'}
+                </span>
+                <span className="ml-auto flex items-center gap-2">
+                  <span className="rounded-full bg-gold/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gold shadow-[inset_0_0_0_1px_rgb(255_200_97/0.3)]">
+                    Not in collection
+                  </span>
+                  {tracks.length > 0 && (
+                    <button
+                      onClick={() =>
+                        setAdding({
+                          // The selection when there is one, else everything in
+                          // view that the collection does not already hold.
+                          ids: selected.size
+                            ? filtered.filter((t) => selected.has(t.id)).map((t) => t.id)
+                            : filtered.filter((t) => !heldInFolder.has(t.id)).map((t) => t.id),
+                          target: null,
+                        })
+                      }
+                      disabled={!selected.size && filtered.every((t) => heldInFolder.has(t.id))}
+                      className="btn-primary rounded-full px-3 py-1 text-xs font-semibold disabled:opacity-40"
+                    >
+                      {selected.size ? `Add ${selected.size} to collection…` : 'Add all to collection…'}
+                    </button>
+                  )}
+                </span>
+              </>
+            ) : viewingExport ? (
               <>
                 <span className="text-xs text-faint">
                   {filtersActive
@@ -1026,6 +1158,44 @@ export default function App() {
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
                 onEditField={canEdit ? editField : undefined}
+                activeTrackId={prepTrack?.id ?? null}
+                columnVisibility={columnVisibility}
+                columnOrder={columnOrder}
+                columnSizing={columnSizing}
+                onColumnOrderChange={setColumnOrder}
+                onColumnSizingChange={setColumnSizing}
+              />
+            )
+          ) : viewingFolder ? (
+            /* A folder uses the plain table too, WITH selection: its bulk
+               action is adding the selected files to the collection. The #
+               column checks off the files the collection already holds. */
+            folderView.isError ? (
+              <div className="flex h-full flex-col items-center justify-center gap-1 text-muted">
+                <div className="text-lg">Can’t read this folder</div>
+                <div className="text-sm text-faint">{(folderView.error as Error).message}</div>
+              </div>
+            ) : filtered.length === 0 ? (
+              <div className="flex h-full flex-col items-center justify-center gap-1 text-muted">
+                <div className="text-lg">
+                  {tracks.length === 0 ? 'No music here' : 'No tracks match'}
+                </div>
+                <div className="text-sm text-faint">
+                  {tracks.length === 0
+                    ? 'This folder has no audio files directly in it — try one of its subfolders.'
+                    : 'Try clearing some filters.'}
+                </div>
+              </div>
+            ) : (
+              <TrackTable
+                tracks={filtered}
+                sorting={sorting}
+                onSortingChange={setSorting}
+                selection={{ selected, onChange: setSelected }}
+                marked={{ ids: heldInFolder, title: 'Already in your collection' }}
+                onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
+                onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
+                onPlay={playTrack}
                 activeTrackId={prepTrack?.id ?? null}
                 columnVisibility={columnVisibility}
                 columnOrder={columnOrder}

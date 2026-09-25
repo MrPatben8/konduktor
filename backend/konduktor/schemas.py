@@ -382,6 +382,47 @@ class ImportRequest(BaseModel):
     folder_name: str | None = None
 
 
+class Drive(BaseModel):
+    """A drive in the sidebar, under Devices (`external`) or Local Storage.
+
+    `library` is the OneLibrary database on it, when there is one — the same
+    candidate `/api/sources` reports, attached to the drive it lives on so the
+    sidebar can show one row per drive rather than a device list and a drive
+    list that disagree about what is plugged in.
+    """
+
+    name: str
+    path: str
+    kind: Literal["local", "external"]
+    library: SourceCandidate | None = None
+
+
+class FolderTracks(BaseModel):
+    """The audio files directly inside one folder, projected as tracks."""
+
+    path: str
+    tracks: list[Track]
+    # Ids (= absolute paths) of the files the collection already points at.
+    in_collection: list[str]
+    # On an external drive: a track referenced in place goes missing when the
+    # drive is unplugged, which the add dialog has to say.
+    removable: bool
+
+
+class FolderAddRequest(BaseModel):
+    """Add browsed files to the collection, and optionally to a playlist/export.
+
+    `mode` is asked every time rather than defaulted, because the right answer
+    depends on the drive and on how the DJ keeps their music.
+    """
+
+    track_ids: list[str]
+    mode: Literal["copy", "reference"]
+    destination: str | None = None  # required for `copy`
+    playlist_id: str | None = None
+    export_id: str | None = None
+
+
 class JobStatus(BaseModel):
     id: str
     kind: str

@@ -20,7 +20,9 @@ from pydantic import BaseModel
 # "Konduktor cannot write this platform YET" is a roadmap gap the user should
 # expect to close, whereas "this library is synced with Rekordbox Cloud" is a
 # permanent refusal protecting their other machines.
-ReadonlyCause = Literal["platform_incomplete", "cloud_synced"]
+# `not_in_library` is a folder of loose files being browsed: nothing there is a
+# library to write to, and the way to edit one is to add it to the collection.
+ReadonlyCause = Literal["platform_incomplete", "cloud_synced", "not_in_library"]
 
 CueType = Literal["cue", "fade_in", "fade_out", "load", "loop"]
 CueRole = Literal["hotcue", "memory"]
@@ -61,6 +63,10 @@ class TrackCapabilities(BaseModel):
     # Tracks can be removed from the library (and so from its playlists). The
     # audio file is never touched either way.
     removable: bool = False
+    # The audio files this library can hold, as lower-case suffixes. What a
+    # browsed folder offers to add — a file the library would refuse, or that
+    # the DJ app cannot play, is not worth listing as addable.
+    audio_formats: list[str] = [".mp3", ".wav", ".aif", ".aiff", ".flac", ".m4a"]
     artwork: bool = False
     artwork_note: str | None = None
 

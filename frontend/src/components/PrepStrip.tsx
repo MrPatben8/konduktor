@@ -8,6 +8,9 @@ import {
   type GridMarker,
   type Track,
   type TrackCues,
+  type TrackOrigin,
+  trackAudioUrl,
+  trackCuesFor,
 } from '../api'
 import { buildBeatGrid, GRID_EPS } from '../lib/beatgrid'
 import { slotLabeller, useCaps } from '../lib/capabilities'
@@ -36,12 +39,13 @@ interface Props {
   /** Neutral/success feedback (e.g. Auto Hotcues result). */
   onNotify?: (kind: 'success' | 'error', msg: string) => void
   /**
-   * The track came from a browsed DEVICE, not the loaded library, so its audio
-   * and cues must be read from the source endpoints. Every EDIT control is
-   * already inert here — a device's capabilities say `writable: false`, and the
-   * deck gates on those — so this only needs to redirect the two READS.
+   * Which library the track belongs to, and so which endpoints serve its audio
+   * and cues: the loaded collection, a browsed DEVICE, or a browsed FOLDER of
+   * loose files. Every EDIT control is already inert for the last two — their
+   * capabilities say `writable: false`, and the deck gates on those — so this
+   * only needs to redirect the two READS.
    */
-  fromDevice?: boolean
+  origin?: TrackOrigin
   /** Bumped when something outside the deck (batch grid analysis) rewrote the
    *  loaded track's cues/grid, so the deck re-reads them. */
   cuesRefresh?: number
@@ -85,7 +89,7 @@ export function PrepStrip({
   playRequest = 0,
   onError,
   onNotify,
-  fromDevice = false,
+  origin = 'collection',
   cuesRefresh = 0,
 }: Props) {
   const qc = useQueryClient()
@@ -250,8 +254,8 @@ export function PrepStrip({
   // Recolour the whole app from this track's cover art. A device's art is not
   // served (only its audio is), so a device track keeps the default look.
   useEffect(() => {
-    void setAmbientFromArt(trackId && !fromDevice ? api.artUrl(trackId) : null)
-  }, [trackId, fromDevice])
+    void setAmbientFromArt(trackId && origin === 'collection' ? api.artUrl(trackId) : null)
+  }, [trackId, origin])
 
   // Analyse once per track; the decoded buffer feeds both the playback and
   // scratch engines (no re-decode) and both waveform views share the columns.
@@ -266,7 +270,7 @@ export function PrepStrip({
     let cancelled = false
     setCols(null)
     setWaveStatus('loading')
-    analyzeWaveform(fromDevice ? api.sourceAudioUrl(trackId) : api.audioUrl(trackId))
+    analyzeWaveform(trackAudioUrl(origin, trackId))
       .then((res) => {
         if (cancelled) return
         setCols(res.cols)
@@ -297,7 +301,7 @@ export function PrepStrip({
     return () => {
       cancelled = true
     }
-  }, [trackId, fromDevice])
+  }, [trackId, origin])
 
   // Fetch beatgrid + cue markers for the loaded track.
   useEffect(() => {
@@ -307,7 +311,7 @@ export function PrepStrip({
     }
     let cancelled = false
     setCueData(null)
-    ;(fromDevice ? api.sourceTrackCues(trackId) : api.trackCues(trackId))
+    ;trackCuesFor(origin, trackId)
       .then((d) => {
         if (cancelled) return
         setCueData(d)
@@ -322,7 +326,7 @@ export function PrepStrip({
     return () => {
       cancelled = true
     }
-  }, [trackId, fromDevice])
+  }, [trackId, origin])
 
   // Re-read after an outside edit. Deliberately NOT the effect above: that one
   // resets `originalGridRef`, and "Reset" should still restore the grid the
@@ -1128,7 +1132,7 @@ export function PrepStrip({
     <div className="glass flex h-[19.75rem] shrink-0 flex-col gap-2 p-4">
       {/* ---- Header: the track, its readouts, the analysis actions ---- */}
       <div className="flex h-12 shrink-0 items-center gap-3">
-        <CoverThumb trackId={track && !fromDevice ? track.id : null} />
+        <CoverThumb trackId={track && origin === 'collection' ? track.id : null} />
         <div className="min-w-0 flex-1">
           {track ? (
             <>

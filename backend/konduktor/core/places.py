@@ -168,3 +168,127 @@ def volume_places() -> list[dict]:
         except OSError:
             continue
     return out
+
+
+# ---- local vs external drives -------------------------------------------------
+#
+# Only the boot disk is identifiable everywhere. Whether ANOTHER volume is an
+# internal SSD or a USB stick needs the OS's own answer, and where that answer is
+# not available (or not trustworthy — Windows reports most USB SSDs as "fixed")
+# a volume is filed as EXTERNAL. Guessing "local" wrongly would present a stick
+# that is about to be unplugged as a permanent home for referenced tracks.
+
+# Keyed by (path, st_dev): a volume's answer does not change while it is mounted,
+# and `diskutil` is a subprocess — too slow to run for every drive on every poll.
+_mac_info_cache: dict[tuple[str, int], dict] = {}
+
+
+def _mac_info(path: Path) -> dict:
+    import plistlib
+    import subprocess
+
+    try:
+        key = (str(path), path.stat().st_dev)
+    except OSError:
+        return {}
+    if key not in _mac_info_cache:
+        try:
+            out = subprocess.run(
+                ["diskutil", "info", "-plist", str(path)],
+                capture_output=True, timeout=5, check=True,
+            ).stdout
+            _mac_info_cache[key] = plistlib.loads(out)
+        except (OSError, subprocess.SubprocessError, plistlib.InvalidFileException, ValueError):
+            _mac_info_cache[key] = {}
+    return _mac_info_cache[key]
+
+
+def is_internal(path: Path) -> bool:
+    """Whether a non-boot volume is a drive built into this computer."""
+    if sys.platform != "darwin":
+        return False
+    info = _mac_info(path)
+    return (
+        bool(info.get("Internal"))
+        and not info.get("Ejectable")
+        and not info.get("RemovableMediaOrExternalDevice")
+        and not info.get("RemovableMedia")
+    )
+
+
+def _is_disk_image(path: Path) -> bool:
+    """A mounted .dmg (an installer, usually) — a mount, but not a drive."""
+    return sys.platform == "darwin" and _mac_info(path).get("BusProtocol") == "Disk Image"
+
+
+def drives() -> list[dict]:
+    """Every drive, split into `local` (boot + internal) and `external`.
+
+    The boot disk's path is the filesystem root, not its `/Volumes` alias: on
+    macOS `/Volumes/Macintosh HD` is a link back to `/`, and browsing through it
+    would show every path twice over.
+    """
+    out: list[dict] = []
+    boot_seen = False
+    for vol in sorted(set(mount_points()), key=lambda p: p.name.lower()):
+        try:
+            if is_boot_volume(vol):
+                if boot_seen:
+                    continue
+                boot_seen = True
+                root = Path(vol.anchor) if sys.platform == "win32" else Path("/")
+                out.append({"name": vol.name or str(vol), "path": str(root), "kind": "local"})
+                continue
+            if _is_disk_image(vol):
+                continue
+            kind = "local" if is_internal(vol) else "external"
+            out.append({"name": vol.name or str(vol), "path": str(vol), "kind": kind})
+        except OSError:
+            continue
+    if not boot_seen and sys.platform != "win32":
+        # Linux mounts nothing for the root filesystem under /media.
+        out.insert(0, {"name": "Computer", "path": "/", "kind": "local"})
+    return out
+
+
+# ---- what a folder listing should show ----------------------------------------
+
+_UF_HIDDEN = 0x8000  # macOS/BSD `chflags hidden`: /usr, /bin, /Volumes, …
+_WIN_HIDDEN = 0x2 | 0x4  # FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
+
+
+def is_hidden(entry: os.DirEntry | Path) -> bool:
+    """Whether a file browser should leave this entry out.
+
+    macOS hides its system folders by FLAG, not by name, so a list of names to
+    skip would be both incomplete and wrong on a renamed volume. The flag is what
+    Finder itself reads.
+    """
+    name = entry.name
+    if name.startswith(".") or is_os_housekeeping(name):
+        return True
+    try:
+        st = entry.stat(follow_symlinks=False) if isinstance(entry, os.DirEntry) else entry.lstat()
+    except OSError:
+        return True
+    if getattr(st, "st_flags", 0) & _UF_HIDDEN:
+        return True
+    if getattr(st, "st_file_attributes", 0) & _WIN_HIDDEN:
+        return True
+    return False
+
+
+def subfolders(path: Path) -> list[Path]:
+    """The visible folders directly inside `path`, sorted as Finder would."""
+    out: list[Path] = []
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=True) and not is_hidden(entry):
+                        out.append(Path(entry.path))
+                except OSError:
+                    continue
+    except OSError:
+        return []
+    return sorted(out, key=lambda p: p.name.lower())
