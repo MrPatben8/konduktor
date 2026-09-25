@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Track } from '../api'
@@ -95,9 +96,9 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
     apply.mutate()
   }
 
-  return (
+  return createPortal(
     <div
-      aria-modal="true" className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
+      aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
       onClick={onClose}
     >
       <div
@@ -247,6 +248,7 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

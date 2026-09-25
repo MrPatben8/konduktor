@@ -675,6 +675,17 @@ easy to break:
   placed relative to the panel, not the window — the sidebar's playlist menu
   opened far from the cursor. `.glass`'s blur and tint therefore live on its
   `::after` (z-index -1 under `isolation: isolate`), not on the panel.
+- **Every overlay renders through `createPortal(…, document.body)`** — all
+  dialogs, `ContextMenu` and `Toast`. Each `.glass` panel is a stacking context
+  (`isolation`), so an overlay rendered INSIDE one can never rise above a
+  neighbouring panel, whatever its z-index: New Export (from the sidebar) sat
+  behind the library, and the deck's Auto Hotcues dialog behind both. One
+  z scale, set on the overlay's root: dialogs `z-50`, a dialog opened from a
+  dialog (`FolderPicker`) `z-[60]`, menus `z-[70]`, toasts `z-[80]`. A new
+  overlay that skips the portal will look fine when opened from `App` and break
+  the first time a panel opens it. Small popovers anchored to a control inside a
+  scrolling list should open the shared `ContextMenu` instead (as the playlist
+  row's "Add to export" does) — a popover inside the list is clipped by it.
 - **The accent is `oklch(0.8 0.11 var(--accent-hue))`** — the cover's hue at a
   FIXED lightness and chroma, so dark text on it keeps its contrast whatever is
   loaded. `lib/ambient.ts` sets `--accent-hue` and `--amb-1..4` on `<html>`;

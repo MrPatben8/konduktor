@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
@@ -146,7 +147,7 @@ export function UpdateCheck() {
 
   const changes = whatsChanged(latest.body)
 
-  return (
+  return createPortal(
     <div
       aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
       onClick={close}
@@ -206,6 +207,7 @@ export function UpdateCheck() {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

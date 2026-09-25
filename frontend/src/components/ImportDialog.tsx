@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type ImportPreview, type JobStatus } from '../api'
@@ -141,7 +142,7 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
   const finished = job != null && job.state !== 'running'
   const pct = job && job.total > 0 ? Math.min(100, (job.done / job.total) * 100) : null
 
-  return (
+  return createPortal(
     <>
     {browsing && (
       <FolderPicker
@@ -322,6 +323,7 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
         </div>
       </div>
     </div>
-    </>
+    </>,
+    document.body,
   )
 }

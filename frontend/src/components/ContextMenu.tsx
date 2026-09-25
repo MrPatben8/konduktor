@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { Icon } from '../lib/icons'
@@ -55,7 +56,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
     }
   }, [])
 
-  return (
+  return createPortal(
     // `contents`: the panels are fixed-positioned, so this wrapper must take no
     // part in layout. As an ordinary empty block it became one more item in
     // the app's gapped flex column and pushed every panel down by a gap.
@@ -69,7 +70,8 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
           return { top, left: Math.min(x, window.innerWidth - 180), maxHeight: window.innerHeight - top - 8 }
         })()}
       />
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -101,7 +103,7 @@ function MenuPanel({
   return (
     <>
       <div
-        className={`glass-overlay fixed z-50 overflow-y-auto rounded-2xl p-1.5 ${className}`}
+        className={`glass-overlay fixed z-[70] overflow-y-auto rounded-2xl p-1.5 ${className}`}
         style={style}
       >
         {items.map((item, i) => {

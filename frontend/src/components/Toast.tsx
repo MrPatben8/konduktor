@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useEffect } from 'react'
 
 export interface ToastMsg {
@@ -20,8 +21,8 @@ export function Toast({ toast, onClose }: { toast: ToastMsg | null; onClose: () 
   }, [toast, onClose])
 
   if (!toast) return null
-  return (
-    <div className="pointer-events-none fixed inset-x-0 top-4 z-50 flex justify-center">
+  return createPortal(
+    <div className="pointer-events-none fixed inset-x-0 top-4 z-[80] flex justify-center">
       <div
         className="glass-overlay pointer-events-auto flex max-w-lg items-center gap-3 !rounded-full px-5 py-2.5 text-sm text-text"
       >
@@ -29,6 +30,7 @@ export function Toast({ toast, onClose }: { toast: ToastMsg | null; onClose: () 
         <span className={`h-2 w-2 shrink-0 rounded-full ${KIND_CLS[toast.kind]}`} />
         {toast.text}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

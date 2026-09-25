@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useEffect, useState, type ReactNode } from 'react'
 
 export interface ConfirmRequest {
@@ -43,10 +44,10 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onClose }:
     return () => window.removeEventListener('keydown', onKey)
   })
 
-  return (
+  return createPortal(
     <div
       aria-modal="true"
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
       onClick={() => !busy && onClose()}
     >
       <div
@@ -74,6 +75,7 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onClose }:
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

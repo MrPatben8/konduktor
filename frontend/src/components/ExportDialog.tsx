@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type ExportSet } from '../api'
@@ -58,7 +59,7 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
     }
   }
 
-  return (
+  return createPortal(
     <>
       {browsing && (
         <FolderPicker
@@ -165,6 +166,7 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
           </div>
         </div>
       </div>
-    </>
+    </>,
+    document.body,
   )
 }

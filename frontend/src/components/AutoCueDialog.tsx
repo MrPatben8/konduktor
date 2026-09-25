@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -151,8 +152,8 @@ export function AutoCueDialog(props: Props) {
     }
   }
 
-  return (
-    <div aria-modal="true" className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6" onClick={() => !busy && onClose()}>
+  return createPortal(
+    <div aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6" onClick={() => !busy && onClose()}>
       <div
         className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden glass-overlay"
         onClick={(e) => e.stopPropagation()}
@@ -293,6 +294,7 @@ export function AutoCueDialog(props: Props) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

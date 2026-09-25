@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useEffect } from 'react'
 
 interface Props {
@@ -23,10 +24,10 @@ export function AnalyzeGridDialog({ total, existing, locked, onChoose, onClose }
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  return (
+  return createPortal(
     <div
       aria-modal="true"
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
       onClick={onClose}
     >
       <div
@@ -78,6 +79,7 @@ export function AnalyzeGridDialog({ total, existing, locked, onChoose, onClose }
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

@@ -92,6 +92,8 @@ interface RowActions {
   onRename: (node: PlaylistNode, name: string) => void
   onDelete: (node: PlaylistNode) => void
   onAddToExport: (node: PlaylistNode, setId: string) => void
+  /** The row's export button: the export list as a menu under it. */
+  onPickExport: (e: React.MouseEvent<HTMLElement>, node: PlaylistNode) => void
   onCommitDraft: (name: string) => void
   onCancelDraft: () => void
 }
@@ -165,7 +167,6 @@ function NodeRow({
   actions: RowActions
 }) {
   const [open, setOpen] = useState(true)
-  const [adding, setAdding] = useState(false)
   const renaming = renamingId === node.id
   const [renameDraft, setRenameDraft] = useState(node.name)
   const isFolder = node.kind === 'folder'
@@ -245,32 +246,13 @@ function NodeRow({
             library being writable: an export set is Konduktor's own curation
             and adding to one changes nothing in the user's library. */}
         {!renaming && exportSets.length > 0 && (
-          <div className="relative shrink-0">
-            <button
-              title="Add to an export"
-              onClick={() => setAdding((a) => !a)}
-              className="hidden rounded px-1 text-faint hover:text-gold group-hover:block"
-            >
-              <Icon name="export" size={13} />
-            </button>
-            {adding && (
-              <div className="glass-overlay absolute right-0 top-full z-30 mt-1 w-48 !rounded-2xl p-1.5">
-                {exportSets.map((set) => (
-                  <button
-                    key={set.id}
-                    onClick={() => {
-                      setAdding(false)
-                      actions.onAddToExport(node, set.id)
-                    }}
-                    className="flex w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-sm text-muted hover:bg-ink-800 hover:text-text"
-                  >
-                    <span className="shrink-0 text-gold"><Icon name="export" size={13} /></span>
-                    <span className="truncate">{set.name}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          <button
+            title="Add to an export"
+            onClick={(e) => actions.onPickExport(e, node)}
+            className="hidden shrink-0 rounded px-1 text-faint hover:text-gold group-hover:block"
+          >
+            <Icon name="export" size={13} />
+          </button>
         )}
         {!renaming && node.can_rename && (
           <button
@@ -486,6 +468,24 @@ export function Sidebar({
     onRename: (node, name) => rename.mutate({ node, name }),
     onDelete: confirmDelete,
     onAddToExport: (node, setId) => addToExport.mutate({ node, setId }),
+    // Opened as the shared ContextMenu rather than a popover inside the row: the
+    // playlist list scrolls, and a popover inside it was clipped by its edges.
+    onPickExport: (e, node) => {
+      e.stopPropagation()
+      const r = e.currentTarget.getBoundingClientRect()
+      setMenu({
+        x: r.left,
+        y: r.bottom + 4,
+        items: [
+          { heading: 'Add to export' },
+          ...exportSets.map((set) => ({
+            label: set.name,
+            icon: <Icon name="export" size={13} />,
+            onClick: () => addToExport.mutate({ node, setId: set.id }),
+          })),
+        ],
+      })
+    },
     onCommitDraft: (name) => {
       if (draft) create.mutate({ ...draft, name })
       setDraft(null)
@@ -494,7 +494,7 @@ export function Sidebar({
   }
 
   return (
-    <aside className="glass flex h-full w-64 shrink-0 flex-col overflow-hidden">
+    <aside className="glass flex h-full w-64 shrink-0 flex-col">
       {/* Which library is open — and the way to open a different one. Until
           this existed the picker was a one-way door: it ran once at startup and
           nothing could summon it again, so changing library meant restarting.

@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type ExportPreview, type ExportSet, type JobStatus } from '../api'
@@ -100,7 +101,7 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
   const pct = job && job.total > 0 ? Math.min(100, (job.done / job.total) * 100) : null
   const blocked = p?.blocked ?? null
 
-  return (
+  return createPortal(
     <div aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-4">
       <div className="w-full max-w-lg glass-overlay">
         <div className="border-b border-line px-5 py-3">
@@ -260,6 +261,7 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
