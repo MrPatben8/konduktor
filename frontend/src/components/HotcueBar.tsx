@@ -94,13 +94,15 @@ export function HotcueBar({
               'relative flex h-11 min-w-0 max-w-[7.5rem] flex-1 flex-col items-start justify-center gap-1 rounded-xl px-2.5 text-left transition-[filter,background-color] ' +
               (color
                 ? 'hover:brightness-115'
-                : 'bg-white/[0.035] text-faint shadow-[inset_0_0_0_1px_rgb(255_255_255/0.07)] hover:bg-ink-800') +
+                : // An empty pad gets the same dark ground, so the row reads as
+                  // one bank of pads rather than lit ones and holes.
+                  'bg-[rgb(8_10_18/0.4)] text-faint shadow-[inset_0_0_0_1px_rgb(255_255_255/0.09)] hover:bg-[rgb(8_10_18/0.25)]') +
               (selected && !color ? ' ring-2 ring-inset ring-white/70' : '')
             }
           >
             <span
               className="font-mono text-[11px] font-bold leading-none"
-              style={color ? { color: color } : undefined}
+              style={color ? { color: lighten(color) } : undefined}
             >
               {locked ? <Icon name="lock" size={11} strokeWidth={2.2} /> : slotLabel(slot)}
             </span>
@@ -115,7 +117,7 @@ export function HotcueBar({
               // blank line — the pad still says what it holds.
               <span
                 className={`w-full truncate text-[11px] leading-none ${
-                  cue && cue.name && cue.name !== 'n.n.' ? 'text-text/85' : 'text-text/50'
+                  cue && cue.name && cue.name !== 'n.n.' ? 'text-text' : 'text-text/60'
                 }`}
               >
                 {cue ? (cue.name && cue.name !== 'n.n.' ? cue.name : CUE_TYPE_LABELS[cue.type]) : 'Empty'}
@@ -143,16 +145,31 @@ export function HotcueBar({
  */
 function padStyle(color: string, selected: boolean): CSSProperties {
   return {
-    background: `linear-gradient(180deg, ${withAlpha(color, selected ? 0.5 : 0.3)}, ${withAlpha(
-      color,
-      selected ? 0.24 : 0.1,
-    )})`,
+    // The cue colour sits on a DARK GROUND (the last layer), not on bare glass:
+    // over a bright or warm ambient wash a thin tint alone came out the same hue
+    // as the backdrop and the pad dissolved into it. The ground keeps every pad
+    // the same deep base whatever track is loaded.
+    background: [
+      `linear-gradient(180deg, ${withAlpha(color, selected ? 0.52 : 0.34)}, ${withAlpha(
+        color,
+        selected ? 0.26 : 0.12,
+      )})`,
+      'rgba(8,10,18,0.55)',
+    ].join(', '),
     boxShadow: [
       'inset 0 1px 0 rgba(255,255,255,0.22)',
-      `inset 0 0 0 ${selected ? 2 : 1}px ${withAlpha(color, selected ? 0.95 : 0.55)}`,
+      `inset 0 0 0 ${selected ? 2 : 1}px ${withAlpha(color, selected ? 0.95 : 0.7)}`,
       `0 0 ${selected ? 24 : 18}px -4px ${withAlpha(color, selected ? 0.8 : 0.55)}`,
     ].join(', '),
   }
+}
+
+/** A cue colour lifted toward white, for the pad's number: the raw colour is
+ *  too dark to read as text on its own tint (blue especially). */
+function lighten(hex: string, amount = 0.35): string {
+  const v = parseInt(hex.slice(1, 7), 16)
+  const mix = (c: number) => Math.round(c + (255 - c) * amount)
+  return `rgb(${mix(v >> 16)},${mix((v >> 8) & 255)},${mix(v & 255)})`
 }
 
 /** The pad's name, edited in place. Enter or clicking away commits; Esc cancels. */
