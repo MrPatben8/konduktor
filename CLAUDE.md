@@ -342,7 +342,7 @@ Two independent apps that talk over HTTP:
     same menu and the row's hover buttons, which share one set of actions.
     A Traktor folder's id is its PATH of names, so the `PATCH`/`DELETE`
     playlist routes take a `:path` param, a folder name may not contain `/`,
-    and renaming onto a sibling folder's name is refused), `SaveBar` (+ the settings gear beside it), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
+    and renaming onto a sibling folder's name is refused), `SaveBar` (+ the settings gear beside it, whose menu opens `ShortcutsDialog` — the shortcut list is written out BY HAND, so a new or changed shortcut in `PrepStrip` / `TrackTable` must be added there too), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
     `TrackTable` (**the one track list** — All Tracks, playlists, exports and
     devices. TanStack Table + **virtualized** grid; per-row play button,
     configurable columns, header sorting, inline double-click editing, and

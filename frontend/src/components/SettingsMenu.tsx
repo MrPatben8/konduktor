@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { ShortcutsDialog } from './ShortcutsDialog'
 
 interface Props {
   onOpenPathMapping: () => void
@@ -7,9 +8,11 @@ interface Props {
 }
 
 /** Overflow menu for low-frequency, collection-level settings. Currently holds
- * path remapping; the natural home for future advanced settings. */
+ * path remapping and the shortcut list; the natural home for future advanced
+ * settings. The shortcuts dialog is owned here, since nothing else opens it. */
 export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
   const [open, setOpen] = useState(false)
+  const [showShortcuts, setShowShortcuts] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -63,8 +66,19 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
               Point the collection at moved or relocated files
             </span>
           </button>
+          <button
+            onClick={() => {
+              setShowShortcuts(true)
+              setOpen(false)
+            }}
+            className={item}
+          >
+            <span className="text-sm text-text">View Shortcuts</span>
+            <span className="text-[11px] text-faint">Every keyboard shortcut in one list</span>
+          </button>
         </div>
       )}
+      {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}
     </div>
   )
 }
