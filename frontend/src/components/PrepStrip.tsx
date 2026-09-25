@@ -91,6 +91,9 @@ export function PrepStrip({
   const qc = useQueryClient()
   const [playing, setPlaying] = useState(false)
   const [previewing, setPreviewing] = useState(false) // momentary hold-to-play active
+  // CUE is held down (mouse OR the C key) — drives the button's pressed look,
+  // which the pointer's :active alone cannot, since the key never touches it.
+  const [cueHeld, setCueHeld] = useState(false)
   const [current, setCurrent] = useState(0)
   const [duration, setDuration] = useState(0)
   const [ready, setReady] = useState(false)
@@ -239,6 +242,7 @@ export function PrepStrip({
     loopInRef.current = null
     previewRef.current = null
     setPreviewing(false)
+    setCueHeld(false)
   }, [trackId])
 
   // Recolour the whole app from this track's cover art. A device's art is not
@@ -392,6 +396,7 @@ export function PrepStrip({
   const onCuePress = () => {
     const eng = playbackRef.current
     if (!eng || !eng.ready) return
+    setCueHeld(true)
     getCtx()
     if (eng.playing) {
       eng.pause()
@@ -409,7 +414,18 @@ export function PrepStrip({
       beginPreview('cue', cuePoint)
     }
   }
-  const onCueRelease = () => endPreview('cue')
+  const onCueRelease = () => {
+    setCueHeld(false)
+    endPreview('cue')
+  }
+
+  // A key-up that happens in another window never arrives, which would leave
+  // the button looking held; letting go of the window lets go of CUE.
+  useEffect(() => {
+    const letGo = () => setCueHeld(false)
+    window.addEventListener('blur', letGo)
+    return () => window.removeEventListener('blur', letGo)
+  }, [])
 
   // A library row's play button bumps `playRequest`: load (if needed) + play.
   // If the requested track is already loaded and ready, start immediately;
@@ -1242,7 +1258,14 @@ export function PrepStrip({
           onPointerUp={onCueRelease}
           onPointerCancel={onCueRelease}
           disabled={!ready}
-          className="flex h-10 w-14 shrink-0 items-center justify-center rounded-xl bg-gold/10 font-mono text-[13px] font-semibold tracking-wider text-gold shadow-[inset_0_1px_0_rgb(255_255_255/0.12),inset_0_0_0_1px_rgb(255_200_97/0.4)] transition-colors hover:bg-gold/15 disabled:cursor-not-allowed disabled:opacity-40"
+          aria-pressed={cueHeld}
+          className={`flex h-10 w-14 shrink-0 items-center justify-center rounded-xl font-mono text-[13px] font-semibold tracking-wider transition-[background-color,box-shadow,transform,color] duration-75 disabled:cursor-not-allowed disabled:opacity-40 ${
+            cueHeld
+              ? // Held: lit like a pressed controller button — brighter fill,
+                // solid gold rim, a glow, and a slight press-in.
+                'scale-[0.96] bg-gold/35 text-[#fff1cc] shadow-[inset_0_1px_0_rgb(255_255_255/0.3),inset_0_0_0_1px_rgb(255_200_97/0.9),0_0_20px_-2px_rgb(255_200_97/0.75)]'
+              : 'bg-gold/10 text-gold shadow-[inset_0_1px_0_rgb(255_255_255/0.12),inset_0_0_0_1px_rgb(255_200_97/0.4)] hover:bg-gold/15'
+          }`}
           title="Cue — set the cue point (paused), hold to preview from it, or jump back to it (playing) (C)"
         >
           CUE
