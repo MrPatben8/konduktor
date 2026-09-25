@@ -42,7 +42,7 @@ export function BeatJumpControls({ beats, onStep, onJump, disabled }: Props) {
         className={BTN}
         onClick={() => onStep(-1)}
         disabled={disabled || atMin}
-        title="Smaller jump size"
+        title="Smaller jump size (Cmd/Ctrl+↓)"
       >
         −
       </button>
@@ -53,7 +53,7 @@ export function BeatJumpControls({ beats, onStep, onJump, disabled }: Props) {
         className={BTN}
         onClick={() => onStep(1)}
         disabled={disabled || atMax}
-        title="Larger jump size"
+        title="Larger jump size (Cmd/Ctrl+↑)"
       >
         +
       </button>

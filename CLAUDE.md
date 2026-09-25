@@ -689,7 +689,8 @@ that number and nothing else — everything derives from it:
   collection picker (Automatic / last-opened / manual), persisted to `userprefs.json`
 - ✅ Track prep — audio playback, frequency-colored scrolling waveform, scratch,
   beatgrid display + editing, cue/hotcue create/jump/delete, loops; keyboard
-  shortcuts (Space = play/pause, 1–8 = hotcues, Shift+1–8 = delete). See "Prep engine".
+  shortcuts (Space = play/pause, 1–8 = hotcues, Shift+1–8 = delete, Cmd/Ctrl+↑/↓ =
+  beat jump size). See "Prep engine".
 - ✅ Track prep Tier 2 — cue-point fine editing / audio export polish
 - ✅ Flexible beatgrids — the grid is a marker list end to end (marker-level
   commands, piecewise beat math, playhead-derived marker editing). Step 1 of the

@@ -877,7 +877,8 @@ export function PrepStrip({
 
   // ---- keyboard shortcuts ----------------------------------------------
   // Space → play/pause; 1–8 → the matching hotcue slot; Shift+1–8 → delete it.
-  // ←/→ → beat jump; Shift+←/→ → step between grid markers.
+  // ←/→ → beat jump; Shift+←/→ → step between grid markers; Cmd/Ctrl+↑/↓ →
+  // beat jump size (Shift+↑/↓ is the track table's extend-selection).
   // Digits are read from e.code (layout-/Shift-independent) and a ref holds the
   // latest handlers so the listener attaches once and never goes stale.
   const shortcutsRef = useRef({
@@ -888,6 +889,7 @@ export function PrepStrip({
     onCuePress,
     onCueRelease,
     beatJump,
+    stepJumpSize,
     prevMarker,
     nextMarker,
     slotCount,
@@ -900,6 +902,7 @@ export function PrepStrip({
     onCuePress,
     onCueRelease,
     beatJump,
+    stepJumpSize,
     prevMarker,
     nextMarker,
     slotCount,
@@ -909,6 +912,14 @@ export function PrepStrip({
       // Ignore while typing in a field or with a non-Shift modifier held.
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      // Cmd (macOS) / Ctrl (Windows, Linux), either accepted as Cmd/Ctrl+A is.
+      // Repeats allowed: holding it sweeps through the sizes.
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey &&
+          (e.code === 'ArrowUp' || e.code === 'ArrowDown')) {
+        e.preventDefault()
+        shortcutsRef.current.stepJumpSize(e.code === 'ArrowUp' ? 1 : -1)
+        return
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return
       if (e.repeat) return // held key auto-repeats — treat as one press+hold
       if (e.code === 'Space') {
