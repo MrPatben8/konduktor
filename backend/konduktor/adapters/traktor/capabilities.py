@@ -59,6 +59,7 @@ def capabilities_for(path: Path, editable_fields: list[str]) -> Capabilities:
             rating_max=5,
             editable_fields=sorted(editable_fields),
             media_kinds=["audio", "stem"],
+            removable=True,
             artwork=True,
             artwork_note=(
                 "Traktor caches its own cover thumbnail, so a replaced image may "

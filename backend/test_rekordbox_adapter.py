@@ -296,6 +296,9 @@ with tempfile.TemporaryDirectory() as d:
     print("== what Rekordbox genuinely cannot do still refuses, with a reason ==")
     commands = {
         "set_cover_art": lambda: adapter.set_cover_art(sample.id, b"", "image/jpeg"),
+        # A track spans rows in several tables plus ANLZ files; which of them
+        # Rekordbox expects deleted together is unmeasured.
+        "remove_tracks": lambda: adapter.remove_tracks([sample.id]),
         # Rekordbox genuinely has no per-track grid lock, unlike Traktor's LOCK.
         "set_grid_lock": lambda: adapter.set_grid_lock(sample.id, True),
         "remap_locations": lambda: adapter.remap_locations(None),

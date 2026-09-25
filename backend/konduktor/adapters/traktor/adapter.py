@@ -150,6 +150,16 @@ class TraktorAdapter:
     def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
         return self._store.cover_art(track_id)
 
+    # ---- removing tracks ---------------------------------------------------
+    def remove_tracks(self, track_ids: list[str]) -> int:
+        with _translate():
+            n = self._store.remove_entries(track_ids)
+        if n:
+            # Rebuilt rather than patched: an entry sharing a removed key went
+            # too, and the index would otherwise still hold its projection.
+            self._rebuild()
+        return n
+
     # ---- adding tracks ----------------------------------------------------
     def add_tracks(self, items: list) -> list[str]:
         """Add tracks that came from somewhere else, with their prep.

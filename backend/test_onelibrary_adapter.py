@@ -307,6 +307,7 @@ print("== every command is refused ==")
 COMMANDS = [
     ("set_track_metadata", lambda: adapter.set_track_metadata(one.id, {"title": "x"})),
     ("set_cover_art", lambda: adapter.set_cover_art(one.id, b"", "image/png")),
+    ("remove_tracks", lambda: adapter.remove_tracks([one.id])),
     ("create_playlist", lambda: adapter.create_playlist("x")),
     ("rename_playlist", lambda: adapter.rename_playlist(node.id, "x")),
     ("delete_playlist", lambda: adapter.delete_playlist(node.id)),

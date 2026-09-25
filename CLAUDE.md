@@ -358,11 +358,18 @@ Two independent apps that talk over HTTP:
     `AutoCueDialog` (the Auto Hotcues slot template: event + beat offset per
     slot, a per-slot Replace tick for occupied slots — never remembered, since
     overwriting is a decision about THIS track — and the template itself
-    persisted as `autoCueTemplate` in userprefs),
+    persisted as `autoCueTemplate` in userprefs. Also has a **batch mode** for
+    the context menu: same template, but it starts a job via `onRun`, and each
+    tick reads "Replace" and applies to every track in the batch. A Replace
+    RENAMES the slot's cue — `set_hotcue` keeps the old name only when called
+    without one, which is what a hand move does),
     `ContextMenu` (supports `▸` submenus, section headings, separators and
     checkbox items that toggle without closing — the header row's right-click
     column chooser uses those; "Add to" lists
-    playlists + exports and acts on the whole selection) + `EditTagsDialog`
+    playlists + exports and acts on the whole selection; "Remove ▸" holds
+    From this playlist / From this export / Grids / Hotcues / From collection,
+    each behind a `ConfirmDialog` — as is the playlist Delete key. Enter
+    confirms unless a button has focus, so Tab-to-Cancel + Enter cancels) + `EditTagsDialog`
     (right-click → multi-field metadata + album-art edit), `StatusBar`,
     `RatingStars` (read-only, or click-to-set when given `onChange`), `Toast`,
     `UpdateDialog` (`UpdateCheck`, mounted in `main.tsx` beside `App` so it shows
@@ -447,7 +454,10 @@ serialization path.** It enforces:
   **flexible (multi-marker) grids** add/move/delete reversibly, `delete_grid`
   leaves no companion debris (I); **companion cues are ordinary editable
   hotcues** — move/retype/delete work and never touch the grid marker (J); and
-  real flexible grids in the collection project correctly (K).
+  real flexible grids in the collection project correctly (K); and
+  **removing a track from the collection** drops its `<ENTRY>` and its
+  PRIMARYKEYs from exactly the playlists that held it — the only ADDED lines are
+  the `ENTRIES=` recounts, every other playlist byte-identical (L).
   The guard that catches serialization regressions like the lxml reformatting bug.
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched.
@@ -492,13 +502,30 @@ serialization path.** It enforces:
   (across a tempo change), and the ROUTE end to end on a temp copy of the real
   collection — the previous implementation's route returned 500 on every call
   for a week while its helper's tests passed.
-- `test_grid_batch.py` — **batch grid analysis** (context menu → Analyze Grid &
-  BPM → `POST /api/tracks/grid/auto-batch`, a `jobs.py` job shown in the status
-  bar). Pins the batch-only decisions: locked grids are skipped always, existing
-  grids unless `replace_existing`, a failing track is reported not fatal, one
-  run at a time, a cancel KEEPS finished tracks (unsaved edits like any other)
-  and still returns its result, and opening another library cancels the run.
-  Shares `_analyse_grid` with the deck's single-track Analyze.
+- `test_grid_batch.py` — **batch analysis** from the context menu, both
+  `jobs.py` jobs shown in the status bar: Analyze Grid & BPM
+  (`POST /api/tracks/grid/auto-batch`) and Auto Hotcues…
+  (`POST /api/tracks/cue/auto-batch`, one template for every track). Pins the
+  batch-only decisions: locked grids are skipped always, existing grids unless
+  `replace_existing`; a hotcue batch analyses a grid FIRST where there is none
+  and never touches an existing one, and a ticked Replace applies to every
+  track; a failing track is reported not fatal; **one batch at a time ACROSS
+  both kinds** (a grid run would move the beats a hotcue run is placing cues
+  on); a cancel KEEPS finished tracks (unsaved edits like any other) and still
+  returns its result; opening another library cancels the run. Each shares its
+  helper (`_analyse_grid`, `_place_auto_cues`) with the deck's single-track
+  button.
+- `test_bulk_remove.py` — the context menu's **Remove ▸** routes
+  (`/api/tracks/grid/clear`, `/api/tracks/cue/clear`, `/api/tracks/remove`):
+  locked grids are kept, clearing hotcues empties the whole bank (loops and the
+  grid's beat-1 cue too) but never the grid, a removed track leaves the
+  projection AND its playlists while its audio file is untouched, removal is
+  gated on `tracks.removable`, and all three are refused while a batch
+  analysis runs. `remove_tracks` is the protocol's only DESTROYING verb for
+  tracks; Traktor implements it, Rekordbox and OneLibrary refuse (a Rekordbox
+  track spans rows in several tables plus ANLZ files, and which Rekordbox
+  expects deleted together is unmeasured). The journal records it as
+  `track/remove`, NOT an edit — otherwise history would read "edited 40 tracks".
 - `test_picker.py` — the picker's routes. Pins the scoping, because the bug it
   replaced was invisible: `/api/library/options` flattened every driver's
   detections and returned `[0]`, so a plugged-in USB stick could be offered as

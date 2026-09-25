@@ -36,6 +36,8 @@ from .schemas import (
     AutoGridRequest,
     AutoCueOutcome,
     AutoHotcue,
+    AutoHotcuesBatchRequest,
+    TrackIds,
     AutoHotcuesRequest,
     AutoHotcuesResult,
     CollectionCandidate,
@@ -149,8 +151,9 @@ def open_collection(body: OpenCollection) -> CollectionStatus:
     if not path.exists():
         raise HTTPException(400, f"Not found: {path}")
     # A running analysis writes into the library being replaced; stop it.
-    for job in JOBS.active(GRID_JOB):
-        JOBS.cancel(job.id)
+    for kind in BATCH_JOBS:
+        for job in JOBS.active(kind):
+            JOBS.cancel(job.id)
     try:
         STATE.open(path)
     except AdapterError as ex:
@@ -838,22 +841,35 @@ def auto_hotcues(body: AutoHotcuesRequest) -> AutoHotcuesResult:
         raise HTTPException(404, "Track not found")
     if not cues.grid_markers:
         raise HTTPException(400, "Set a beatgrid before using Auto Hotcues")
-    slots = a.capabilities().cues.hotcue_slots
+    _check_cue_slots(a, body.slots)
+    try:
+        return _place_auto_cues(a, body.track_id, cues, body.slots)
+    except _AnalysisError as ex:
+        raise HTTPException(400, str(ex))
+
+
+def _check_cue_slots(a, slots: list) -> None:
+    """Refuse a template the bank cannot hold — once, before any track is touched."""
+    n = a.capabilities().cues.hotcue_slots
     seen: set[int] = set()
-    for r in body.slots:
-        if not 0 <= r.slot < slots:
-            raise HTTPException(400, f"Slot {r.slot} is outside this library's {slots} hotcues")
+    for r in slots:
+        if not 0 <= r.slot < n:
+            raise HTTPException(400, f"Slot {r.slot} is outside this library's {n} hotcues")
         if r.slot in seen:
             raise HTTPException(400, f"Slot {r.slot} is requested twice")
         seen.add(r.slot)
-    path = a.audio_path(body.track_id)
-    if path is None or not path.exists():
-        raise HTTPException(400, "Audio file not found (is the drive mounted?)")
 
+
+def _place_auto_cues(a, track_id: str, cues: TrackCues, slots: list) -> AutoHotcuesResult:
+    """Analyse one gridded track's structure and place the template — shared by
+    the deck's Auto button and the batch job, so the two cannot drift."""
+    path = a.audio_path(track_id)
+    if path is None or not path.exists():
+        raise _AnalysisError("Audio file not found (is the drive mounted?)")
     try:
         found = structure.analyse(str(path), [(m.start, m.bpm) for m in cues.grid_markers])
     except Exception as ex:  # analysis is best-effort; never 500 the UI
-        raise HTTPException(400, f"Analysis failed: {ex}")
+        raise _AnalysisError(f"Analysis failed: {ex}") from ex
 
     existing = {
         c.slot: ah.ExistingCue(c.editable, c.start)
@@ -862,7 +878,7 @@ def auto_hotcues(body: AutoHotcuesRequest) -> AutoHotcuesResult:
     }
     outcomes = ah.plan(
         found,
-        [ah.SlotRequest(r.slot, r.event, r.offset_beats, r.overwrite) for r in body.slots],
+        [ah.SlotRequest(r.slot, r.event, r.offset_beats, r.overwrite) for r in slots],
         existing,
     )
     placed = [o for o in outcomes if o.status == ah.PLACED]
@@ -870,7 +886,7 @@ def auto_hotcues(body: AutoHotcuesRequest) -> AutoHotcuesResult:
         # overwrite=True is safe: `plan` only passes an occupied slot when the
         # user ticked it, and the adapter still refuses a protected one.
         cues = a.place_cues(
-            body.track_id,
+            track_id,
             [AutoHotcue(slot=o.slot, start=o.start, name=o.name) for o in placed],
             overwrite=True,
         )
@@ -892,12 +908,25 @@ def auto_grid(body: AutoGridRequest) -> TrackCues:
         raise HTTPException(404, "Track not found")
     try:
         return _analyse_grid(a, body.track_id)
-    except _GridAnalysisError as ex:
+    except _AnalysisError as ex:
         raise HTTPException(400, str(ex))
 
 
-class _GridAnalysisError(Exception):
+class _AnalysisError(Exception):
     """A track that could not be analysed; the message is user-facing."""
+
+
+# Batch analysis jobs. ONE at a time across both kinds: a grid run replacing a
+# track's grid while a hotcue run places cues on the old one would put cues on
+# beats that no longer exist.
+GRID_JOB = "grid-analysis"
+CUE_JOB = "auto-hotcues"
+BATCH_JOBS = (GRID_JOB, CUE_JOB)
+
+
+def _require_no_batch() -> None:
+    if any(JOBS.active(k) for k in BATCH_JOBS):
+        raise HTTPException(409, "A batch analysis is already running")
 
 
 def _analyse_grid(a, track_id: str) -> TrackCues:
@@ -905,17 +934,15 @@ def _analyse_grid(a, track_id: str) -> TrackCues:
     batch job, so the two cannot come to mean different things."""
     path = a.audio_path(track_id)
     if path is None or not path.exists():
-        raise _GridAnalysisError("Audio file not found (is the drive mounted?)")
+        raise _AnalysisError("Audio file not found (is the drive mounted?)")
     try:
         found = grid_detect.detect_grid(str(path))
     except Exception as ex:  # analysis is best-effort; never 500 the UI
-        raise _GridAnalysisError(f"Analysis failed: {ex}") from ex
+        raise _AnalysisError(f"Analysis failed: {ex}") from ex
     # "Analysed", not "replace": each platform writes an analysis result in its
     # own shape (Traktor pairs the first marker with a beat-1 cue).
     return a.set_analysed_grid(track_id, [(found.anchor, found.bpm)])
 
-
-GRID_JOB = "grid-analysis"
 
 
 @app.post("/api/tracks/grid/auto-batch", response_model=JobStatus)
@@ -930,10 +957,7 @@ def auto_grid_batch(body: AutoGridBatchRequest) -> JobStatus:
     a = require_adapter()
     if not a.capabilities().grid.editable:
         raise HTTPException(422, "This library's beatgrids cannot be edited")
-    # One at a time: two runs over overlapping selections would analyse the
-    # same track twice and race on its grid.
-    if JOBS.active(GRID_JOB):
-        raise HTTPException(409, "Grid analysis is already running")
+    _require_no_batch()
     ids = list(dict.fromkeys(body.track_ids))
 
     def run(handle) -> dict:
@@ -955,12 +979,63 @@ def auto_grid_batch(body: AutoGridBatchRequest) -> JobStatus:
                 try:
                     _analyse_grid(a, track_id)
                     result["analysed"].append(track_id)
-                except (_GridAnalysisError, AdapterError) as ex:
+                except (_AnalysisError, AdapterError) as ex:
                     result["failed"].append({"title": title, "reason": str(ex)})
             handle.progress(done=i + 1)
         return result
 
     job = JOBS.submit(GRID_JOB, run)
+    return JobStatus(**job.as_dict())
+
+
+@app.post("/api/tracks/cue/auto-batch", response_model=JobStatus)
+def auto_hotcues_batch(body: AutoHotcuesBatchRequest) -> JobStatus:
+    """Place one Auto Hotcues template on many tracks, as a JOB.
+
+    A track with no beatgrid gets one analysed first (as "Analyze Grid & BPM"
+    would), since the events are found on the grid; a track that has one keeps
+    it untouched. Same contract as the grid batch: written as each track
+    finishes, a cancel keeps what is done, a failing track is reported and
+    skipped."""
+    a = require_adapter()
+    caps = a.capabilities()
+    if not caps.writable or caps.cues.hotcue_slots == 0:
+        raise HTTPException(422, "This library's hotcues cannot be edited")
+    _check_cue_slots(a, body.slots)
+    if not body.slots:
+        raise HTTPException(400, "The template places no cues")
+    _require_no_batch()
+    ids = list(dict.fromkeys(body.track_ids))
+
+    def run(handle) -> dict:
+        result = {"tracks": [], "cues_placed": 0, "grids_created": 0, "failed": []}
+        handle.progress(done=0, total=len(ids))
+        for i, track_id in enumerate(ids):
+            if handle.cancelled:
+                break  # keep what is done; return it rather than raise
+            track = a.track(track_id)
+            title = (track.title or track_id) if track else track_id
+            handle.progress(message=title)
+            try:
+                cues = a.track_cues(track_id) if track else None
+                if cues is None:
+                    raise _AnalysisError("Track not found")
+                if not cues.grid_markers:
+                    if track.grid_locked:
+                        raise _AnalysisError("No beatgrid, and the grid is locked")
+                    if not caps.grid.editable:
+                        raise _AnalysisError("No beatgrid")
+                    cues = _analyse_grid(a, track_id)
+                    result["grids_created"] += 1
+                placed = _place_auto_cues(a, track_id, cues, body.slots)
+                result["tracks"].append(track_id)
+                result["cues_placed"] += sum(o.status == ah.PLACED for o in placed.outcomes)
+            except (_AnalysisError, AdapterError) as ex:
+                result["failed"].append({"title": title, "reason": str(ex)})
+            handle.progress(done=i + 1)
+        return result
+
+    job = JOBS.submit(CUE_JOB, run)
     return JobStatus(**job.as_dict())
 
 
@@ -1018,6 +1093,72 @@ def replace_grid(body: ReplaceGrid) -> TrackCues:
 def remove_grid(track_id: str) -> TrackCues:
     """Delete every grid marker and its companion cue. <TEMPO> is kept."""
     return require_adapter().delete_grid(track_id)
+
+
+# ---- bulk Remove (the context menu's Remove ▸ submenu) --------------------
+#
+# Quick in-memory edits, so requests rather than jobs — but refused while a
+# batch analysis runs: it would write cues/grids onto a track removed under it.
+
+
+@app.post("/api/tracks/grid/clear")
+def clear_grids(body: TrackIds) -> dict:
+    """Delete the beatgrid of every given track. Locked grids are skipped —
+    a lock is the user saying "leave this grid alone" — and reported."""
+    a = require_adapter()
+    if not a.capabilities().grid.editable:
+        raise HTTPException(422, "This library's beatgrids cannot be edited")
+    _require_no_batch()
+    out = {"cleared": 0, "locked": 0, "empty": 0}
+    for tid in dict.fromkeys(body.track_ids):
+        track = a.track(tid)
+        if track is None:
+            continue
+        if track.grid_locked:
+            out["locked"] += 1
+        elif not (a.track_cues(tid) or TrackCues()).grid_markers:
+            out["empty"] += 1  # counted from the cues: the projection's count can be approximate
+        else:
+            a.delete_grid(tid)
+            out["cleared"] += 1
+    return out
+
+
+@app.post("/api/tracks/cue/clear")
+def clear_hotcues(body: TrackIds) -> dict:
+    """Empty the whole hotcue bank of every given track — point cues, loops
+    and the grid's paired beat-1 cue alike (the grid itself is untouched).
+    Cues the adapter will not edit — Rekordbox memory cues — are kept."""
+    a = require_adapter()
+    caps = a.capabilities()
+    if not caps.writable or caps.cues.hotcue_slots == 0:
+        raise HTTPException(422, "This library's hotcues cannot be edited")
+    _require_no_batch()
+    out = {"tracks": 0, "cues": 0}
+    for tid in dict.fromkeys(body.track_ids):
+        cues = a.track_cues(tid)
+        slots = sorted({
+            c.slot for c in (cues.cues if cues else [])
+            if c.role == "hotcue" and c.slot is not None and c.editable
+        })
+        for slot in slots:
+            a.delete_cue(tid, slot)
+        if slots:
+            out["tracks"] += 1
+            out["cues"] += len(slots)
+    return out
+
+
+@app.post("/api/tracks/remove")
+def remove_tracks(body: TrackIds) -> dict:
+    """Remove tracks from the library and every playlist. Audio files are
+    never touched. An export set referencing one will report it as missing,
+    which is what export sets do with any track that has gone."""
+    a = require_adapter()
+    if not a.capabilities().tracks.removable:
+        raise HTTPException(422, "Tracks cannot be removed from this library")
+    _require_no_batch()
+    return {"removed": a.remove_tracks(list(dict.fromkeys(body.track_ids)))}
 
 
 @app.patch("/api/tracks/grid/lock", response_model=TrackCues)

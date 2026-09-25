@@ -239,6 +239,9 @@ class OneLibraryAdapter:
     def add_tracks(self, items: list) -> list[str]:
         self._refuse("Adding tracks")
 
+    def remove_tracks(self, track_ids: list[str]) -> int:
+        self._refuse("Removing tracks")
+
     def set_track_metadata(self, track_id: str, fields: dict) -> Track | None:
         self._refuse("Editing track metadata")
 

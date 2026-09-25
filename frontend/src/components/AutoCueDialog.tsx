@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   api,
   type AutoCueEvent,
+  type AutoCueSlot,
   type AutoHotcuesResult,
   type CuePoint,
   type Track,
@@ -17,6 +18,11 @@ import { formatDuration } from '../lib/format'
  * every track the same way — but the per-slot "replace" ticks are NOT: whether
  * to overwrite a hand-placed cue is a decision about THIS track, and a
  * remembered tick would silently clobber the next track's cues.
+ *
+ * Batch mode (`batch` instead of `track`) edits the same remembered template but
+ * does not run it: it hands the slots to `onRun`, which starts a job. There is
+ * no single track to show existing cues for, so each slot's tick reads "Replace
+ * existing" and applies to every track in the batch — still never remembered.
  */
 
 export const AUTO_CUE_EVENTS: { id: AutoCueEvent; label: string }[] = [
@@ -64,18 +70,33 @@ function loadTemplate(prefs: Record<string, unknown> | undefined, slots: number)
   })
 }
 
-interface Props {
-  track: Track
+type Props = {
   slotCount: number
   slotLabel: (slot: number) => string
-  /** The track's current hotcues by slot, to mark occupied rows. */
-  existing: Map<number, CuePoint>
   onClose: () => void
-  onDone: (result: AutoHotcuesResult) => void
   onError: (msg: string) => void
-}
+} & (
+  | {
+      track: Track
+      /** The track's current hotcues by slot, to mark occupied rows. */
+      existing: Map<number, CuePoint>
+      onDone: (result: AutoHotcuesResult) => void
+      batch?: undefined
+      onRun?: undefined
+    }
+  | {
+      track?: undefined
+      existing?: undefined
+      onDone?: undefined
+      /** How many tracks the template will be applied to. */
+      batch: { count: number; withoutGrid: number }
+      /** Start the batch; resolve once it has started. */
+      onRun: (slots: AutoCueSlot[]) => Promise<void>
+    }
+)
 
-export function AutoCueDialog({ track, slotCount, slotLabel, existing, onClose, onDone, onError }: Props) {
+export function AutoCueDialog(props: Props) {
+  const { slotCount, slotLabel, onClose, onError } = props
   const qc = useQueryClient()
   const prefs = useQuery({ queryKey: ['prefs'], queryFn: api.getPrefs })
   const [rows, setRows] = useState<Row[] | null>(null)
@@ -114,14 +135,15 @@ export function AutoCueDialog({ track, slotCount, slotLabel, existing, onClose, 
       .patchPrefs({ [PREF_KEY]: template })
       .then((p) => qc.setQueryData(['prefs'], p))
       .catch(() => {})
+    const slots: AutoCueSlot[] = rows.flatMap((r, slot) =>
+      r.event ? [{ slot, event: r.event, offset_beats: r.offset, overwrite: replace.has(slot) }] : [],
+    )
     try {
-      const result = await api.autoCues(
-        track.id,
-        rows.flatMap((r, slot) =>
-          r.event ? [{ slot, event: r.event, offset_beats: r.offset, overwrite: replace.has(slot) }] : [],
-        ),
-      )
-      onDone(result)
+      if (props.batch) {
+        await props.onRun(slots)
+      } else {
+        props.onDone(await api.autoCues(props.track.id, slots))
+      }
       onClose()
     } catch (e) {
       onError((e as Error).message)
@@ -138,7 +160,9 @@ export function AutoCueDialog({ track, slotCount, slotLabel, existing, onClose, 
         <div className="border-b border-line px-5 py-4">
           <div className="text-[15px] font-semibold tracking-tight">Auto Hotcues</div>
           <div className="truncate text-xs text-muted">
-            {track.artist} — {track.title}
+            {props.batch
+              ? `${props.batch.count} tracks — the same slots on every one`
+              : `${props.track.artist} — ${props.track.title}`}
           </div>
         </div>
 
@@ -147,13 +171,31 @@ export function AutoCueDialog({ track, slotCount, slotLabel, existing, onClose, 
             <span>Slot</span>
             <span>Event</span>
             <span className="text-center">Offset (beats)</span>
-            <span>Existing cue</span>
+            <span>{props.batch ? 'Occupied slot' : 'Existing cue'}</span>
           </div>
           {rows === null ? (
             <div className="py-6 text-center text-sm text-muted">Loading…</div>
           ) : (
             rows.map((r, slot) => {
-              const cue = existing.get(slot)
+              const cue = props.existing?.get(slot)
+              const tick = (label: string, title?: string) => (
+                <label className="flex min-w-0 items-center gap-1.5 text-xs text-muted" title={title}>
+                  <input
+                    type="checkbox"
+                    checked={replace.has(slot)}
+                    disabled={!r.event}
+                    onChange={(e) =>
+                      setReplace((s) => {
+                        const n = new Set(s)
+                        if (e.target.checked) n.add(slot)
+                        else n.delete(slot)
+                        return n
+                      })
+                    }
+                  />
+                  <span className="truncate">{label}</span>
+                </label>
+              )
               return (
                 <div key={slot} className="grid grid-cols-[2rem_1fr_9rem_7.5rem] items-center gap-2 py-1">
                   <span className="flex h-7 w-7 items-center justify-center rounded bg-ink-800 text-xs font-bold text-text">
@@ -197,26 +239,11 @@ export function AutoCueDialog({ track, slotCount, slotLabel, existing, onClose, 
                       +
                     </button>
                   </div>
-                  {cue ? (
+                  {props.batch ? (
+                    tick('Replace', 'Replace the cue in this slot on every track that has one')
+                  ) : cue ? (
                     cue.editable ? (
-                      <label className="flex min-w-0 items-center gap-1.5 text-xs text-muted" title={cue.name ?? ''}>
-                        <input
-                          type="checkbox"
-                          checked={replace.has(slot)}
-                          disabled={!r.event}
-                          onChange={(e) =>
-                            setReplace((s) => {
-                              const n = new Set(s)
-                              if (e.target.checked) n.add(slot)
-                              else n.delete(slot)
-                              return n
-                            })
-                          }
-                        />
-                        <span className="truncate">
-                          Replace {cue.name || formatDuration(cue.start)}
-                        </span>
-                      </label>
+                      tick(`Replace ${cue.name || formatDuration(cue.start)}`, cue.name ?? '')
                     ) : (
                       <span className="truncate text-xs text-faint" title="This cue belongs to the beatgrid and is never replaced">
                         Grid cue (kept)
@@ -228,6 +255,12 @@ export function AutoCueDialog({ track, slotCount, slotLabel, existing, onClose, 
                 </div>
               )
             })
+          )}
+          {props.batch && props.batch.withoutGrid > 0 && (
+            <p className="mt-3 text-[11px] leading-relaxed text-gold">
+              {props.batch.withoutGrid} of these {props.batch.withoutGrid === 1 ? 'has' : 'have'} no
+              beatgrid — {props.batch.withoutGrid === 1 ? 'it' : 'they'}’ll get one analyzed first.
+            </p>
           )}
           <p className="mt-3 text-[11px] leading-relaxed text-faint">
             Events are found on the beatgrid, counting bar 1 from its first marker — if drops land a
@@ -250,7 +283,13 @@ export function AutoCueDialog({ track, slotCount, slotLabel, existing, onClose, 
             disabled={busy || rows === null || active === 0}
             className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-ink-950 hover:brightness-110 disabled:opacity-40"
           >
-            {busy ? 'Analyzing…' : `Analyze & place ${active} cue${active === 1 ? '' : 's'}`}
+            {busy
+              ? props.batch
+                ? 'Starting…'
+                : 'Analyzing…'
+              : props.batch
+                ? `Place ${active} cue${active === 1 ? '' : 's'} on ${props.batch.count} tracks`
+                : `Analyze & place ${active} cue${active === 1 ? '' : 's'}`}
           </button>
         </div>
       </div>

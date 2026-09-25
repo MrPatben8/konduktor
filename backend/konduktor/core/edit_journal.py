@@ -68,12 +68,21 @@ class EditJournal:
         changed, they simply did not exist before. Counting them here would both
         mislabel the version-history message and drag them through the file-tag
         sync, which has nothing to write for a track whose fields were never
-        touched.
+        touched. Excludes tracks REMOVED from the library for the same reason:
+        "edited 40 tracks" would describe a deletion as an edit.
         """
+        removed = self.removed_tracks()
         return {
             c.target
             for c in self.changes
-            if c.scope == "track" and c.target and c.op != "add"
+            if c.scope == "track" and c.target and c.op not in ("add", "remove")
+            and c.target not in removed
+        }
+
+    def removed_tracks(self) -> set[str]:
+        """Tracks taken out of the library this session."""
+        return {
+            c.target for c in self.changes if c.scope == "track" and c.op == "remove" and c.target
         }
 
     def added_tracks(self) -> set[str]:
@@ -115,6 +124,9 @@ class EditJournal:
         n_added = len(self.added_tracks())
         if n_added:
             parts.append(f"added {tracks(n_added)}")
+        n_removed = len(self.removed_tracks())
+        if n_removed:
+            parts.append(f"removed {tracks(n_removed)} from the collection")
 
         # --- track metadata + cover art (already counted per-track) ---
         n_meta = len(self.edited_tracks() | (extra_tracks or set()))

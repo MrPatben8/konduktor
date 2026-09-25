@@ -232,6 +232,8 @@ export interface Capabilities {
     rating_max: number
     editable_fields: TrackField[]
     media_kinds: MediaKind[]
+    /** Tracks can be removed from the library (audio files are never touched). */
+    removable: boolean
     artwork: boolean
     artwork_note: string | null
   }
@@ -350,6 +352,15 @@ export interface GridBatchResult {
   analysed: string[]
   locked: number
   existing: number
+  failed: { title: string; reason: string }[]
+}
+
+/** What a batch Auto Hotcues run did. `tracks` got the template (whatever it
+ *  placed on each); `failed` could not be analysed. */
+export interface CueBatchResult {
+  tracks: string[]
+  cues_placed: number
+  grids_created: number
   failed: { title: string; reason: string }[]
 }
 
@@ -676,6 +687,22 @@ export const api = {
   /** Many tracks at once, as a job — poll `job()`. Locked grids are always
    *  skipped; existing ones unless `replaceExisting`. The finished job's
    *  `result` is a `GridBatchResult`. */
+  /** Auto Hotcues over many tracks, one template for all, as a job. A track
+   *  without a grid gets one analysed first. The finished job's `result` is a
+   *  `CueBatchResult`. */
+  autoCuesBatch: (trackIds: string[], slots: AutoCueSlot[]) =>
+    send<JobStatus>('POST', '/api/tracks/cue/auto-batch', { track_ids: trackIds, slots }),
+  /** Delete these tracks' beatgrids; locked grids are skipped and counted. */
+  clearGrids: (trackIds: string[]) =>
+    send<{ cleared: number; locked: number; empty: number }>('POST', '/api/tracks/grid/clear', {
+      track_ids: trackIds,
+    }),
+  /** Empty these tracks' whole hotcue bank (the grid is untouched). */
+  clearHotcues: (trackIds: string[]) =>
+    send<{ tracks: number; cues: number }>('POST', '/api/tracks/cue/clear', { track_ids: trackIds }),
+  /** Remove tracks from the library and every playlist. Audio files stay. */
+  removeTracks: (trackIds: string[]) =>
+    send<{ removed: number }>('POST', '/api/tracks/remove', { track_ids: trackIds }),
   autoGridBatch: (trackIds: string[], replaceExisting: boolean) =>
     send<JobStatus>('POST', '/api/tracks/grid/auto-batch', {
       track_ids: trackIds,

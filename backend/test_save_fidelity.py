@@ -687,5 +687,54 @@ else:
     check("K: a marker without a companion projects None", ok_comp)
 
 
+# ---- Invariant L: removing a track from the collection is localized ---------
+print("== L. remove_entries drops the ENTRY and its playlist references, nothing else ==")
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    store = TraktorStore(work)
+    original = store._render()
+
+    def pl_nodes(st):
+        return [n for n in st._iter_nodes(st._root()) if n.playlist is not None]
+
+    in_pl = {k for n in pl_nodes(store) for k in store._entry_keys_of(n.playlist)}
+    target = next(e for e in store._nml.collection.entry
+                  if e.location and store._key_of(e) in in_pl)
+    key = store._key_of(target)
+    touched = {n.playlist.uuid for n in pl_nodes(store) if key in store._entry_keys_of(n.playlist)}
+    untouched = [n.playlist.uuid for n in pl_nodes(store) if n.playlist.uuid not in touched]
+    n_before = len(store._nml.collection.entry)
+
+    removed = store.remove_entries([key, "no/such/track.mp3"])
+    after = store._render()
+    check("L: exactly one ENTRY removed (an unknown id is ignored)", removed == 1, str(removed))
+
+    import difflib
+    plus = [d for d in difflib.unified_diff(tag_lines(original), tag_lines(after), n=0)
+            if d.startswith("+") and not d.startswith("+++")]
+    # Every ADDED line is a recount — the collection's or a touched playlist's.
+    # Nothing is rewritten, only removed.
+    check("L: the only added lines are ENTRIES recounts",
+          all("ENTRIES=" in d for d in plus) and len(plus) == 1 + len(touched), "\n".join(plus[:6]))
+    check("L: every other playlist is byte-identical",
+          all(original[slice(*playlist_block_span(original, u))] == after[slice(*playlist_block_span(after, u))]
+              for u in untouched))
+
+    check("L: the edit journal records a removal, not an edit",
+          store._journal.removed_tracks() == {key} and not store._journal.edited_tracks())
+    summary = store._journal.summary()
+    check("L: …and the history message says so", "removed 1 track from the collection" in summary.lower(), summary)
+
+    store.save()
+    re = TraktorStore(work)
+    keys = [re._key_of(e) for e in re._nml.collection.entry]
+    check("L: the track is gone from the collection", key not in keys)
+    check("L: <COLLECTION ENTRIES> matches the entries", re._nml.collection.entries == len(keys) == n_before - 1)
+    check("L: …and from every playlist", all(key not in re._entry_keys_of(n.playlist) for n in pl_nodes(re)))
+    check("L: every playlist's ENTRIES count matches",
+          all((n.playlist.entries or 0) == len(n.playlist.entry or []) for n in pl_nodes(re)))
+
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

@@ -58,6 +58,9 @@ class TrackCapabilities(BaseModel):
     rating_max: int = 5
     editable_fields: list[str] = []
     media_kinds: list[MediaKind] = ["audio"]
+    # Tracks can be removed from the library (and so from its playlists). The
+    # audio file is never touched either way.
+    removable: bool = False
     artwork: bool = False
     artwork_note: str | None = None
 

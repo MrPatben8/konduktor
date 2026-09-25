@@ -105,6 +105,20 @@ class AutoHotcuesRequest(BaseModel):
     slots: list[AutoCueSlot]
 
 
+class TrackIds(BaseModel):
+    """A body naming a set of tracks — the bulk Remove commands."""
+
+    track_ids: list[str]
+
+
+class AutoHotcuesBatchRequest(BaseModel):
+    """The same template applied to every track. `overwrite` on a slot means
+    "replace this slot's cue on every track that has one"."""
+
+    track_ids: list[str]
+    slots: list[AutoCueSlot]
+
+
 class AutoCueOutcome(BaseModel):
     slot: int
     event: AutoCueEvent

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnSizingState, SortingState, VisibilityState } from '@tanstack/react-table'
-import { CapabilitiesContext } from './lib/capabilities'
+import { CapabilitiesContext, slotLabeller } from './lib/capabilities'
 import { writeHint } from './lib/platformCopy'
-import { api, type GridBatchResult, type PlaylistNode, type Track } from './api'
+import { api, type CueBatchResult, type GridBatchResult, type AutoCueSlot, type PlaylistNode, type Track } from './api'
 import {
   COLUMN_MENU,
   DEFAULT_COLUMN_ORDER,
@@ -18,6 +18,8 @@ import { CollectionPicker } from './components/CollectionPicker'
 import { ContextMenu, type MenuItem } from './components/ContextMenu'
 import { EditTagsDialog } from './components/EditTagsDialog'
 import { AnalyzeGridDialog } from './components/AnalyzeGridDialog'
+import { AutoCueDialog } from './components/AutoCueDialog'
+import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { PathMappingDialog } from './components/PathMappingDialog'
 import { HistoryPanel } from './components/HistoryPanel'
 import { PrepStrip } from './components/PrepStrip'
@@ -62,14 +64,19 @@ export default function App() {
   const [prepTrack, setPrepTrack] = useState<Track | null>(null)
   const [playRequest, setPlayRequest] = useState(0) // bump → deck loads & auto-plays
   const [importing, setImporting] = useState(false)
-  // Batch grid analysis: the confirm step (only when some tracks already have
-  // a grid), then the running job, polled into the status bar.
+  // Batch analysis (grid, or Auto Hotcues): a confirm step, then the running
+  // job, polled into the status bar. ONE at a time across both kinds — the
+  // backend refuses a second, since a grid run would move the beats a hotcue
+  // run is placing cues on.
   const [gridConfirm, setGridConfirm] = useState<
     { ids: string[]; existing: number; locked: number } | null
   >(null)
-  const [gridJobId, setGridJobId] = useState<string | null>(null)
-  const [gridCancelling, setGridCancelling] = useState(false)
+  const [cueBatch, setCueBatch] = useState<{ ids: string[]; withoutGrid: number } | null>(null)
+  const [batchJob, setBatchJob] = useState<{ id: string; kind: 'grid' | 'cues' } | null>(null)
+  const [batchCancelling, setBatchCancelling] = useState(false)
   const [cuesRefresh, setCuesRefresh] = useState(0) // bump → deck re-reads its cues
+  // Every Remove ▸ action (and the playlist Delete key) confirms first.
+  const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null)
 
   const playTrack = useCallback((t: Track) => {
     setPrepTrack(t)
@@ -424,28 +431,29 @@ export default function App() {
     return m
   }, [source.kind, tracks])
 
-  const gridJob = useQuery({
-    queryKey: ['job', gridJobId],
-    queryFn: () => api.job(gridJobId!),
-    enabled: !!gridJobId,
+  const batchJobStatus = useQuery({
+    queryKey: ['job', batchJob?.id ?? null],
+    queryFn: () => api.job(batchJob!.id),
+    enabled: !!batchJob,
     refetchInterval: (q) => (q.state.data && q.state.data.state !== 'running' ? false : 400),
   })
-  const gridDone = gridJob.data?.done ?? 0
+  const batchDone = batchJobStatus.data?.done ?? 0
   useEffect(() => {
     // Each finished track is an unsaved edit; let the Save button know as they land.
-    if (gridDone > 0) qc.invalidateQueries({ queryKey: ['state'] })
-  }, [gridDone, qc])
+    if (batchDone > 0) qc.invalidateQueries({ queryKey: ['state'] })
+  }, [batchDone, qc])
   useEffect(() => {
-    const job = gridJob.data
-    if (!job || job.state === 'running') return
-    setGridJobId(null)
-    setGridCancelling(false)
+    const job = batchJobStatus.data
+    if (!job || job.state === 'running' || !batchJob || job.id !== batchJob.id) return
+    const kind = batchJob.kind
+    setBatchJob(null)
+    setBatchCancelling(false)
     if (job.state === 'failed') {
-      onError(`Grid analysis failed: ${job.error ?? 'unknown error'}`)
+      const what = kind === 'grid' ? 'Grid analysis' : 'Auto Hotcues'
+      onError(`${what} failed: ${job.error ?? 'unknown error'}`)
       return
     }
-    const r = job.result as unknown as GridBatchResult | null
-    if (!r) return
+    if (!job.result) return
     qc.invalidateQueries({ queryKey: ['state'] })
     qc.invalidateQueries({ queryKey: ['tracks'] })
     qc.invalidateQueries({ queryKey: ['playlist'] })
@@ -453,26 +461,44 @@ export default function App() {
     qc.invalidateQueries({ queryKey: ['export-playlist-tracks'] })
     qc.invalidateQueries({ queryKey: ['export-loose'] })
     qc.invalidateQueries({ queryKey: ['facets'] })
-    if (prepTrack && r.analysed.includes(prepTrack.id)) setCuesRefresh((n) => n + 1)
-    const n = r.analysed.length
-    const parts = [
-      `${job.state === 'cancelled' ? 'Cancelled — analyzed' : 'Analyzed'} ${n} track${n === 1 ? '' : 's'}`,
-      r.existing ? `skipped ${r.existing} with a grid` : '',
-      r.locked ? `${r.locked} locked` : '',
-      r.failed.length
-        ? `${r.failed.length} failed (${r.failed[0].title}: ${r.failed[0].reason}${r.failed.length > 1 ? ', …' : ''})`
-        : '',
-    ].filter(Boolean)
-    notify(r.failed.length && n === 0 ? 'error' : 'success', parts.join(' · '))
+    const cancelled = job.state === 'cancelled'
+    const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
+    let touched: string[]
+    let parts: string[]
+    let failures: CueBatchResult['failed']
+    if (kind === 'grid') {
+      const r = job.result as unknown as GridBatchResult
+      touched = r.analysed
+      failures = r.failed
+      parts = [
+        `${cancelled ? 'Cancelled — analyzed' : 'Analyzed'} ${plural(r.analysed.length, 'track')}`,
+        r.existing ? `skipped ${r.existing} with a grid` : '',
+        r.locked ? `${r.locked} locked` : '',
+      ]
+    } else {
+      const r = job.result as unknown as CueBatchResult
+      touched = r.tracks
+      failures = r.failed
+      parts = [
+        `${cancelled ? 'Cancelled — placed' : 'Placed'} ${plural(r.cues_placed, 'cue')} on ${plural(r.tracks.length, 'track')}`,
+        r.grids_created ? `analyzed ${plural(r.grids_created, 'new grid')}` : '',
+      ]
+    }
+    if (failures.length) {
+      const f = failures[0]
+      parts.push(`${failures.length} failed (${f.title}: ${f.reason}${failures.length > 1 ? ', …' : ''})`)
+    }
+    if (prepTrack && touched.includes(prepTrack.id)) setCuesRefresh((n) => n + 1)
+    notify(failures.length && touched.length === 0 ? 'error' : 'success', parts.filter(Boolean).join(' · '))
     // Only the job's finish matters here; prepTrack is read, not tracked.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gridJob.data])
+  }, [batchJobStatus.data])
 
   const handleOpened = () => {
     setForcePicker(false)
     setSource({ kind: 'all' })
     setSelected(new Set())
-    setGridJobId(null) // the backend cancels it; its result is for the old library
+    setBatchJob(null) // the backend cancels it; its result is for the old library
     setFilters(emptyFilters)
     setSorting([])
     qc.invalidateQueries() // refetch everything for the newly-opened collection
@@ -516,8 +542,8 @@ export default function App() {
     setGridConfirm(null)
     try {
       const job = await api.autoGridBatch(ids, replaceExisting)
-      setGridCancelling(false)
-      setGridJobId(job.id)
+      setBatchCancelling(false)
+      setBatchJob({ id: job.id, kind: 'grid' })
     } catch (e) {
       onError((e as Error).message)
     }
@@ -538,6 +564,184 @@ export default function App() {
     }
   }
   const canAnalyzeGrid = canEdit && !viewingDevice && !!capabilities.data?.grid.editable
+
+  const startCueBatch = (ids: string[]) => {
+    const byId = new Map(tracks.map((t) => [t.id, t]))
+    const withoutGrid = ids.filter((id) => (byId.get(id)?.grid_marker_count ?? 0) === 0).length
+    setCueBatch({ ids, withoutGrid })
+  }
+  // Rejects on failure, so the dialog stays open and shows it can be retried.
+  const runCueBatch = async (ids: string[], slots: AutoCueSlot[]) => {
+    const job = await api.autoCuesBatch(ids, slots)
+    setBatchCancelling(false)
+    setBatchJob({ id: job.id, kind: 'cues' })
+  }
+  const canAutoCue = canEdit && !viewingDevice && (capabilities.data?.cues.hotcue_slots ?? 0) > 0
+
+  // ---- Remove ▸ -----------------------------------------------------------
+  const nTracks = (n: number) => `${n} track${n === 1 ? '' : 's'}`
+  const trackNoun = (ids: string[]) => {
+    if (ids.length > 1) return nTracks(ids.length)
+    const t = tracks.find((x) => x.id === ids[0])
+    return t?.title ? `“${t.title}”` : 'this track'
+  }
+  // Refetch whatever a track list or the deck could be showing. Throws on
+  // failure (after reporting), so the confirm dialog stays open for a retry.
+  const afterBulk = (ids: string[], cuesChanged: boolean) => {
+    qc.invalidateQueries({ queryKey: ['state'] })
+    qc.invalidateQueries({ queryKey: ['tracks'] })
+    qc.invalidateQueries({ queryKey: ['playlist'] })
+    qc.invalidateQueries({ queryKey: ['playlists'] })
+    qc.invalidateQueries({ queryKey: ['export-tracks'] })
+    qc.invalidateQueries({ queryKey: ['export-playlist-tracks'] })
+    qc.invalidateQueries({ queryKey: ['export-loose'] })
+    qc.invalidateQueries({ queryKey: ['export-contents'] })
+    qc.invalidateQueries({ queryKey: ['facets'] })
+    if (cuesChanged && prepTrack && ids.includes(prepTrack.id)) setCuesRefresh((n) => n + 1)
+  }
+  const guard = async (fn: () => Promise<void>) => {
+    try {
+      await fn()
+    } catch (e) {
+      onError((e as Error).message)
+      throw e
+    }
+  }
+
+  const confirmRemoveFromPlaylist = (ids: string[]) =>
+    setConfirmReq({
+      title: 'Remove from playlist',
+      body: (
+        <p>
+          Remove {trackNoun(ids)} from <span className="text-text">{playlistNode?.name ?? 'this playlist'}</span>?
+          The {ids.length === 1 ? 'track stays' : 'tracks stay'} in the collection.
+        </p>
+      ),
+      confirmLabel: `Remove ${nTracks(ids.length)}`,
+      onConfirm: () => {
+        removeFromPlaylist(ids)
+        setSelected(new Set())
+      },
+    })
+
+  const confirmRemoveFromExport = (exportId: string, ids: string[]) => {
+    const name = exportSets.data?.find((x) => x.id === exportId)?.name ?? 'this export'
+    setConfirmReq({
+      title: 'Remove from export',
+      body: (
+        <p>
+          Remove {trackNoun(ids)} from <span className="text-text">{name}</span>? Your library is not
+          changed.
+        </p>
+      ),
+      confirmLabel: `Remove ${nTracks(ids.length)}`,
+      onConfirm: () =>
+        guard(async () => {
+          await removeFromExport(exportId, ids)
+          setSelected(new Set())
+        }),
+    })
+  }
+
+  const confirmClearGrids = (ids: string[]) => {
+    const locked = tracks.filter((t) => ids.includes(t.id) && t.grid_locked).length
+    setConfirmReq({
+      title: 'Remove beatgrids',
+      body: (
+        <>
+          <p>
+            Delete the beatgrid of {trackNoun(ids)}? Tempo and markers go; the paired beat-1 cue goes
+            with them. Hotcues are kept.
+          </p>
+          {locked > 0 && (
+            <p className="text-faint">{locked} locked {locked === 1 ? 'grid is' : 'grids are'} kept.</p>
+          )}
+        </>
+      ),
+      confirmLabel: 'Remove grids',
+      onConfirm: () =>
+        guard(async () => {
+          const r = await api.clearGrids(ids)
+          afterBulk(ids, true)
+          notify(
+            'success',
+            [`Removed ${r.cleared} grid${r.cleared === 1 ? '' : 's'}`, r.locked ? `${r.locked} locked, kept` : '']
+              .filter(Boolean)
+              .join(' · '),
+          )
+        }),
+    })
+  }
+
+  const confirmClearHotcues = (ids: string[]) =>
+    setConfirmReq({
+      title: 'Remove hotcues',
+      body: (
+        <p>
+          Clear every hotcue on {trackNoun(ids)} — cues, loops and the grid’s beat-1 cue? The beatgrid
+          itself is kept.
+        </p>
+      ),
+      confirmLabel: 'Remove hotcues',
+      onConfirm: () =>
+        guard(async () => {
+          const r = await api.clearHotcues(ids)
+          afterBulk(ids, true)
+          notify('success', `Removed ${r.cues} hotcue${r.cues === 1 ? '' : 's'} from ${nTracks(r.tracks)}`)
+        }),
+    })
+
+  const confirmRemoveTracks = (ids: string[]) =>
+    setConfirmReq({
+      title: 'Remove from collection',
+      body: (
+        <>
+          <p>
+            Remove {trackNoun(ids)} from the collection and from every playlist?
+          </p>
+          <p className="text-faint">
+            The audio {ids.length === 1 ? 'file stays' : 'files stay'} on disk. Nothing is written until you
+            save, and a save can be rolled back from version history.
+          </p>
+        </>
+      ),
+      confirmLabel: `Remove ${nTracks(ids.length)}`,
+      onConfirm: () =>
+        guard(async () => {
+          const r = await api.removeTracks(ids)
+          setSelected(new Set())
+          if (prepTrack && ids.includes(prepTrack.id)) setPrepTrack(null)
+          afterBulk(ids, false)
+          notify('success', `Removed ${nTracks(r.removed)} from the collection`)
+        }),
+    })
+
+  const canClearGrids = canEdit && !viewingDevice && !!capabilities.data?.grid.editable
+  const canClearCues = canAutoCue
+  const canRemoveTracks = canEdit && !viewingDevice && !!capabilities.data?.tracks.removable
+  const exportRootId =
+    source.kind === 'export' ? source.id : source.kind === 'export-other' ? source.exportId : null
+  const removeItems = (ids: string[]): MenuItem[] => [
+    ...(playlistEditable
+      ? [{ label: 'From this playlist…', onClick: () => confirmRemoveFromPlaylist(ids) }]
+      : []),
+    // Only on the export's ROOT view. Inside a referenced playlist there is
+    // nothing to remove: the reference is live, and per-track removal would
+    // need an exclusion list — hidden state deciding what a future export
+    // contains. Remove the whole playlist, or add tracks instead.
+    ...(exportRootId ? [{ label: 'From this export…', onClick: () => confirmRemoveFromExport(exportRootId, ids) }] : []),
+    // Removing touches cues and grids a running batch is writing; the backend
+    // refuses, so the items say why instead of failing on click.
+    ...(canClearGrids
+      ? [{ label: 'Grids…', hint: batchJob ? 'busy' : undefined, disabled: !!batchJob, onClick: () => confirmClearGrids(ids) }]
+      : []),
+    ...(canClearCues
+      ? [{ label: 'Hotcues…', hint: batchJob ? 'busy' : undefined, disabled: !!batchJob, onClick: () => confirmClearHotcues(ids) }]
+      : []),
+    ...(canRemoveTracks
+      ? [{ label: 'From collection…', danger: true, hint: batchJob ? 'busy' : undefined, disabled: !!batchJob, onClick: () => confirmRemoveTracks(ids) }]
+      : []),
+  ]
 
   // The "Add to" submenu. Exports are listed even on a read-only library:
   // adding to one touches no library data — an export is Konduktor's own
@@ -586,43 +790,31 @@ export default function App() {
               ? [
                   {
                     label: 'Analyze Grid & BPM',
-                    hint: gridJobId ? 'running' : menu.ids.length > 1 ? String(menu.ids.length) : undefined,
-                    disabled: !!gridJobId,
+                    hint: batchJob ? 'busy' : menu.ids.length > 1 ? String(menu.ids.length) : undefined,
+                    disabled: !!batchJob,
                     onClick: () => startGridAnalysis(menu.ids),
+                  },
+                ]
+              : []),
+            // The deck's ✨ Auto covers a single loaded track, with its
+            // existing cues shown; this is the same template over the selection.
+            ...(canAutoCue
+              ? [
+                  {
+                    label: 'Auto Hotcues…',
+                    hint: batchJob ? 'busy' : menu.ids.length > 1 ? String(menu.ids.length) : undefined,
+                    disabled: !!batchJob,
+                    onClick: () => startCueBatch(menu.ids),
                   },
                 ]
               : []),
             // A device's track ids belong to the stick, not the collection, so
             // there is nothing they could be added to.
             ...(viewingDevice ? [] : [{ label: 'Add to', submenu: addToItems(menu.ids) }]),
-            ...(playlistEditable
-              ? [
-                  {
-                    label: menu.ids.length > 1 ? `Remove ${menu.ids.length} from playlist` : 'Remove from playlist',
-                    danger: true,
-                    onClick: () => {
-                      removeFromPlaylist(menu.ids)
-                      setSelected(new Set())
-                    },
-                  },
-                ]
-              : []),
-            // Only on the export's ROOT view. Inside a referenced playlist there
-            // is nothing to remove: the reference is live, and per-track removal
-            // would need an exclusion list — hidden state deciding what a future
-            // export contains. Remove the whole playlist, or add tracks instead.
-            ...(source.kind === 'export' || source.kind === 'export-other'
-              ? [
-                  {
-                    label: 'Remove from this export',
-                    onClick: () =>
-                      removeFromExport(
-                        source.kind === 'export' ? source.id : source.exportId,
-                        menu.ids,
-                      ),
-                  },
-                ]
-              : []),
+            ...(() => {
+              const items = removeItems(menu.ids)
+              return items.length ? [{ label: 'Remove', submenu: items }] : []
+            })(),
           ]}
           onClose={() => setMenu(null)}
         />
@@ -652,6 +844,17 @@ export default function App() {
           track={editing}
           onClose={() => setEditing(null)}
           onApplied={(msg) => notify('success', msg)}
+          onError={onError}
+        />
+      )}
+      {confirmReq && <ConfirmDialog {...confirmReq} onClose={() => setConfirmReq(null)} />}
+      {cueBatch && (
+        <AutoCueDialog
+          batch={{ count: cueBatch.ids.length, withoutGrid: cueBatch.withoutGrid }}
+          slotCount={capabilities.data!.cues.hotcue_slots}
+          slotLabel={slotLabeller(capabilities.data!)}
+          onRun={(slots) => runCueBatch(cueBatch.ids, slots)}
+          onClose={() => setCueBatch(null)}
           onError={onError}
         />
       )}
@@ -903,7 +1106,7 @@ export default function App() {
                   ? { enabled: !filtersActive && sorting.length === 0, onReorder: reorderPlaylist }
                   : undefined
               }
-              onRemove={playlistEditable ? removeFromPlaylist : undefined}
+              onRemove={playlistEditable ? confirmRemoveFromPlaylist : undefined}
               onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
               onPlay={playTrack}
@@ -925,16 +1128,16 @@ export default function App() {
           sourceName={viewName}
           selected={viewingDevice ? 0 : selected.size}
           job={
-            gridJobId
+            batchJob
               ? {
-                  label: 'Analyzing',
-                  done: gridJob.data?.done ?? 0,
-                  total: gridJob.data?.total ?? 0,
-                  detail: gridJob.data?.message,
-                  cancelling: gridCancelling,
+                  label: batchJob.kind === 'grid' ? 'Analyzing grids' : 'Placing hotcues',
+                  done: batchJobStatus.data?.done ?? 0,
+                  total: batchJobStatus.data?.total ?? 0,
+                  detail: batchJobStatus.data?.message,
+                  cancelling: batchCancelling,
                   onCancel: () => {
-                    setGridCancelling(true)
-                    api.cancelJob(gridJobId).catch((e) => onError((e as Error).message))
+                    setBatchCancelling(true)
+                    api.cancelJob(batchJob.id).catch((e) => onError((e as Error).message))
                   },
                 }
               : null

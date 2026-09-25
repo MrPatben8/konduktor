@@ -400,6 +400,12 @@ class RekordboxAdapter:
         # import target for now.
         self._refuse("Adding tracks")
 
+    def remove_tracks(self, track_ids: list[str]) -> int:
+        # Same shape as adding: a track is a djmdContent row plus its cues,
+        # playlist rows, contentCue/contentFile mirrors and ANLZ files, and
+        # which of those Rekordbox expects to be deleted together is unmeasured.
+        self._refuse("Removing tracks")
+
     def set_cover_art(self, track_id: str, data: bytes, mime: str) -> None:
         self._refuse("Editing cover art")
 

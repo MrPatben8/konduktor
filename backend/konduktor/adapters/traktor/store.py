@@ -418,6 +418,56 @@ class TraktorStore:
             self.dirty = True
             return key
 
+    def remove_entries(self, track_ids: list[str]) -> int:
+        """Remove tracks from the collection AND from every playlist; return
+        how many ENTRYs went.
+
+        The mirror of `add_entry`, with the same care about bytes: only the
+        removed ENTRYs, the `<COLLECTION ENTRIES>` count and the playlists that
+        actually referenced a removed track change — any other playlist is left
+        alone rather than rebuilt, so it still renders what it was parsed from.
+
+        Playlists must be purged too: a PRIMARYKEY naming a track that is no
+        longer in COLLECTION is a dangling reference, not an empty slot. The
+        audio file is never touched — this is the library's record of the track,
+        like Traktor's own "Delete from Collection".
+
+        Matches by primary key in DOCUMENT order, so two ENTRYs sharing a key
+        (which `iter_entries` warns can happen) both go, where the key→entry
+        dict would have found only one.
+        """
+        gone = set(track_ids)
+        with self._lock:
+            before = self._nml.collection.entry
+            kept = [e for e in before if self._key_of(e) not in gone]
+            removed = len(before) - len(kept)
+            if removed == 0:
+                return 0
+            self._nml.collection.entry = kept
+            self._nml.collection.entries = len(kept)
+            for key in gone:
+                if self._entry_by_key.pop(key, None) is not None:
+                    self._track_art.pop(key, None)
+                    self._note("track", "remove", key)
+            for n in self._iter_nodes(self._root()):
+                pl = n.playlist
+                if pl is None or not pl.entry:
+                    continue
+                entries = [
+                    e for e in pl.entry
+                    if not (e.primarykey is not None and e.primarykey.key in gone)
+                ]
+                if len(entries) != len(pl.entry):
+                    pl.entry = entries
+                    pl.entries = len(entries)
+            self.dirty = True
+            return removed
+
+    @staticmethod
+    def _key_of(entry) -> str | None:
+        loc = entry.location
+        return f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}" if loc else None
+
     def iter_entries(self):
         """Every collection ENTRY in document order.
 
@@ -480,7 +530,10 @@ class TraktorStore:
         """Create (or reposition + retype) the hotcue in `slot` at `start_sec`.
 
         `length_sec` > 0 makes it a loop (used with cue_type 5). `name` sets the
-        cue label on create; when unset it falls back to Traktor's "n.n."."""
+        label: on create it falls back to Traktor's "n.n."; on a replace, None
+        keeps the old label (a hand move is still the same cue) while a name
+        renames it (Auto Hotcues' Replace puts a DIFFERENT cue in the slot, and
+        keeping "Drop 1" on a cue now at "Drop 1 -16" would mislabel it)."""
         if not 0 <= slot <= 7:
             raise PlaylistError(f"Invalid hotcue slot: {slot}")
         if cue_type not in self.CREATABLE_TYPES:
@@ -496,6 +549,8 @@ class TraktorStore:
                 existing.start = start_ms
                 existing.type = cue_type
                 existing.len = len_ms
+                if name is not None:
+                    existing.name = name
             else:
                 if entry.cue_v2 is None:
                     entry.cue_v2 = []

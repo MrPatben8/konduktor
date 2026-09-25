@@ -1,9 +1,12 @@
-"""Batch grid analysis — the route and its job, on a temp copy of the collection.
+"""Batch analysis — grid and Auto Hotcues jobs, on a temp copy of the collection.
 
 Detection itself is `test_grid_detect.py`'s job; this pins the WIRING, and the
 decisions only the batch makes: locked grids are skipped always, existing grids
 only when asked, a failing track is reported and skipped rather than fatal, a
-cancel keeps what is done, and nothing reaches disk before Save.
+cancel keeps what is done, and nothing reaches disk before Save. Batch Auto
+Hotcues adds: one template on every track, a grid analysed first where there is
+none (and an existing one left alone), Replace applying to every track, and one
+batch job at a time ACROSS both kinds.
 """
 from __future__ import annotations
 
@@ -13,6 +16,8 @@ import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
+
+import numpy as np
 
 REAL = Path(__file__).resolve().parents[1] / "collection.nml"
 
@@ -105,6 +110,90 @@ with tempfile.TemporaryDirectory() as d:
         check("a cancelled run says so", j["state"] == "cancelled", str(j))
         n = len(j["result"]["analysed"]) if j["result"] else -1
         check("…and still returns what it finished", 0 < n < len(many), str(n))
+
+        # ---- batch Auto Hotcues --------------------------------------------
+        print("== batch auto hotcues ==")
+        main.grid_detect.detect_grid = fake_detect
+        from konduktor.core import structure
+
+        def fake_analyse(path, markers):
+            bpm = markers[0][1]
+            st = structure.Structure(beats=np.arange(400) * 60.0 / bpm, bar0=0,
+                                     n_bars=100, duration=400 * 60.0 / bpm)
+            st.events = {"drop_1": 129, "outro": 353}  # clear of any beat-0 grid cue
+            return st
+
+        main.structure.analyse = fake_analyse
+
+        def free(tid, n):
+            cu = a.track_cues(tid)
+            used = {q.slot for q in cu.cues if q.slot is not None}
+            return [k for k in range(8) if k not in used][:n]
+
+        gridded = next(t.id for t in a.tracks if t.grid_marker_count > 0 and not t.grid_locked
+                       and len(free(t.id, 2)) == 2 and t.id not in many)
+        nogrid = next(t.id for t in a.tracks if t.grid_marker_count == 0
+                      and t.id not in (missing, *bare, *many))
+        before_grid = a.track_cues(gridded).grid_markers
+        s0, s1 = free(gridded, 2)
+        tmpl = [{"slot": s0, "event": "drop_1"}, {"slot": s1, "event": "outro"}]
+
+        r = c.post("/api/tracks/cue/auto-batch",
+                   json={"track_ids": [gridded, nogrid, missing], "slots": tmpl})
+        check("the batch route starts a job", r.status_code == 200, r.text[:200])
+        j = wait(c, r.json()["id"])
+        res = j["result"]
+        check("the job finishes", j["state"] == "done", str(j))
+        check("both tracks got cues", res["tracks"] == [gridded, nogrid], str(res))
+        check("a grid is created only where there was none", res["grids_created"] == 1, str(res))
+        check("an existing grid is left untouched",
+              a.track_cues(gridded).grid_markers == before_grid)
+        check("the track without a grid now has one", len(a.track_cues(nogrid).grid_markers) == 1)
+        names = {q.slot: q.name for q in a.track_cues(gridded).cues if q.slot is not None}
+        check("the template's cues are placed", names.get(s0) == "Drop 1" and names.get(s1) == "Outro", str(names))
+        check("placed cues are counted", res["cues_placed"] == 4, str(res))
+        check("a missing file is reported, not fatal",
+              len(res["failed"]) == 1 and "not found" in res["failed"][0]["reason"], str(res))
+
+        # Occupied slots: kept, unless ticked — and then replaced on every track.
+        # A fresh beat (16 before the drop), so the one-cue-per-beat rule cannot
+        # be what decides it.
+        tmpl2 = [{"slot": s0, "event": "drop_1", "offset_beats": -16}]
+        res = wait(c, c.post("/api/tracks/cue/auto-batch",
+                             json={"track_ids": [gridded], "slots": tmpl2}).json()["id"])["result"]
+        check("an occupied slot is kept without Replace", res["cues_placed"] == 0, str(res))
+        tmpl2[0]["overwrite"] = True
+        res = wait(c, c.post("/api/tracks/cue/auto-batch",
+                             json={"track_ids": [gridded], "slots": tmpl2}).json()["id"])["result"]
+        names = {q.slot: q.name for q in a.track_cues(gridded).cues if q.slot is not None}
+        check("…and replaced with it", names.get(s0) == "Drop 1 -16" and res["cues_placed"] == 1,
+              f"{names} {res}")
+
+        r = c.post("/api/tracks/cue/auto-batch",
+                   json={"track_ids": [gridded], "slots": [{"slot": 99, "event": "outro"}]})
+        check("a template the bank cannot hold is refused up front", r.status_code == 400, r.text[:200])
+        r = c.post("/api/tracks/cue/auto-batch", json={"track_ids": [gridded], "slots": []})
+        check("an empty template is refused", r.status_code == 400, r.text[:200])
+
+        # One batch at a time ACROSS kinds.
+        main.grid_detect.detect_grid = lambda p, *a, **k: (time.sleep(0.05), fake_detect(p))[1]
+        jid = c.post("/api/tracks/grid/auto-batch",
+                     json={"track_ids": many, "replace_existing": True}).json()["id"]
+        r = c.post("/api/tracks/cue/auto-batch", json={"track_ids": [gridded], "slots": tmpl})
+        check("hotcues are refused while a grid run is going", r.status_code == 409, r.text[:200])
+        c.post(f"/api/jobs/{jid}/cancel")
+        wait(c, jid)
+
+        # Opening another library cancels a running batch.
+        main.structure.analyse = lambda p, m: (time.sleep(0.05), fake_analyse(p, m))[1]
+        gridded_many = [t.id for t in a.tracks if t.grid_marker_count > 0][:40]
+        jid = c.post("/api/tracks/cue/auto-batch",
+                     json={"track_ids": gridded_many, "slots": tmpl}).json()["id"]
+        time.sleep(0.1)
+        other = Path(d) / "other.nml"
+        shutil.copy2(REAL, other)
+        c.post("/api/library/open", json={"path": str(other)})
+        check("opening another library cancels the run", wait(c, jid)["state"] == "cancelled")
 
         check("nothing was written to disk (edits stay in memory until Save)",
               work.read_bytes() == REAL.read_bytes())
