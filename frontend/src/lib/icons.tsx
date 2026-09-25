@@ -85,6 +85,7 @@ const PATHS = {
   ),
   pencil: <path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4" strokeLinejoin="round" />,
   plus: <path d="M12 5v14M5 12h14" />,
+  grid: <path d="M5 3v18M10 3v18M15 3v18M20 3v18" />,
 } as const
 
 export type IconName = keyof typeof PATHS

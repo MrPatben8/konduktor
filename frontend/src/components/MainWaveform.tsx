@@ -13,6 +13,8 @@ interface Props {
   grid: BeatGrid | null
   /** Marker governing the playhead — drawn gold, its segment tinted. */
   activeMarker: number
+  /** Grid mode is on: draw the beat lines brighter. */
+  emphasizeGrid?: boolean
   loop: { start: number; end: number } | null
   /** Seconds across the view — the zoom level, owned by the parent so it
       survives track switches and persists to prefs. */
@@ -44,6 +46,7 @@ export function MainWaveform({
   cuePoint,
   grid,
   activeMarker,
+  emphasizeGrid = false,
   loop,
   secPerView,
   onZoomChange,
@@ -92,7 +95,7 @@ export function MainWaveform({
         drawLoop(ctx, timeToX(loop.start), timeToX(loop.end), h, dpr)
       }
       if (grid) {
-        drawBeatgrid(ctx, grid, startSec, endSec, w, h, dpr, activeMarker)
+        drawBeatgrid(ctx, grid, startSec, endSec, w, h, dpr, activeMarker, emphasizeGrid)
       }
       if (cues.length) {
         drawCues(ctx, cues, w, h, dpr, timeToX, true)
@@ -119,6 +122,29 @@ export function MainWaveform({
     const ro = new ResizeObserver(() => drawRef.current())
     ro.observe(wrap)
     return () => ro.disconnect()
+  }, [])
+
+  // Cmd/Ctrl + scroll zooms (a trackpad pinch arrives as ctrl+wheel too).
+  // Attached by hand because React's onWheel is passive, so it could not stop
+  // the page scrolling. Accumulated so a trackpad's many tiny deltas step the
+  // zoom as evenly as a mouse wheel's notches do.
+  const zoomRef = useRef({ secPerView, onZoomChange })
+  zoomRef.current = { secPerView, onZoomChange }
+  useEffect(() => {
+    const wrap = wrapRef.current
+    if (!wrap) return
+    let acc = 0
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return
+      e.preventDefault()
+      acc += e.deltaY
+      if (Math.abs(acc) < 40) return
+      const { secPerView: sec, onZoomChange: set } = zoomRef.current
+      set(Math.min(MAX_SEC, Math.max(MIN_SEC, acc > 0 ? sec * 2 : sec / 2)))
+      acc = 0
+    }
+    wrap.addEventListener('wheel', onWheel, { passive: false })
+    return () => wrap.removeEventListener('wheel', onWheel)
   }, [])
 
   // A press that doesn't move is a seek (map offset from centre to a time);

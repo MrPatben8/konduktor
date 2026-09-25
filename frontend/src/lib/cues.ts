@@ -255,6 +255,8 @@ export function drawBeatgrid(
   h: number,
   dpr: number,
   activeMarker: number,
+  /** Grid mode: the grid is what is being edited, so it is drawn brighter. */
+  emphasize = false,
 ): void {
   if (endSec <= startSec) return
   const span = endSec - startSec
@@ -295,7 +297,9 @@ export function drawBeatgrid(
       // Translucent white with no outline: the grid should read as a ruler laid
       // over the waveform, not bars cut through it. Downbeats are clearly
       // brighter, which is what grid editing needs to see.
-      ctx.fillStyle = downbeat ? 'rgba(255,255,255,0.62)' : 'rgba(255,255,255,0.26)'
+      ctx.fillStyle = downbeat
+        ? `rgba(255,255,255,${emphasize ? 0.9 : 0.62})`
+        : `rgba(255,255,255,${emphasize ? 0.5 : 0.26})`
       ctx.fillRect(x - Math.floor(lw / 2), 0, lw, h)
     }
   }

@@ -104,6 +104,14 @@ textarea,
   user-select: text;
 }
 
+/* Keyboard focus: a soft accent ring instead of the browser's hard outline,
+   which reads as a white box on glass. :focus-visible only, so a mouse click
+   leaves no ring behind. */
+:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-accent) 75%, transparent);
+  outline-offset: 2px;
+}
+
 input::placeholder,
 textarea::placeholder {
   color: var(--color-faint);

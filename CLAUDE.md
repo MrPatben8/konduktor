@@ -387,14 +387,31 @@ Two independent apps that talk over HTTP:
     browser via `@tauri-apps/plugin-shell` `open` — falls back to `window.open`
     outside Tauri; "Skip this version" persists `skippedUpdateVersion` to
     userprefs via `/api/prefs`; all failures are silent).
-  - **Prep strip** (DJ deck across the top of the window): `PrepStrip` owns it —
-    transport (play/pause, CUE), two waveforms (`MainWaveform` scrolling+zoomable
-    — its zoom is owned by `PrepStrip` so it survives track switches and persists,
-    `OverviewWaveform` whole-track), `LoopControls`, `HotcueBar`, `GridControls`
-    (BPM readout/editor, fine ±0.01 / coarse ±0.25 BPM nudge, /2·×2, tap tempo,
-    marker nudge, add/delete marker, lock, delete grid (confirmed) — all on the
-    marker **governing the playhead**, since a beatgrid is a marker list and
-    there is no separate marker selection; see "Beatgrid" below).
+  - **Prep strip** (DJ deck across the top of the window): `PrepStrip` owns it,
+    in three rows. **Header**: cover, title/artist · album · genre, a Read-only
+    badge, the readout well (ELAPSED / REMAIN to tenths, KEY, and `BpmReadout` —
+    click to type an exact BPM), SNAP, Analyze, Auto hotcues. **Waveforms**:
+    `MainWaveform` (scrolling; zoom +/− in its corner and Cmd/Ctrl+scroll, owned
+    by `PrepStrip` so it survives track switches and persists) over
+    `OverviewWaveform`. **Controls**: play, CUE, `LoopControls`, then EITHER
+    `HotcueBar` OR — in **Grid mode** — `GridEditStrip`, then `TempoControls`
+    (±0.01 / ±0.25, ÷2 ×2, tap, lock) and the Grid toggle. Every grid control acts
+    on the marker **governing the playhead**, since a beatgrid is a marker list
+    and there is no separate marker selection; see "Beatgrid" below.
+    - **One size for loops AND beat jump** (`beatSize`, 1/32–32, persisted as
+      `beatSize`; the old `beatJumpBeats` pref is read once on upgrade).
+      `LoopControls` has a BEAT / MAN switch: BEAT shows `− size +` (the size
+      key sets or clears a loop of that length; −/+ halve/double, resizing an
+      engaged beat loop from its locked start), MAN shows IN / OUT / toggle.
+      **‹ › (and ←/→) MOVE an engaged loop by its own length**, Traktor-style,
+      and only jump the playhead when no loop is engaged. The move sets the new
+      loop BEFORE seeking: `PlaybackEngine.seek` honours the loop in force, so
+      seeking first wraps the playhead back into the old loop.
+    - **Hotcue edits live on the pad's right-click menu** (type as one-click
+      choices, Rename…, Delete); there is no standalone type dropdown or delete
+      button. Rename re-sets the slot with its own start/type/length plus the
+      new name, since `set_cue` replaces a slot. A non-editable cue gets the
+      same menu disabled, not no menu.
     Prep libs live in `src/lib/`: `playbackEngine.ts` (Web Audio, seamless loops),
     `scratchEngine.ts` (drag-to-scratch), `waveform.ts` (frequency-colored
     analysis + paint), `beatgrid.ts` (the marker-list beat math — every
@@ -752,7 +769,7 @@ that number and nothing else — everything derives from it:
 - ✅ Track prep — audio playback, frequency-colored scrolling waveform, scratch,
   beatgrid display + editing, cue/hotcue create/jump/delete, loops; keyboard
   shortcuts (Space = play/pause, 1–8 = hotcues, Shift+1–8 = delete, Cmd/Ctrl+↑/↓ =
-  beat jump size). See "Prep engine".
+  loop/jump size). See "Prep engine".
 - ✅ Track prep Tier 2 — cue-point fine editing / audio export polish
 - ✅ Flexible beatgrids — the grid is a marker list end to end (marker-level
   commands, piecewise beat math, playhead-derived marker editing). Step 1 of the

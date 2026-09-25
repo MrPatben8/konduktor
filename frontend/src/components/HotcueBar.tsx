@@ -1,6 +1,6 @@
-import type { CSSProperties } from 'react'
+import { useRef, useState, type CSSProperties } from 'react'
 import type { CuePoint } from '../api'
-import { cueColor, cueGlyph, withAlpha } from '../lib/cues'
+import { CUE_TYPE_LABELS, cueColor, cueGlyph, withAlpha } from '../lib/cues'
 import { Icon } from '../lib/icons'
 
 interface Props {
@@ -12,6 +12,12 @@ interface Props {
   selectedSlot: number | null
   onSlotPress: (slot: number) => void
   onSlotRelease: (slot: number) => void
+  /** Right-click on a pad: the deck opens its Type / Rename / Delete menu. */
+  onSlotMenu: (slot: number, x: number, y: number) => void
+  /** The pad whose name is being edited in place, if any. */
+  renamingSlot: number | null
+  onRenameCommit: (slot: number, name: string) => void
+  onRenameCancel: () => void
 }
 
 const READONLY_LABELS: Record<string, string> = {
@@ -37,9 +43,16 @@ export function HotcueBar({
   selectedSlot,
   onSlotPress,
   onSlotRelease,
+  onSlotMenu,
+  renamingSlot,
+  onRenameCommit,
+  onRenameCancel,
 }: Props) {
   return (
-    <div className="flex min-w-0 flex-1 items-stretch gap-1.5">
+    // The group takes the row's spare width; each pad is capped, so on a wide
+    // window the pads keep a pad's proportions and the space is left empty
+    // rather than stretching them into bars.
+    <div className="flex min-w-0 flex-1 items-center gap-1.5">
       {Array.from({ length: slotCount }, (_, i) => i).map((slot) => {
         const cue = cues.find((c) => c.role === 'hotcue' && c.slot === slot) ?? null
         // Gate on `editable`, never on why: a platform-owned cue is a read-only
@@ -51,7 +64,13 @@ export function HotcueBar({
         return (
           <button
             key={slot}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              onSlotMenu(slot, e.clientX, e.clientY)
+            }}
             onPointerDown={(e) => {
+              // Right button opens the menu; it must not also trigger the pad.
+              if (e.button !== 0) return
               e.preventDefault()
               // Capture so the matching release fires even if the pointer drifts
               // off the button before it's let go.
@@ -72,7 +91,7 @@ export function HotcueBar({
             }
             style={color ? padStyle(color, selected) : undefined}
             className={
-              'relative flex min-w-0 flex-1 flex-col items-start justify-center rounded-[11px] px-2 text-left transition-[filter,background-color] ' +
+              'relative flex h-11 min-w-0 max-w-[7.5rem] flex-1 flex-col items-start justify-center gap-1 rounded-xl px-2.5 text-left transition-[filter,background-color] ' +
               (color
                 ? 'hover:brightness-115'
                 : 'bg-white/[0.035] text-faint shadow-[inset_0_0_0_1px_rgb(255_255_255/0.07)] hover:bg-ink-800') +
@@ -85,9 +104,23 @@ export function HotcueBar({
             >
               {locked ? <Icon name="lock" size={11} strokeWidth={2.2} /> : slotLabel(slot)}
             </span>
-            <span className="mt-1 w-full truncate text-[11px] leading-none text-text/85">
-              {cue ? (cue.name && cue.name !== 'n.n.' ? cue.name : ' ') : ''}
-            </span>
+            {renamingSlot === slot && cue ? (
+              <RenameField
+                initial={cue.name && cue.name !== 'n.n.' ? cue.name : ''}
+                onCommit={(name) => onRenameCommit(slot, name)}
+                onCancel={onRenameCancel}
+              />
+            ) : (
+              // A cue without a name shows its type, dimmed, rather than a
+              // blank line — the pad still says what it holds.
+              <span
+                className={`w-full truncate text-[11px] leading-none ${
+                  cue && cue.name && cue.name !== 'n.n.' ? 'text-text/85' : 'text-text/50'
+                }`}
+              >
+                {cue ? (cue.name && cue.name !== 'n.n.' ? cue.name : CUE_TYPE_LABELS[cue.type]) : 'Empty'}
+              </span>
+            )}
             {glyph && (
               <span
                 className="absolute right-1.5 top-1 text-[9px] leading-none opacity-90"
@@ -120,4 +153,43 @@ function padStyle(color: string, selected: boolean): CSSProperties {
       `0 0 ${selected ? 24 : 18}px -4px ${withAlpha(color, selected ? 0.8 : 0.55)}`,
     ].join(', '),
   }
+}
+
+/** The pad's name, edited in place. Enter or clicking away commits; Esc cancels. */
+function RenameField({
+  initial,
+  onCommit,
+  onCancel,
+}: {
+  initial: string
+  onCommit: (name: string) => void
+  onCancel: () => void
+}) {
+  const [val, setVal] = useState(initial)
+  // Enter commits and unmounts the field, which can fire a trailing blur.
+  const done = useRef(false)
+  const finish = (commit: boolean) => {
+    if (done.current) return
+    done.current = true
+    if (commit && val.trim() !== initial) onCommit(val.trim())
+    else onCancel()
+  }
+  return (
+    <input
+      autoFocus
+      value={val}
+      onChange={(e) => setVal(e.target.value)}
+      onFocus={(e) => e.currentTarget.select()}
+      onBlur={() => finish(true)}
+      // The pad is a button: keep its press/preview handlers out of the field.
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        e.stopPropagation() // digits and Space must type, not trigger the deck
+        if (e.key === 'Enter') finish(true)
+        else if (e.key === 'Escape') finish(false)
+      }}
+      className="w-full min-w-0 rounded bg-well px-1 text-[11px] leading-4 text-text outline-none ring-1 ring-accent"
+    />
+  )
 }

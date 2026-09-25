@@ -1,94 +1,162 @@
 import { Icon } from '../lib/icons'
 
-interface Props {
-  hasGrid: boolean // beat-loops need a beatgrid; buttons disable without one
-  active: boolean // a loop is currently engaged
-  activeBeats: number | null // size of the active loop (null for a manual loop)
-  canToggle: boolean // a loop region exists to enable/disable
-  snap: boolean
-  onToggleSnap: () => void
-  onSetLoop: (beats: number) => void
-  onLoopIn: () => void
-  onLoopOut: () => void
-  onToggleActive: () => void
-}
+/** One size, 1/32 → 32 beats, shared by beat loops AND beat jump: the number a
+ *  DJ has in their head ("4 beats") should not differ between the two. */
+export const LOOP_SIZES = [1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32]
 
-// All fixed beat-loop sizes, 1/32 → 32 beats, shown at once.
-const SIZES = [1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32]
-
-function label(size: number): string {
+export function sizeLabel(size: number): string {
   return size < 1 ? `1/${Math.round(1 / size)}` : String(size)
 }
 
-const CELL =
-  'flex items-center justify-center rounded-lg font-mono text-xs font-semibold transition-colors select-none'
-const IDLE = 'btn-glass text-text'
-const OFF = 'disabled:opacity-30'
-// A lit green key: an engaged loop should read as ON from across the room.
+export type LoopMode = 'beat' | 'manual'
+
+interface Props {
+  mode: LoopMode
+  onMode: (mode: LoopMode) => void
+  hasGrid: boolean // beat loops and jumps are sized in beats; inert without a grid
+  ready: boolean
+  /** The shared loop/jump size, in beats. */
+  size: number
+  onSmaller: () => void
+  onBigger: () => void
+  /** A loop is engaged right now (either kind). */
+  loopActive: boolean
+  /** The engaged loop is a beat loop of exactly `size` — the size key is lit. */
+  sizeLit: boolean
+  onToggleSize: () => void
+  // manual mode
+  canToggle: boolean // a loop region exists to switch on/off
+  onLoopIn: () => void
+  onLoopOut: () => void
+  onToggleLoop: () => void
+  /** ‹ ›: move an engaged loop by its own length, else jump by `size`. */
+  onMove: (dir: -1 | 1) => void
+}
+
 const LIT =
   'bg-gradient-to-b from-[#7bf0ad] to-mint text-ink-950 shadow-[inset_0_1px_0_rgb(255_255_255/0.6),0_0_14px_rgb(61_220_132/0.55)]'
+const KEY = 'flex items-center justify-center rounded-[9px] transition-colors disabled:opacity-30'
+// BOTH modes' clusters are this wide, so switching BEAT ⇄ MAN never shifts
+// the pads and tempo controls to their right.
+const CLUSTER = 'well flex h-10 w-[8.5rem] shrink-0 items-center gap-0.5 rounded-xl p-[3px]'
 
+/**
+ * The deck's loop + jump cluster: a BEAT / MAN switch, then either the beat
+ * size (− size +, the size itself toggling a loop of that length) or the manual
+ * IN / OUT / toggle, then ‹ › which move an engaged loop or jump the playhead.
+ *
+ * Presentational: PrepStrip owns every piece of state and does the seeking.
+ */
 export function LoopControls({
+  mode,
+  onMode,
   hasGrid,
-  active,
-  activeBeats,
+  ready,
+  size,
+  onSmaller,
+  onBigger,
+  loopActive,
+  sizeLit,
+  onToggleSize,
   canToggle,
-  snap,
-  onToggleSnap,
-  onSetLoop,
   onLoopIn,
   onLoopOut,
-  onToggleActive,
+  onToggleLoop,
+  onMove,
 }: Props) {
+  const atMin = size <= LOOP_SIZES[0]
+  const atMax = size >= LOOP_SIZES[LOOP_SIZES.length - 1]
+  const what = loopActive ? 'Move the loop' : `Jump ${sizeLabel(size)} beat${size === 1 ? '' : 's'}`
+  // A beat jump needs a grid; moving a manual loop does not.
+  const canMove = ready && (loopActive || hasGrid)
+
+  const tab = (m: LoopMode, text: string, title: string) => (
+    <button
+      onClick={() => onMode(m)}
+      title={title}
+      aria-pressed={mode === m}
+      className={`h-[17px] rounded-[7px] px-[7px] text-[9px] font-bold tracking-[0.08em] transition-colors ${
+        mode === m ? 'btn-primary' : 'text-faint hover:text-text'
+      }`}
+    >
+      {text}
+    </button>
+  )
 
   return (
-    <div className="flex h-10 shrink-0 items-center gap-1.5 pt-2">
-      <span className="flex w-12 shrink-0 items-center text-[10px] font-semibold uppercase tracking-wider text-faint">
-        Loop
-      </span>
-
-      <div className="well flex h-full min-w-0 flex-1 items-stretch gap-0.5 rounded-xl p-[3px]">
-      {SIZES.map((size) => {
-        const isActive = active && activeBeats === size
-        return (
-          <button
-            key={size}
-            onClick={() => onSetLoop(size)}
-            disabled={!hasGrid}
-            title={hasGrid ? `${label(size)}-beat loop` : 'No beatgrid'}
-            className={`${CELL} ${OFF} flex-1 ${
-              isActive ? LIT : 'text-muted hover:bg-ink-800 hover:text-text'
-            }`}
-          >
-            {label(size)}
-          </button>
-        )
-      })}
+    <div className="flex shrink-0 items-center gap-2">
+      <div role="group" aria-label="Loop mode" className="well flex h-10 flex-col justify-center gap-0.5 rounded-[10px] p-0.5">
+        {tab('beat', 'BEAT', 'Beat loops, sized in beats')}
+        {tab('manual', 'MAN', 'Manual loops: set IN and OUT')}
       </div>
 
-      <button onClick={onLoopIn} className={`${CELL} ${IDLE} h-full w-11`} title="Loop in at playhead">
-        IN
-      </button>
-      <button onClick={onLoopOut} className={`${CELL} ${IDLE} h-full w-11`} title="Loop out at playhead">
-        OUT
-      </button>
-      <button
-        onClick={onToggleActive}
-        disabled={!canToggle}
-        title={active ? 'Disable loop' : 'Enable loop'}
-        className={`${CELL} ${OFF} h-full w-11 ${active ? LIT : IDLE}`}
-      >
-        <Icon name="loop" size={15} />
-      </button>
-      <button
-        onClick={onToggleSnap}
-        title="Snap to the nearest beat"
-        className={`${CELL} h-full w-14 font-sans text-[11px] uppercase tracking-wider ${
-          snap ? 'is-selected text-text' : `${IDLE} text-muted`
-        }`}
-      >
-        Snap
-      </button>
+      {mode === 'beat' ? (
+        <div role="group" aria-label="Loop size" className={`${CLUSTER} font-mono`}>
+          <button
+            onClick={onSmaller}
+            disabled={atMin}
+            title="Halve the size (Cmd/Ctrl+↓)"
+            className={`${KEY} h-[34px] w-7 text-[15px] text-muted hover:bg-ink-800 hover:text-text`}
+          >
+            −
+          </button>
+          <button
+            onClick={onToggleSize}
+            disabled={!hasGrid || !ready}
+            title={hasGrid ? `${sizeLabel(size)}-beat loop — click to switch on or off` : 'No beatgrid'}
+            className={`${KEY} h-[34px] min-w-0 flex-1 px-2 text-sm font-semibold ${
+              sizeLit ? LIT : 'btn-glass text-text'
+            }`}
+          >
+            {sizeLabel(size)}
+          </button>
+          <button
+            onClick={onBigger}
+            disabled={atMax}
+            title="Double the size (Cmd/Ctrl+↑)"
+            className={`${KEY} h-[34px] w-7 text-[15px] text-muted hover:bg-ink-800 hover:text-text`}
+          >
+            +
+          </button>
+        </div>
+      ) : (
+        <div role="group" aria-label="Manual loop" className={`${CLUSTER} text-xs font-semibold`}>
+          <button onClick={onLoopIn} disabled={!ready} title="Loop in at the playhead" className={`${KEY} btn-glass h-[34px] min-w-0 flex-1 text-text`}>
+            IN
+          </button>
+          <button onClick={onLoopOut} disabled={!ready} title="Loop out at the playhead" className={`${KEY} btn-glass h-[34px] min-w-0 flex-1 text-text`}>
+            OUT
+          </button>
+          <button
+            onClick={onToggleLoop}
+            disabled={!canToggle}
+            title={loopActive ? 'Switch the loop off' : 'Switch the loop on'}
+            aria-pressed={loopActive}
+            className={`${KEY} h-[34px] min-w-0 flex-1 ${loopActive ? LIT : 'btn-glass text-text'}`}
+          >
+            <Icon name="loop" size={15} />
+          </button>
+        </div>
+      )}
+
+      <div role="group" aria-label="Jump or move loop" className="btn-glass flex h-10 items-center rounded-xl">
+        <button
+          onClick={() => onMove(-1)}
+          disabled={!canMove}
+          title={`${what} back (←)`}
+          className="flex h-10 w-[34px] items-center justify-center text-text disabled:opacity-30"
+        >
+          <Icon name="chevronLeft" size={15} strokeWidth={2.2} />
+        </button>
+        <button
+          onClick={() => onMove(1)}
+          disabled={!canMove}
+          title={`${what} forward (→)`}
+          className="flex h-10 w-[34px] items-center justify-center text-text disabled:opacity-30"
+        >
+          <Icon name="chevronRight" size={15} strokeWidth={2.2} />
+        </button>
+      </div>
     </div>
   )
 }

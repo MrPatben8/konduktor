@@ -31,12 +31,14 @@ function sections(slots: number): Section[] {
       rows: [
         { keys: [['Space']], action: 'Play / pause' },
         { keys: [['C']], action: 'CUE — jump back, set, or hold to preview' },
-        { keys: [['←'], ['→']], action: 'Beat jump back / forward' },
-        { keys: [[MOD, '↓'], [MOD, '↑']], action: 'Smaller / larger beat jump' },
+        { keys: [['←'], ['→']], action: 'Beat jump back / forward — or move the loop, while one plays' },
+        { keys: [[MOD, '↓'], [MOD, '↑']], action: 'Halve / double the loop and jump size' },
         { keys: [['Shift', '←'], ['Shift', '→']], action: 'Previous / next grid marker' },
         { keys: [[pads]], action: 'Hotcue — set if empty, else jump (hold to preview)' },
         { keys: [['Shift', pads]], action: 'Delete hotcue' },
         { keys: [['Drag waveform']], action: 'Scratch' },
+        { keys: [[MOD, 'Scroll']], action: 'Zoom the waveform' },
+        { keys: [['Right-click', 'pad']], action: 'Hotcue type, rename, delete' },
       ],
     },
     {
