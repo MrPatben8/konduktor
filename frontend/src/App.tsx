@@ -10,7 +10,7 @@ import {
 } from './lib/trackColumns'
 import { Sidebar, type Source } from './components/Sidebar'
 import { Toolbar, emptyFilters, type Filters } from './components/Toolbar'
-import { TrackTable, PlaylistTable } from './components/TrackTable'
+import { TrackTable } from './components/TrackTable'
 import { StatusBar } from './components/StatusBar'
 import { Toast, type ToastMsg } from './components/Toast'
 import { CollectionPicker } from './components/CollectionPicker'
@@ -391,10 +391,35 @@ export default function App() {
     [source, qc, onError],
   )
   const removeFromPlaylist = useCallback(
-    (trackId: string) =>
-      reorderPlaylist(tracks.filter((t) => t.id !== trackId).map((t) => t.id)),
+    (ids: string[]) => {
+      const gone = new Set(ids)
+      reorderPlaylist(tracks.filter((t) => !gone.has(t.id)).map((t) => t.id))
+    },
     [reorderPlaylist, tracks],
   )
+  // The open playlist's node, for its own flags: a smart playlist has a track
+  // list but no manual order, and each platform says so per node.
+  const playlistNode = useMemo(() => {
+    if (source.kind !== 'playlist') return null
+    const find = (nodes: PlaylistNode[]): PlaylistNode | null => {
+      for (const n of nodes) {
+        if (n.id === source.id) return n
+        const hit = find(n.children)
+        if (hit) return hit
+      }
+      return null
+    }
+    return find(playlists.data ?? [])
+  }, [source, playlists.data])
+  const playlistEditable = canEdit && !!playlistNode?.can_reorder
+  // A playlist's own 1-based positions, so the # column still means "where in
+  // the playlist" once the view is sorted or filtered.
+  const playlistPositions = useMemo(() => {
+    if (source.kind !== 'playlist') return undefined
+    const m = new Map<string, number>()
+    tracks.forEach((t, i) => !m.has(t.id) && m.set(t.id, i + 1))
+    return m
+  }, [source.kind, tracks])
 
   const gridJob = useQuery({
     queryKey: ['job', gridJobId],
@@ -567,6 +592,18 @@ export default function App() {
             // A device's track ids belong to the stick, not the collection, so
             // there is nothing they could be added to.
             ...(viewingDevice ? [] : [{ label: 'Add to', submenu: addToItems(menu.ids) }]),
+            ...(playlistEditable
+              ? [
+                  {
+                    label: menu.ids.length > 1 ? `Remove ${menu.ids.length} from playlist` : 'Remove from playlist',
+                    danger: true,
+                    onClick: () => {
+                      removeFromPlaylist(menu.ids)
+                      setSelected(new Set())
+                    },
+                  },
+                ]
+              : []),
             // Only on the export's ROOT view. Inside a referenced playlist there
             // is nothing to remove: the reference is live, and per-track removal
             // would need an exclusion list — hidden state deciding what a future
@@ -715,9 +752,13 @@ export default function App() {
               </>
             ) : (
               <span className="text-xs text-faint">
-                {filtersActive
-                  ? `${filtered.length} of ${tracks.length} tracks · × to remove · clear the filter to reorder`
-                  : `${tracks.length} tracks · drag ⠿ to reorder · × to remove`}
+                {!playlistEditable
+                  ? `${filtersActive ? `${filtered.length} of ` : ''}${tracks.length} tracks`
+                  : filtersActive || sorting.length > 0
+                    ? `${filtersActive ? `${filtered.length} of ` : ''}${tracks.length} tracks · clear the ${
+                        filtersActive ? 'filter' : 'sort'
+                      } to reorder`
+                    : `${tracks.length} tracks · drag rows to reorder · Delete to remove`}
               </span>
             )}
           </div>
@@ -828,9 +869,19 @@ export default function App() {
               <div className="text-sm text-faint">Try clearing some filters.</div>
             </div>
           ) : (
-            <PlaylistTable
+            <TrackTable
               tracks={filtered}
-              onRowContextMenu={(track, x, y) => openMenu(track, x, y, false)}
+              sorting={sorting}
+              onSortingChange={setSorting}
+              selection={{ selected, onChange: setSelected }}
+              positions={playlistPositions}
+              reorder={
+                playlistEditable
+                  ? { enabled: !filtersActive && sorting.length === 0, onReorder: reorderPlaylist }
+                  : undefined
+              }
+              onRemove={playlistEditable ? removeFromPlaylist : undefined}
+              onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
               onPlay={playTrack}
               onEditField={canEdit ? editField : undefined}
               activeTrackId={prepTrack?.id ?? null}
@@ -839,9 +890,6 @@ export default function App() {
               columnSizing={columnSizing}
               onColumnOrderChange={setColumnOrder}
               onColumnSizingChange={setColumnSizing}
-              onReorder={reorderPlaylist}
-              onRemove={removeFromPlaylist}
-              canReorder={!filtersActive}
             />
           )}
 
@@ -851,7 +899,7 @@ export default function App() {
           showing={filtered.length}
           total={tracks.length}
           sourceName={viewName}
-          selected={isAll || viewingExport ? selected.size : 0}
+          selected={viewingDevice ? 0 : selected.size}
           job={
             gridJobId
               ? {

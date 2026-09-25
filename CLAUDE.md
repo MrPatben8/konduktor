@@ -315,9 +315,10 @@ Two independent apps that talk over HTTP:
     recomputed on every read, because the references are LIVE. Two deliberate
     omissions: a referenced playlist has **no per-track remove** — that would
     need an exclusion list, i.e. hidden state deciding future exports — and an
-    export's views use `TrackTable`, **never `PlaylistTable`**, whose `×` removes
-    from the user's REAL playlist: same pixels, opposite meaning. Removal from an
-    export is on the context menu, and only on its root view. Adding is not gated
+    export's views pass `TrackTable` **no `onRemove` / `reorder`** — in a
+    playlist those act on the user's REAL playlist: same pixels, opposite
+    meaning. Removal from an export is on the context menu, and only on its root
+    view. Adding is not gated
     on the library being writable, since an export set is Konduktor's own data.
     `ExportDialog` shows unsupported targets **disabled with a reason** rather
     than hiding them), `CollectionPicker` (**two steps: which PLATFORM, then which
@@ -336,22 +337,24 @@ Two independent apps that talk over HTTP:
     edits, since the adapter holds them in a native model that opening another
     library replaces — plus the playlist tree +
     create/rename/delete), `SaveBar`, `Toolbar` (search/filters + `ColumnsMenu`),
-    `TrackTable` (All Tracks — TanStack Table + **virtualized** grid; per-row play
-    button, configurable columns, inline double-click editing, and **Finder-style
-    row selection** — click / Cmd-Ctrl+click / Shift+click over the SORTED rows,
-    ↑/↓ (Shift extends), Cmd/Ctrl+A, Esc; shortcuts stand down while an
-    `aria-modal` dialog or `role="menu"` is open, so new dialogs need
+    `TrackTable` (**the one track list** — All Tracks, playlists, exports and
+    devices. TanStack Table + **virtualized** grid; per-row play button,
+    configurable columns, header sorting, inline double-click editing, and
+    **Finder-style row selection** — click / Cmd-Ctrl+click / Shift+click over
+    the SORTED rows, ↑/↓ (Shift extends), Cmd/Ctrl+A, Esc; shortcuts stand down
+    while an `aria-modal` dialog or `role="menu"` is open, so new dialogs need
     `aria-modal="true"`. Right-click acts on the whole selection; single-track
-    items are hidden for a multi-selection) and `PlaylistTable`
-    (playlists — same columns/cells/play/inline-edit via shared `HeaderRow`/
-    `RowCells`/`PlayButton`, so the two views look identical, PLUS dnd-kit
-    drag-to-reorder + a remove button, header sorting disabled so the manual order
-    stands; `canReorder` is false while a filter/search is active so a partial order
-    can't overwrite the full entry list). `PlaylistTable` is non-virtualized
-    (playlists are small) and feeds `useReactTable` a **stable** empty `sorting`
-    array (`NO_SORTING`): a controlled `state.sorting` that's a fresh `[]` each
-    render with no `onSortingChange` makes TanStack Table re-sync its internal
-    state every commit → infinite re-render loop. Keep that reference stable.
+    items are hidden for a multi-selection. A view with a manual order passes
+    `reorder` (drag rows — the whole selection moves as a block — with an
+    insertion line and edge auto-scroll); `enabled` is false while a sort or
+    filter is active, so a partial or re-sorted order can never overwrite the
+    real entry list. `onRemove` wires Delete/Backspace; `positions` makes the #
+    column show playlist positions. Playlists gate both on the node's own
+    `can_reorder`, so smart playlists get neither. **Row reorder is hand-rolled,
+    not dnd-kit sortable**: a SortableContext around the virtualizer loops on its
+    flushSync-driven measurement — which is why playlists were once a separate,
+    non-virtualized `PlaylistTable`. Fixed 44 px rows make the drop index just
+    pointer-y / ROW_HEIGHT. dnd-kit still reorders the header's columns.)
     `AutoCueDialog` (the Auto Hotcues slot template: event + beat offset per
     slot, a per-slot Replace tick for occupied slots — never remembered, since
     overwriting is a decision about THIS track — and the template itself
