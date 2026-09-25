@@ -651,7 +651,12 @@ frontend at `http://localhost:5173`.
 - Frontend: functional components, TanStack Query for fetching, Tailwind
   utility classes with the `ink-*`/`well`/`accent`/`gold`/`mint`/`pink` tokens
   and the material classes from `index.css` (see "Theme"). Icons come from
-  `lib/icons.tsx`, never emoji. Keep `api.ts` types aligned with `schemas.py`.
+  `lib/icons.tsx`, never emoji; a platform's own mark comes from
+  `lib/platformIcons.tsx` (`<PlatformIcon platform=…>` — single-colour marks
+  redrawn from each platform's app icon, masks keyed by `useId` since one page
+  can show a mark twice). That file is a lookup of display ASSETS by platform
+  id, not platform branching; an unknown id falls back to a generic mark, so a
+  new adapter needs no change there to appear. Keep `api.ts` types aligned with `schemas.py`.
 
 ## Theme — "dark liquid glass"
 
@@ -686,6 +691,11 @@ easy to break:
   the first time a panel opens it. Small popovers anchored to a control inside a
   scrolling list should open the shared `ContextMenu` instead (as the playlist
   row's "Add to export" does) — a popover inside the list is clipped by it.
+- **A `.glass` / `.glass-overlay` box must never be the element that scrolls.**
+  Its tint, blur and rim are pseudo-elements sized to the box, so they scroll
+  away with the first screenful and leave later content on bare background (the
+  column chooser's last items did). Give the glass frame `overflow-hidden` and
+  scroll an inner element — as every dialog and `ContextMenu` do.
 - **The accent is `oklch(0.8 0.11 var(--accent-hue))`** — the cover's hue at a
   FIXED lightness and chroma, so dark text on it keeps its contrast whatever is
   loaded. `lib/ambient.ts` sets `--accent-hue` and `--amb-1..4` on `<html>`;

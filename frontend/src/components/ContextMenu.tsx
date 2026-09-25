@@ -21,6 +21,9 @@ interface Props {
 
 const SUBMENU_WIDTH = 240
 const SUBMENU_MAX_HEIGHT = 288
+// A long menu (the header's column chooser lists every column) scrolls rather
+// than running the height of the window.
+const MENU_MAX_HEIGHT = 400
 
 // Lightweight fixed-position menu. Closes on outside click, scroll, or Escape.
 export function ContextMenu({ x, y, items, onClose }: Props) {
@@ -67,7 +70,11 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
         className="min-w-[160px]"
         style={(() => {
           const top = Math.min(y, window.innerHeight - 100)
-          return { top, left: Math.min(x, window.innerWidth - 180), maxHeight: window.innerHeight - top - 8 }
+          return {
+            top,
+            left: Math.min(x, window.innerWidth - 180),
+            maxHeight: Math.min(MENU_MAX_HEIGHT, window.innerHeight - top - 8),
+          }
         })()}
       />
     </div>,
@@ -102,10 +109,15 @@ function MenuPanel({
 
   return (
     <>
+      {/* The glass (tint, blur, rim) is painted by pseudo-elements of THIS box,
+          so it must not be the one that scrolls: its ::before/::after would
+          scroll away with the first screenful of items and leave the rest on
+          bare background. The frame stays put; the inner list scrolls. */}
       <div
-        className={`glass-overlay fixed z-[70] overflow-y-auto rounded-2xl p-1.5 ${className}`}
+        className={`glass-overlay fixed z-[70] flex flex-col overflow-hidden rounded-2xl ${className}`}
         style={style}
       >
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5">
         {items.map((item, i) => {
           if ('separator' in item) {
             return <div key={i} className="mx-2 my-1 border-t border-line" />
@@ -181,6 +193,7 @@ function MenuPanel({
             </button>
           )
         })}
+        </div>
       </div>
       {open && openItem && 'submenu' in openItem && (
         <MenuPanel items={openItem.submenu} onClose={onClose} style={open.style} />

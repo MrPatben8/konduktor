@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api, type CollectionCandidate, type CollectionStatus, type PlatformOption } from '../api'
 import { FileBrowser, useFsListing } from './FileBrowser'
 import { browsePrompt, platformAvailability } from '../lib/platformCopy'
+import { Icon } from '../lib/icons'
+import { PlatformIcon } from '../lib/platformIcons'
 
 /**
  * Choose a library to open, in two steps: WHICH PLATFORM, then which library.
@@ -35,13 +37,16 @@ function formatWhen(sec: number | null): string {
 
 function OptionCard({
   icon,
+  lit,
   title,
   subtitle,
   disabled,
   busy,
   onClick,
 }: {
-  icon: string
+  icon: ReactNode
+  /** A small lit dot on the icon tile: "something is here". */
+  lit?: boolean
   title: string
   subtitle: string
   disabled?: boolean
@@ -52,14 +57,24 @@ function OptionCard({
     <button
       disabled={disabled || busy}
       onClick={onClick}
-      className="flex w-full items-center gap-3 rounded-lg border border-line bg-ink-850 px-4 py-3 text-left transition-colors hover:border-accent hover:bg-ink-800 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line disabled:hover:bg-ink-850"
+      className="btn-glass group flex w-full items-center gap-3.5 rounded-2xl px-3 py-3 text-left disabled:cursor-not-allowed disabled:opacity-40"
     >
-      <span className="text-xl">{icon}</span>
+      <span className="well relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-text">
+        {icon}
+        {lit && (
+          <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-mint shadow-[0_0_8px_var(--color-mint)] ring-2 ring-[rgb(12_14_24)]" />
+        )}
+      </span>
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium text-text">{title}</div>
+        <div className="text-sm font-semibold text-text">{title}</div>
         <div className="truncate text-xs text-faint">{subtitle}</div>
       </div>
-      <span className="text-faint">›</span>
+      <Icon
+        name="chevronRight"
+        size={14}
+        strokeWidth={2.2}
+        className="text-faint transition-colors group-hover:text-text"
+      />
     </button>
   )
 }
@@ -124,6 +139,11 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
       <div className="glass flex h-[600px] w-full max-w-2xl flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center gap-3 border-b border-line px-5 py-4">
+          {platform && (
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-ink-800 text-text">
+              <PlatformIcon platform={platform.platform} size={22} />
+            </span>
+          )}
           <div className="min-w-0 flex-1">
             <div className="text-[15px] font-semibold tracking-tight">
               {platform ? `Select your ${platform.name} library` : 'Select your DJ platform'}
@@ -133,23 +153,25 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
           {step === 'browse' && (
             <button
               onClick={() => setStep('library')}
-              className="rounded-md px-2.5 py-1.5 text-sm text-muted hover:bg-ink-800 hover:text-text"
+              className="flex items-center gap-1 rounded-full px-3 py-1.5 text-sm text-muted hover:bg-ink-800 hover:text-text"
             >
-              ‹ Back
+              <Icon name="chevronLeft" size={13} strokeWidth={2.2} />
+              Back
             </button>
           )}
           {step === 'library' && (
             <button
               onClick={goPlatform}
-              className="rounded-md px-2.5 py-1.5 text-sm text-muted hover:bg-ink-800 hover:text-text"
+              className="flex items-center gap-1 rounded-full px-3 py-1.5 text-sm text-muted hover:bg-ink-800 hover:text-text"
             >
-              ‹ Platforms
+              <Icon name="chevronLeft" size={13} strokeWidth={2.2} />
+              Platforms
             </button>
           )}
           {onCancel && (
             <button
               onClick={onCancel}
-              className="rounded-md px-2.5 py-1.5 text-sm text-muted hover:bg-ink-800 hover:text-text"
+              className="rounded-full px-3 py-1.5 text-sm text-muted hover:bg-ink-800 hover:text-text"
             >
               Cancel
             </button>
@@ -166,7 +188,8 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
             {platforms.data?.map((p) => (
               <OptionCard
                 key={p.platform}
-                icon={p.removable ? '⬒' : p.found > 0 ? '●' : '○'}
+                icon={<PlatformIcon platform={p.platform} size={26} />}
+                lit={p.found > 0}
                 title={p.name}
                 subtitle={platformAvailability(p)}
                 onClick={() => {
@@ -180,7 +203,7 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
           /* ---- Step 2: which library of that platform ---- */
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-5">
             <OptionCard
-              icon="✨"
+              icon={<Icon name="sparkle" size={20} />}
               title="Automatic"
               subtitle={
                 auto
@@ -196,7 +219,7 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
               onClick={() => auto && open.mutate(auto.path)}
             />
             <OptionCard
-              icon="🕘"
+              icon={<Icon name="history" size={20} />}
               title="Open last library"
               subtitle={
                 recent
@@ -210,7 +233,7 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
               onClick={() => recent && open.mutate(recent.path)}
             />
             <OptionCard
-              icon="📂"
+              icon={<Icon name="folderOpen" size={20} />}
               title="Find library manually"
               subtitle={
                 picksDirectory
@@ -234,7 +257,7 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
                       key={c.path}
                       disabled={open.isPending}
                       onClick={() => open.mutate(c.path)}
-                      className="flex w-full items-center gap-2 rounded-md border border-line bg-ink-850 px-3 py-2 text-left text-sm text-muted hover:border-accent hover:text-text disabled:opacity-40"
+                      className="btn-glass flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-muted hover:text-text disabled:opacity-40"
                     >
                       <span className="truncate">{c.label}</span>
                       <span className="ml-auto shrink-0 text-[11px] text-faint">
@@ -247,7 +270,7 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
             )}
 
             {openError && (
-              <div className="rounded-md border border-pink/40 bg-ink-850 px-3 py-2 text-xs text-pink">
+              <div className="rounded-xl bg-pink/10 px-3 py-2 text-xs text-pink shadow-[inset_0_0_0_1px_rgb(255_122_154/0.35)]">
                 {openError}
               </div>
             )}
@@ -286,7 +309,7 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
             {/* Manual path + errors */}
             <div className="border-t border-line px-4 py-3">
               {openError && (
-                <div className="mb-2 rounded-md border border-pink/40 bg-ink-850 px-3 py-2 text-xs text-pink">
+                <div className="mb-2 rounded-xl bg-pink/10 px-3 py-2 text-xs text-pink shadow-[inset_0_0_0_1px_rgb(255_122_154/0.35)]">
                   {openError}
                 </div>
               )}
