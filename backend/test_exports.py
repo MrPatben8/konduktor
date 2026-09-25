@@ -179,6 +179,29 @@ exports.delete(LIB, s1.id)
 check("the set is gone", exports.get(LIB, s1.id) is None)
 check("the destination folder is NOT touched", (dest / "already-there.txt").is_file())
 
+print("== a path rewrite carries every set's track ids with it ==")
+# Through the ROUTE, not exports.retarget: the route is what joins the adapter's
+# renames to the sets, and it once 500'd on every call with no test to notice.
+from fastapi.testclient import TestClient  # noqa: E402
+
+import konduktor.main as main  # noqa: E402
+
+ad, lib = STATE.adapter, STATE.library_id
+prefix = ad.path_prefix_suggestions()["primary"]
+loose = next(t.id for t in ad.tracks if str(ad.audio_path(t.id) or "").startswith(prefix))
+s3 = exports.create(lib, name="Remapped", target="traktor", destination=str(work / "remapped"))
+exports.add(lib, s3.id, track_ids=[loose])
+r = TestClient(main.app, raise_server_exceptions=False).post(
+    "/api/library/remap-paths", json={"from": prefix, "to": "/Volumes/KonduktorTest"}
+)
+check("the route answers 200", r.status_code == 200, r.text[:300])
+check("and rewrote tracks", r.status_code == 200 and r.json()["rewritten"] > 0, r.text[:300])
+followed = exports.get(lib, s3.id).track_ids
+check("the set no longer holds the old id", loose not in followed, str(followed))
+check("it holds the track's NEW id",
+      len(followed) == 1 and ad.track(followed[0]) is not None
+      and str(ad.audio_path(followed[0])).startswith("/Volumes/KonduktorTest"), str(followed))
+
 print("\n" + ("❌ FAILED" if failed else "✅ PASSED"))
 _TMP.cleanup()
 raise SystemExit(1 if failed else 0)

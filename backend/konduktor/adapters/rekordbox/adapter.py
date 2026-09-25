@@ -220,7 +220,7 @@ class RekordboxAdapter:
             "samples": samples,
         }
 
-    def remap_locations(self, mapping: PathMapping) -> int:
+    def remap_locations(self, mapping: PathMapping) -> dict[str, str]:
         raise Unsupported(self._readonly_reason("Rewriting stored paths"))
 
     # ---- commands: track metadata ----------------------------------------

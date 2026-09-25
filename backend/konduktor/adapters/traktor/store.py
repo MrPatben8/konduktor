@@ -1056,18 +1056,20 @@ class TraktorStore:
                         samples.append({"from": str(base), "to": str(target), "exists": ok})
             return {"total": total, "matched": matched, "existing": existing, "samples": samples}
 
-    def remap_locations(self, mapping: PathMapping) -> int:
+    def remap_locations(self, mapping: PathMapping) -> dict[str, str]:
         """Permanently rewrite matching track LOCATIONs to the mapping's ``to``
         prefix — a deliberate library move (write-back).
 
         Because ``track_id`` IS the LOCATION key (``volume+dir+file``), every
         playlist ``PRIMARYKEY`` that referenced a moved track is rewritten too,
         so playlists keep pointing at their tracks. Non-matching entries are
-        untouched. Returns the number of tracks rewritten; the caller saves.
+        untouched. Returns ``{old track id: new track id}`` for every track
+        rewritten — callers holding ids (export sets) follow them with it, and
+        must not rebuild it from paths; the caller saves.
         """
 
         if mapping.empty:
-            return 0
+            return {}
         with self._lock:
             key_remap: dict[str, str] = {}
             for e in self._nml.collection.entry:
@@ -1086,7 +1088,7 @@ class TraktorStore:
                 loc.volume, loc.dir, loc.file = volume, dir_, file
                 key_remap[old_key] = new_key
             if not key_remap:
-                return 0
+                return {}
             # Rewrite playlist entry primary keys that referenced moved tracks.
             for node in self._iter_nodes(self._root()):
                 pl = node.playlist
@@ -1102,7 +1104,7 @@ class TraktorStore:
                 self._journal.retarget(old_key, new_key)
             self._note("remap", str(len(key_remap)))
             self.dirty = True
-            return len(key_remap)
+            return key_remap
 
     def _entry_field_value(self, entry: Entrytype, field: str):
         """Read a single editable field's current value from the model, in the

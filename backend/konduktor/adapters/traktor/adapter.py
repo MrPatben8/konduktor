@@ -369,13 +369,13 @@ class TraktorAdapter:
     def remap_preview(self, mapping: PathMapping) -> dict:
         return self._store.remap_preview(mapping)
 
-    def remap_locations(self, mapping: PathMapping) -> int:
+    def remap_locations(self, mapping: PathMapping) -> dict[str, str]:
         with _translate():
-            n = self._store.remap_locations(mapping)
+            moved = self._store.remap_locations(mapping)
         # A remap rewrites LOCATIONs, so track ids themselves change — there is
         # no per-track patch that could express this.
         self._rebuild()
-        return n
+        return moved
 
     # ---- save --------------------------------------------------------------
     @property

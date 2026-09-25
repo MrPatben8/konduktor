@@ -439,7 +439,7 @@ with tempfile.TemporaryDirectory() as d:
     from_prefix = str(resolve_path(loc.volume, loc.dir, loc.file))
     to_prefix = "/Volumes/KONDUKTOR_TEST_H1/remapped__unique__one.mp3"
 
-    n = store.remap_locations(PathMapping.make(from_prefix, to_prefix))
+    n = len(store.remap_locations(PathMapping.make(from_prefix, to_prefix)))
     store.save()
     edited = work.read_bytes()
 
@@ -489,7 +489,7 @@ with tempfile.TemporaryDirectory() as d:
     to_prefix = "/Volumes/KONDUKTOR_TEST_H2/remapped__playlist__one.mp3"
     new_key = "".join(os_path_to_location(Path(to_prefix)))
 
-    n = store.remap_locations(PathMapping.make(from_prefix, to_prefix))
+    n = len(store.remap_locations(PathMapping.make(from_prefix, to_prefix)))
     store.save()
 
     check("H2: at least one track rewritten", n >= 1)

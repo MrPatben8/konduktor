@@ -223,7 +223,7 @@ class OneLibraryAdapter:
         paths = [Path(p) for p in self._store.all_audio_paths()]
         return {"total": len(paths), "matched": 0, "existing": 0, "samples": []}
 
-    def remap_locations(self, mapping: PathMapping) -> int:
+    def remap_locations(self, mapping: PathMapping) -> dict[str, str]:
         raise Unsupported(self._readonly_reason("Rewriting stored paths"))
 
     # ---- save -------------------------------------------------------------

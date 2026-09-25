@@ -168,9 +168,13 @@ with tempfile.TemporaryDirectory() as d:
         if (ap := adapter.audio_path(t.id)) and str(ap).startswith(prefix)
     }
     old_id = next(iter(matched))
-    n = adapter.remap_locations(PathMapping.make(prefix, "/Volumes/KonduktorTest"))
+    moved = adapter.remap_locations(PathMapping.make(prefix, "/Volumes/KonduktorTest"))
+    n = len(moved)
     check("remap rewrote some locations", n > 0, str(n))
     check("the old track id is gone from the index", adapter.track(old_id) is None)
+    # Export sets follow ids through a remap with exactly this mapping.
+    check("it reports where each track id went",
+          old_id in moved and adapter.track(moved[old_id]) is not None)
     check("the index still holds every track", len(adapter.tracks) == 8485)
 
 # ---- place_cues takes the generic spec ------------------------------------

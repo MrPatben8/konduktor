@@ -245,26 +245,20 @@ def remap_paths(body: PathMappingInfo) -> RemapResult:
         raise HTTPException(400, "Both a `from` and `to` prefix are required")
     adapter = require_adapter()
     # A Traktor track id IS its location, so a remap renames every matching id.
-    # Snapshot before/after and follow them, or every export set referencing a
-    # remapped track would dangle — and dangle SILENTLY, still looking curated
-    # while quietly exporting fewer tracks than it says.
-    before = {t.id: t.filepath for t in adapter.tracks() if t.filepath}
-    count = adapter.remap_locations(mapping)
-    if count == 0:
+    # Follow them, or every export set referencing a remapped track would
+    # dangle — and dangle SILENTLY, still looking curated while quietly
+    # exporting fewer tracks than it says. The adapter returns the renames
+    # itself: rebuilding them here from display paths (which omit the volume)
+    # could pair up two tracks with the same folder on different drives.
+    moved = adapter.remap_locations(mapping)
+    if not moved:
         return RemapResult(rewritten=0, commit=None)
-    after = {t.filepath: t.id for t in adapter.tracks() if t.filepath}
-    moved = {
-        old_id: after[str(mapping.apply(Path(old_path)))]
-        for old_id, old_path in before.items()
-        if str(mapping.apply(Path(old_path))) in after
-        and after[str(mapping.apply(Path(old_path)))] != old_id
-    }
     if moved and STATE.library_id:
         exports.retarget(STATE.library_id, moved)
     # Through AppState, not the adapter: this is the one route besides /api/save
     # that writes, and skipping it would leave a gap in the version history.
     _outcome, commit = STATE.save()
-    return RemapResult(rewritten=count, commit=commit)
+    return RemapResult(rewritten=len(moved), commit=commit)
 
 
 @app.get("/api/prefs")
