@@ -24,6 +24,7 @@ import { PathMappingDialog } from './components/PathMappingDialog'
 import { HistoryPanel } from './components/HistoryPanel'
 import { PrepStrip } from './components/PrepStrip'
 import { ImportDialog } from './components/ImportDialog'
+import { Icon } from './lib/icons'
 
 function applyFilters(tracks: Track[], f: Filters): Track[] {
   const q = f.search.trim().toLowerCase()
@@ -506,7 +507,7 @@ export default function App() {
 
   if (collection.isLoading || (loaded && !capabilities.data)) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-ink-950 text-muted">
+      <div className="flex h-screen w-screen items-center justify-center text-muted">
         Loading…
       </div>
     )
@@ -759,7 +760,7 @@ export default function App() {
       { heading: 'Exports', empty: exportSets.data?.length ? undefined : 'No exports yet' },
       ...(exportSets.data ?? []).map((set) => ({
         label: set.name,
-        icon: '◈',
+        icon: <Icon name="export" size={13} />,
         onClick: () => addToExport(set.id, ids),
       })),
     ]
@@ -767,7 +768,9 @@ export default function App() {
 
   return (
     <CapabilitiesContext.Provider value={capabilities.data!}>
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-ink-950">
+    {/* Floating glass panels with gaps between them: the ambient backdrop
+        (main.tsx) shows through the gutters as well as through the glass. */}
+    <div className="flex h-screen w-screen flex-col gap-3 overflow-hidden p-3">
       <Toast toast={toast} onClose={() => setToast(null)} />
       {menu && (
         <ContextMenu
@@ -907,7 +910,7 @@ export default function App() {
         />
       </CapabilitiesContext.Provider>
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 gap-3">
         <Sidebar
           source={source}
           onSelect={selectSource}
@@ -920,20 +923,23 @@ export default function App() {
         />
 
         <CapabilitiesContext.Provider value={viewCaps}>
-        <main className="relative flex min-w-0 flex-1 flex-col">
+        <main className="glass relative flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Search / filters — always visible. Columns are chosen by right-clicking the header. */}
         <Toolbar
           filters={filters}
           onChange={setFilters}
         />
         {(!isAll || viewingDevice) && (
-          <div className="flex items-center gap-3 border-b border-line bg-ink-900 px-4 py-2">
+          <div className="flex items-center gap-3 border-b border-line px-4 py-2">
             <span
-              className={`text-[11px] ${
+              className={`flex ${
                 viewingDevice ? 'text-gold' : viewingExport ? 'text-gold' : 'text-accent'
               }`}
             >
-              {viewingDevice ? '⬒' : viewingExport ? (source.kind === 'export' ? '◈' : '♫') : '♫'}
+              <Icon
+                name={viewingDevice ? 'drive' : viewingExport && source.kind === 'export' ? 'export' : 'playlist'}
+                size={15}
+              />
             </span>
             <span className="font-semibold text-text">{viewName}</span>
             {viewingExport ? (
@@ -949,7 +955,7 @@ export default function App() {
                       : ' · live — what ships is whatever this playlist holds at export time'}
                 </span>
                 <span className="ml-auto flex items-center gap-2">
-                  <span className="rounded bg-ink-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gold">
+                  <span className="rounded-full bg-gold/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gold shadow-[inset_0_0_0_1px_rgb(255_200_97/0.3)]">
                     Export
                   </span>
                 </span>
@@ -962,12 +968,12 @@ export default function App() {
                     : `${tracks.length} tracks`}
                 </span>
                 <span className="ml-auto flex items-center gap-2">
-                  <span className="rounded bg-ink-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gold">
+                  <span className="rounded-full bg-gold/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gold shadow-[inset_0_0_0_1px_rgb(255_200_97/0.3)]">
                     Device · read-only
                   </span>
                   <button
                     onClick={() => setImporting(true)}
-                    className="rounded-md bg-accent px-2 py-1 text-xs font-medium text-ink-950 hover:brightness-110"
+                    className="btn-primary rounded-full px-3 py-1 text-xs font-semibold"
                   >
                     Import{source.kind === 'device-playlist' ? ' this playlist' : ' everything'}…
                   </button>
@@ -1122,33 +1128,35 @@ export default function App() {
 
         </div>
 
-        <StatusBar
-          showing={filtered.length}
-          total={tracks.length}
-          sourceName={viewName}
-          selected={viewingDevice ? 0 : selected.size}
-          job={
-            batchJob
-              ? {
-                  label: batchJob.kind === 'grid' ? 'Analyzing grids' : 'Placing hotcues',
-                  done: batchJobStatus.data?.done ?? 0,
-                  total: batchJobStatus.data?.total ?? 0,
-                  detail: batchJobStatus.data?.message,
-                  cancelling: batchCancelling,
-                  onCancel: () => {
-                    setBatchCancelling(true)
-                    api.cancelJob(batchJob.id).catch((e) => onError((e as Error).message))
-                  },
-                }
-              : null
-          }
-          loading={loading}
-          collectionName={capabilities.data ? libraryName : null}
-          onChangeCollection={() => setForcePicker(true)}
-        />
         </main>
         </CapabilitiesContext.Provider>
       </div>
+
+      {/* A slim capsule of its own under both columns, as on the deck above. */}
+      <StatusBar
+        showing={filtered.length}
+        total={tracks.length}
+        sourceName={viewName}
+        selected={viewingDevice ? 0 : selected.size}
+        job={
+          batchJob
+            ? {
+                label: batchJob.kind === 'grid' ? 'Analyzing grids' : 'Placing hotcues',
+                done: batchJobStatus.data?.done ?? 0,
+                total: batchJobStatus.data?.total ?? 0,
+                detail: batchJobStatus.data?.message,
+                cancelling: batchCancelling,
+                onCancel: () => {
+                  setBatchCancelling(true)
+                  api.cancelJob(batchJob.id).catch((e) => onError((e as Error).message))
+                },
+              }
+            : null
+        }
+        loading={loading}
+        collectionName={capabilities.data ? libraryName : null}
+        onChangeCollection={() => setForcePicker(true)}
+      />
     </div>
     </CapabilitiesContext.Provider>
   )

@@ -67,8 +67,8 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
           onClose={() => setBrowsing(false)}
         />
       )}
-      <div aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-        <div className="w-full max-w-lg rounded-lg border border-line bg-ink-900 shadow-xl">
+      <div aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-4">
+        <div className="w-full max-w-lg glass-overlay">
           <div className="border-b border-line px-5 py-3">
             <h2 className="text-sm font-semibold text-text">
               {editing ? `Edit “${editing.name}”` : 'New export'}
@@ -86,7 +86,7 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && valid && !busy) save()
                 }}
-                className="w-full rounded-md border border-line bg-ink-950 px-2 py-1.5 text-sm text-text outline-none focus:border-accent"
+                className="w-full rounded-md well px-2 py-1.5 text-sm text-text outline-none focus:ring-1 focus:ring-accent"
               />
             </div>
 
@@ -124,13 +124,13 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
                 <span
                   title={destination}
                   dir="rtl"
-                  className="min-w-0 flex-1 truncate rounded-md border border-line bg-ink-950 px-2 py-1.5 font-mono text-xs text-text"
+                  className="min-w-0 flex-1 truncate rounded-md well px-2 py-1.5 font-mono text-xs text-text"
                 >
                   {destination || 'Choose a folder…'}
                 </span>
                 <button
                   onClick={() => setBrowsing(true)}
-                  className="shrink-0 rounded-md border border-line px-3 py-1.5 text-sm text-muted hover:text-text"
+                  className="shrink-0 btn-glass rounded-full px-3 py-1.5 text-sm text-muted hover:text-text"
                 >
                   Browse…
                 </button>
@@ -140,7 +140,7 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
                 every track, in your own folder structure.
               </div>
               {conflict && (
-                <div className="mt-2 rounded border border-line bg-ink-950 px-3 py-2 text-xs text-gold">
+                <div className="mt-2 rounded well px-3 py-2 text-xs text-gold">
                   “{conflict}” already exports here. Exporting replaces whatever the other one
                   wrote.
                 </div>
@@ -151,14 +151,14 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
           <div className="flex justify-end gap-2 border-t border-line px-5 py-3">
             <button
               onClick={onClose}
-              className="rounded-md border border-line px-3 py-1.5 text-sm text-muted hover:text-text"
+              className="btn-glass rounded-full px-3 py-1.5 text-sm text-muted hover:text-text"
             >
               Cancel
             </button>
             <button
               disabled={!valid || busy}
               onClick={save}
-              className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-ink-950 hover:brightness-110 disabled:opacity-40"
+              className="rounded-full btn-primary px-3 py-1.5 text-sm font-semibold disabled:opacity-40"
             >
               {busy ? 'Saving…' : editing ? 'Save' : 'Create'}
             </button>

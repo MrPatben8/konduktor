@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-from ...core.model import CuePoint, GridMarker, Track, TrackCues
+from ...core.model import CuePoint, GridMarker, HotcueChip, Track, TrackCues
 from . import beatgrid
 from .cue_types import cue_type, role_and_slot
 
@@ -97,12 +97,14 @@ def _name_of(related) -> str | None:
     return None
 
 
-def to_track(row, cue_counts: tuple[int, int] = (0, 0)) -> Track:
+def to_track(row, cue_kinds=()) -> Track:
     """Project one ``DjmdContent`` row.
 
-    `cue_counts` is ``(total, hotcues)`` from the store's single aggregate
+    `cue_kinds` is this track's ``(Kind, OutMsec)`` pairs from the store's single
     query — passed in rather than read off the row, which would be a per-track
-    round trip.
+    round trip. "Is this a hot cue, and on which pad?" is `role_and_slot`, the
+    same definition `to_track_cues` uses, so the table's count and dots agree
+    with the pads shown in the deck (it also rules out the reserved Kind).
 
     **`grid_marker_count` is an approximation here**: the real count needs the
     track's ANLZ file, which is far too slow to read for every track at open
@@ -115,7 +117,14 @@ def to_track(row, cue_counts: tuple[int, int] = (0, 0)) -> Track:
     On the reference library the two sets agree exactly: all 22 tracks with no
     BPM are precisely the 22 with no grid.
     """
-    total_cues, hotcues = cue_counts
+    chips: list[HotcueChip] = []
+    for kind, out_msec in cue_kinds:
+        role, slot = role_and_slot(kind)
+        if role == "hotcue" and slot is not None:
+            # Rekordbox's colour is a palette index nobody has decoded yet (see
+            # `_cue_color`), so no colour is claimed and the UI uses the type's.
+            chips.append(HotcueChip(slot=slot, type=cue_type(out_msec), color=None))
+    chips.sort(key=lambda chip: chip.slot)
     key_name = _name_of(getattr(row, "Key", None))
     wheel, mode = parse_key(key_name)
     return Track(
@@ -142,8 +151,9 @@ def to_track(row, cue_counts: tuple[int, int] = (0, 0)) -> Track:
         last_played=None,  # not modelled as a date in master.db
         release_date=_iso_date(getattr(row, "ReleaseDate", None)),
         filepath=str(getattr(row, "FolderPath", "") or "") or None,
-        cue_count=total_cues,
-        hotcue_count=hotcues,
+        cue_count=len(cue_kinds),
+        hotcue_count=len(chips),
+        hotcues=chips,
         grid_marker_count=1 if (_bpm(row) and getattr(row, "AnalysisDataPath", None)) else 0,
         grid_locked=False,  # Rekordbox has no per-track grid lock
         media_kind="audio",

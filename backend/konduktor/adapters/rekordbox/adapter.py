@@ -43,10 +43,10 @@ class RekordboxAdapter:
 
     # ---- projection maintenance -----------------------------------------
     def _rebuild(self) -> None:
-        counts = self._store.cue_counts()
+        kinds = self._store.cue_kinds()
         self._index.rebuild(
             [
-                projection.to_track(row, counts.get(str(row.ID), (0, 0)))
+                projection.to_track(row, kinds.get(str(row.ID), ()))
                 for row in self._store.iter_content()
             ]
         )
@@ -66,9 +66,9 @@ class RekordboxAdapter:
         Every mutating command must end in this — a forgotten refresh is a
         silently stale projection that no byte- or row-level test would catch.
         """
-        counts = self._store.cue_counts()
+        kinds = self._store.cue_kinds()
         row = self._store.content(track_id)
-        self._index.replace(projection.to_track(row, counts.get(str(row.ID), (0, 0))))
+        self._index.replace(projection.to_track(row, kinds.get(str(row.ID), ())))
 
     def close(self) -> None:
         """Release the database connection.

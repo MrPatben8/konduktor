@@ -1,3 +1,4 @@
+import { Icon } from '../lib/icons'
 /** A background job's progress, shown at the right of the bar. */
 export interface StatusJob {
   label: string
@@ -33,7 +34,7 @@ export function StatusBar({
   onChangeCollection,
 }: Props) {
   return (
-    <div className="flex items-center gap-3 border-t border-line bg-ink-900 px-4 py-2 text-xs text-muted">
+    <div className="glass flex h-7 shrink-0 items-center gap-3 !rounded-full px-4 text-[11px] text-muted">
       <span className="font-medium text-text">{sourceName}</span>
       <span className="text-faint">·</span>
       {loading ? (
@@ -61,9 +62,9 @@ export function StatusBar({
             {job.cancelling ? 'Cancelling…' : job.label}
             {job.total > 0 && ` ${Math.min(job.done + 1, job.total)}/${job.total}`}
           </span>
-          <span className="h-1.5 w-32 shrink-0 overflow-hidden rounded-full bg-ink-800">
+          <span className="well h-1.5 w-32 shrink-0 overflow-hidden rounded-full">
             <span
-              className={`block h-full rounded-full bg-accent transition-[width] duration-300 ${
+              className={`block h-full rounded-full bg-gradient-to-r from-[var(--amb-1)] to-accent shadow-[0_0_8px_var(--color-accent)] transition-[width] duration-300 ${
                 job.total > 0 ? '' : 'w-1/3 animate-pulse'
               }`}
               style={job.total > 0 ? { width: `${(job.done / job.total) * 100}%` } : undefined}
@@ -86,7 +87,7 @@ export function StatusBar({
           className={`${job ? '' : 'ml-auto '}flex items-center gap-1.5 rounded px-2 py-0.5 text-faint hover:bg-ink-800 hover:text-text`}
           title="Change collection"
         >
-          <span className="text-[11px]">⎘</span>
+          <Icon name="link" size={12} />
           <span className="max-w-[220px] truncate font-mono text-[11px]">{collectionName}</span>
         </button>
       )}

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type FsListing, type FsPlace } from '../api'
+import { Icon, type IconName } from '../lib/icons'
 
 /**
  * The one file browser. A places rail, a path bar, a listing.
@@ -36,14 +37,14 @@ export function useFsListing(path: string | undefined, platform?: string) {
 // the sidebar's device poll: this is a shortcut list, not the thing you came for.
 const PLACES_POLL_MS = 5000
 
-const ICONS: Record<FsPlace['kind'], string> = {
-  home: '⌂',
-  music: '♫',
-  desktop: '🖥',
-  documents: '🗎',
-  downloads: '⬇',
-  volume: '⬒',
-  library: '◈',
+const ICONS: Record<FsPlace['kind'], IconName> = {
+  home: 'home',
+  music: 'music',
+  desktop: 'desktop',
+  documents: 'file',
+  downloads: 'download',
+  volume: 'drive',
+  library: 'playlist',
 }
 
 interface Props {
@@ -85,7 +86,7 @@ export function FileBrowser({ mode, platform, path, onNavigate, onPickFile, foot
       {/* ---- Places rail. Navigates, never selects: one click here must not be
               able to open a library or commit an import destination, because a
               sidebar does not look like something that does that. ---- */}
-      <div className="w-44 shrink-0 overflow-y-auto border-r border-line bg-ink-950/40 py-2">
+      <div className="w-44 shrink-0 overflow-y-auto border-r border-line bg-well py-2">
         {groups.map((g) => (
           <div key={g.label} className="mb-2">
             <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-faint">
@@ -98,13 +99,13 @@ export function FileBrowser({ mode, platform, path, onNavigate, onPickFile, foot
                   key={p.path}
                   onClick={() => onNavigate(p.path)}
                   title={p.path}
-                  className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors ${
+                  className={`mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left text-xs transition-colors ${
                     active
-                      ? 'bg-accent-soft text-text'
+                      ? 'is-selected text-text'
                       : 'text-muted hover:bg-ink-800 hover:text-text'
                   }`}
                 >
-                  <span className="w-3 shrink-0 text-center text-faint">{ICONS[p.kind]}</span>
+                  <span className="flex shrink-0 text-faint"><Icon name={ICONS[p.kind]} size={14} /></span>
                   <span className="truncate">{p.name}</span>
                 </button>
               )
@@ -115,13 +116,13 @@ export function FileBrowser({ mode, platform, path, onNavigate, onPickFile, foot
 
       {/* ---- Path bar + listing ---- */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex items-center gap-2 border-b border-line bg-ink-850 px-4 py-2">
+        <div className="flex items-center gap-2 border-b border-line px-4 py-2">
           <button
             title="Home"
             onClick={() => data?.home && onNavigate(data.home)}
-            className="rounded px-2 py-1 text-sm text-muted hover:bg-ink-800 hover:text-text"
+            className="rounded-lg px-2 py-1 text-sm text-muted hover:bg-ink-800 hover:text-text"
           >
-            ⌂
+            <Icon name="home" size={15} />
           </button>
           <button
             title="Up one level"
@@ -149,7 +150,7 @@ export function FileBrowser({ mode, platform, path, onNavigate, onPickFile, foot
               onClick={() => onNavigate(d.path)}
               className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-muted hover:bg-ink-800 hover:text-text"
             >
-              <span className="text-faint">📁</span>
+              <span className="flex text-faint"><Icon name="folder" size={15} /></span>
               <span className="truncate">{d.name}</span>
             </button>
           ))}
@@ -163,7 +164,7 @@ export function FileBrowser({ mode, platform, path, onNavigate, onPickFile, foot
                 onClick={() => onPickFile?.(f.path)}
                 className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-text hover:bg-accent-soft"
               >
-                <span className="text-accent">♫</span>
+                <span className="flex text-accent"><Icon name="music" size={15} /></span>
                 <span className="truncate">{f.name}</span>
                 <span className="ml-auto text-[10px] uppercase tracking-wider text-faint">
                   open

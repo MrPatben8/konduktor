@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { CuePoint } from '../api'
 import type { BeatGrid } from '../lib/beatgrid'
-import { drawBeatgrid, drawCuePoint, drawCues, drawLoop } from '../lib/cues'
+import { drawBeatgrid, drawCuePoint, drawCues, drawLoop, drawPlayhead } from '../lib/cues'
 import { paintWave, type WaveColumn } from '../lib/waveform'
 
 interface Props {
@@ -79,7 +79,12 @@ export function MainWaveform({
       const half = secPerView / 2
       const startSec = currentTime - half
       const endSec = currentTime + half
-      paintWave(ctx, cols, w, h, startSec / duration, endSec / duration)
+      // 2 px bars with a 1 px gap: the texture that makes the scrolling view
+      // read as discrete energy rather than a smear.
+      paintWave(ctx, cols, w, h, startSec / duration, endSec / duration, {
+        bar: Math.max(1, Math.round(2 * dpr)),
+        gap: Math.max(1, Math.round(dpr)),
+      })
 
       const timeToX = (t: number) => ((t - startSec) / secPerView) * w
       // Loop band (under the grid/cues), then beatgrid, then cue markers.
@@ -97,32 +102,7 @@ export function MainWaveform({
       }
     }
 
-    // Fixed centre playhead — red core with a translucent black outline so it
-    // separates from the waveform, plus inward-pointing triangle caps top and
-    // bottom that anchor the eye in the quiet margins.
-    const core = Math.max(2, Math.round(2 * dpr))
-    const edge = Math.max(1, Math.round(dpr))
-    const cx = Math.floor(w / 2)
-    const px = cx - Math.floor(core / 2)
-    ctx.fillStyle = 'rgba(0,0,0,0.5)'
-    ctx.fillRect(px - edge, 0, core + edge * 2, h)
-    ctx.fillStyle = '#ff3b30'
-    ctx.fillRect(px, 0, core, h)
-
-    const cap = Math.round(6 * dpr)
-    ctx.fillStyle = '#ff3b30'
-    ctx.beginPath()
-    ctx.moveTo(cx - cap, 0)
-    ctx.lineTo(cx + cap, 0)
-    ctx.lineTo(cx, cap)
-    ctx.closePath()
-    ctx.fill()
-    ctx.beginPath()
-    ctx.moveTo(cx - cap, h)
-    ctx.lineTo(cx + cap, h)
-    ctx.lineTo(cx, h - cap)
-    ctx.closePath()
-    ctx.fill()
+    drawPlayhead(ctx, Math.floor(w / 2), h, dpr, true)
   }
 
   const drawRef = useRef(draw)
@@ -199,7 +179,7 @@ export function MainWaveform({
           onPointerDown={(e) => e.stopPropagation()}
           onClick={zoomIn}
           disabled={secPerView <= MIN_SEC}
-          className="flex h-6 w-6 items-center justify-center rounded border border-line bg-ink-950/70 text-sm text-text hover:border-accent disabled:opacity-30"
+          className="btn-glass flex h-6 w-6 items-center justify-center rounded-lg text-sm text-text backdrop-blur-md disabled:opacity-30"
           title="Zoom in"
         >
           +
@@ -208,7 +188,7 @@ export function MainWaveform({
           onPointerDown={(e) => e.stopPropagation()}
           onClick={zoomOut}
           disabled={secPerView >= MAX_SEC}
-          className="flex h-6 w-6 items-center justify-center rounded border border-line bg-ink-950/70 text-sm text-text hover:border-accent disabled:opacity-30"
+          className="btn-glass flex h-6 w-6 items-center justify-center rounded-lg text-sm text-text backdrop-blur-md disabled:opacity-30"
           title="Zoom out"
         >
           −

@@ -427,7 +427,8 @@ Two independent apps that talk over HTTP:
   - Data flow: the whole library is fetched once (`/api/tracks?limit=20000`);
     filtering and sorting happen **client-side** for instant interaction. Edits
     apply in-memory (server holds them) and the sidebar **Save to Traktor**
-    button flushes to disk. Styling is Tailwind v4 with tokens in `src/index.css`.
+    button flushes to disk. Styling is Tailwind v4 with tokens in `src/index.css`
+    — see "Theme" below.
     Library column layout (visibility/order/width) persists to `userprefs.json`
     via `GET`/`PATCH /api/prefs` (debounced; hydrated on launch, merged against
     defaults so newly-added columns still appear). The prep deck's main-waveform
@@ -648,8 +649,48 @@ frontend at `http://localhost:5173`.
 - Backend: type hints, Pydantic models for all responses, keep query logic in
   `collection_service.py` (routes stay thin).
 - Frontend: functional components, TanStack Query for fetching, Tailwind
-  utility classes with the `ink-*`/`accent`/`gold`/`mint`/`pink` tokens from
-  `index.css`. Keep `api.ts` types aligned with `schemas.py`.
+  utility classes with the `ink-*`/`well`/`accent`/`gold`/`mint`/`pink` tokens
+  and the material classes from `index.css` (see "Theme"). Icons come from
+  `lib/icons.tsx`, never emoji. Keep `api.ts` types aligned with `schemas.py`.
+
+## Theme — "dark liquid glass"
+
+Floating frosted panels (12 px gutters) over a drifting wash of colour sampled
+from the loaded track's cover art. Colour is reserved for MEANING — cue types,
+key, playhead, the one primary action; chrome stays neutral. The rules that are
+easy to break:
+
+- **`ink-900`…`ink-600` are translucent WHITE overlays, not greys**, so they
+  read on any panel. Only `ink-950` is opaque: it is the dark text on light
+  buttons and the page base. Recessed things (inputs, waveforms, readouts,
+  progress tracks) use `well` / the `.well` class — never `bg-ink-950`.
+- **Materials are classes in `index.css`**: `.glass` (panel), `.glass-overlay`
+  (menus, dialogs, toasts — denser), `.well`, `.btn-glass`, `.btn-primary`
+  (white→accent pill, one per view), `.is-selected`. The rim light is a
+  `::before`, so these set `position: relative`; Tailwind's `fixed`/`absolute`
+  utilities win because utilities outrank the components layer.
+- **Never put `backdrop-filter` (or `filter`/`transform`) on an element that can
+  contain a popup.** It makes that element the containing block for every
+  `position: fixed` descendant, so a context menu or dialog opened inside it is
+  placed relative to the panel, not the window — the sidebar's playlist menu
+  opened far from the cursor. `.glass`'s blur and tint therefore live on its
+  `::after` (z-index -1 under `isolation: isolate`), not on the panel.
+- **The accent is `oklch(0.8 0.11 var(--accent-hue))`** — the cover's hue at a
+  FIXED lightness and chroma, so dark text on it keeps its contrast whatever is
+  loaded. `lib/ambient.ts` sets `--accent-hue` and `--amb-1..4` on `<html>`;
+  they are `@property`-registered so a track change glides, and nothing in React
+  state depends on them (no re-render on a track change). The art is fetched as
+  a blob → `createImageBitmap`, because a cross-origin `<img>` (the API under
+  Tauri) taints the canvas. A device track, or greyscale art, gets the default.
+- `AmbientBackdrop` is mounted in `main.tsx`, behind the picker too; so no root
+  container may set an opaque background, or the glass has nothing behind it.
+- **Canvas drawing glows instead of outlining** (`cues.ts`): a black outline on
+  glass reads as a gap in the waveform. The playhead is `drawPlayhead`, shared
+  by both waveforms.
+- The table's Cues column draws one dot per occupied slot from
+  `Track.hotcues` (`HotcueChip`: slot, type, colour), which every adapter
+  projects with the SAME slot test its `track_cues()` uses, so the dots cannot
+  disagree with the pads. OneLibrary fills it lazily, like `hotcue_count`.
 - Python 3.14 note: pin dependencies loosely enough to get prebuilt wheels
   (older `pydantic-core` pins force a from-source Rust build that fails).
 
@@ -929,9 +970,14 @@ The prep strip plays every track through the **Web Audio API** (a plain
   playback buffer's views). Playback and scratch also run on **separate
   `AudioContext`s** — sharing one goes silent after a source has played.
 - `waveform.ts` — decodes once (buffer reused by both engines, no re-decode),
-  splits into 3 bands via `OfflineAudioContext` biquads, and colors each column
-  by blending three palette targets (bass→orange, mids→violet, highs→cyan — no
-  green, matching Traktor's Spectrum). Height = amplitude.
+  splits into 3 bands via `OfflineAudioContext` biquads, and paints them as
+  **three layers**, not one blended colour per column: bass (orange) first and
+  tallest, then mids (violet) and highs (cyan) with a `screen` blend — no green,
+  matching Traktor's Spectrum. Each band is normalised to its own 99.5th
+  percentile and then EXPANDED (bass steepest): dance music holds its bass near
+  full scale for whole sections, so a linear map draws a solid orange wall
+  instead of the kick pulse. The main view draws 2 px bars with a 1 px gap,
+  **binned in track space** so bars scroll rather than flicker.
 - `cues.ts` — canvas drawers for cue markers (type-colored), the active loop
   band, the beatgrid (per-segment white beats/brighter downbeats, plus marker
   lines — gold for the one governing the playhead, accent otherwise, with the

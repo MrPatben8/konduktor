@@ -80,11 +80,11 @@ export function HistoryPanel({ onClose, onNotify, onError }: Props) {
 
   return (
     <div
-      aria-modal="true" className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6"
+      aria-modal="true" className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-line bg-ink-900 shadow-2xl"
+        className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden glass-overlay"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-line px-5 py-4">
@@ -152,7 +152,7 @@ export function HistoryPanel({ onClose, onNotify, onError }: Props) {
                         onClick={() => setConfirmingId(e.id)}
                         disabled={isCurrent}
                         title={isCurrent ? 'This is the current version' : 'Restore this version'}
-                        className="mt-0.5 shrink-0 rounded-md border border-line px-2.5 py-1 text-xs text-muted opacity-0 transition-opacity hover:bg-ink-800 hover:text-text group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-0"
+                        className="mt-0.5 shrink-0 btn-glass rounded-full px-2.5 py-1 text-xs text-muted opacity-0 transition-opacity hover:text-text group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-0"
                       >
                         Restore
                       </button>

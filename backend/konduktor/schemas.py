@@ -314,6 +314,7 @@ from .core.model import (  # noqa: E402,F401
     Facets,
     GenreCount,
     GridMarker,
+    HotcueChip,
     PlaylistNode,
     PrefixGroup,
     PrefixSuggestions,

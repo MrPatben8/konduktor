@@ -16,6 +16,7 @@ import {
 } from '@tanstack/react-table'
 import type { Track } from '../api'
 import { formatBpm, formatDuration, keyColor } from './format'
+import { cueTypeColor } from './cues'
 import { RatingStars } from '../components/RatingStars'
 
 declare module '@tanstack/react-table' {
@@ -75,7 +76,7 @@ function InlineEdit({
         }}
         onClick={(e) => e.stopPropagation()}
         onDoubleClick={(e) => e.stopPropagation()}
-        className="w-full min-w-0 rounded bg-ink-800 px-1 py-0.5 text-sm text-text outline-none ring-1 ring-accent"
+        className="w-full min-w-0 rounded-md bg-well px-1 py-0.5 text-sm text-text outline-none ring-1 ring-accent"
       />
     )
   }
@@ -134,7 +135,7 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
           <InlineEdit
             value={title}
             display={title || <span className="text-faint">Untitled</span>}
-            className="w-full min-w-0 truncate font-medium text-text"
+            className="w-full min-w-0 truncate font-medium text-text group-data-[active]:text-accent"
             readOnly={!canEdit(c, 'title')}
             onCommit={(v) => edit?.(r, 'title', v)}
           />
@@ -182,7 +183,7 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
     id: 'bpm',
     header: 'BPM',
     size: 74,
-    cell: (c) => <span className="tabular-nums text-text">{formatBpm(c.getValue())}</span>,
+    cell: (c) => <span className="font-mono text-xs text-text">{formatBpm(c.getValue())}</span>,
   }),
   col.accessor('key', {
     id: 'key',
@@ -193,10 +194,11 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
       if (!k) return <span className="text-faint">—</span>
       return (
         <span
-          className="rounded px-1.5 py-0.5 text-xs font-semibold"
+          className="inline-block min-w-[2.1rem] rounded-md px-1.5 py-0.5 text-center font-mono text-[11px] font-semibold"
           style={{
             color: keyColor(c.row.original.key_wheel),
-            background: 'color-mix(in srgb, currentColor 14%, transparent)',
+            background: 'color-mix(in srgb, currentColor 16%, transparent)',
+            boxShadow: 'inset 0 0 0 1px color-mix(in srgb, currentColor 32%, transparent)',
           }}
         >
           {k}
@@ -225,7 +227,7 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
     id: 'length',
     header: 'Time',
     size: 64,
-    cell: (c) => <span className="tabular-nums text-muted">{formatDuration(c.getValue())}</span>,
+    cell: (c) => <span className="font-mono text-xs text-muted">{formatDuration(c.getValue())}</span>,
   }),
   col.accessor('bitrate', {
     id: 'bitrate',
@@ -243,21 +245,38 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
   col.accessor('cue_count', {
     id: 'cue_count',
     header: 'Cues',
-    size: 72,
+    size: 104,
     cell: (c) => {
-      const n = c.getValue()
-      const markers = c.row.original.grid_marker_count
-      // Gold marks a flexible (multi-tempo) grid, mint an ordinary constant one.
+      const r = c.row.original
+      const n = c.getValue() as number
+      const markers = r.grid_marker_count
+      // One lit dot per occupied hotcue slot, in the cue's colour, so a row
+      // previews the track's prep without loading it. Cues that exist but are
+      // not in the bank (memory cues), or not yet read (a lazily-parsed
+      // device), fall back to the count so a prepped track never looks bare.
       return (
-        <span className="flex items-center gap-1 tabular-nums">
-          <span className={n > 0 ? 'text-text' : 'text-faint'}>{n}</span>
-          {markers > 0 && (
-            <span
-              className={markers > 1 ? 'text-[10px] text-gold' : 'text-[10px] text-mint'}
-              title={markers > 1 ? `Flexible beatgrid (${markers} markers)` : 'Beatgrid analyzed'}
-            >
-              ⊞
-            </span>
+        <span
+          className="flex items-center gap-1"
+          title={`${n} cue${n === 1 ? '' : 's'}${
+            markers > 1 ? ` · flexible beatgrid (${markers} markers)` : markers ? ' · beatgrid analyzed' : ''
+          }`}
+        >
+          {r.hotcues.map((h) => {
+            const color = h.color ?? cueTypeColor(h.type)
+            return (
+              <span
+                key={h.slot}
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{ background: color, boxShadow: `0 0 6px ${color}` }}
+              />
+            )
+          })}
+          {r.hotcues.length === 0 && (
+            <span className={`font-mono text-xs ${n > 0 ? 'text-text' : 'text-faint'}`}>{n || '—'}</span>
+          )}
+          {markers > 1 && (
+            // Gold marks a flexible (multi-tempo) grid — rare, and worth seeing.
+            <span className="ml-0.5 text-[10px] text-gold">⊞</span>
           )}
         </span>
       )
@@ -267,7 +286,7 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
     id: 'playcount',
     header: 'Plays',
     size: 68,
-    cell: (c) => <span className="tabular-nums text-muted">{c.getValue() || 0}</span>,
+    cell: (c) => <span className="font-mono text-xs text-muted">{c.getValue() || 0}</span>,
   }),
   col.accessor('import_date', {
     id: 'import_date',

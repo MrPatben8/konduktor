@@ -171,23 +171,22 @@ class RekordboxStore:
             raise NotFound(f"No track {track_id!r}")
         return row
 
-    def cue_counts(self) -> dict[str, tuple[int, int]]:
-        """``{track_id: (total_cues, hotcue_count)}`` in one aggregate query."""
+    def cue_kinds(self) -> dict[str, list[tuple[int | None, int | None]]]:
+        """``{track_id: [(Kind, OutMsec), ...]}`` for every live cue, in one query.
+
+        Just enough per cue for the library table's count and hotcue dots,
+        without a per-track round trip. What a ``Kind`` means is decided in the
+        projection, by the same `role_and_slot` the deck's cues use, so the
+        table and the pads cannot disagree.
+        """
         t = self._tables
         rows = self._db.session.execute(
-            select(t.DjmdCue.ContentID, t.DjmdCue.Kind, func.count())
+            select(t.DjmdCue.ContentID, t.DjmdCue.Kind, t.DjmdCue.OutMsec)
             .where(t.DjmdCue.rb_local_deleted == 0)
-            .group_by(t.DjmdCue.ContentID, t.DjmdCue.Kind)
         ).all()
-        out: dict[str, tuple[int, int]] = {}
-        for content_id, kind, n in rows:
-            total, hot = out.get(str(content_id), (0, 0))
-            # "Is this a hot cue?" must mean the same here as in the projection,
-            # or the count in the library table disagrees with the pads shown in
-            # the deck. `role_and_slot` is the single definition — it also rules
-            # out the reserved Kind, which occupies no pad.
-            is_hotcue = role_and_slot(kind)[0] == "hotcue"
-            out[str(content_id)] = (total + n, hot + (n if is_hotcue else 0))
+        out: dict[str, list[tuple[int | None, int | None]]] = {}
+        for content_id, kind, out_msec in rows:
+            out.setdefault(str(content_id), []).append((kind, out_msec))
         return out
 
     def cues(self, track_id: str) -> list:

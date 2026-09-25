@@ -1,3 +1,5 @@
+import { Icon } from '../lib/icons'
+
 /** Jump-size cycle, in beats. Fractional sizes allow fine micro-nudging. */
 export const BEAT_JUMP_SIZES = [0.25, 0.5, 1, 2, 4, 8, 16, 32]
 
@@ -13,9 +15,8 @@ interface Props {
 }
 
 const BTN =
-  'flex h-7 w-7 shrink-0 items-center justify-center rounded border border-line bg-ink-850 ' +
-  'text-xs font-semibold text-text transition-colors hover:border-accent disabled:opacity-30 ' +
-  'disabled:hover:border-line'
+  'btn-glass flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ' +
+  'font-mono text-xs font-semibold text-text disabled:opacity-30'
 
 /** Beats-only readout: 0.25 → "1/4", 0.5 → "1/2", else the integer. */
 function sizeLabel(beats: number): string {
@@ -46,7 +47,7 @@ export function BeatJumpControls({ beats, onStep, onJump, disabled }: Props) {
       >
         −
       </button>
-      <span className="w-9 text-center text-xs font-semibold tabular-nums text-text">
+      <span className="w-9 text-center font-mono text-xs font-semibold text-text">
         {sizeLabel(beats)}
       </span>
       <button
@@ -64,7 +65,7 @@ export function BeatJumpControls({ beats, onStep, onJump, disabled }: Props) {
         disabled={disabled}
         title="Jump back (←)"
       >
-        ◀
+        <Icon name="chevronLeft" size={14} strokeWidth={2.2} />
       </button>
       <button
         className={BTN}
@@ -72,7 +73,7 @@ export function BeatJumpControls({ beats, onStep, onJump, disabled }: Props) {
         disabled={disabled}
         title="Jump forward (→)"
       >
-        ▶
+        <Icon name="chevronRight" size={14} strokeWidth={2.2} />
       </button>
     </div>
   )

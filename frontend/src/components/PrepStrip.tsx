@@ -14,6 +14,8 @@ import { slotLabeller, useCaps } from '../lib/capabilities'
 import { CUE_TYPE_LABELS } from '../lib/cues'
 import { readOnlyShort, readOnlyNotice } from '../lib/platformCopy'
 import { analyzeWaveform, type WaveColumn } from '../lib/waveform'
+import { setAmbientFromArt } from '../lib/ambient'
+import { Icon } from '../lib/icons'
 import { ScratchEngine } from '../lib/scratchEngine'
 import { PlaybackEngine } from '../lib/playbackEngine'
 import { AutoCueDialog, eventLabel } from './AutoCueDialog'
@@ -225,6 +227,12 @@ export function PrepStrip({
     previewRef.current = null
     setPreviewing(false)
   }, [trackId])
+
+  // Recolour the whole app from this track's cover art. A device's art is not
+  // served (only its audio is), so a device track keeps the default look.
+  useEffect(() => {
+    void setAmbientFromArt(trackId && !fromDevice ? api.artUrl(trackId) : null)
+  }, [trackId, fromDevice])
 
   // Analyse once per track; the decoded buffer feeds both the playback and
   // scratch engines (no re-decode) and both waveform views share the columns.
@@ -970,13 +978,15 @@ export function PrepStrip({
   const activeLoop = loopActive && loopRegion ? loopRegion : null
 
   return (
-    <div className="flex h-[25.5rem] shrink-0 items-stretch gap-px border-b border-line bg-ink-950">
+    <div className="glass flex h-[25.5rem] shrink-0 items-stretch gap-3 p-3">
       {/* Controls */}
-      <div className="flex w-72 shrink-0 flex-col gap-3 bg-ink-900 px-4 py-3">
-        <div className="min-w-0">
+      <div className="flex w-72 shrink-0 flex-col gap-3 px-1 py-1">
+        <div className="flex min-w-0 items-center gap-3">
+          <CoverThumb trackId={track && !fromDevice ? track.id : null} />
+          <div className="min-w-0 flex-1">
           {track ? (
             <>
-              <div className="truncate text-sm font-semibold text-text" title={track.title ?? ''}>
+              <div className="truncate text-[15px] font-semibold tracking-tight text-text" title={track.title ?? ''}>
                 {track.title ?? 'Untitled'}
               </div>
               <div className="truncate text-xs text-muted" title={track.artist ?? ''}>
@@ -987,7 +997,7 @@ export function PrepStrip({
                   live. The controls themselves report the reason when pressed. */}
               {readOnlyShort(caps) && (
                 <div
-                  className="mt-1 inline-block rounded bg-ink-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-faint"
+                  className="mt-1 inline-block rounded-md bg-ink-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted"
                   title={readOnlyNotice(caps) ?? ''}
                 >
                   {readOnlyShort(caps)}
@@ -997,6 +1007,7 @@ export function PrepStrip({
           ) : (
             <div className="text-xs uppercase tracking-wider text-faint">No track loaded</div>
           )}
+          </div>
         </div>
 
         {track && (
@@ -1036,7 +1047,7 @@ export function PrepStrip({
             onPointerUp={onCueRelease}
             onPointerCancel={onCueRelease}
             disabled={!ready}
-            className="flex h-11 items-center justify-center rounded-xl border border-line bg-ink-850 px-4 text-sm font-bold tracking-wide text-gold transition-colors hover:border-gold disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line"
+            className="flex h-11 items-center justify-center rounded-xl bg-gold/10 px-4 font-mono text-sm font-semibold tracking-wider text-gold shadow-[inset_0_1px_0_rgb(255_255_255/0.12),inset_0_0_0_1px_rgb(255_200_97/0.4)] transition-colors hover:bg-gold/15 disabled:cursor-not-allowed disabled:opacity-40"
             title="Cue — set the cue point (paused), hold to preview from it, or jump back to it (playing)"
           >
             CUE
@@ -1045,27 +1056,18 @@ export function PrepStrip({
             onClick={toggle}
             disabled={!ready}
             className={
-              'flex h-11 w-11 items-center justify-center rounded-xl transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 ' +
+              'flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 ' +
               (previewing
-                ? 'bg-gold text-ink-950 shadow-lg shadow-gold/20 hover:brightness-110'
+                ? 'bg-gradient-to-b from-white to-gold text-ink-950 shadow-[0_0_0_4px_rgb(255_200_97/0.22),0_8px_24px_-4px_var(--color-gold)]'
                 : playing
-                  ? 'bg-mint text-ink-950 shadow-lg shadow-mint/20 hover:brightness-110'
-                  : 'border border-line bg-ink-850 text-text hover:border-accent disabled:hover:border-line')
+                  ? 'btn-primary shadow-[0_0_0_4px_color-mix(in_oklab,var(--color-accent)_22%,transparent),0_8px_24px_-4px_var(--color-accent)]'
+                  : 'btn-glass text-text')
             }
             title={playing ? 'Pause' : 'Play'}
           >
-            {playing ? (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-                <rect x="6" y="5" width="4" height="14" rx="1" />
-                <rect x="14" y="5" width="4" height="14" rx="1" />
-              </svg>
-            ) : (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-                <path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.29-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z" />
-              </svg>
-            )}
+            <Icon name={playing ? 'pause' : 'play'} size={18} />
           </button>
-          <div className="tabular-nums text-lg font-medium text-muted">
+          <div className="font-mono text-[15px] font-medium text-muted">
             {fmt(current)} / {fmt(duration)}
           </div>
         </div>
@@ -1079,18 +1081,18 @@ export function PrepStrip({
       </div>
 
       {/* Waveforms + loop/hotcue controls. */}
-      <div className="relative flex min-w-0 flex-1 flex-col bg-ink-900">
+      <div className="relative flex min-w-0 flex-1 flex-col">
         {!track ? (
-          <div className="flex flex-1 items-center justify-center text-xs text-faint">
+          <div className="well flex flex-1 items-center justify-center rounded-2xl text-xs text-faint">
             Load a track to prep it
           </div>
         ) : waveStatus === 'error' ? (
-          <div className="flex flex-1 items-center justify-center text-xs text-pink">
+          <div className="well flex flex-1 items-center justify-center rounded-2xl text-xs text-pink">
             Could not load audio — file may be missing or an unsupported format.
           </div>
         ) : (
           <>
-            <div className="relative min-h-0 flex-1">
+            <div className="well relative min-h-0 flex-1 overflow-hidden rounded-2xl">
               {showWaves ? (
                 <MainWaveform
                   cols={cols}
@@ -1114,7 +1116,7 @@ export function PrepStrip({
                 </div>
               )}
             </div>
-            <div className="h-10 shrink-0 border-t border-line">
+            <div className="well mt-2 h-10 shrink-0 overflow-hidden rounded-xl">
               {showWaves && (
                 <OverviewWaveform
                   cols={cols}
@@ -1142,8 +1144,8 @@ export function PrepStrip({
             />
 
             {/* Hotcue row: label · 8 slots · type of selected cue · delete. */}
-            <div className="flex h-10 shrink-0 items-stretch gap-px border-t border-line bg-ink-950">
-              <span className="flex w-16 items-center justify-center bg-ink-900 text-[10px] font-semibold uppercase tracking-wider text-faint">
+            <div className="flex h-12 shrink-0 items-stretch gap-1.5 pt-2">
+              <span className="flex w-12 shrink-0 items-center text-[10px] font-semibold uppercase tracking-wider text-faint">
                 Cues
               </span>
               <HotcueBar
@@ -1154,7 +1156,7 @@ export function PrepStrip({
                 onSlotPress={onSlotPress}
                 onSlotRelease={onSlotRelease}
               />
-              <div className="flex w-28 items-center justify-center bg-ink-900 px-1">
+              <div className="btn-glass flex w-28 shrink-0 items-center justify-center rounded-lg px-1">
                 {selectedCue && selectedCue.type === 'loop' ? (
                   <span className="text-sm font-semibold text-mint">Loop</span>
                 ) : pointCueTypes.length < 2 ? (
@@ -1187,17 +1189,19 @@ export function PrepStrip({
                     ? 'Place hotcues on the track\'s drops, breakdowns and other sections'
                     : 'Set a beatgrid first'
                 }
-                className="flex w-16 items-center justify-center gap-1 bg-ink-900 text-[11px] font-semibold uppercase tracking-wider text-muted transition-colors hover:bg-ink-800 hover:text-accent disabled:opacity-30 disabled:hover:bg-ink-900 disabled:hover:text-muted"
+                className="btn-glass flex w-[4.5rem] shrink-0 items-center justify-center gap-1.5 rounded-lg text-[11px] font-semibold uppercase tracking-wider text-muted hover:text-accent disabled:opacity-30 disabled:hover:text-muted"
               >
-                ✨ Auto
+                <Icon name="sparkle" size={14} />
+                Auto
               </button>
               <button
                 onClick={deleteSelected}
                 disabled={!selectedCue}
                 title="Delete selected hotcue"
-                className="flex w-12 items-center justify-center bg-ink-900 text-muted transition-colors hover:bg-ink-800 hover:text-pink disabled:opacity-30 disabled:hover:bg-ink-900 disabled:hover:text-muted"
+                aria-label="Delete selected hotcue"
+                className="btn-glass flex w-11 shrink-0 items-center justify-center rounded-lg text-muted hover:text-pink disabled:opacity-30 disabled:hover:text-muted"
               >
-                🗑
+                <Icon name="trash" size={15} />
               </button>
             </div>
           </>
@@ -1212,6 +1216,32 @@ export function PrepStrip({
           onClose={() => setAutoOpen(false)}
           onDone={autoHotcuesDone}
           onError={(msg) => onError?.(msg)}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * The loaded track's sleeve. Until it loads — and for a track with no art — a
+ * swatch of the ambient colours stands in, so the header never has a hole in it.
+ */
+function CoverThumb({ trackId }: { trackId: string | null }) {
+  const [failed, setFailed] = useState<string | null>(null)
+  const showArt = trackId != null && failed !== trackId
+  return (
+    <div
+      aria-hidden
+      className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl shadow-[inset_0_1px_0_rgb(255_255_255/0.35),0_8px_24px_-6px_var(--amb-2)]"
+      style={{ background: 'linear-gradient(135deg, var(--amb-1), var(--amb-2) 55%, var(--amb-3))' }}
+    >
+      {showArt && (
+        <img
+          key={trackId}
+          src={api.artUrl(trackId)}
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover"
+          onError={() => setFailed(trackId)}
         />
       )}
     </div>

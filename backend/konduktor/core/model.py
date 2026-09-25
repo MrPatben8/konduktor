@@ -16,6 +16,18 @@ from pydantic import BaseModel, ConfigDict, Field
 from .capabilities import CueRole, CueType, MediaKind, PlaylistKind
 
 
+class HotcueChip(BaseModel):
+    """One occupied hotcue slot, as the library table previews it.
+
+    Deliberately far smaller than a `CuePoint`: it rides on every `Track` in the
+    whole-library fetch, and a row only needs enough to draw a coloured dot.
+    """
+
+    slot: int
+    type: CueType = "cue"
+    color: str | None = None  # "#RRGGBB" as the platform stored it
+
+
 class Track(BaseModel):
     """A single track in the library, as the app sees it."""
 
@@ -47,6 +59,10 @@ class Track(BaseModel):
     filepath: str | None = None  # human-readable OS path
     cue_count: int = 0
     hotcue_count: int = 0
+    # The occupied hotcue slots, ordered by slot. Where cues are parsed lazily
+    # (OneLibrary) this is empty until `track_cues()` corrects it, exactly like
+    # `hotcue_count` — the two must always agree.
+    hotcues: list[HotcueChip] = Field(default_factory=list)
     # 0 = no beatgrid, 1 = constant tempo, >1 = a flexible (multi-tempo) grid.
     grid_marker_count: int = 0
     grid_locked: bool = False

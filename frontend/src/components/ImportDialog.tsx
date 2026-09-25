@@ -153,8 +153,8 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
         onClose={() => setBrowsing(false)}
       />
     )}
-    <div aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-lg rounded-lg border border-line bg-ink-900 shadow-xl">
+    <div aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-4">
+      <div className="w-full max-w-lg glass-overlay">
         <div className="border-b border-line px-5 py-3">
           <h2 className="text-sm font-semibold text-text">
             Import from {deviceLabel}
@@ -170,14 +170,14 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
                 <div className="flex items-center gap-2">
                   <span
                     title={baseFolder}
-                    className="min-w-0 flex-1 truncate rounded-md border border-line bg-ink-950 px-2 py-1.5 font-mono text-xs text-text"
+                    className="min-w-0 flex-1 truncate rounded-md well px-2 py-1.5 font-mono text-xs text-text"
                     dir="rtl"
                   >
                     {baseFolder || 'Loading…'}
                   </span>
                   <button
                     onClick={() => setBrowsing(true)}
-                    className="shrink-0 rounded-md border border-line px-3 py-1.5 text-sm text-muted hover:text-text"
+                    className="shrink-0 btn-glass rounded-full px-3 py-1.5 text-sm text-muted hover:text-text"
                   >
                     Browse…
                   </button>
@@ -228,7 +228,7 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
                   {/* Reported and then skipped, rather than failing the whole
                       import halfway through a multi-minute copy. */}
                   {p.missing.length > 0 && (
-                    <div className="rounded border border-line bg-ink-950 px-3 py-2 text-xs text-pink">
+                    <div className="rounded well px-3 py-2 text-xs text-pink">
                       {p.missing.length} track{p.missing.length === 1 ? '' : 's'} will be skipped —
                       the audio file is not on the drive:
                       <div className="mt-1 text-faint">{p.missing.slice(0, 4).join(', ')}</div>
@@ -238,7 +238,7 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
                   {/* A warning, not a block: everything is imported as a new
                       entry, so a re-import legitimately duplicates. */}
                   {p.duplicates.length > 0 && (
-                    <div className="rounded border border-line bg-ink-950 px-3 py-2 text-xs text-gold">
+                    <div className="rounded well px-3 py-2 text-xs text-gold">
                       {p.duplicates.length} of these look like tracks your collection already has.
                       They will be added again as new entries.
                     </div>
@@ -255,7 +255,7 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
           {job && (
             <div className="space-y-3">
               <div className="text-text">{job.message || 'Working…'}</div>
-              <div className="h-2 overflow-hidden rounded-full bg-ink-950">
+              <div className="h-2 overflow-hidden rounded-full bg-well">
                 <div
                   className={`h-full transition-[width] duration-200 ${
                     job.state === 'failed' ? 'bg-pink' : 'bg-accent'
@@ -286,7 +286,7 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
             <>
               <button
                 onClick={cancel}
-                className="rounded-md border border-line px-3 py-1.5 text-sm text-muted hover:text-text"
+                className="btn-glass rounded-full px-3 py-1.5 text-sm text-muted hover:text-text"
               >
                 Cancel import
               </button>
@@ -302,7 +302,7 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
             <>
               <button
                 onClick={onClose}
-                className="rounded-md border border-line px-3 py-1.5 text-sm text-muted hover:text-text"
+                className="btn-glass rounded-full px-3 py-1.5 text-sm text-muted hover:text-text"
               >
                 {finished ? 'Close' : 'Cancel'}
               </button>
@@ -312,7 +312,7 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
                     starting || !p || p.importable === 0 || p.enough_space === false
                   }
                   onClick={start}
-                  className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-ink-950 hover:brightness-110 disabled:opacity-40"
+                  className="rounded-full btn-primary px-3 py-1.5 text-sm font-semibold disabled:opacity-40"
                 >
                   {starting ? 'Starting…' : `Import ${p?.importable ?? ''}`.trim()}
                 </button>

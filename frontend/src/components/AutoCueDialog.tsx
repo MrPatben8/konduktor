@@ -152,9 +152,9 @@ export function AutoCueDialog(props: Props) {
   }
 
   return (
-    <div aria-modal="true" className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6" onClick={() => !busy && onClose()}>
+    <div aria-modal="true" className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6" onClick={() => !busy && onClose()}>
       <div
-        className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-line bg-ink-900 shadow-2xl"
+        className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden glass-overlay"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-line px-5 py-4">
@@ -281,7 +281,7 @@ export function AutoCueDialog(props: Props) {
           <button
             onClick={confirm}
             disabled={busy || rows === null || active === 0}
-            className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-ink-950 hover:brightness-110 disabled:opacity-40"
+            className="rounded-full btn-primary px-4 py-1.5 text-sm font-semibold disabled:opacity-40"
           >
             {busy
               ? props.batch

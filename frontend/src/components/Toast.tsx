@@ -7,9 +7,9 @@ export interface ToastMsg {
 }
 
 const KIND_CLS: Record<ToastMsg['kind'], string> = {
-  error: 'border-pink/40 bg-ink-800 text-pink',
-  warning: 'border-gold/40 bg-ink-800 text-gold',
-  success: 'border-mint/40 bg-ink-800 text-mint',
+  error: 'bg-pink shadow-[0_0_14px_rgb(255_122_154/0.6)]',
+  warning: 'bg-gold shadow-[0_0_14px_rgb(255_200_97/0.6)]',
+  success: 'bg-mint shadow-[0_0_14px_rgb(61_220_132/0.6)]',
 }
 
 export function Toast({ toast, onClose }: { toast: ToastMsg | null; onClose: () => void }) {
@@ -23,8 +23,10 @@ export function Toast({ toast, onClose }: { toast: ToastMsg | null; onClose: () 
   return (
     <div className="pointer-events-none fixed inset-x-0 top-4 z-50 flex justify-center">
       <div
-        className={`pointer-events-auto max-w-lg rounded-lg border px-4 py-2.5 text-sm shadow-xl ${KIND_CLS[toast.kind]}`}
+        className="glass-overlay pointer-events-auto flex max-w-lg items-center gap-3 !rounded-full px-5 py-2.5 text-sm text-text"
       >
+        {/* The glass carries no colour; a lit dot says which kind this is. */}
+        <span className={`h-2 w-2 shrink-0 rounded-full ${KIND_CLS[toast.kind]}`} />
         {toast.text}
       </div>
     </div>

@@ -1,5 +1,7 @@
+import type { CSSProperties } from 'react'
 import type { CuePoint } from '../api'
-import { contrastText, cueColor, cueGlyph } from '../lib/cues'
+import { cueColor, cueGlyph, withAlpha } from '../lib/cues'
+import { Icon } from '../lib/icons'
 
 interface Props {
   cues: CuePoint[]
@@ -37,7 +39,7 @@ export function HotcueBar({
   onSlotRelease,
 }: Props) {
   return (
-    <div className="flex flex-1 items-stretch gap-px">
+    <div className="flex min-w-0 flex-1 items-stretch gap-1.5">
       {Array.from({ length: slotCount }, (_, i) => i).map((slot) => {
         const cue = cues.find((c) => c.role === 'hotcue' && c.slot === slot) ?? null
         // Gate on `editable`, never on why: a platform-owned cue is a read-only
@@ -68,16 +70,29 @@ export function HotcueBar({
                     : `Hotcue ${slotLabel(slot)}`
                   : `Hotcue ${slotLabel(slot)} — click to set at playhead`
             }
-            style={color ? { backgroundColor: color, color: contrastText(color) } : undefined}
+            style={color ? padStyle(color, selected) : undefined}
             className={
-              'relative flex flex-1 items-center justify-center text-sm font-semibold transition-colors ' +
-              (color ? 'hover:brightness-110' : 'bg-ink-900 text-faint hover:bg-ink-800') +
-              (selected ? ' ring-2 ring-inset ring-white/80' : '')
+              'relative flex min-w-0 flex-1 flex-col items-start justify-center rounded-[11px] px-2 text-left transition-[filter,background-color] ' +
+              (color
+                ? 'hover:brightness-115'
+                : 'bg-white/[0.035] text-faint shadow-[inset_0_0_0_1px_rgb(255_255_255/0.07)] hover:bg-ink-800') +
+              (selected && !color ? ' ring-2 ring-inset ring-white/70' : '')
             }
           >
-            {locked ? '🔒' : slotLabel(slot)}
+            <span
+              className="font-mono text-[11px] font-bold leading-none"
+              style={color ? { color: color } : undefined}
+            >
+              {locked ? <Icon name="lock" size={11} strokeWidth={2.2} /> : slotLabel(slot)}
+            </span>
+            <span className="mt-1 w-full truncate text-[11px] leading-none text-text/85">
+              {cue ? (cue.name && cue.name !== 'n.n.' ? cue.name : ' ') : ''}
+            </span>
             {glyph && (
-              <span className="absolute right-0.5 top-0 text-[9px] leading-none opacity-80">
+              <span
+                className="absolute right-1.5 top-1 text-[9px] leading-none opacity-90"
+                style={{ color: color ?? undefined }}
+              >
                 {glyph}
               </span>
             )}
@@ -86,4 +101,23 @@ export function HotcueBar({
       })}
     </div>
   )
+}
+
+/**
+ * A lit pad: tinted glass in the cue's colour with a soft glow of it, the way a
+ * backlit controller pad reads. Selection brightens the tint and rings it in
+ * the colour itself, so it stays legible whichever colour the cue is.
+ */
+function padStyle(color: string, selected: boolean): CSSProperties {
+  return {
+    background: `linear-gradient(180deg, ${withAlpha(color, selected ? 0.5 : 0.3)}, ${withAlpha(
+      color,
+      selected ? 0.24 : 0.1,
+    )})`,
+    boxShadow: [
+      'inset 0 1px 0 rgba(255,255,255,0.22)',
+      `inset 0 0 0 ${selected ? 2 : 1}px ${withAlpha(color, selected ? 0.95 : 0.55)}`,
+      `0 0 ${selected ? 24 : 18}px -4px ${withAlpha(color, selected ? 0.8 : 0.55)}`,
+    ].join(', '),
+  }
 }

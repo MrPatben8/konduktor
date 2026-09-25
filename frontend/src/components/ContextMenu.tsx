@@ -1,8 +1,10 @@
+import type { ReactNode } from 'react'
 import { useEffect, useRef, useState } from 'react'
+import { Icon } from '../lib/icons'
 
 /** One row of a menu: an action, a submenu (`label ▸`), or a section heading. */
 export type MenuItem =
-  | { label: string; onClick: () => void; danger?: boolean; hint?: string; icon?: string; disabled?: boolean }
+  | { label: string; onClick: () => void; danger?: boolean; hint?: string; icon?: ReactNode; disabled?: boolean }
   | { label: string; submenu: MenuItem[] }
   // Toggles in place and leaves the menu open, so several can be flipped in one go.
   | { label: string; checked: boolean; onToggle: () => void }
@@ -54,7 +56,10 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
   }, [])
 
   return (
-    <div ref={rootRef} role="menu" onClick={(e) => e.stopPropagation()}>
+    // `contents`: the panels are fixed-positioned, so this wrapper must take no
+    // part in layout. As an ordinary empty block it became one more item in
+    // the app's gapped flex column and pushed every panel down by a gap.
+    <div ref={rootRef} role="menu" className="contents" onClick={(e) => e.stopPropagation()}>
       <MenuPanel
         items={items}
         onClose={onClose}
@@ -96,12 +101,12 @@ function MenuPanel({
   return (
     <>
       <div
-        className={`fixed z-50 overflow-y-auto rounded-lg border border-line bg-ink-850 py-1 shadow-2xl ${className}`}
+        className={`glass-overlay fixed z-50 overflow-y-auto rounded-2xl p-1.5 ${className}`}
         style={style}
       >
         {items.map((item, i) => {
           if ('separator' in item) {
-            return <div key={i} className="my-1 border-t border-line" />
+            return <div key={i} className="mx-2 my-1 border-t border-line" />
           }
           if ('checked' in item) {
             return (
@@ -111,14 +116,14 @@ function MenuPanel({
                 aria-checked={item.checked}
                 onMouseEnter={() => setOpen(null)}
                 onClick={item.onToggle}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-muted hover:bg-ink-800 hover:text-text"
+                className="flex w-full items-center gap-2 rounded-[10px] px-3 py-1.5 text-left text-sm text-muted hover:bg-ink-800 hover:text-text"
               >
                 <span
-                  className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border text-[10px] leading-none ${
-                    item.checked ? 'border-accent bg-accent text-ink-950' : 'border-ink-600'
+                  className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border leading-none ${
+                    item.checked ? 'border-accent btn-primary' : 'border-ink-600'
                   }`}
                 >
-                  {item.checked ? '✓' : ''}
+                  {item.checked && <Icon name="check" size={10} strokeWidth={3.2} />}
                 </span>
                 <span className="min-w-0 flex-1 truncate">{item.label}</span>
               </button>
@@ -140,12 +145,12 @@ function MenuPanel({
                 key={i}
                 onMouseEnter={(e) => openSubmenu(i, e.currentTarget)}
                 onClick={(e) => openSubmenu(i, e.currentTarget)}
-                className={`flex w-full items-center justify-between gap-4 px-3 py-1.5 text-left text-sm hover:bg-ink-800 hover:text-text ${
+                className={`flex w-full items-center justify-between gap-4 rounded-[10px] px-3 py-1.5 text-left text-sm hover:bg-ink-800 hover:text-text ${
                   open?.index === i ? 'bg-ink-800 text-text' : 'text-muted'
                 }`}
               >
                 <span>{item.label}</span>
-                <span className="text-[10px] text-faint">▸</span>
+                <Icon name="chevronRight" size={12} strokeWidth={2.4} className="text-faint" />
               </button>
             )
           }
@@ -158,7 +163,7 @@ function MenuPanel({
                 item.onClick()
                 onClose()
               }}
-              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm ${
+              className={`flex w-full items-center gap-2 rounded-[10px] px-3 py-1.5 text-left text-sm ${
                 item.disabled
                   ? 'cursor-default text-faint'
                   : item.danger
@@ -166,10 +171,10 @@ function MenuPanel({
                     : 'text-muted hover:bg-ink-800 hover:text-text'
               }`}
             >
-              {item.icon && <span className="shrink-0 text-[11px] text-gold">{item.icon}</span>}
+              {item.icon && <span className="flex shrink-0 text-gold">{item.icon}</span>}
               <span className="min-w-0 flex-1 truncate">{item.label}</span>
               {item.hint && (
-                <span className="shrink-0 text-[10px] tabular-nums text-faint">{item.hint}</span>
+                <span className="shrink-0 font-mono text-[10px] text-faint">{item.hint}</span>
               )}
             </button>
           )

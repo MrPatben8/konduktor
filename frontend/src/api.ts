@@ -29,10 +29,21 @@ export interface Track {
   filepath: string | null
   cue_count: number
   hotcue_count: number
+  /** The occupied hotcue slots, ordered by slot — what the table's Cues column
+   *  draws as dots. Empty until corrected where cues load lazily (OneLibrary),
+   *  exactly like `hotcue_count`. */
+  hotcues: HotcueChip[]
   /** 0 = no beatgrid, 1 = constant tempo, >1 = a flexible (multi-tempo) grid. */
   grid_marker_count: number
   grid_locked: boolean
   media_kind: MediaKind
+}
+
+/** One occupied hotcue slot, as the library table previews it. */
+export interface HotcueChip {
+  slot: number
+  type: CueType
+  color: string | null // "#RRGGBB" as the platform stored it
 }
 
 export interface TrackPage {

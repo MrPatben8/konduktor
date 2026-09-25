@@ -1,4 +1,5 @@
 import { memo, useRef, useState } from 'react'
+import { Icon } from '../lib/icons'
 
 interface Props {
   /** Tempo of the marker governing the playhead — what the tempo controls act
@@ -48,9 +49,8 @@ function markerTime(t: number): string {
 }
 
 const BTN =
-  'flex flex-1 items-center justify-center rounded border border-line bg-ink-850 py-1 text-xs ' +
-  'font-semibold text-text transition-colors hover:border-accent disabled:opacity-30 ' +
-  'disabled:hover:border-line'
+  'btn-glass flex flex-1 items-center justify-center gap-1 rounded-lg py-1 font-mono text-[11px] ' +
+  'font-semibold text-text disabled:opacity-30'
 
 /**
  * Beatgrid / tempo panel (Traktor grid-control equivalent): editable BPM, BPM
@@ -114,7 +114,7 @@ export const GridControls = memo(function GridControls({
   return (
     <div className="flex flex-col gap-2">
       {/* BPM readout / editor */}
-      <div className="text-center">
+      <div className="well rounded-2xl px-3 py-2 text-center">
         {editing ? (
           <input
             autoFocus
@@ -125,7 +125,7 @@ export const GridControls = memo(function GridControls({
               if (e.key === 'Enter') commit()
               if (e.key === 'Escape') setEditing(false)
             }}
-            className="w-28 rounded bg-ink-850 py-0.5 text-center text-2xl font-semibold tabular-nums text-text outline-none"
+            className="w-32 rounded-lg bg-ink-800 py-0.5 text-center font-mono text-[26px] font-semibold text-accent outline-none"
           />
         ) : (
           <button
@@ -133,7 +133,7 @@ export const GridControls = memo(function GridControls({
               setVal(bpm != null ? bpm.toFixed(3) : '')
               setEditing(true)
             }}
-            className="text-2xl font-semibold tabular-nums text-text hover:text-accent"
+            className="font-mono text-[26px] font-semibold leading-tight text-accent [text-shadow:0_0_18px_color-mix(in_oklab,var(--color-accent)_55%,transparent)] hover:brightness-110"
             title="Click to type an exact BPM"
           >
             {bpm != null ? bpm.toFixed(2) : '––'}
@@ -302,13 +302,14 @@ export const GridControls = memo(function GridControls({
           onClick={onToggleLock}
           title={locked ? 'Unlock track' : 'Lock track'}
           className={
-            'flex flex-1 items-center justify-center gap-1 rounded border py-1 text-xs font-semibold transition-colors ' +
+            'flex flex-1 items-center justify-center gap-1.5 rounded-lg py-1 text-xs font-semibold transition-colors ' +
             (locked
-              ? 'border-gold bg-gold/15 text-gold'
-              : 'border-line bg-ink-850 text-text hover:border-accent')
+              ? 'bg-gold/15 text-gold shadow-[inset_0_0_0_1px_rgb(255_200_97/0.45),0_0_16px_-4px_rgb(255_200_97/0.6)]'
+              : 'btn-glass text-text')
           }
         >
-          {locked ? '🔒 Locked' : '🔓 Lock'}
+          <Icon name={locked ? 'lock' : 'unlock'} size={13} />
+          {locked ? 'Locked' : 'Lock'}
         </button>
         {/* Only a marker you are standing on can be deleted, so one that is
             scrolled off-screen can never go by accident. Deleting the last
@@ -325,7 +326,7 @@ export const GridControls = memo(function GridControls({
                 : 'Park the playhead on a marker to delete it (‹ › to step)'
           }
         >
-          🗑 Mrk
+          <Icon name="trash" size={12} /> Mrk
         </button>
         <button
           className={BTN}
@@ -343,7 +344,7 @@ export const GridControls = memo(function GridControls({
           disabled={!hasGrid}
           title="Delete beatgrid"
         >
-          🗑 Grid
+          <Icon name="trash" size={12} /> Grid
         </button>
       </div>
 
@@ -355,7 +356,8 @@ export const GridControls = memo(function GridControls({
           disabled={analyzing}
           title="Detect BPM and first beat, then set the grid + hotcue 1 (fix octave with ÷2 / ×2)"
         >
-          {analyzing ? '…' : 'Analyze'}
+          <Icon name="wave" size={13} />
+          {analyzing ? 'Analyzing…' : 'Analyze'}
         </button>
       </div>
     </div>

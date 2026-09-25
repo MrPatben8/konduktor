@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { CuePoint } from '../api'
-import { drawCuePoint, drawCues, drawLoop } from '../lib/cues'
+import { drawCuePoint, drawCues, drawLoop, drawPlayhead } from '../lib/cues'
 import { paintWave, type WaveColumn } from '../lib/waveform'
 
 interface Props {
@@ -63,7 +63,7 @@ export function OverviewWaveform({
     const dur = durRef.current
     if (dur > 0) {
       const px = Math.round((timeRef.current / dur) * w)
-      ctx.fillStyle = 'rgba(10,11,15,0.55)'
+      ctx.fillStyle = 'rgba(5,6,10,0.5)'
       ctx.fillRect(0, 0, px, h)
       const dpr = window.devicePixelRatio || 1
       const lp = loopRef.current
@@ -72,13 +72,7 @@ export function OverviewWaveform({
       drawCues(ctx, cuesRef.current, w, h, dpr, (t) => (t / dur) * w, false)
       const cp = cuePointRef.current
       if (cp != null) drawCuePoint(ctx, Math.round((cp / dur) * w), h, dpr)
-      const pw = Math.max(2, Math.round(2 * dpr))
-      const px0 = px - Math.floor(pw / 2)
-      const po = Math.max(1, Math.round(dpr))
-      ctx.fillStyle = 'rgba(0,0,0,0.6)'
-      ctx.fillRect(px0 - po, 0, pw + po * 2, h)
-      ctx.fillStyle = '#ff3b30'
-      ctx.fillRect(px0, 0, pw, h)
+      drawPlayhead(ctx, px, h, dpr, false)
     }
   }, [])
 

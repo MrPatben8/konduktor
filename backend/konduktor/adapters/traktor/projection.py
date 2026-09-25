@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-from ...core.model import CuePoint, GridMarker, Track, TrackCues
+from ...core.model import CuePoint, GridMarker, HotcueChip, Track, TrackCues
 from . import beatgrid
 from .cue_types import NATIVE_TO_CUE_TYPE
 
@@ -83,8 +83,19 @@ def to_track(e) -> Track:
     # question, two answers.
     markers = beatgrid.grid_markers(e)
     cues = [c for c in (e.cue_v2 or []) if getattr(c, "grid", None) is None]
-    hotcues = sum(
-        1 for c in cues if c.hotcue is not None and c.hotcue >= 0
+    # The same "is this in the bank" test as `to_track_cues`' slot, so the
+    # table's dots and the deck's pads cannot disagree.
+    chips = sorted(
+        (
+            HotcueChip(
+                slot=c.hotcue,
+                type=NATIVE_TO_CUE_TYPE.get(c.type, "cue"),
+                color=c.color or None,
+            )
+            for c in cues
+            if c.hotcue is not None and c.hotcue >= 0
+        ),
+        key=lambda chip: chip.slot,
     )
     wheel, mode = parse_key(info.key if info else None)
     return Track(
@@ -111,7 +122,8 @@ def to_track(e) -> Track:
         release_date=iso_date(info.release_date if info else None),
         filepath=_display_path(loc) if loc else None,
         cue_count=len(cues),
-        hotcue_count=hotcues,
+        hotcue_count=len(chips),
+        hotcues=chips,
         grid_marker_count=len(markers),
         grid_locked=bool(e.lock),
         media_kind="stem" if getattr(e, "stems", None) is not None else "audio",

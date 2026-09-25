@@ -8,6 +8,21 @@ interface Props {
   onChange?: (value: number) => void
 }
 
+function Star({ className }: { className?: string }) {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      aria-hidden
+      className={className}
+      fill="currentColor"
+    >
+      <path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z" />
+    </svg>
+  )
+}
+
 // Compact star rating. Read-only by default (shows a dash when unrated). When
 // `onChange` is given it's interactive: hollow (☆) above the rating, solid gold
 // (★) up to it, with hover preview. Clicking a star sets that rating; clicking
@@ -19,11 +34,9 @@ export function RatingStars({ value, max = 5, onChange }: Props) {
   if (!onChange) {
     if (!value) return <span className="text-faint">—</span>
     return (
-      <span className="whitespace-nowrap tracking-tight" title={`${value} / ${max}`}>
+      <span className="flex items-center gap-0.5" title={`${value} / ${max}`}>
         {stars.map((i) => (
-          <span key={i} className={i <= value ? 'text-gold' : 'text-ink-600'}>
-            {i <= value ? '★' : '☆'}
-          </span>
+          <Star key={i} className={i <= value ? 'text-gold' : 'text-white/15'} />
         ))}
       </span>
     )
@@ -31,7 +44,7 @@ export function RatingStars({ value, max = 5, onChange }: Props) {
 
   const shown = hover || value
   return (
-    <span className="whitespace-nowrap tracking-tight" title={`${value} / ${max}`}>
+    <span className="flex items-center gap-0.5" title={`${value} / ${max}`}>
       {stars.map((i) => (
         <button
           key={i}
@@ -41,10 +54,10 @@ export function RatingStars({ value, max = 5, onChange }: Props) {
           }}
           onMouseEnter={() => setHover(i)}
           onMouseLeave={() => setHover(0)}
-          className={`transition-colors ${i <= shown ? 'text-gold' : 'text-ink-600 hover:text-gold/60'}`}
+          className={`transition-colors ${i <= shown ? 'text-gold' : 'text-white/15 hover:text-gold/60'}`}
           title={i === value ? 'Clear rating' : `Set ${i} star${i > 1 ? 's' : ''}`}
         >
-          {i <= shown ? '★' : '☆'}
+          <Star />
         </button>
       ))}
     </span>

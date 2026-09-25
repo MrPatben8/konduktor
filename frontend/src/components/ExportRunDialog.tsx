@@ -101,8 +101,8 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
   const blocked = p?.blocked ?? null
 
   return (
-    <div aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-lg rounded-lg border border-line bg-ink-900 shadow-xl">
+    <div aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-4">
+      <div className="w-full max-w-lg glass-overlay">
         <div className="border-b border-line px-5 py-3">
           <h2 className="text-sm font-semibold text-text">Export “{set.name}”</h2>
         </div>
@@ -115,7 +115,7 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
                 <div
                   dir="rtl"
                   title={set.destination}
-                  className="truncate rounded-md border border-line bg-ink-950 px-2 py-1.5 font-mono text-xs text-text"
+                  className="truncate rounded-md well px-2 py-1.5 font-mono text-xs text-text"
                 >
                   {set.destination}
                 </div>
@@ -143,14 +143,14 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
                   {/* Reported and skipped, not a failure halfway through a long
                       copy. A gig stick short four tracks must never be silent. */}
                   {p.missing.length > 0 && (
-                    <div className="rounded border border-line bg-ink-950 px-3 py-2 text-xs text-pink">
+                    <div className="rounded well px-3 py-2 text-xs text-pink">
                       {p.missing.length} track{p.missing.length === 1 ? '' : 's'} will be skipped —
                       the audio file is not on this disk:
                       <div className="mt-1 text-faint">{p.missing.slice(0, 4).join(', ')}</div>
                     </div>
                   )}
                   {p.replacing && (
-                    <div className="rounded border border-line bg-ink-950 px-3 py-2 text-xs text-gold">
+                    <div className="rounded well px-3 py-2 text-xs text-gold">
                       This folder already holds an export. Its files will be replaced.
                     </div>
                   )}
@@ -162,19 +162,19 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
               )}
 
               {blocked === 'destination_not_empty' && (
-                <div className="rounded border border-pink/40 bg-ink-950 px-3 py-2 text-xs text-pink">
+                <div className="rounded border border-pink/40 bg-well px-3 py-2 text-xs text-pink">
                   That folder already has files in it that Konduktor didn’t put there. An export
                   replaces what it wrote last time, so it will only write into an empty folder or
                   one of its own. Edit the export and choose somewhere else.
                 </div>
               )}
               {blocked === 'nothing_to_export' && (
-                <div className="rounded border border-line bg-ink-950 px-3 py-2 text-xs text-muted">
+                <div className="rounded well px-3 py-2 text-xs text-muted">
                   There’s nothing to export yet — add some tracks or a playlist.
                 </div>
               )}
               {blocked === 'unsupported_target' && (
-                <div className="rounded border border-pink/40 bg-ink-950 px-3 py-2 text-xs text-pink">
+                <div className="rounded border border-pink/40 bg-well px-3 py-2 text-xs text-pink">
                   Konduktor can’t write that kind of library yet.
                 </div>
               )}
@@ -184,7 +184,7 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
           {job && (
             <div className="space-y-3">
               <div className="text-text">{job.message || 'Working…'}</div>
-              <div className="h-2 overflow-hidden rounded-full bg-ink-950">
+              <div className="h-2 overflow-hidden rounded-full bg-well">
                 <div
                   className={`h-full transition-[width] duration-200 ${
                     job.state === 'failed' ? 'bg-pink' : 'bg-accent'
@@ -225,7 +225,7 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
             <>
               <button
                 onClick={cancel}
-                className="rounded-md border border-line px-3 py-1.5 text-sm text-muted hover:text-text"
+                className="btn-glass rounded-full px-3 py-1.5 text-sm text-muted hover:text-text"
               >
                 Cancel export
               </button>
@@ -241,7 +241,7 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
             <>
               <button
                 onClick={onClose}
-                className="rounded-md border border-line px-3 py-1.5 text-sm text-muted hover:text-text"
+                className="btn-glass rounded-full px-3 py-1.5 text-sm text-muted hover:text-text"
               >
                 {finished ? 'Close' : 'Cancel'}
               </button>
@@ -251,7 +251,7 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
                     starting || !p || !!blocked || p.exportable === 0 || p.enough_space === false
                   }
                   onClick={start}
-                  className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-ink-950 hover:brightness-110 disabled:opacity-40"
+                  className="rounded-full btn-primary px-3 py-1.5 text-sm font-semibold disabled:opacity-40"
                 >
                   {starting ? 'Starting…' : `Export ${p && !blocked ? p.exportable : ''}`.trim()}
                 </button>

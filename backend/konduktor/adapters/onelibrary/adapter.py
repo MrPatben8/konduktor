@@ -24,7 +24,7 @@ from pathlib import Path
 
 from ...core.adapter import Unsupported
 from ...core.capabilities import Capabilities
-from ...core.model import PlaylistNode, Track, TrackCues
+from ...core.model import HotcueChip, PlaylistNode, Track, TrackCues
 from ...core.pathmap import PathMapping, common_dir_prefix
 from ...core.query import TrackIndex
 from . import capabilities as caps
@@ -125,7 +125,15 @@ class OneLibraryAdapter:
         if track is not None:
             track.grid_marker_count = len(result.grid_markers)
             track.cue_count = len(result.cues)
-            track.hotcue_count = sum(1 for c in result.cues if c.role == "hotcue")
+            track.hotcues = sorted(
+                (
+                    HotcueChip(slot=c.slot, type=c.type, color=c.color)
+                    for c in result.cues
+                    if c.role == "hotcue" and c.slot is not None
+                ),
+                key=lambda chip: chip.slot,
+            )
+            track.hotcue_count = len(track.hotcues)
         return result
 
     # ---- playlists -------------------------------------------------------

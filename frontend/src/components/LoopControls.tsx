@@ -1,3 +1,5 @@
+import { Icon } from '../lib/icons'
+
 interface Props {
   hasGrid: boolean // beat-loops need a beatgrid; buttons disable without one
   active: boolean // a loop is currently engaged
@@ -18,9 +20,13 @@ function label(size: number): string {
   return size < 1 ? `1/${Math.round(1 / size)}` : String(size)
 }
 
-const CELL = 'flex items-center justify-center text-sm font-semibold transition-colors select-none'
-const IDLE = 'bg-ink-900 text-text hover:bg-ink-800'
-const OFF = 'disabled:opacity-30 disabled:hover:bg-ink-900'
+const CELL =
+  'flex items-center justify-center rounded-lg font-mono text-xs font-semibold transition-colors select-none'
+const IDLE = 'btn-glass text-text'
+const OFF = 'disabled:opacity-30'
+// A lit green key: an engaged loop should read as ON from across the room.
+const LIT =
+  'bg-gradient-to-b from-[#7bf0ad] to-mint text-ink-950 shadow-[inset_0_1px_0_rgb(255_255_255/0.6),0_0_14px_rgb(61_220_132/0.55)]'
 
 export function LoopControls({
   hasGrid,
@@ -36,11 +42,12 @@ export function LoopControls({
 }: Props) {
 
   return (
-    <div className="flex h-10 shrink-0 items-stretch gap-px border-t border-line bg-ink-950">
-      <span className="flex w-16 items-center justify-center bg-ink-900 text-[10px] font-semibold uppercase tracking-wider text-faint">
+    <div className="flex h-10 shrink-0 items-center gap-1.5 pt-2">
+      <span className="flex w-12 shrink-0 items-center text-[10px] font-semibold uppercase tracking-wider text-faint">
         Loop
       </span>
 
+      <div className="well flex h-full min-w-0 flex-1 items-stretch gap-0.5 rounded-xl p-[3px]">
       {SIZES.map((size) => {
         const isActive = active && activeBeats === size
         return (
@@ -49,32 +56,35 @@ export function LoopControls({
             onClick={() => onSetLoop(size)}
             disabled={!hasGrid}
             title={hasGrid ? `${label(size)}-beat loop` : 'No beatgrid'}
-            className={`${CELL} ${OFF} flex-1 ${isActive ? 'bg-mint text-ink-950' : IDLE}`}
+            className={`${CELL} ${OFF} flex-1 ${
+              isActive ? LIT : 'text-muted hover:bg-ink-800 hover:text-text'
+            }`}
           >
             {label(size)}
           </button>
         )
       })}
+      </div>
 
-      <button onClick={onLoopIn} className={`${CELL} ${IDLE} w-12`} title="Loop in at playhead">
+      <button onClick={onLoopIn} className={`${CELL} ${IDLE} h-full w-11`} title="Loop in at playhead">
         IN
       </button>
-      <button onClick={onLoopOut} className={`${CELL} ${IDLE} w-12`} title="Loop out at playhead">
+      <button onClick={onLoopOut} className={`${CELL} ${IDLE} h-full w-11`} title="Loop out at playhead">
         OUT
       </button>
       <button
         onClick={onToggleActive}
         disabled={!canToggle}
         title={active ? 'Disable loop' : 'Enable loop'}
-        className={`${CELL} ${OFF} w-12 text-base ${active ? 'bg-mint text-ink-950' : IDLE}`}
+        className={`${CELL} ${OFF} h-full w-11 ${active ? LIT : IDLE}`}
       >
-        ⟳
+        <Icon name="loop" size={15} />
       </button>
       <button
         onClick={onToggleSnap}
         title="Snap to the nearest beat"
-        className={`${CELL} w-16 text-[11px] uppercase tracking-wider ${
-          snap ? 'bg-accent text-ink-950' : `${IDLE} text-muted`
+        className={`${CELL} h-full w-14 font-sans text-[11px] uppercase tracking-wider ${
+          snap ? 'is-selected text-text' : `${IDLE} text-muted`
         }`}
       >
         Snap

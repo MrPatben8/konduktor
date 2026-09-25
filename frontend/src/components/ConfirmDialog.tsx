@@ -46,11 +46,11 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onClose }:
   return (
     <div
       aria-modal="true"
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
       onClick={() => !busy && onClose()}
     >
       <div
-        className="w-full max-w-sm overflow-hidden rounded-xl border border-line bg-ink-900 shadow-2xl"
+        className="w-full max-w-sm overflow-hidden glass-overlay"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-line px-5 py-4 text-[15px] font-semibold tracking-tight">
@@ -68,7 +68,7 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onClose }:
           <button
             onClick={() => void confirm()}
             disabled={busy}
-            className="rounded-md bg-pink px-4 py-1.5 text-sm font-medium text-ink-950 hover:brightness-110 disabled:opacity-50"
+            className="rounded-full bg-pink/15 shadow-[inset_0_1px_0_rgb(255_255_255/0.12),inset_0_0_0_1px_rgb(255_122_154/0.55)] hover:bg-pink/25 px-4 py-1.5 text-sm font-semibold text-[#ffd0da] disabled:opacity-50"
           >
             {confirmLabel}
           </button>

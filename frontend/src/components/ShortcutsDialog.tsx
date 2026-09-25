@@ -97,11 +97,11 @@ export function ShortcutsDialog({ onClose }: Props) {
   return (
     <div
       aria-modal="true"
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
       onClick={onClose}
     >
       <div
-        className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-xl border border-line bg-ink-900 shadow-2xl"
+        className="flex max-h-full w-full max-w-lg flex-col overflow-hidden glass-overlay"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-line px-5 py-4">

@@ -26,11 +26,11 @@ export function AnalyzeGridDialog({ total, existing, locked, onChoose, onClose }
   return (
     <div
       aria-modal="true"
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-sm overflow-hidden rounded-xl border border-line bg-ink-900 shadow-2xl"
+        className="w-full max-w-sm overflow-hidden glass-overlay"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-line px-5 py-4">
@@ -71,7 +71,7 @@ export function AnalyzeGridDialog({ total, existing, locked, onChoose, onClose }
           {canSkip && (
             <button
               onClick={() => onChoose(false)}
-              className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-ink-950 hover:brightness-110"
+              className="rounded-full btn-primary px-4 py-1.5 text-sm font-semibold"
             >
               Skip {existing === 1 ? 'it' : 'them'}
             </button>

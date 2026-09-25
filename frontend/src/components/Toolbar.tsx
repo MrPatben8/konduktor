@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api'
 import { useCaps } from '../lib/capabilities'
+import { Icon } from '../lib/icons'
 
 export interface Filters {
   search: string
@@ -28,7 +29,7 @@ interface Props {
 }
 
 const selectCls =
-  'rounded-md border border-line bg-ink-850 px-2.5 py-1.5 text-sm text-text outline-none focus:border-accent hover:border-ink-600 transition-colors'
+  'btn-glass rounded-full px-3 py-1.5 text-sm text-text outline-none focus:ring-1 focus:ring-accent'
 
 export function Toolbar({
   filters,
@@ -47,16 +48,16 @@ export function Toolbar({
     filters.hasCues !== 'any'
 
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-line bg-ink-900 px-4 py-3">
+    <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">
       <div className="relative">
-        <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint">
-          ⌕
+        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-faint">
+          <Icon name="search" size={15} />
         </span>
         <input
           value={filters.search}
           onChange={(e) => set({ search: e.target.value })}
           placeholder="Search artist, title, album…"
-          className="w-64 rounded-md border border-line bg-ink-850 py-1.5 pl-8 pr-3 text-sm text-text outline-none placeholder:text-faint focus:border-accent"
+          className="well w-72 rounded-full py-1.5 pl-9 pr-3 text-sm text-text outline-none placeholder:text-faint focus:ring-1 focus:ring-accent"
         />
       </div>
 
@@ -91,14 +92,14 @@ export function Toolbar({
           value={filters.bpmMin}
           onChange={(e) => set({ bpmMin: e.target.value.replace(/[^\d.]/g, '') })}
           placeholder="min"
-          className="w-14 rounded-md border border-line bg-ink-850 px-2 py-1.5 text-center text-sm tabular-nums outline-none focus:border-accent placeholder:text-faint"
+          className="well w-14 rounded-full px-2 py-1.5 text-center font-mono text-sm outline-none focus:ring-1 focus:ring-accent placeholder:text-faint"
         />
         <span className="text-xs text-faint">BPM</span>
         <input
           value={filters.bpmMax}
           onChange={(e) => set({ bpmMax: e.target.value.replace(/[^\d.]/g, '') })}
           placeholder="max"
-          className="w-14 rounded-md border border-line bg-ink-850 px-2 py-1.5 text-center text-sm tabular-nums outline-none focus:border-accent placeholder:text-faint"
+          className="well w-14 rounded-full px-2 py-1.5 text-center font-mono text-sm outline-none focus:ring-1 focus:ring-accent placeholder:text-faint"
         />
       </div>
 
@@ -129,7 +130,7 @@ export function Toolbar({
         {active && (
           <button
             onClick={() => onChange(emptyFilters)}
-            className="rounded-md px-2.5 py-1.5 text-sm text-muted hover:bg-ink-800 hover:text-text"
+            className="rounded-full px-3 py-1.5 text-sm text-muted hover:bg-ink-800 hover:text-text"
           >
             Clear filters
           </button>

@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type PlaylistNode } from '../api'
 import type { Source } from './Sidebar'
+import { Icon } from '../lib/icons'
 
 /**
  * Plugged-in libraries, in the sidebar, the way rekordbox and Traktor show them.
@@ -107,11 +108,11 @@ export function DevicesSection({ source, onSelect, onError, onImport }: Props) {
                 }
                 className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors ${
                   isOpen && source.kind === 'device'
-                    ? 'bg-accent-soft text-text'
+                    ? 'is-selected text-text'
                     : 'text-muted hover:bg-ink-800 hover:text-text'
                 }`}
               >
-                <span className="w-3 text-center text-[11px] text-gold">⬒</span>
+                <span className="flex w-4 justify-center text-gold"><Icon name="drive" size={15} /></span>
                 <span className="flex-1 truncate" title={d.path}>
                   {d.label}
                 </span>
@@ -140,7 +141,7 @@ export function DevicesSection({ source, onSelect, onError, onImport }: Props) {
         {viewingDevice && openPath && (
           <button
             onClick={onImport}
-            className="mt-2 mb-1 w-full rounded-md bg-accent px-2 py-1.5 text-sm font-medium text-ink-950 hover:brightness-110"
+            className="mt-2 mb-1 w-full rounded-full btn-primary px-2 py-1.5 text-sm font-semibold"
           >
             Import to collection…
           </button>
@@ -178,14 +179,14 @@ function DevicePlaylistRow({
         style={{ paddingLeft: 8 + depth * 12 }}
         className={`flex w-full items-center gap-2 rounded-md py-1 pr-2 text-left text-sm transition-colors ${
           selected
-            ? 'bg-accent-soft text-text'
+            ? 'is-selected text-text'
             : node.selectable
               ? 'text-muted hover:bg-ink-800 hover:text-text'
               : 'text-faint'
         }`}
       >
-        <span className="w-3 text-center text-[11px] text-faint">
-          {isFolder ? '▸' : '♫'}
+        <span className="flex w-4 justify-center text-faint">
+          <Icon name={isFolder ? 'folder' : 'playlist'} size={14} />
         </span>
         <span className="flex-1 truncate">{node.name}</span>
         {!isFolder && <span className="text-[10px] text-faint">{node.count}</span>}

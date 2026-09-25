@@ -120,8 +120,8 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
   const openError = open.isError ? (open.error as Error).message : null
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-ink-950 p-6">
-      <div className="flex h-[600px] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-line bg-ink-900 shadow-2xl">
+    <div className="flex h-screen w-screen items-center justify-center p-6">
+      <div className="glass flex h-[600px] w-full max-w-2xl flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center gap-3 border-b border-line px-5 py-4">
           <div className="min-w-0 flex-1">
@@ -274,7 +274,7 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
                     <button
                       disabled={!here || open.isPending}
                       onClick={() => here && open.mutate(here)}
-                      className="shrink-0 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-ink-950 hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+                      className="shrink-0 rounded-full btn-primary px-3 py-1.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {open.isPending ? 'Opening…' : 'Open this folder'}
                     </button>
@@ -302,12 +302,12 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
                       ? '…or paste a full path to the drive'
                       : `…or paste a full path to ${platform!.library_label}`
                   }
-                  className="min-w-0 flex-1 rounded-md border border-line bg-ink-850 px-3 py-2 font-mono text-xs text-text outline-none placeholder:text-faint focus:border-accent"
+                  className="min-w-0 flex-1 rounded-lg well px-3 py-2 font-mono text-xs text-text outline-none placeholder:text-faint focus:ring-1 focus:ring-accent"
                 />
                 <button
                   disabled={!manual.trim() || open.isPending}
                   onClick={() => open.mutate(manual.trim())}
-                  className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-ink-950 hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="rounded-full btn-primary px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {open.isPending ? 'Opening…' : 'Open'}
                 </button>

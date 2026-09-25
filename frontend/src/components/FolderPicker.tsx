@@ -31,8 +31,8 @@ export function FolderPicker({ value, onChange, onClose }: Props) {
   }
 
   return (
-    <div aria-modal="true" className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
-      <div className="flex h-[70vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-line bg-ink-900 shadow-xl">
+    <div aria-modal="true" className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-4">
+      <div className="flex h-[70vh] w-full max-w-2xl flex-col overflow-hidden glass-overlay">
         <div className="border-b border-line px-5 py-3">
           <h2 className="text-sm font-semibold text-text">Choose a folder</h2>
         </div>
@@ -53,7 +53,7 @@ export function FolderPicker({ value, onChange, onClose }: Props) {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && newFolder.trim() && here) confirm()
                 }}
-                className="min-w-0 flex-1 rounded-md border border-line bg-ink-950 px-2 py-1 text-xs text-text outline-none focus:border-accent"
+                className="min-w-0 flex-1 rounded-md well px-2 py-1 text-xs text-text outline-none focus:ring-1 focus:ring-accent"
               />
             </div>
           }
@@ -67,14 +67,14 @@ export function FolderPicker({ value, onChange, onClose }: Props) {
           </span>
           <button
             onClick={onClose}
-            className="shrink-0 rounded-md border border-line px-3 py-1.5 text-sm text-muted hover:text-text"
+            className="shrink-0 btn-glass rounded-full px-3 py-1.5 text-sm text-muted hover:text-text"
           >
             Cancel
           </button>
           <button
             disabled={!here}
             onClick={confirm}
-            className="shrink-0 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-ink-950 hover:brightness-110 disabled:opacity-40"
+            className="shrink-0 rounded-full btn-primary px-3 py-1.5 text-sm font-semibold disabled:opacity-40"
           >
             Use this folder
           </button>

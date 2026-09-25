@@ -21,5 +21,6 @@ export function formatBpm(bpm: number | null): string {
  */
 export function keyColor(wheel: number | null): string | undefined {
   if (wheel == null) return undefined
-  return `hsl(${((wheel % 12) / 12) * 360} 65% 62%)`
+  // Light and saturated: it is drawn as text on a tint of itself, on glass.
+  return `hsl(${((wheel % 12) / 12) * 360} 90% 76%)`
 }

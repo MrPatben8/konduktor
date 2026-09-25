@@ -3,13 +3,13 @@ import { BEATS_PER_BAR, type BeatGrid } from './beatgrid'
 
 // Fallback colour by cue type, used when the platform stored none.
 const TYPE_COLORS: Record<CueType, string> = {
-  cue: '#3b82f6', // blue
-  fade_in: '#ff8c2f', // orange
-  fade_out: '#ff8c2f', // orange
-  load: '#ffd60a', // yellow
-  loop: '#22c55e', // green
+  cue: '#4d94ff', // blue
+  fade_in: '#ff9a3d', // orange
+  fade_out: '#ff9a3d', // orange
+  load: '#ffd23d', // yellow
+  loop: '#3ddc84', // green
 }
-const MEMORY_COLOR = '#8b93a3' // gray
+const MEMORY_COLOR = '#9aa1b2' // gray
 
 export const CUE_TYPE_LABELS: Record<CueType, string> = {
   cue: 'Cue',
@@ -53,7 +53,7 @@ export function cueGlyph(cue: CuePoint): string {
   return TYPE_GLYPHS[cue.type] ?? ''
 }
 
-function withAlpha(hex: string, a: number): string {
+export function withAlpha(hex: string, a: number): string {
   const r = parseInt(hex.slice(1, 3), 16)
   const g = parseInt(hex.slice(3, 5), 16)
   const b = parseInt(hex.slice(5, 7), 16)
@@ -70,8 +70,13 @@ export function contrastText(hex: string): string {
 
 /**
  * Draw cue/loop markers onto a canvas. `timeToX` maps a time (seconds) to a
- * device-pixel x. With `labels`, a small numbered flag is drawn at the top for
- * hotcues (used on the main waveform); the overview passes labels=false.
+ * device-pixel x. With `labels`, a rounded flag is drawn at the top for each
+ * cue carrying its slot label — and its name, where the cue has one (used on
+ * the main waveform); the overview passes labels=false.
+ *
+ * Lines glow in their own colour rather than sitting on a black outline: on the
+ * glass deck a dark outline reads as a gap in the waveform, where a glow reads
+ * as the line being lit.
  */
 export function drawCues(
   ctx: CanvasRenderingContext2D,
@@ -85,10 +90,13 @@ export function drawCues(
   slotLabel: (slot: number) => string = (slot) => String(slot + 1),
 ): void {
   const lineW = Math.max(2, Math.round(2 * dpr))
-  const outline = Math.max(1, Math.round(dpr))
-  const flagW = Math.round(12 * dpr)
-  const flagH = Math.round(14 * dpr)
   const half = Math.floor(lineW / 2)
+  const tabH = Math.round(17 * dpr)
+  const pad = Math.round(6 * dpr)
+  const radius = Math.round(8 * dpr)
+  const inset = Math.round(5 * dpr)
+  ctx.font = `600 ${Math.round(11 * dpr)}px 'Geist Variable', system-ui, sans-serif`
+  ctx.textBaseline = 'middle'
   for (const cue of cues) {
     const color = cueColor(cue)
     const x = Math.round(timeToX(cue.start))
@@ -97,43 +105,50 @@ export function drawCues(
     if (cue.length > 0) {
       const x2 = Math.round(timeToX(cue.start + cue.length))
       if (x2 > 0 && x < w) {
-        ctx.fillStyle = withAlpha(color, 0.2)
+        ctx.fillStyle = withAlpha(color, 0.16)
         ctx.fillRect(x, 0, Math.max(1, x2 - x), h)
       }
     }
 
-    if (x < -flagW || x > w + flagW) continue
+    // A flag can extend well to the right of its line; keep drawing while any
+    // of it could be on screen.
+    if (x < -w || x > w + lineW) continue
 
-    // Dark outline behind the line so it reads on any waveform colour.
-    ctx.fillStyle = 'rgba(0,0,0,0.7)'
-    ctx.fillRect(x - half - outline, 0, lineW + outline * 2, h)
+    ctx.save()
+    ctx.shadowColor = color
+    ctx.shadowBlur = 10 * dpr
     ctx.fillStyle = color
     ctx.fillRect(x - half, 0, lineW, h)
+    ctx.restore()
 
     if (labels) {
-      // A flag tab at the top for every cue (outlined). A banked cue carries its
-      // slot label; one without a slot (a memory cue) gets a half-height tab, so
-      // it still reads as a real object rather than an anonymous line.
+      // A banked cue's flag carries its slot label (plus its name when it has
+      // a meaningful one); a cue without a slot (a memory cue) gets a short,
+      // unlabelled flag, so it still reads as a real object rather than an
+      // anonymous line.
       const banked = cue.slot != null
-      const tabH = banked ? flagH : Math.round(flagH / 2)
-      ctx.fillStyle = 'rgba(0,0,0,0.7)'
-      ctx.fillRect(x - half - outline, 0, flagW + outline * 2, tabH + outline * 2)
-      ctx.fillStyle = color
-      ctx.fillRect(x - half, 0, flagW, tabH)
-      if (banked) {
+      const slotText = banked ? slotLabel(cue.slot!) : ''
+      const name = cue.name && cue.name !== 'n.n.' ? cue.name : ''
+      const text = slotText && name ? `${slotText}  ${name}` : slotText
+      const tw = text ? Math.ceil(ctx.measureText(text).width) : 0
+      const fw = text ? tw + pad * 2 : Math.round(8 * dpr)
+      const fh = banked ? tabH : Math.round(tabH / 2)
+      ctx.fillStyle = withAlpha(color, 0.9)
+      ctx.beginPath()
+      ctx.roundRect(x - half, inset, fw, fh, [0, radius, radius, 0])
+      ctx.fill()
+      if (text) {
         ctx.fillStyle = contrastText(color)
-        ctx.font = `bold ${Math.round(10 * dpr)}px system-ui, sans-serif`
-        ctx.textBaseline = 'top'
-        ctx.fillText(slotLabel(cue.slot!), x - half + Math.round(2 * dpr), Math.round(2 * dpr))
+        ctx.fillText(text, x - half + pad, inset + fh / 2 + dpr * 0.5)
       }
     }
   }
 }
 
 /**
- * Draw the floating "CUE" point: a gold vertical line with a dark outline and a
- * solid downward triangle tab at the top, distinct from numbered hotcue flags,
- * the white beatgrid, and the red playhead.
+ * Draw the floating "CUE" point: a gold vertical line with a solid downward
+ * triangle tab at the top, distinct from hotcue flags, the white beatgrid, and
+ * the red playhead.
  */
 export function drawCuePoint(
   ctx: CanvasRenderingContext2D,
@@ -143,11 +158,11 @@ export function drawCuePoint(
 ): void {
   const lw = Math.max(2, Math.round(2 * dpr))
   const half = Math.floor(lw / 2)
-  const outline = Math.max(1, Math.round(dpr))
-  const tab = Math.round(8 * dpr)
-  ctx.fillStyle = 'rgba(0,0,0,0.6)'
-  ctx.fillRect(x - half - outline, 0, lw + outline * 2, h)
-  ctx.fillStyle = '#ffb020'
+  const tab = Math.round(7 * dpr)
+  ctx.save()
+  ctx.shadowColor = '#ffc861'
+  ctx.shadowBlur = 10 * dpr
+  ctx.fillStyle = '#ffc861'
   ctx.fillRect(x - half, 0, lw, h)
   ctx.beginPath()
   ctx.moveTo(x - tab, 0)
@@ -155,9 +170,10 @@ export function drawCuePoint(
   ctx.lineTo(x, tab)
   ctx.closePath()
   ctx.fill()
+  ctx.restore()
 }
 
-/** Draw the active loop region: a translucent green band with bright edges. */
+/** Draw the active loop region: a green band, brightest at the top, with lit edges. */
 export function drawLoop(
   ctx: CanvasRenderingContext2D,
   startX: number,
@@ -165,18 +181,62 @@ export function drawLoop(
   h: number,
   dpr: number,
 ): void {
-  const edge = Math.max(1, Math.round(2 * dpr))
-  ctx.fillStyle = 'rgba(34,197,94,0.18)'
+  const edge = Math.max(1, Math.round(1.5 * dpr))
+  const band = ctx.createLinearGradient(0, 0, 0, h)
+  band.addColorStop(0, 'rgba(61,220,132,0.22)')
+  band.addColorStop(1, 'rgba(61,220,132,0.08)')
+  ctx.fillStyle = band
   ctx.fillRect(startX, 0, Math.max(1, endX - startX), h)
-  ctx.fillStyle = 'rgba(34,197,94,0.95)'
+  ctx.save()
+  ctx.shadowColor = '#3ddc84'
+  ctx.shadowBlur = 8 * dpr
+  ctx.fillStyle = 'rgba(61,220,132,0.9)'
   ctx.fillRect(startX, 0, edge, h)
   ctx.fillRect(endX - edge, 0, edge, h)
+  ctx.restore()
+}
+
+/**
+ * The main waveform's fixed centre playhead: a red line with a soft red glow
+ * and inward-pointing caps top and bottom that anchor the eye in the quiet
+ * margins. Shared with the overview so the two can never drift apart in look.
+ */
+export function drawPlayhead(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  h: number,
+  dpr: number,
+  caps: boolean,
+): void {
+  const core = Math.max(2, Math.round(2 * dpr))
+  const px = x - Math.floor(core / 2)
+  ctx.save()
+  ctx.shadowColor = '#ff4d5e'
+  ctx.shadowBlur = 12 * dpr
+  ctx.fillStyle = '#ff4d5e'
+  ctx.fillRect(px, 0, core, h)
+  if (caps) {
+    const cap = Math.round(6 * dpr)
+    ctx.beginPath()
+    ctx.moveTo(x - cap, 0)
+    ctx.lineTo(x + cap, 0)
+    ctx.lineTo(x, cap)
+    ctx.closePath()
+    ctx.fill()
+    ctx.beginPath()
+    ctx.moveTo(x - cap, h)
+    ctx.lineTo(x + cap, h)
+    ctx.lineTo(x, h - cap)
+    ctx.closePath()
+    ctx.fill()
+  }
+  ctx.restore()
 }
 
 /** Grid marker line colours. Markers are structural, so they are never culled
  *  by the density check the way ordinary beat lines are. */
-export const GRID_MARKER_COLOR = '#4f8cff' // accent — an inactive marker
-export const GRID_MARKER_ACTIVE_COLOR = '#ffb020' // gold — governs the playhead
+export const GRID_MARKER_COLOR = '#9fb0ff' // periwinkle — an inactive marker
+export const GRID_MARKER_ACTIVE_COLOR = '#ffc861' // gold — governs the playhead
 
 /**
  * Draw the beatgrid across the visible window [startSec, endSec].
@@ -199,7 +259,6 @@ export function drawBeatgrid(
   if (endSec <= startSec) return
   const span = endSec - startSec
   const toX = (t: number) => Math.round(((t - startSec) / span) * w)
-  const outline = Math.max(1, Math.round(dpr))
   const beatW = Math.max(1, Math.round(dpr))
   const barW = Math.max(2, Math.round(2 * dpr))
 
@@ -210,7 +269,7 @@ export function drawBeatgrid(
     if (seg && seg.start < endSec && seg.end > startSec) {
       const x1 = toX(Math.max(seg.start, startSec))
       const x2 = toX(Math.min(seg.end, endSec))
-      ctx.fillStyle = 'rgba(255,176,32,0.07)'
+      ctx.fillStyle = 'rgba(255,200,97,0.07)'
       ctx.fillRect(x1, 0, Math.max(1, x2 - x1), h)
     }
   }
@@ -233,10 +292,10 @@ export function drawBeatgrid(
       if (bt < startSec || bt > endSec) continue
       const x = toX(bt)
       const lw = downbeat ? barW : beatW
-      // Dark outline so the line reads on any waveform colour, then a bright line.
-      ctx.fillStyle = 'rgba(0,0,0,0.6)'
-      ctx.fillRect(x - Math.floor(lw / 2) - outline, 0, lw + outline * 2, h)
-      ctx.fillStyle = downbeat ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.65)'
+      // Translucent white with no outline: the grid should read as a ruler laid
+      // over the waveform, not bars cut through it. Downbeats are clearly
+      // brighter, which is what grid editing needs to see.
+      ctx.fillStyle = downbeat ? 'rgba(255,255,255,0.62)' : 'rgba(255,255,255,0.26)'
       ctx.fillRect(x - Math.floor(lw / 2), 0, lw, h)
     }
   }
@@ -248,8 +307,9 @@ export function drawBeatgrid(
     const color = active ? GRID_MARKER_ACTIVE_COLOR : GRID_MARKER_COLOR
     const lw = Math.max(2, Math.round((active ? 3 : 2) * dpr))
     const x = toX(grid.markers[i].start)
-    ctx.fillStyle = 'rgba(0,0,0,0.6)'
-    ctx.fillRect(x - Math.floor(lw / 2) - outline, 0, lw + outline * 2, h)
+    ctx.save()
+    ctx.shadowColor = color
+    ctx.shadowBlur = 10 * dpr
     ctx.fillStyle = color
     ctx.fillRect(x - Math.floor(lw / 2), 0, lw, h)
     const tab = Math.round(7 * dpr)
@@ -259,5 +319,6 @@ export function drawBeatgrid(
     ctx.lineTo(x - tab, h)
     ctx.closePath()
     ctx.fill()
+    ctx.restore()
   }
 }

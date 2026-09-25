@@ -4,6 +4,7 @@ import { api, type ExportSet } from '../api'
 import { ExportDialog } from './ExportDialog'
 import { ExportRunDialog } from './ExportRunDialog'
 import type { Source } from './Sidebar'
+import { Icon } from '../lib/icons'
 
 /**
  * Exports in the sidebar: each one a named, persisted slice of the library
@@ -166,21 +167,21 @@ function ExportRow({
     <div>
       <div
         className={`group flex w-full items-center gap-1 rounded-md pr-1 transition-colors ${
-          selected ? 'bg-accent-soft text-text' : 'text-muted hover:bg-ink-800 hover:text-text'
+          selected ? 'is-selected text-text' : 'text-muted hover:bg-ink-800 hover:text-text'
         }`}
       >
         <button
           title={expanded ? 'Collapse' : 'Expand'}
           onClick={() => setOpen((o) => !o)}
-          className="w-4 shrink-0 py-1.5 text-center text-[10px] text-faint hover:text-text"
+          className="flex w-4 shrink-0 justify-center py-1.5 text-faint hover:text-text"
         >
-          {expanded ? '▾' : '▸'}
+          <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={12} strokeWidth={2.4} />
         </button>
         <button
           onClick={() => onSelect({ kind: 'export', id: set.id, name: set.name })}
           className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left text-sm"
         >
-          <span className="w-3 shrink-0 text-center text-[11px] text-gold">◈</span>
+          <span className="flex w-4 shrink-0 justify-center text-gold"><Icon name="export" size={14} /></span>
           <span className="flex-1 truncate" title={set.destination}>
             {set.name}
           </span>
@@ -193,14 +194,14 @@ function ExportRow({
           onClick={onEdit}
           className="shrink-0 px-1 text-xs text-faint opacity-0 hover:text-text group-hover:opacity-100"
         >
-          ⚙
+          <Icon name="settings" size={13} />
         </button>
         <button
           title="Delete this export"
           onClick={onDelete}
           className="shrink-0 px-1 text-xs text-faint opacity-0 hover:text-pink group-hover:opacity-100"
         >
-          ✕
+          <Icon name="close" size={13} />
         </button>
       </div>
 
@@ -212,7 +213,7 @@ function ExportRow({
               <div
                 key={p.id}
                 className={`group flex items-center gap-1 rounded-md pr-1 ${
-                  chosen ? 'bg-accent-soft text-text' : 'text-muted hover:bg-ink-800 hover:text-text'
+                  chosen ? 'is-selected text-text' : 'text-muted hover:bg-ink-800 hover:text-text'
                 }`}
               >
                 <button
@@ -228,7 +229,7 @@ function ExportRow({
                   style={{ paddingLeft: 24 }}
                   className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left text-sm disabled:cursor-not-allowed"
                 >
-                  <span className="w-3 shrink-0 text-center text-[11px] text-faint">♫</span>
+                  <span className="flex w-4 shrink-0 justify-center text-faint"><Icon name="playlist" size={14} /></span>
                   {/* A playlist deleted since curation is SHOWN, not dropped:
                       the set records the user's intent, and losing part of it
                       silently is worse than showing something broken. */}
@@ -244,7 +245,7 @@ function ExportRow({
                   onClick={() => dropPlaylist.mutate(p.id)}
                   className="shrink-0 px-1 text-xs text-faint opacity-0 hover:text-pink group-hover:opacity-100"
                 >
-                  ✕
+                  <Icon name="close" size={13} />
                 </button>
               </div>
             )
@@ -256,11 +257,11 @@ function ExportRow({
               style={{ paddingLeft: 24 }}
               className={`flex w-full items-center gap-2 rounded-md py-1 pr-2 text-left text-sm transition-colors ${
                 source.kind === 'export-other' && source.exportId === set.id
-                  ? 'bg-accent-soft text-text'
+                  ? 'is-selected text-text'
                   : 'text-muted hover:bg-ink-800 hover:text-text'
               }`}
             >
-              <span className="w-3 shrink-0 text-center text-[11px] text-faint">◇</span>
+              <span className="flex w-4 shrink-0 justify-center text-faint"><Icon name="music" size={14} /></span>
               <span className="flex-1 truncate">Other</span>
               <span className="shrink-0 text-[10px] tabular-nums text-faint">{data.loose}</span>
             </button>
@@ -287,7 +288,7 @@ function ExportRow({
             <button
               onClick={onRun}
               style={{ marginLeft: 24 }}
-              className="mb-1 mt-1 rounded-md bg-accent px-2 py-1 text-xs font-medium text-ink-950 hover:brightness-110"
+              className="mb-1 mt-1 rounded-full btn-primary px-2 py-1 text-xs font-semibold"
             >
               Export {data.tracks} track{data.tracks === 1 ? '' : 's'}…
             </button>

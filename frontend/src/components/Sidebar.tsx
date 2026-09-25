@@ -8,6 +8,7 @@ import { DevicesSection } from './DevicesSection'
 import { ExportsSection } from './ExportsSection'
 import { ConfirmDialog, type ConfirmRequest } from './ConfirmDialog'
 import { ContextMenu, type MenuItem } from './ContextMenu'
+import { Icon, type IconName } from '../lib/icons'
 
 /**
  * Which view the main table is showing.
@@ -74,10 +75,10 @@ function deleteRequest(node: PlaylistNode) {
   }
 }
 
-const icons: Record<PlaylistKind, string> = {
-  folder: '▸',
-  playlist: '♫',
-  smart: '✦',
+const icons: Record<PlaylistKind, IconName> = {
+  folder: 'chevronRight',
+  playlist: 'playlist',
+  smart: 'smart',
 }
 
 /** What the sidebar is naming in place: a new node, and the folder it goes in
@@ -120,11 +121,11 @@ function DraftRow({
       style={{ paddingLeft: `${8 + depth * 14}px` }}
     >
       <span
-        className={`w-3 shrink-0 text-center text-[11px] ${
+        className={`flex w-4 shrink-0 justify-center ${
           draft.kind === 'folder' ? 'text-faint' : 'text-accent'
         }`}
       >
-        {icons[draft.kind]}
+        <Icon name={icons[draft.kind]} size={draft.kind === 'folder' ? 12 : 15} />
       </span>
       <input
         autoFocus
@@ -136,7 +137,7 @@ function DraftRow({
           else if (e.key === 'Escape') finish(false)
         }}
         onBlur={() => finish(true)}
-        className="min-w-0 flex-1 rounded border border-accent bg-ink-950 px-1 py-0 text-sm text-text outline-none"
+        className="min-w-0 flex-1 rounded-md bg-well px-1 py-0 text-sm text-text outline-none ring-1 ring-accent"
       />
     </div>
   )
@@ -184,8 +185,8 @@ function NodeRow({
     <div>
       <div
         onContextMenu={(e) => actions.onContextMenu(e, node)}
-        className={`group flex items-center gap-1 rounded-md pr-1 text-sm transition-colors ${
-          selected ? 'bg-accent-soft text-text' : 'text-muted hover:bg-ink-800 hover:text-text'
+        className={`group flex items-center gap-1 rounded-[10px] pr-1 text-sm transition-colors ${
+          selected ? 'is-selected font-medium text-text' : 'text-muted hover:bg-ink-800 hover:text-text'
         }`}
       >
         <button
@@ -199,12 +200,21 @@ function NodeRow({
           style={{ paddingLeft: `${8 + depth * 14}px` }}
         >
           <span
-            className={`w-3 shrink-0 text-center text-[11px] ${
-              isFolder ? 'text-faint' : node.kind === 'smart' ? 'text-pink' : 'text-accent'
+            className={`flex w-4 shrink-0 justify-center ${
+              isFolder ? 'text-faint' : node.kind === 'smart' ? 'text-pink' : selected ? 'text-accent' : 'text-muted'
             } ${expanded ? 'rotate-90' : ''} transition-transform`}
           >
-            {icons[node.kind]}
+            <Icon
+              name={icons[node.kind]}
+              size={isFolder ? 12 : 15}
+              strokeWidth={isFolder ? 2.4 : 1.8}
+            />
           </span>
+          {isFolder && (
+            <span className="-ml-1 flex shrink-0 text-muted">
+              <Icon name={expanded ? 'folderOpen' : 'folder'} size={15} />
+            </span>
+          )}
           {renaming ? (
             <input
               autoFocus
@@ -221,7 +231,7 @@ function NodeRow({
                 }
               }}
               onBlur={() => setRenamingId(null)}
-              className="min-w-0 flex-1 rounded border border-accent bg-ink-950 px-1 py-0 text-sm text-text outline-none"
+              className="min-w-0 flex-1 rounded-md bg-well px-1 py-0 text-sm text-text outline-none ring-1 ring-accent"
             />
           ) : (
             <span className="flex-1 truncate">{node.name}</span>
@@ -239,12 +249,12 @@ function NodeRow({
             <button
               title="Add to an export"
               onClick={() => setAdding((a) => !a)}
-              className="hidden rounded px-1 text-xs text-faint hover:text-gold group-hover:block"
+              className="hidden rounded px-1 text-faint hover:text-gold group-hover:block"
             >
-              ◈
+              <Icon name="export" size={13} />
             </button>
             {adding && (
-              <div className="absolute right-0 top-full z-30 mt-1 w-48 rounded-md border border-line bg-ink-850 p-1 shadow-2xl">
+              <div className="glass-overlay absolute right-0 top-full z-30 mt-1 w-48 !rounded-2xl p-1.5">
                 {exportSets.map((set) => (
                   <button
                     key={set.id}
@@ -252,9 +262,9 @@ function NodeRow({
                       setAdding(false)
                       actions.onAddToExport(node, set.id)
                     }}
-                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted hover:bg-ink-800 hover:text-text"
+                    className="flex w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-sm text-muted hover:bg-ink-800 hover:text-text"
                   >
-                    <span className="shrink-0 text-[11px] text-gold">◈</span>
+                    <span className="shrink-0 text-gold"><Icon name="export" size={13} /></span>
                     <span className="truncate">{set.name}</span>
                   </button>
                 ))}
@@ -266,23 +276,23 @@ function NodeRow({
           <button
             title="Rename"
             onClick={startRename}
-            className="hidden shrink-0 rounded px-1 text-xs text-faint hover:text-text group-hover:block"
+            className="hidden shrink-0 rounded px-1 text-faint hover:text-text group-hover:block"
           >
-            ✎
+            <Icon name="pencil" size={13} />
           </button>
         )}
         {!renaming && node.can_delete && (
           <button
             title={isFolder ? 'Delete folder' : 'Delete playlist'}
             onClick={() => actions.onDelete(node)}
-            className="hidden shrink-0 rounded px-1 text-xs text-faint hover:text-pink group-hover:block"
+            className="hidden shrink-0 rounded px-1 text-faint hover:text-pink group-hover:block"
           >
-            ×
+            <Icon name="close" size={13} />
           </button>
         )}
         {!renaming && !isFolder && (
           <span
-            className={`shrink-0 rounded bg-ink-800 px-1.5 py-0.5 text-[10px] tabular-nums text-faint ${
+            className={`shrink-0 px-1.5 font-mono text-[11px] text-faint ${
               node.can_rename || node.can_delete ? 'group-hover:hidden' : ''
             }`}
           >
@@ -420,9 +430,9 @@ export function Sidebar({
   const createItems = (parentId: string | null): MenuItem[] =>
     canCreate
       ? [
-          { label: 'New Playlist', icon: '♫', onClick: () => startDraft('playlist', parentId) },
+          { label: 'New Playlist', icon: <Icon name="playlist" size={13} />, onClick: () => startDraft('playlist', parentId) },
           ...(foldersSupported
-            ? [{ label: 'New Folder', icon: '▸', onClick: () => startDraft('folder', parentId) }]
+            ? [{ label: 'New Folder', icon: <Icon name="folder" size={13} />, onClick: () => startDraft('folder', parentId) }]
             : []),
         ]
       : []
@@ -439,7 +449,7 @@ export function Sidebar({
               label: 'Add to export',
               submenu: exportSets.map((set) => ({
                 label: set.name,
-                icon: '◈',
+                icon: <Icon name="export" size={13} />,
                 onClick: () => addToExport.mutate({ node, setId: set.id }),
               })),
             },
@@ -484,7 +494,7 @@ export function Sidebar({
   }
 
   return (
-    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-line bg-ink-900">
+    <aside className="glass flex h-full w-64 shrink-0 flex-col overflow-hidden">
       {/* Which library is open — and the way to open a different one. Until
           this existed the picker was a one-way door: it ran once at startup and
           nothing could summon it again, so changing library meant restarting.
@@ -492,8 +502,15 @@ export function Sidebar({
       <button
         onClick={switchLibrary}
         title={library ? `${library.path} — click to open a different library` : undefined}
-        className="group flex items-center gap-2 border-b border-line px-3 py-2.5 text-left hover:bg-ink-800"
+        className="btn-glass group m-2.5 mb-0 flex items-center gap-2.5 rounded-[14px] px-2.5 py-2 text-left"
       >
+        <span
+          aria-hidden
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[13px] font-bold text-white shadow-[inset_0_1px_0_rgb(255_255_255/0.4)]"
+          style={{ background: 'linear-gradient(135deg, var(--amb-1), var(--amb-3))' }}
+        >
+          {(library?.name ?? 'K').slice(0, 1).toUpperCase()}
+        </span>
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium text-text">
             {library?.display_name ?? 'No library'}
@@ -504,27 +521,29 @@ export function Sidebar({
               : 'Choose one'}
           </div>
         </div>
-        <span className="shrink-0 text-xs text-faint transition-colors group-hover:text-accent">
-          ⇄
+        <span className="shrink-0 text-faint transition-colors group-hover:text-accent">
+          <Icon name="switch" size={14} strokeWidth={2} />
         </span>
       </button>
 
       <div className="px-2 pt-3">
         <button
           onClick={() => onSelect({ kind: 'all' })}
-          className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors ${
+          className={`flex w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-sm transition-colors ${
             source.kind === 'all'
-              ? 'bg-accent-soft text-text'
+              ? 'is-selected font-medium text-text'
               : 'text-muted hover:bg-ink-800 hover:text-text'
           }`}
         >
-          <span className="w-3 text-center text-[11px] text-mint">◈</span>
+          <span className={`flex w-4 justify-center ${source.kind === 'all' ? 'text-accent' : ''}`}>
+            <Icon name="music" size={15} />
+          </span>
           <span className="flex-1">All Tracks</span>
         </button>
       </div>
 
       <div className="mt-3 px-4">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-faint">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-faint">
           Playlists
         </span>
       </div>
@@ -569,6 +588,7 @@ export function Sidebar({
         onClick={onOpenHistory}
         className="flex items-center justify-center gap-2 border-t border-line px-4 py-2 text-center text-xs text-muted hover:bg-ink-800 hover:text-text"
       >
+        <Icon name="history" size={13} />
         Collection Version History
       </button>
 

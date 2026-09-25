@@ -97,11 +97,11 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
 
   return (
     <div
-      aria-modal="true" className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6"
+      aria-modal="true" className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-line bg-ink-900 shadow-2xl"
+        className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden glass-overlay"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-line px-5 py-4">
@@ -173,14 +173,14 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
                   value={form[key]}
                   onChange={(e) => setForm({ ...form, [key]: e.target.value })}
                   rows={2}
-                  className="w-full resize-y rounded-md border border-line bg-ink-850 px-2.5 py-1.5 text-sm text-text outline-none focus:border-accent"
+                  className="w-full resize-y rounded-lg well px-2.5 py-1.5 text-sm text-text outline-none focus:ring-1 focus:ring-accent"
                 />
               ) : (
                 <input
                   value={form[key]}
                   onChange={(e) => setForm({ ...form, [key]: e.target.value })}
                   list={key === 'genre' ? 'genre-suggestions' : undefined}
-                  className="w-full rounded-md border border-line bg-ink-850 px-2.5 py-1.5 text-sm text-text outline-none focus:border-accent"
+                  className="w-full rounded-lg well px-2.5 py-1.5 text-sm text-text outline-none focus:ring-1 focus:ring-accent"
                 />
               )}
             </label>
@@ -241,7 +241,7 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
           <button
             onClick={submit}
             disabled={apply.isPending}
-            className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-ink-950 hover:brightness-110 disabled:opacity-50"
+            className="rounded-full btn-primary px-4 py-1.5 text-sm font-semibold disabled:opacity-50"
           >
             {apply.isPending ? 'Applying…' : 'Apply'}
           </button>
