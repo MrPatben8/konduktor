@@ -1,6 +1,6 @@
 import { useRef, useState, type CSSProperties } from 'react'
 import type { CuePoint } from '../api'
-import { CUE_TYPE_LABELS, cueColor, cueGlyph, withAlpha } from '../lib/cues'
+import { CUE_TYPE_LABELS, cueColor, cueIcon, withAlpha } from '../lib/cues'
 import { Icon } from '../lib/icons'
 
 interface Props {
@@ -60,7 +60,7 @@ export function HotcueBar({
         const locked = cue != null && !cue.editable
         const selected = selectedSlot === slot && !locked
         const color = cue ? cueColor(cue) : null
-        const glyph = cue ? cueGlyph(cue) : ''
+        const icon = cue && !locked ? cueIcon(cue) : null
         return (
           <button
             key={slot}
@@ -123,12 +123,11 @@ export function HotcueBar({
                 {cue ? (cue.name && cue.name !== 'n.n.' ? cue.name : CUE_TYPE_LABELS[cue.type]) : 'Empty'}
               </span>
             )}
-            {glyph && (
-              <span
-                className="absolute right-1.5 top-1 text-[9px] leading-none opacity-90"
-                style={{ color: color ?? undefined }}
-              >
-                {glyph}
+            {/* The type icon, top right on the number's line — the name below
+                is free to run the full width. */}
+            {icon && color && (
+              <span className="absolute right-2 top-[7px] flex" style={{ color: lighten(color) }}>
+                <Icon name={icon} size={14} strokeWidth={2} />
               </span>
             )}
           </button>

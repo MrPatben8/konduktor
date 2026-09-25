@@ -1,5 +1,6 @@
 import type { CuePoint, CueType } from '../api'
 import { BEATS_PER_BAR, type BeatGrid } from './beatgrid'
+import type { IconName } from './icons'
 
 // Fallback colour by cue type, used when the platform stored none.
 const TYPE_COLORS: Record<CueType, string> = {
@@ -20,14 +21,14 @@ export const CUE_TYPE_LABELS: Record<CueType, string> = {
 }
 
 // A second, always-present channel for type. Colour used to be type-derived and
-// therefore always carried it; now that a user's stored colour wins, the glyph
+// therefore always carried it; now that a user's stored colour wins, the icon
 // is what keeps a fade-in distinguishable from a plain cue.
-const TYPE_GLYPHS: Record<CueType, string> = {
-  cue: '',
-  fade_in: '▶',
-  fade_out: '◀',
-  load: '⏏',
-  loop: '⟳',
+const TYPE_ICONS: Record<CueType, IconName> = {
+  cue: 'cueFlag',
+  fade_in: 'fadeIn',
+  fade_out: 'fadeOut',
+  load: 'eject',
+  loop: 'loop',
 }
 
 /**
@@ -49,8 +50,11 @@ export function cueTypeColor(type: CueType): string {
   return TYPE_COLORS[type] ?? MEMORY_COLOR
 }
 
-export function cueGlyph(cue: CuePoint): string {
-  return TYPE_GLYPHS[cue.type] ?? ''
+/** The pad icon for a cue: its type — or the grid icon for a cue that marks a
+ *  beatgrid marker (Traktor's white companion), since that is what it is. */
+export function cueIcon(cue: CuePoint): IconName {
+  if (cue.grid_marker != null) return 'grid'
+  return TYPE_ICONS[cue.type] ?? 'cueFlag'
 }
 
 export function withAlpha(hex: string, a: number): string {

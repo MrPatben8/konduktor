@@ -85,6 +85,11 @@ const PATHS = {
   ),
   pencil: <path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4" strokeLinejoin="round" />,
   plus: <path d="M12 5v14M5 12h14" />,
+  // Cue types, for the hotcue pads.
+  cueFlag: <path d="M6 21V4M6 4h11l-3 4 3 4H6" strokeLinejoin="round" />,
+  fadeIn: <path d="M3 19L21 5v14z" strokeLinejoin="round" />,
+  fadeOut: <path d="M3 5l18 14H3z" strokeLinejoin="round" />,
+  eject: <path d="M12 4l8 9H4zM4 18h16" strokeLinejoin="round" />,
   grid: <path d="M5 3v18M10 3v18M15 3v18M20 3v18" />,
 } as const
 

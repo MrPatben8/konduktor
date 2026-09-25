@@ -432,8 +432,12 @@ export function PrepStrip({
   // A library row's play button bumps `playRequest`: load (if needed) + play.
   // If the requested track is already loaded and ready, start immediately;
   // otherwise flag it and the analysis effect starts playback once ready.
+  // Only a CHANGE is a request: the deck unmounts behind the library picker,
+  // and remounting with a non-zero count must not start playback.
+  const seenPlayRequestRef = useRef(playRequest)
   useEffect(() => {
-    if (playRequest === 0) return
+    if (playRequest === seenPlayRequestRef.current) return
+    seenPlayRequestRef.current = playRequest
     pendingPlayRef.current = true
     const eng = playbackRef.current
     if (loadedIdRef.current === trackId && eng?.ready) {

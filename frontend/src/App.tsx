@@ -500,6 +500,9 @@ export default function App() {
     setSource({ kind: 'all' })
     setSelected(new Set())
     setBatchJob(null) // the backend cancels it; its result is for the old library
+    // The deck starts empty: its track belongs to the old library.
+    setPrepTrack(null)
+    setPlayRequest(0)
     setFilters(emptyFilters)
     setSorting([])
     qc.invalidateQueries() // refetch everything for the newly-opened collection
