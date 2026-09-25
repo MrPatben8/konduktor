@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { CuePoint } from '../api'
 import type { BeatGrid } from '../lib/beatgrid'
-import { drawBeatgrid, drawCuePoint, drawCues, drawLoop, drawPlayhead } from '../lib/cues'
+import { drawBeatgrid, drawCuePoint, drawCues, drawLoop, drawLoopIn, drawPlayhead } from '../lib/cues'
 import { paintWave, type WaveColumn } from '../lib/waveform'
 
 interface Props {
@@ -16,6 +16,10 @@ interface Props {
   /** Grid mode is on: draw the beat lines brighter. */
   emphasizeGrid?: boolean
   loop: { start: number; end: number } | null
+  /** A loop that exists but is switched off — drawn as a dim outline. */
+  idleLoop?: { start: number; end: number } | null
+  /** An armed manual loop-in point, waiting for OUT. */
+  loopIn?: number | null
   /** Seconds across the view — the zoom level, owned by the parent so it
       survives track switches and persists to prefs. */
   secPerView: number
@@ -48,6 +52,8 @@ export function MainWaveform({
   activeMarker,
   emphasizeGrid = false,
   loop,
+  idleLoop = null,
+  loopIn = null,
   secPerView,
   onZoomChange,
   onSeek,
@@ -93,7 +99,11 @@ export function MainWaveform({
       // Loop band (under the grid/cues), then beatgrid, then cue markers.
       if (loop) {
         drawLoop(ctx, timeToX(loop.start), timeToX(loop.end), h, dpr)
+      } else if (idleLoop) {
+        drawLoop(ctx, timeToX(idleLoop.start), timeToX(idleLoop.end), h, dpr, true)
       }
+      // An armed IN, and the loop OUT would make right now: IN → playhead.
+      if (loopIn != null) drawLoopIn(ctx, timeToX(loopIn), w / 2, h, dpr)
       if (grid) {
         drawBeatgrid(ctx, grid, startSec, endSec, w, h, dpr, activeMarker, emphasizeGrid)
       }

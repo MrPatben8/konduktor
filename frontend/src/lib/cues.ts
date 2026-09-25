@@ -173,27 +173,82 @@ export function drawCuePoint(
   ctx.restore()
 }
 
-/** Draw the active loop region: a green band, brightest at the top, with lit edges. */
+/**
+ * Draw a loop region: a green band, brightest at the top, with lit edges.
+ * `idle` draws a loop that exists but is switched off — the same region as a
+ * faint outline with no glow, so it reads as "available", not "playing".
+ */
 export function drawLoop(
   ctx: CanvasRenderingContext2D,
   startX: number,
   endX: number,
   h: number,
   dpr: number,
+  idle = false,
 ): void {
   const edge = Math.max(1, Math.round(1.5 * dpr))
   const band = ctx.createLinearGradient(0, 0, 0, h)
-  band.addColorStop(0, 'rgba(61,220,132,0.22)')
-  band.addColorStop(1, 'rgba(61,220,132,0.08)')
+  band.addColorStop(0, `rgba(61,220,132,${idle ? 0.07 : 0.22})`)
+  band.addColorStop(1, `rgba(61,220,132,${idle ? 0.02 : 0.08})`)
   ctx.fillStyle = band
   ctx.fillRect(startX, 0, Math.max(1, endX - startX), h)
   ctx.save()
-  ctx.shadowColor = '#3ddc84'
-  ctx.shadowBlur = 8 * dpr
-  ctx.fillStyle = 'rgba(61,220,132,0.9)'
+  if (!idle) {
+    ctx.shadowColor = '#3ddc84'
+    ctx.shadowBlur = 8 * dpr
+  }
+  ctx.fillStyle = idle ? 'rgba(61,220,132,0.4)' : 'rgba(61,220,132,0.9)'
   ctx.fillRect(startX, 0, edge, h)
   ctx.fillRect(endX - edge, 0, edge, h)
   ctx.restore()
+}
+
+/**
+ * An armed manual loop-in, before OUT: a lit green line with an "IN" flag at
+ * the bottom (the top belongs to hotcue flags), and — when the playhead is past
+ * it — a dashed-edged band from IN to the playhead: the loop OUT would make now.
+ */
+export function drawLoopIn(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  playheadX: number,
+  h: number,
+  dpr: number,
+): void {
+  if (playheadX > x) {
+    ctx.fillStyle = 'rgba(61,220,132,0.10)'
+    ctx.fillRect(x, 0, playheadX - x, h)
+    ctx.save()
+    ctx.strokeStyle = 'rgba(61,220,132,0.55)'
+    ctx.lineWidth = Math.max(1, dpr)
+    ctx.setLineDash([4 * dpr, 4 * dpr])
+    ctx.beginPath()
+    ctx.moveTo(x, 0.5 * dpr)
+    ctx.lineTo(playheadX, 0.5 * dpr)
+    ctx.moveTo(x, h - 0.5 * dpr)
+    ctx.lineTo(playheadX, h - 0.5 * dpr)
+    ctx.stroke()
+    ctx.restore()
+  }
+  const lw = Math.max(2, Math.round(2 * dpr))
+  ctx.save()
+  ctx.shadowColor = '#3ddc84'
+  ctx.shadowBlur = 10 * dpr
+  ctx.fillStyle = '#3ddc84'
+  ctx.fillRect(Math.round(x) - Math.floor(lw / 2), 0, lw, h)
+  ctx.restore()
+  const pad = Math.round(6 * dpr)
+  const fh = Math.round(17 * dpr)
+  const inset = Math.round(5 * dpr)
+  ctx.font = `600 ${Math.round(11 * dpr)}px 'Geist Variable', system-ui, sans-serif`
+  const fw = Math.ceil(ctx.measureText('IN').width) + pad * 2
+  ctx.fillStyle = 'rgba(61,220,132,0.9)'
+  ctx.beginPath()
+  ctx.roundRect(Math.round(x) - Math.floor(lw / 2), h - inset - fh, fw, fh, [0, 8 * dpr, 8 * dpr, 0])
+  ctx.fill()
+  ctx.fillStyle = '#03210f'
+  ctx.textBaseline = 'middle'
+  ctx.fillText('IN', Math.round(x) - Math.floor(lw / 2) + pad, h - inset - fh / 2 + dpr * 0.5)
 }
 
 /**

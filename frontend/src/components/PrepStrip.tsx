@@ -119,7 +119,9 @@ export function PrepStrip({
   const [loopRegion, setLoopRegion] = useState<{ start: number; end: number } | null>(null)
   const [loopActive, setLoopActive] = useState(false)
   const [activeBeats, setActiveBeats] = useState<number | null>(null)
-  const loopInRef = useRef<number | null>(null) // armed manual loop-in point
+  // The armed manual loop-in point: IN was pressed, OUT not yet. STATE, not a
+  // ref, because the IN button and the waveform both show it while it waits.
+  const [loopInPoint, setLoopInPoint] = useState<number | null>(null)
   const originalGridRef = useRef<GridMarker[] | null>(null)
 
   const audioCtxRef = useRef<AudioContext | null>(null) // playback
@@ -239,7 +241,7 @@ export function PrepStrip({
     setLoopActive(false)
     setActiveBeats(null)
     setCuePoint(0)
-    loopInRef.current = null
+    setLoopInPoint(null)
     previewRef.current = null
     setPreviewing(false)
     setCueHeld(false)
@@ -590,7 +592,7 @@ export function PrepStrip({
     setLoopRegion({ start, end })
     setLoopActive(true)
     setActiveBeats(beats)
-    loopInRef.current = null
+    setLoopInPoint(null)
     setCurrent(eng.getPosition())
   }
 
@@ -615,15 +617,18 @@ export function PrepStrip({
   const loopIn = () => {
     const eng = playbackRef.current
     if (!eng || !eng.ready) return
-    loopInRef.current = snapTime(eng.getPosition())
+    setLoopInPoint(snapTime(eng.getPosition()))
   }
 
   const loopOut = () => {
     const eng = playbackRef.current
-    if (!eng || !eng.ready || loopInRef.current == null) return
+    if (!eng || !eng.ready) return
     const end = snapTime(eng.getPosition())
-    if (end <= loopInRef.current) return
-    engagLoop(loopInRef.current, end, null)
+    // OUT closes an armed IN — or, with a manual loop already set, moves that
+    // loop's end to the playhead (Traktor's loop-out adjust).
+    const start = loopInPoint ?? (loopRegion && activeBeats == null ? loopRegion.start : null)
+    if (start == null || end <= start) return
+    engagLoop(start, end, null)
   }
 
   const toggleLoop = () => {
@@ -1202,6 +1207,8 @@ export function PrepStrip({
                 activeMarker={activeMarkerIndex}
                 emphasizeGrid={gridMode}
                 loop={activeLoop}
+                idleLoop={!loopActive ? loopRegion : null}
+                loopIn={loopInPoint}
                 secPerView={secPerView}
                 onZoomChange={setSecPerView}
                 onSeek={seekManual}
@@ -1283,6 +1290,8 @@ export function PrepStrip({
           sizeLit={loopActive && activeBeats === beatSize}
           onToggleSize={toggleSizeLoop}
           canToggle={loopRegion != null}
+          inArmed={loopInPoint != null}
+          manualSet={loopRegion != null && activeBeats == null}
           onLoopIn={loopIn}
           onLoopOut={loopOut}
           onToggleLoop={toggleLoop}

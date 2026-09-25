@@ -404,6 +404,12 @@ Two independent apps that talk over HTTP:
       `LoopControls` has a BEAT / MAN switch: BEAT shows `− size +` (the size
       key sets or clears a loop of that length; −/+ halve/double, resizing an
       engaged beat loop from its locked start), MAN shows IN / OUT / toggle.
+      The armed IN point is React STATE (`loopInPoint`), not a ref, because the
+      IN button (lit "armed") and the waveform (`drawLoopIn`: a green IN line
+      plus a dashed band to the playhead — the loop OUT would make now) both
+      show it. OUT closes an armed IN, or with a manual loop already set moves
+      its end to the playhead. A loop that is switched off stays drawn as a dim
+      outline (`drawLoop(…, idle)`), so the toggle shows what it would restore.
       **‹ › (and ←/→) MOVE an engaged loop by its own length**, Traktor-style,
       and only jump the playhead when no loop is engaged. The move sets the new
       loop BEFORE seeking: `PlaybackEngine.seek` honours the loop in force, so

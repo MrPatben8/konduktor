@@ -26,6 +26,10 @@ interface Props {
   onToggleSize: () => void
   // manual mode
   canToggle: boolean // a loop region exists to switch on/off
+  /** IN was pressed and is waiting for OUT. */
+  inArmed: boolean
+  /** A manual (IN/OUT) loop exists, engaged or not. */
+  manualSet: boolean
   onLoopIn: () => void
   onLoopOut: () => void
   onToggleLoop: () => void
@@ -35,7 +39,16 @@ interface Props {
 
 const LIT =
   'bg-gradient-to-b from-[#7bf0ad] to-mint text-ink-950 shadow-[inset_0_1px_0_rgb(255_255_255/0.6),0_0_14px_rgb(61_220_132/0.55)]'
-const KEY = 'flex items-center justify-center rounded-[9px] transition-colors disabled:opacity-30'
+// Every key presses in when clicked, so a press is felt even when what it did
+// (a loop moved, an in-point set) is somewhere else on screen.
+const KEY =
+  'flex items-center justify-center rounded-[9px] transition-[color,background-color,box-shadow,transform,filter] duration-75 ' +
+  'active:scale-[0.93] active:brightness-125 disabled:opacity-30 disabled:active:scale-100'
+// An armed IN: a green rim and glow — "waiting for OUT".
+const ARMED =
+  'bg-mint/15 text-mint shadow-[inset_0_0_0_1px_rgb(61_220_132/0.75),0_0_12px_-3px_rgb(61_220_132/0.7)]'
+// A set point (the loop exists): green text on a faint green tint.
+const SET = 'bg-mint/10 text-mint shadow-[inset_0_0_0_1px_rgb(61_220_132/0.35)]'
 // BOTH modes' clusters are this wide, so switching BEAT ⇄ MAN never shifts
 // the pads and tempo controls to their right.
 const CLUSTER = 'well flex h-10 w-[8.5rem] shrink-0 items-center gap-0.5 rounded-xl p-[3px]'
@@ -59,6 +72,8 @@ export function LoopControls({
   sizeLit,
   onToggleSize,
   canToggle,
+  inArmed,
+  manualSet,
   onLoopIn,
   onLoopOut,
   onToggleLoop,
@@ -121,10 +136,28 @@ export function LoopControls({
         </div>
       ) : (
         <div role="group" aria-label="Manual loop" className={`${CLUSTER} text-xs font-semibold`}>
-          <button onClick={onLoopIn} disabled={!ready} title="Loop in at the playhead" className={`${KEY} btn-glass h-[34px] min-w-0 flex-1 text-text`}>
+          <button
+            onClick={onLoopIn}
+            disabled={!ready}
+            aria-pressed={inArmed || manualSet}
+            title={inArmed ? 'Loop in is set — now press OUT (or IN again to move it)' : 'Loop in at the playhead'}
+            className={`${KEY} h-[34px] min-w-0 flex-1 ${inArmed ? ARMED : manualSet ? SET : 'btn-glass text-text'}`}
+          >
             IN
           </button>
-          <button onClick={onLoopOut} disabled={!ready} title="Loop out at the playhead" className={`${KEY} btn-glass h-[34px] min-w-0 flex-1 text-text`}>
+          <button
+            onClick={onLoopOut}
+            disabled={!ready || (!inArmed && !manualSet)}
+            aria-pressed={manualSet && !inArmed}
+            title={
+              inArmed
+                ? 'Loop out at the playhead'
+                : manualSet
+                  ? "Move the loop's end to the playhead"
+                  : 'Set IN first'
+            }
+            className={`${KEY} h-[34px] min-w-0 flex-1 ${manualSet && !inArmed ? SET : 'btn-glass text-text'}`}
+          >
             OUT
           </button>
           <button
