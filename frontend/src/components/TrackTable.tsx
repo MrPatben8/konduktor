@@ -451,7 +451,8 @@ export function TrackTable({
 
   // Keyboard: ↑/↓ move the selection (Shift extends it), Cmd/Ctrl+A selects
   // every visible row, Esc clears, Delete/Backspace removes (where the view
-  // allows it). Read through a ref so the listener is attached once.
+  // allows it), Enter loads the highlighted row into the deck and plays it.
+  // Read through a ref so the listener is attached once.
   // ←/→, Space, C and digits belong to the deck (PrepStrip).
   const keysRef = useRef<(e: KeyboardEvent) => void>(() => {})
   keysRef.current = (e) => {
@@ -474,6 +475,17 @@ export function TrackTable({
       e.preventDefault()
       onRemove([...selection.selected])
       selection.onChange(new Set())
+      return
+    }
+    if (e.key === 'Enter' && onPlay) {
+      // The highlighted row is the lead — the one last clicked or arrowed to,
+      // which in a multi-selection is the row the cursor is on.
+      const lead = indexOf(leadRef.current)
+      if (lead < 0 || !selection.selected.has(rows[lead].original.id)) return
+      // Wins over a focused button, as Space does for the deck: after clicking
+      // a playlist and arrowing down, Enter must not re-press that playlist.
+      e.preventDefault()
+      if (!e.repeat) onPlay(rows[lead].original)
       return
     }
     if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return

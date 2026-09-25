@@ -347,7 +347,8 @@ Two independent apps that talk over HTTP:
     devices. TanStack Table + **virtualized** grid; per-row play button,
     configurable columns, header sorting, inline double-click editing, and
     **Finder-style row selection** — click / Cmd-Ctrl+click / Shift+click over
-    the SORTED rows, ↑/↓ (Shift extends), Cmd/Ctrl+A, Esc; shortcuts stand down
+    the SORTED rows, ↑/↓ (Shift extends), Cmd/Ctrl+A, Esc, Enter (load + play
+    the highlighted row, winning over a focused button); shortcuts stand down
     while an `aria-modal` dialog or `role="menu"` is open, so new dialogs need
     `aria-modal="true"`. Right-click acts on the whole selection; single-track
     items are hidden for a multi-selection. A view with a manual order passes
