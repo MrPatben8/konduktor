@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from .structure import EVENTS, Structure
 
 LABELS: dict[str, str] = {
@@ -42,7 +44,7 @@ NOT_FOUND = "not_found"        # the track has no such event (e.g. no third drop
 OUT_OF_RANGE = "out_of_range"  # the offset moves it before the start / past the end
 OCCUPIED = "occupied"          # the slot holds a cue and overwrite was not asked for
 PROTECTED = "protected"        # the slot holds a cue the adapter will not replace
-DUPLICATE = "duplicate"        # a lower slot is already getting a cue on this beat
+DUPLICATE = "duplicate"        # another cue (kept, or new in a lower slot) is on this beat
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,14 @@ class SlotRequest:
     event: str
     offset_beats: int = 0
     overwrite: bool = False
+
+
+@dataclass(frozen=True)
+class ExistingCue:
+    """A hotcue already in the bank, before this run."""
+
+    editable: bool
+    start: float  # seconds
 
 
 @dataclass(frozen=True)
@@ -69,31 +79,77 @@ def cue_name(event: str, offset_beats: int) -> str:
     return f"{label} {offset_beats:+d}" if offset_beats else label
 
 
+def _beat_of(structure: Structure, t: float) -> int | None:
+    """The grid beat a cue at ``t`` sits on, or None if it is between beats.
+
+    A quarter-beat tolerance: a hand-placed cue is rarely sample-exact on the
+    grid, and one a DJ put on the half-beat on purpose is a different beat.
+    """
+    b = structure.beats
+    i = int(np.clip(np.searchsorted(b, t), 1, len(b) - 1))
+    i = i if abs(b[i] - t) < abs(b[i - 1] - t) else i - 1
+    step = b[min(i + 1, len(b) - 1)] - b[max(i - 1, 0)]
+    step = step / 2 if step > 0 else 0.5
+    return i if abs(b[i] - t) <= step / 4 else None
+
+
 def plan(
     structure: Structure,
     requests: list[SlotRequest],
-    existing: dict[int, bool],
+    existing: dict[int, ExistingCue],
 ) -> list[SlotOutcome]:
     """Decide every requested slot.
 
-    ``existing`` maps each occupied slot to whether its cue is EDITABLE — a
-    non-editable one (a cue the platform manages itself) is never replaced, even
-    when overwrite is ticked, because the adapter would refuse it anyway.
+    ``existing`` is the bank before this run. A non-editable cue (a Traktor grid
+    marker's companion) is never replaced, even when overwrite is ticked,
+    because the adapter would refuse it anyway.
 
-    Two slots that resolve to the SAME BEAT get one cue, in the lower slot: a
-    second pad on the same beat is a wasted pad, and it happens by construction
-    (Build 2 is Breakdown 1 when two drops are close). Slots are decided in slot
-    order so "lower wins" holds whatever order the request lists them in, and
-    the comparison is on the beat INDEX — exact, where comparing seconds would
-    need a tolerance.
+    **One cue per beat.** A slot whose position is on a beat that already has a
+    cue — one this run is placing in a LOWER slot, or one that was in the bank
+    before and stays there (the grid cue, a hand-placed cue) — is skipped as a
+    duplicate of that slot: a second pad on the same beat is a wasted pad. New
+    cues are decided in slot order, so "lower wins" holds whatever order the
+    request lists them in.
+
+    A cue being REPLACED frees its beat only if its replacement is actually
+    placed; a replacement that is itself skipped leaves the old cue — and its
+    claim on the beat — where they were. That is circular (whether slot 3's old
+    cue survives decides slot 5, and slot 5 may be what slot 3 collides with),
+    so the plan is recomputed until the set of surviving cues stops changing;
+    each pass can only add survivors, so it ends within one pass per slot.
     """
+    requested = {r.slot: r for r in requests}
+    # Old cues whose replacement was not placed, found by the previous pass.
+    surviving_overwritten: set[int] = set()
+    while True:
+        claims: dict[int, int] = {}  # beat index -> slot of the cue on it
+        for slot, cue in sorted(existing.items()):
+            replaced = slot in requested and requested[slot].overwrite and cue.editable
+            if replaced and slot not in surviving_overwritten:
+                continue
+            beat = _beat_of(structure, cue.start)
+            if beat is not None:
+                claims.setdefault(beat, slot)
+        out = _decide(structure, requests, existing, claims)
+        now = {
+            o.slot for o in out
+            if o.slot in existing and requested[o.slot].overwrite
+            and existing[o.slot].editable and o.status != PLACED
+        }
+        if now <= surviving_overwritten:
+            return out
+        surviving_overwritten |= now
+
+
+def _decide(structure, requests, existing, claims) -> list[SlotOutcome]:
     out: list[SlotOutcome] = []
-    taken: dict[int, int] = {}  # beat index -> the slot placing a cue there
+    taken = dict(claims)
     for r in sorted(requests, key=lambda r: r.slot):
-        if r.slot in existing and not existing[r.slot]:
+        cue = existing.get(r.slot)
+        if cue is not None and not cue.editable:
             out.append(SlotOutcome(r.slot, r.event, PROTECTED))
             continue
-        if r.slot in existing and not r.overwrite:
+        if cue is not None and not r.overwrite:
             out.append(SlotOutcome(r.slot, r.event, OCCUPIED))
             continue
         beat = structure.events.get(r.event)

@@ -54,9 +54,12 @@ Two independent apps that talk over HTTP:
       `structure.analyse` finds the events, `auto_hotcues.plan` resolves the
       template and reports an outcome per slot (`placed` / `not_found` /
       `out_of_range` / `occupied` / `protected` / `duplicate`) — "this track has
-      no third drop" is an answer, not a silent gap. Two slots resolving to the
-      same BEAT INDEX get one cue, in the lower slot (decided in slot order, so
-      request order cannot change who wins). How it finds them:
+      no third drop" is an answer, not a silent gap. **One cue per beat**: a slot
+      landing on a beat that already has a cue — one KEPT in the bank (the grid
+      cue, a hand-placed cue, within a quarter beat) or a new one in a lower
+      slot — is a `duplicate` of that slot. A replaced cue frees its beat only
+      if its replacement is placed, which is circular, so `plan` iterates to a
+      fixpoint. How it finds them:
       - **Everything is per bar ON THE TRACK'S GRID**, bar 1 = the first marker
         (Traktor's convention). Bar-1 detection from audio was tried: it never
         beat that rule, because DJ tracks start on a downbeat.

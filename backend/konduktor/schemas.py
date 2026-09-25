@@ -111,7 +111,7 @@ class AutoCueOutcome(BaseModel):
     status: AutoCueStatus
     start: float | None = None  # seconds, when placed
     name: str | None = None
-    duplicate_of: int | None = None  # for "duplicate": the slot that got this beat
+    duplicate_of: int | None = None  # for "duplicate": the slot whose cue (kept or new) has this beat
 
 
 

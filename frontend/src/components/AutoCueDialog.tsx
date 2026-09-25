@@ -232,8 +232,8 @@ export function AutoCueDialog({ track, slotCount, slotLabel, existing, onClose, 
           <p className="mt-3 text-[11px] leading-relaxed text-faint">
             Events are found on the beatgrid, counting bar 1 from its first marker — if drops land a
             bar or two off, move the grid marker onto the first downbeat. Occupied slots are kept
-            unless you tick Replace. If two slots land on the same beat, only the lower one gets
-            the cue. Your slot setup is remembered for the next track.
+            unless you tick Replace. A slot is skipped if its beat already has a cue — one you keep,
+            or a new one in a lower slot. Your slot setup is remembered for the next track.
           </p>
         </div>
 

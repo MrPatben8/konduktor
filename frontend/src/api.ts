@@ -166,8 +166,9 @@ export interface AutoCueSlot {
 /** What happened to one requested slot. `not_found`: the track has no such
  *  event (e.g. no third drop); `out_of_range`: the offset moves it outside the
  *  track; `occupied`: a cue is there and overwrite was off; `protected`: a cue
- *  the adapter will not replace (a grid marker's); `duplicate`: a lower slot
- *  already got a cue on the same beat (`duplicate_of`). */
+ *  the adapter will not replace (a grid marker's); `duplicate`: that beat
+ *  already has a cue — one kept in the bank (the grid cue, a hand-placed cue)
+ *  or a new one in a lower slot — whose slot is `duplicate_of`. */
 export type AutoCueStatus =
   | 'placed' | 'not_found' | 'out_of_range' | 'occupied' | 'protected' | 'duplicate'
 

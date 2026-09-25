@@ -824,8 +824,8 @@ def auto_hotcues(body: AutoHotcuesRequest) -> AutoHotcuesResult:
     Each requested slot is bound to an event (``drop_1``, ``outro``, …) plus an
     offset in beats. Every slot reports an outcome — placed, not found, out of
     range, occupied (a cue is there and overwrite was not asked for), protected
-    (a cue the adapter will not replace) or duplicate (a lower slot already got
-    that beat) — so the UI can say which events this track does not have.
+    (a cue the adapter will not replace) or duplicate (that beat already has a
+    cue — a kept one, or a new one in a lower slot) — so the UI can say which events this track does not have.
     Requires a beatgrid.
     """
     a = require_adapter()
@@ -851,7 +851,11 @@ def auto_hotcues(body: AutoHotcuesRequest) -> AutoHotcuesResult:
     except Exception as ex:  # analysis is best-effort; never 500 the UI
         raise HTTPException(400, f"Analysis failed: {ex}")
 
-    existing = {c.slot: c.editable for c in cues.cues if c.role == "hotcue" and c.slot is not None}
+    existing = {
+        c.slot: ah.ExistingCue(c.editable, c.start)
+        for c in cues.cues
+        if c.role == "hotcue" and c.slot is not None
+    }
     outcomes = ah.plan(
         found,
         [ah.SlotRequest(r.slot, r.event, r.offset_beats, r.overwrite) for r in body.slots],

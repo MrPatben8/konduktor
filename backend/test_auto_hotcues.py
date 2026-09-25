@@ -135,6 +135,7 @@ def fake_structure(events, n_beats=400, bpm=120.0):
 print("== plan: offsets and outcomes ==")
 fs = fake_structure({"drop_1": 128, "outro": 384, "first_beat": 0})
 R = ah.SlotRequest
+E = ah.ExistingCue
 out = {o.slot: o for o in ah.plan(fs, [
     R(0, "first_beat"),
     R(1, "drop_1", -16),
@@ -143,7 +144,7 @@ out = {o.slot: o for o in ah.plan(fs, [
     R(4, "drop_1"),
     R(5, "drop_1", 0, overwrite=True),
     R(6, "drop_1", 0, overwrite=True),
-], existing={4: True, 5: True, 6: False})}
+], existing={4: E(True, 190.0), 5: E(True, 190.5), 6: E(False, 191.0)})}
 check("placed on the event's beat", out[0].status == ah.PLACED and out[0].start == 0.0)
 check("an offset counts BEATS: drop -16 is 8 s earlier at 120 BPM",
       out[1].status == ah.PLACED and abs(out[1].start - (128 - 16) * 0.5) < 1e-9, str(out[1]))
@@ -169,9 +170,32 @@ check("one beat apart is not a duplicate", out[6].status == ah.PLACED)
 rev = {o.slot: o.status for o in ah.plan(dup, [R(4, "build_2"), R(3, "breakdown_1")], existing={})}
 check("lower slot wins whatever order the request lists them in",
       rev == {3: ah.PLACED, 4: ah.DUPLICATE}, str(rev))
-kept = {o.slot: o.status for o in ah.plan(dup, [R(3, "breakdown_1"), R(4, "build_2")], existing={3: True})}
-check("a slot that is NOT placed (occupied) does not claim its beat",
-      kept == {3: ah.OCCUPIED, 4: ah.PLACED}, str(kept))
+
+print("== plan: cues already in the bank claim their beats too ==")
+# beat k is at k * 0.5 s in fake_structure; breakdown_1 / build_2 are beat 112 = 56 s.
+o = {x.slot: x for x in ah.plan(dup, [R(3, "breakdown_1")], existing={0: E(False, 56.0)})}
+check("a new cue on the GRID cue's beat is skipped as its duplicate",
+      o[3].status == ah.DUPLICATE and o[3].duplicate_of == 0, str(o[3]))
+o = {x.slot: x for x in ah.plan(dup, [R(3, "breakdown_1")], existing={6: E(True, 56.03)})}
+check("…and on a hand-placed cue a few ms off the grid (higher slot, still kept)",
+      o[3].status == ah.DUPLICATE and o[3].duplicate_of == 6, str(o[3]))
+o = {x.slot: x for x in ah.plan(dup, [R(3, "breakdown_1")], existing={6: E(True, 56.25)})}
+check("a cue on the half-beat is a different beat", o[3].status == ah.PLACED, str(o[3]))
+o = {x.slot: x.status for x in ah.plan(dup, [R(3, "breakdown_1"), R(4, "build_2")], existing={3: E(True, 10.0)})}
+check("a kept cue elsewhere claims only ITS beat", o == {3: ah.OCCUPIED, 4: ah.PLACED}, str(o))
+
+print("== plan: a replaced cue frees its beat only if its replacement is placed ==")
+o = {x.slot: x.status for x in ah.plan(dup, [
+    R(2, "drop_1", overwrite=True), R(5, "breakdown_1"),
+], existing={2: E(True, 56.0)})}
+check("replaced → its old beat is free for another slot", o == {2: ah.PLACED, 5: ah.PLACED}, str(o))
+o = {x.slot: x for x in ah.plan(dup, [
+    R(1, "drop_1"), R(2, "drop_1", overwrite=True), R(5, "breakdown_1"),
+], existing={2: E(True, 56.0)})}
+check("a replacement that is itself a duplicate is skipped…",
+      o[2].status == ah.DUPLICATE and o[2].duplicate_of == 1, str(o[2]))
+check("…so the old cue stays, and still claims its beat",
+      o[5].status == ah.DUPLICATE and o[5].duplicate_of == 2, str(o[5]))
 
 flex = structure.Structure(beats=np.r_[np.arange(0, 10, 0.5), np.arange(10, 30, 1.0)], bar0=0, n_bars=10, duration=30)
 flex.events = {"drop_1": 24}  # beat 24 is at 14 s (20 beats at 0.5 s, then 4 at 1.0 s)
@@ -193,37 +217,52 @@ with tempfile.TemporaryDirectory() as d:
     # The real collection's audio is not on every machine, so the route gets a
     # stand-in structure and an existing file: this pins the WIRING — request
     # validation, the plan, the adapter write and the response model.
-    main.structure.analyse = lambda path, markers: fake_structure({"drop_1": 64, "first_beat": 0}, bpm=markers[0][1])
+    # Its events are put on beats chosen per track (below), clear of the cues
+    # already there — otherwise the one-cue-per-beat rule, not the wiring, would
+    # decide the outcome.
+    ROUTE_EVENTS: dict = {}
+    main.structure.analyse = lambda path, markers: fake_structure(ROUTE_EVENTS, bpm=markers[0][1])
     with TestClient(main.app, raise_server_exceptions=False) as c:
         a = main.require_adapter()
         a.audio_path = lambda track_id: Path(__file__)
         def free_slots(cu):
             return [s for s in range(8) if not any(q.slot == s for q in cu.cues)]
         tid = next(t.id for t in a.tracks
-                   if (cu := a.track_cues(t.id)) and len(cu.grid_markers) == 1 and len(free_slots(cu)) >= 3)
-        f0, f1, f2 = free_slots(a.track_cues(tid))[:3]
+                   if (cu := a.track_cues(t.id)) and len(cu.grid_markers) == 1 and len(free_slots(cu)) >= 4
+                   and any(q.grid_marker is not None and q.slot is not None for q in cu.cues))
+        cu = a.track_cues(tid)
+        step = 60.0 / cu.grid_markers[0].bpm
+        taken_t = [q.start for q in cu.cues if q.slot is not None]
+        clear = [k for k in range(8, 390) if all(abs(k * step - t) > step for t in taken_t)]
+        drop = next(k for k in clear if k - 16 in clear and k >= 80)
+        outro = next(k for k in clear if k > drop + 40)
+        grid_cue = next(q for q in cu.cues if q.grid_marker is not None and q.slot is not None)
+        ROUTE_EVENTS.update(drop_1=drop, outro=outro, first_beat=round(grid_cue.start / step))
+        f0, f1, f2, f3 = free_slots(cu)[:4]
         r = c.post("/api/tracks/cue/auto", json={"track_id": tid, "slots": [
             {"slot": f0, "event": "first_beat"},
             {"slot": f1, "event": "drop_1", "offset_beats": -16},
             {"slot": f2, "event": "drop_3"},
+            {"slot": f3, "event": "outro"},
         ]})
         check("the route answers 200", r.status_code == 200, r.text[:200])
         if r.status_code == 200:
             j = r.json()
-            st_ = {o["slot"]: o["status"] for o in j["outcomes"]}
-            check("outcomes per slot", st_ == {f0: "placed", f1: "placed", f2: "not_found"}, str(st_))
+            oc = {o["slot"]: o for o in j["outcomes"]}
+            st_ = {k: o["status"] for k, o in oc.items()}
+            check("outcomes per slot", st_ == {f0: "duplicate", f1: "placed", f2: "not_found", f3: "placed"}, str(st_))
+            check("a new cue on the track's real GRID cue is skipped as its duplicate",
+                  oc[f0]["duplicate_of"] == grid_cue.slot, str(oc[f0]))
             names = {q["slot"]: q["name"] for q in j["cues"]["cues"] if q["slot"] is not None}
             check("the cues are in the returned projection", names.get(f1) == "Drop 1 -16", str(names))
             r2 = c.post("/api/tracks/cue/auto", json={"track_id": tid, "slots": [{"slot": f1, "event": "drop_1"}]})
             check("running again leaves the now-occupied slot alone",
                   r2.status_code == 200 and r2.json()["outcomes"][0]["status"] == "occupied", r2.text[:200])
-        f3, f4 = free_slots(a.track_cues(tid))[:2]
-        r = c.post("/api/tracks/cue/auto", json={"track_id": tid, "slots": [
-            {"slot": f3, "event": "first_beat"}, {"slot": f4, "event": "drop_1", "offset_beats": -64},
-        ]})
-        oc = {o["slot"]: o for o in r.json()["outcomes"]} if r.status_code == 200 else {}
-        check("the route reports a same-beat slot as a duplicate of the lower one",
-              oc.get(f4, {}).get("status") == "duplicate" and oc[f4]["duplicate_of"] == f3, r.text[:300])
+            f4 = free_slots(a.track_cues(tid))[0]
+            r3 = c.post("/api/tracks/cue/auto", json={"track_id": tid, "slots": [{"slot": f4, "event": "outro"}]})
+            o3 = r3.json()["outcomes"][0] if r3.status_code == 200 else {}
+            check("…and a later run will not stack a cue on one it placed earlier",
+                  o3.get("status") == "duplicate" and o3.get("duplicate_of") == f3, r3.text[:300])
         r = c.post("/api/tracks/cue/auto", json={"track_id": tid, "slots": [{"slot": f0, "event": "drop_1"}, {"slot": f0, "event": "outro"}]})
         check("a slot requested twice is refused", r.status_code == 400)
         r = c.post("/api/tracks/cue/auto", json={"track_id": tid, "slots": [{"slot": f0, "event": "the_best_bit"}]})
