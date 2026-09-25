@@ -242,6 +242,16 @@ option {
     background: rgb(255 255 255 / 0.12);
   }
 
+  /* A row of buttons that should LOOK like one raised control (‹ ›, the tempo
+     group) but act as separate keys: the btn-glass surface with no hover of
+     its own, so only the key under the pointer reacts. */
+  .glass-group {
+    background: rgb(255 255 255 / 0.07);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.14),
+      inset 0 0 0 1px rgb(255 255 255 / 0.08);
+  }
+
   /* THE primary action: a lit pill, white into the accent. One per view. */
   .btn-primary {
     color: var(--color-ink-950);

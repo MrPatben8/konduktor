@@ -84,8 +84,8 @@ export function BpmReadout({
 }
 
 const T_BTN =
-  'flex h-8 items-center justify-center rounded-lg font-mono text-xs text-text transition-colors ' +
-  'hover:bg-ink-800 disabled:opacity-30 disabled:hover:bg-transparent'
+  'flex h-8 items-center justify-center rounded-lg font-mono text-xs text-text transition-[background-color,transform] duration-75 ' +
+  'hover:bg-ink-800 active:scale-[0.92] active:bg-white/[0.14] disabled:opacity-30 disabled:hover:bg-transparent disabled:active:scale-100'
 
 /** Nudge / octave / tap / lock — always visible on the control row. */
 export function TempoControls({
@@ -126,7 +126,7 @@ export function TempoControls({
   const off = bpm == null
   const of = flexible ? ` of marker ${markerIndex + 1}` : ''
   return (
-    <div role="group" aria-label="Tempo" className="btn-glass flex h-10 shrink-0 items-center gap-0.5 rounded-xl px-1">
+    <div role="group" aria-label="Tempo" className="glass-group flex h-10 shrink-0 items-center gap-0.5 rounded-xl px-1">
       <button className={`${T_BTN} w-7`} onClick={() => onNudgeBpm(-0.25)} disabled={off} title={`BPM −0.25${of}`}>−−</button>
       <button className={`${T_BTN} w-[22px]`} onClick={() => onNudgeBpm(-0.01)} disabled={off} title={`BPM −0.01${of}`}>−</button>
       <button className={`${T_BTN} w-[22px]`} onClick={() => onNudgeBpm(0.01)} disabled={off} title={`BPM +0.01${of}`}>+</button>
@@ -188,7 +188,9 @@ export function GridEditStrip({
 }) {
   const hasGrid = markerCount > 0
   const flexible = markerCount > 1
-  const nudge = 'flex h-10 items-center px-2 font-mono text-[11px] text-text hover:bg-ink-800 disabled:opacity-30'
+  const nudge =
+    'flex h-10 items-center px-2 font-mono text-[11px] text-text transition-[background-color,transform] duration-75 ' +
+    'hover:bg-ink-800 active:scale-[0.92] active:bg-white/[0.14] disabled:opacity-30'
   const pill = 'flex h-[34px] shrink-0 items-center gap-1.5 rounded-full px-3 text-xs disabled:opacity-35'
   return (
     // A container, so the three actions on the right can drop their labels
@@ -224,7 +226,7 @@ export function GridEditStrip({
           </button>
         </div>
 
-        <div className="btn-glass flex h-10 shrink-0 items-center overflow-hidden rounded-xl">
+        <div className="glass-group flex h-10 shrink-0 items-center overflow-hidden rounded-xl">
           {/* Phase nudges move the GOVERNING marker — not gated on atMarker,
               since the drift is heard at the playhead, not at the marker. */}
           <button className={nudge} onClick={() => onNudgeMarker(-10)} disabled={!hasGrid} title="Move the marker −10 ms">−10</button>

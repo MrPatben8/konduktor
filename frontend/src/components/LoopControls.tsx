@@ -44,6 +44,11 @@ const LIT =
 const KEY =
   'flex items-center justify-center rounded-[9px] transition-[color,background-color,box-shadow,transform,filter] duration-75 ' +
   'active:scale-[0.93] active:brightness-125 disabled:opacity-30 disabled:active:scale-100'
+// One half of the ‹ › pair: its own hover and press, inside the shared surface.
+const HALF =
+  'flex h-10 w-[34px] items-center justify-center text-text transition-[background-color,transform] duration-75 ' +
+  'hover:bg-white/[0.08] active:scale-[0.92] active:bg-white/[0.14] disabled:opacity-30 ' +
+  'disabled:hover:bg-transparent disabled:active:scale-100'
 // An armed IN: a green rim and glow — "waiting for OUT".
 const ARMED =
   'bg-mint/15 text-mint shadow-[inset_0_0_0_1px_rgb(61_220_132/0.75),0_0_12px_-3px_rgb(61_220_132/0.7)]'
@@ -172,12 +177,12 @@ export function LoopControls({
         </div>
       )}
 
-      <div role="group" aria-label="Jump or move loop" className="btn-glass flex h-10 items-center rounded-xl">
+      <div role="group" aria-label="Jump or move loop" className="glass-group flex h-10 items-center rounded-xl">
         <button
           onClick={() => onMove(-1)}
           disabled={!canMove}
           title={`${what} back (←)`}
-          className="flex h-10 w-[34px] items-center justify-center text-text disabled:opacity-30"
+          className={`${HALF} rounded-l-xl`}
         >
           <Icon name="chevronLeft" size={15} strokeWidth={2.2} />
         </button>
@@ -185,7 +190,7 @@ export function LoopControls({
           onClick={() => onMove(1)}
           disabled={!canMove}
           title={`${what} forward (→)`}
-          className="flex h-10 w-[34px] items-center justify-center text-text disabled:opacity-30"
+          className={`${HALF} rounded-r-xl`}
         >
           <Icon name="chevronRight" size={15} strokeWidth={2.2} />
         </button>
