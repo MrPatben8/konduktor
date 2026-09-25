@@ -279,7 +279,7 @@ function ExportRow({
 
           {expanded && data && data.tracks === 0 && (
             <div style={{ paddingLeft: 24 }} className="py-1 pr-2 text-[11px] text-faint">
-              Empty — select tracks and use “Add to…”.
+              Empty — right-click tracks and choose Add to.
             </div>
           )}
 

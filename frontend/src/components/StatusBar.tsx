@@ -2,6 +2,8 @@ interface Props {
   showing: number
   total: number
   sourceName: string
+  /** Rows currently selected; shown only when non-zero. */
+  selected?: number
   loading?: boolean
   collectionName?: string | null
   onChangeCollection?: () => void
@@ -11,6 +13,7 @@ export function StatusBar({
   showing,
   total,
   sourceName,
+  selected = 0,
   loading,
   collectionName,
   onChangeCollection,
@@ -31,6 +34,12 @@ export function StatusBar({
             </>
           )}
         </span>
+      )}
+      {selected > 0 && (
+        <>
+          <span className="text-faint">·</span>
+          <span className="tabular-nums text-accent">{selected.toLocaleString()} selected</span>
+        </>
       )}
       {collectionName && (
         <button

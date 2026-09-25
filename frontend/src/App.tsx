@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnSizingState, SortingState, VisibilityState } from '@tanstack/react-table'
 import { CapabilitiesContext } from './lib/capabilities'
 import { writeHint } from './lib/platformCopy'
-import { api, type Track } from './api'
+import { api, type PlaylistNode, type Track } from './api'
 import {
   DEFAULT_COLUMN_ORDER,
   DEFAULT_COLUMN_VISIBILITY,
@@ -11,11 +11,10 @@ import {
 import { Sidebar, type Source } from './components/Sidebar'
 import { Toolbar, emptyFilters, type Filters } from './components/Toolbar'
 import { TrackTable, PlaylistTable } from './components/TrackTable'
-import { SelectionBar } from './components/SelectionBar'
 import { StatusBar } from './components/StatusBar'
 import { Toast, type ToastMsg } from './components/Toast'
 import { CollectionPicker } from './components/CollectionPicker'
-import { ContextMenu } from './components/ContextMenu'
+import { ContextMenu, type MenuItem } from './components/ContextMenu'
 import { EditTagsDialog } from './components/EditTagsDialog'
 import { PathMappingDialog } from './components/PathMappingDialog'
 import { HistoryPanel } from './components/HistoryPanel'
@@ -236,6 +235,15 @@ export default function App() {
   })
   const openDevice = useQuery({ queryKey: ['source'], queryFn: api.source })
   const exportSets = useQuery({ queryKey: ['exports'], queryFn: api.exports, enabled: loaded })
+  const playlists = useQuery({ queryKey: ['playlists'], queryFn: api.playlists, enabled: loaded })
+  // Every playlist the context menu's "Add to" can target, flattened out of
+  // folders. Each node carries its own `can_add_tracks`, so a read-only library
+  // simply offers none.
+  const addablePlaylists = useMemo(() => {
+    const walk = (nodes: PlaylistNode[]): PlaylistNode[] =>
+      nodes.flatMap((n) => [...(n.can_add_tracks ? [n] : []), ...walk(n.children)])
+    return walk(playlists.data ?? [])
+  }, [playlists.data])
 
   // Export membership. Both are no-ops on the library itself, so neither dirties
   // it nor touches version history — an export set is Konduktor's own data.
@@ -259,6 +267,21 @@ export default function App() {
       }
     },
     [refreshExport, exportSets.data, notify, onError],
+  )
+  const addToPlaylist = useCallback(
+    async (uuid: string, ids: string[]) => {
+      try {
+        const res = await api.addEntries(uuid, ids)
+        qc.invalidateQueries({ queryKey: ['state'] })
+        qc.invalidateQueries({ queryKey: ['playlists'] })
+        qc.invalidateQueries({ queryKey: ['playlist', uuid] })
+        const name = addablePlaylists.find((p) => p.id === uuid)?.name ?? 'playlist'
+        notify('success', `Added ${res.added} track${res.added === 1 ? '' : 's'} to ${name}`)
+      } catch (e) {
+        onError((e as Error).message)
+      }
+    },
+    [qc, addablePlaylists, notify, onError],
   )
   const removeFromExport = useCallback(
     async (id: string, ids: string[]) => {
@@ -407,6 +430,28 @@ export default function App() {
       y,
     })
 
+  // The "Add to" submenu. Exports are listed even on a read-only library:
+  // adding to one touches no library data — an export is Konduktor's own
+  // curation. The playlist being viewed is left out; adding a track to the
+  // playlist it came from would only duplicate it.
+  const addToItems = (ids: string[]): MenuItem[] => {
+    const lists = addablePlaylists.filter((p) => !(source.kind === 'playlist' && p.id === source.id))
+    return [
+      { heading: 'Playlists', empty: lists.length ? undefined : 'No playlists' },
+      ...lists.map((p) => ({
+        label: p.name,
+        hint: String(p.count),
+        onClick: () => addToPlaylist(p.id, ids),
+      })),
+      { heading: 'Exports', empty: exportSets.data?.length ? undefined : 'No exports yet' },
+      ...(exportSets.data ?? []).map((set) => ({
+        label: set.name,
+        icon: '◈',
+        onClick: () => addToExport(set.id, ids),
+      })),
+    ]
+  }
+
   return (
     <CapabilitiesContext.Provider value={capabilities.data!}>
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-ink-950">
@@ -428,12 +473,9 @@ export default function App() {
             ...(canEdit && menu.ids.length === 1
               ? [{ label: 'Edit Tags…', onClick: () => setEditing(menu.track) }]
               : []),
-            // Adding to an export touches no library data, so it is offered even
-            // on a read-only one — an export is Konduktor's own curation.
-            ...(exportSets.data ?? []).map((set) => ({
-              label: `Add to “${set.name}”`,
-              onClick: () => addToExport(set.id, menu.ids),
-            })),
+            // A device's track ids belong to the stick, not the collection, so
+            // there is nothing they could be added to.
+            ...(viewingDevice ? [] : [{ label: 'Add to', submenu: addToItems(menu.ids) }]),
             // Only on the export's ROOT view. Inside a referenced playlist there
             // is nothing to remove: the reference is live, and per-track removal
             // would need an exclusion list — hidden state deciding what a future
@@ -588,7 +630,7 @@ export default function App() {
                table's × removes a track from the user's REAL playlist — same
                pixels, opposite meaning — and an export's own removal is offered
                through the context menu instead, on its root view only.
-               Selection stays on, so "Add to…" works from inside an export. */
+               Selection stays on, so right-click → Add to works from inside an export. */
             filtered.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 text-muted">
                 <div className="text-lg">
@@ -596,7 +638,7 @@ export default function App() {
                 </div>
                 <div className="text-sm text-faint">
                   {tracks.length === 0
-                    ? 'Select tracks in All Tracks and use “Add to…”, or add a whole playlist.'
+                    ? 'Right-click tracks in All Tracks and choose Add to, or add a whole playlist.'
                     : 'Try clearing some filters.'}
                 </div>
               </div>
@@ -621,7 +663,7 @@ export default function App() {
             /* A device uses the plain table, not the playlist one: a stick's
                playlists cannot be reordered or have entries removed, so the
                drag handle and the × would exist only to be inert. Selection is
-               omitted for the same reason — SelectionBar adds to the loaded
+               omitted too: its bulk action, "Add to", targets the loaded
                COLLECTION's playlists, and these ids belong to the device. */
             filtered.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-1 text-muted">
@@ -702,23 +744,13 @@ export default function App() {
             />
           )}
 
-          {/* Also inside an export: its rows ARE collection tracks, so "Add
-              to…" means the same thing there as in All Tracks. */}
-          {(isAll || viewingExport) && (
-            <SelectionBar
-              count={selected.size}
-              trackIds={[...selected]}
-              onClear={() => setSelected(new Set())}
-              onDone={(msg) => notify('success', msg)}
-              onError={onError}
-            />
-          )}
         </div>
 
         <StatusBar
           showing={filtered.length}
           total={tracks.length}
           sourceName={viewName}
+          selected={isAll || viewingExport ? selected.size : 0}
           loading={loading}
           collectionName={capabilities.data ? libraryName : null}
           onChangeCollection={() => setForcePicker(true)}

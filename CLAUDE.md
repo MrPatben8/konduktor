@@ -353,7 +353,8 @@ Two independent apps that talk over HTTP:
     slot, a per-slot Replace tick for occupied slots — never remembered, since
     overwriting is a decision about THIS track — and the template itself
     persisted as `autoCueTemplate` in userprefs),
-    `SelectionBar` (bulk add-to-playlist), `ContextMenu` + `EditTagsDialog`
+    `ContextMenu` (supports `▸` submenus and section headings; "Add to" lists
+    playlists + exports and acts on the whole selection) + `EditTagsDialog`
     (right-click → multi-field metadata + album-art edit), `StatusBar`,
     `RatingStars` (read-only, or click-to-set when given `onChange`), `Toast`,
     `UpdateDialog` (`UpdateCheck`, mounted in `main.tsx` beside `App` so it shows
@@ -394,7 +395,7 @@ Two independent apps that talk over HTTP:
   the digit shortcuts all read `cues.hotcue_slots`), the cue-type dropdown
   (`cues.types`), the rating scale (`tracks.rating_max`), the grid Lock button
   (`grid.lockable`). Per-node playlist flags (`can_rename`, `can_delete`,
-  `can_add_tracks`) gate the sidebar and `SelectionBar` — each on its OWN flag,
+  `can_add_tracks`) gate the sidebar and the context menu's "Add to" — each on its OWN flag,
   since a platform may allow renaming but not deleting. Carried but deliberately unused until a second adapter
   exists: `slot_labels: 'letter'`, `palette`, `loops: 'separate_bank'`, and
   memory-cue *editing* (one-platform features stay preserved-but-uneditable).
@@ -790,8 +791,8 @@ that number and nothing else — everything derives from it:
   tests. Exporters declare **static** capabilities: no instance, no path, because
   the library being described does not exist yet.
   **Steps 1–3 done**: `library_id.py`; `exports.py` + 10 routes + `api.ts`; and
-  the UI (`ExportsSection`, `ExportDialog`, export views in `App`, "Add to…" on
-  `SelectionBar`, the track context menu and each sidebar playlist row).
+  the UI (`ExportsSection`, `ExportDialog`, export views in `App`, "Add to" on
+  the track context menu and each sidebar playlist row).
   Next: `core/exporter.py` + the Traktor writer, and the export run itself on top
   of `jobs.py` and `importer.py`'s copy machinery — **there is no Export button
   yet**, since nothing can be written. Note the OneLibrary work already demonstrated
