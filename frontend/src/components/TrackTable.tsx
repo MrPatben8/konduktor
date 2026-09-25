@@ -214,7 +214,15 @@ function HeaderRow({
       }}
     >
       <div
-        className="sticky top-0 z-10 flex border-b border-line bg-ink-850"
+        // Frosted glass: rows scroll UNDER the sticky header, so it blurs
+        // them rather than hiding them behind a solid bar. Safe to filter —
+        // the column menu it opens is portalled (see "Theme" in CLAUDE.md).
+        // Keep the radius SMALL: on a strip this short, Chrome silently skips
+        // a large backdrop blur (12 px and up left the rows perfectly sharp).
+        // A LIGHT tint, as frosted glass is lighter than what it covers, and
+        // inset from the panel's edges so it never blurs the panel's bright
+        // rim into a glowing band along its side.
+        className="sticky top-0 z-10 mt-1.5 flex rounded-xl bg-white/[0.07] shadow-[inset_0_1px_0_rgb(255_255_255/0.14),inset_0_0_0_1px_rgb(255_255_255/0.07),0_6px_16px_-8px_rgb(0_0_0/0.6)] backdrop-blur-[8px]"
         onContextMenu={(e) => {
           if (!onContextMenu) return
           e.preventDefault()
@@ -511,7 +519,7 @@ export function TrackTable({
   return (
     <div
       ref={parentRef}
-      className="h-full overflow-auto"
+      className="h-full overflow-auto px-1.5"
       onClick={(e) => {
         // A click in the empty space below the rows clears the selection.
         const t = e.target as HTMLElement

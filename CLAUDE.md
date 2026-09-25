@@ -714,6 +714,10 @@ easy to break:
   away with the first screenful and leave later content on bare background (the
   column chooser's last items did). Give the glass frame `overflow-hidden` and
   scroll an inner element — as every dialog and `ContextMenu` do.
+- **Keep backdrop blurs on SHORT elements small** (the table's sticky header uses
+  8 px). Chrome silently skips a large backdrop blur on a thin strip — 12 px and
+  up left the rows under the ~33 px header perfectly sharp, with the computed
+  style still reporting the blur, so nothing looks wrong in DevTools.
 - **The accent is `oklch(0.8 0.11 var(--accent-hue))`** — the cover's hue at a
   FIXED lightness and chroma, so dark text on it keeps its contrast whatever is
   loaded. `lib/ambient.ts` sets `--accent-hue` and `--amb-1..4` on `<html>`;
