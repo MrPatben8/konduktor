@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnSizingState, SortingState, VisibilityState } from '@tanstack/react-table'
 import { CapabilitiesContext } from './lib/capabilities'
 import { writeHint } from './lib/platformCopy'
-import { api, type PlaylistNode, type Track } from './api'
+import { api, type GridBatchResult, type PlaylistNode, type Track } from './api'
 import {
   DEFAULT_COLUMN_ORDER,
   DEFAULT_COLUMN_VISIBILITY,
@@ -16,6 +16,7 @@ import { Toast, type ToastMsg } from './components/Toast'
 import { CollectionPicker } from './components/CollectionPicker'
 import { ContextMenu, type MenuItem } from './components/ContextMenu'
 import { EditTagsDialog } from './components/EditTagsDialog'
+import { AnalyzeGridDialog } from './components/AnalyzeGridDialog'
 import { PathMappingDialog } from './components/PathMappingDialog'
 import { HistoryPanel } from './components/HistoryPanel'
 import { PrepStrip } from './components/PrepStrip'
@@ -58,6 +59,14 @@ export default function App() {
   const [prepTrack, setPrepTrack] = useState<Track | null>(null)
   const [playRequest, setPlayRequest] = useState(0) // bump → deck loads & auto-plays
   const [importing, setImporting] = useState(false)
+  // Batch grid analysis: the confirm step (only when some tracks already have
+  // a grid), then the running job, polled into the status bar.
+  const [gridConfirm, setGridConfirm] = useState<
+    { ids: string[]; existing: number; locked: number } | null
+  >(null)
+  const [gridJobId, setGridJobId] = useState<string | null>(null)
+  const [gridCancelling, setGridCancelling] = useState(false)
+  const [cuesRefresh, setCuesRefresh] = useState(0) // bump → deck re-reads its cues
 
   const playTrack = useCallback((t: Track) => {
     setPrepTrack(t)
@@ -387,10 +396,55 @@ export default function App() {
     [reorderPlaylist, tracks],
   )
 
+  const gridJob = useQuery({
+    queryKey: ['job', gridJobId],
+    queryFn: () => api.job(gridJobId!),
+    enabled: !!gridJobId,
+    refetchInterval: (q) => (q.state.data && q.state.data.state !== 'running' ? false : 400),
+  })
+  const gridDone = gridJob.data?.done ?? 0
+  useEffect(() => {
+    // Each finished track is an unsaved edit; let the Save button know as they land.
+    if (gridDone > 0) qc.invalidateQueries({ queryKey: ['state'] })
+  }, [gridDone, qc])
+  useEffect(() => {
+    const job = gridJob.data
+    if (!job || job.state === 'running') return
+    setGridJobId(null)
+    setGridCancelling(false)
+    if (job.state === 'failed') {
+      onError(`Grid analysis failed: ${job.error ?? 'unknown error'}`)
+      return
+    }
+    const r = job.result as unknown as GridBatchResult | null
+    if (!r) return
+    qc.invalidateQueries({ queryKey: ['state'] })
+    qc.invalidateQueries({ queryKey: ['tracks'] })
+    qc.invalidateQueries({ queryKey: ['playlist'] })
+    qc.invalidateQueries({ queryKey: ['export-tracks'] })
+    qc.invalidateQueries({ queryKey: ['export-playlist-tracks'] })
+    qc.invalidateQueries({ queryKey: ['export-loose'] })
+    qc.invalidateQueries({ queryKey: ['facets'] })
+    if (prepTrack && r.analysed.includes(prepTrack.id)) setCuesRefresh((n) => n + 1)
+    const n = r.analysed.length
+    const parts = [
+      `${job.state === 'cancelled' ? 'Cancelled — analyzed' : 'Analyzed'} ${n} track${n === 1 ? '' : 's'}`,
+      r.existing ? `skipped ${r.existing} with a grid` : '',
+      r.locked ? `${r.locked} locked` : '',
+      r.failed.length
+        ? `${r.failed.length} failed (${r.failed[0].title}: ${r.failed[0].reason}${r.failed.length > 1 ? ', …' : ''})`
+        : '',
+    ].filter(Boolean)
+    notify(r.failed.length && n === 0 ? 'error' : 'success', parts.join(' · '))
+    // Only the job's finish matters here; prepTrack is read, not tracked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gridJob.data])
+
   const handleOpened = () => {
     setForcePicker(false)
     setSource({ kind: 'all' })
     setSelected(new Set())
+    setGridJobId(null) // the backend cancels it; its result is for the old library
     setFilters(emptyFilters)
     setSorting([])
     qc.invalidateQueries() // refetch everything for the newly-opened collection
@@ -429,6 +483,33 @@ export default function App() {
       x,
       y,
     })
+
+  const runGridAnalysis = async (ids: string[], replaceExisting: boolean) => {
+    setGridConfirm(null)
+    try {
+      const job = await api.autoGridBatch(ids, replaceExisting)
+      setGridCancelling(false)
+      setGridJobId(job.id)
+    } catch (e) {
+      onError((e as Error).message)
+    }
+  }
+  // Confirm only when the run would meet existing grids. Counted from the
+  // view's tracks, which is where the selection came from.
+  const startGridAnalysis = (ids: string[]) => {
+    const byId = new Map(tracks.map((t) => [t.id, t]))
+    const sel = ids.map((id) => byId.get(id)).filter((t): t is Track => !!t)
+    const locked = sel.filter((t) => t.grid_locked).length
+    const existing = sel.filter((t) => !t.grid_locked && t.grid_marker_count > 0).length
+    if (locked === ids.length) {
+      notify('error', `${locked === 1 ? 'That grid is' : `All ${locked} grids are`} locked — nothing to analyze`)
+    } else if (existing > 0) {
+      setGridConfirm({ ids, existing, locked })
+    } else {
+      void runGridAnalysis(ids, false)
+    }
+  }
+  const canAnalyzeGrid = canEdit && !viewingDevice && !!capabilities.data?.grid.editable
 
   // The "Add to" submenu. Exports are listed even on a read-only library:
   // adding to one touches no library data — an export is Konduktor's own
@@ -473,6 +554,16 @@ export default function App() {
             ...(canEdit && menu.ids.length === 1
               ? [{ label: 'Edit Tags…', onClick: () => setEditing(menu.track) }]
               : []),
+            ...(canAnalyzeGrid
+              ? [
+                  {
+                    label: 'Analyze Grid & BPM',
+                    hint: gridJobId ? 'running' : menu.ids.length > 1 ? String(menu.ids.length) : undefined,
+                    disabled: !!gridJobId,
+                    onClick: () => startGridAnalysis(menu.ids),
+                  },
+                ]
+              : []),
             // A device's track ids belong to the stick, not the collection, so
             // there is nothing they could be added to.
             ...(viewingDevice ? [] : [{ label: 'Add to', submenu: addToItems(menu.ids) }]),
@@ -502,6 +593,15 @@ export default function App() {
           onClose={() => setEditing(null)}
           onApplied={(msg) => notify('success', msg)}
           onError={onError}
+        />
+      )}
+      {gridConfirm && (
+        <AnalyzeGridDialog
+          total={gridConfirm.ids.length}
+          existing={gridConfirm.existing}
+          locked={gridConfirm.locked}
+          onChoose={(replace) => runGridAnalysis(gridConfirm.ids, replace)}
+          onClose={() => setGridConfirm(null)}
         />
       )}
       {showPaths && (
@@ -540,6 +640,7 @@ export default function App() {
           onError={onError}
           onNotify={notify}
           fromDevice={viewingDevice}
+          cuesRefresh={cuesRefresh}
         />
       </CapabilitiesContext.Provider>
 
@@ -751,6 +852,21 @@ export default function App() {
           total={tracks.length}
           sourceName={viewName}
           selected={isAll || viewingExport ? selected.size : 0}
+          job={
+            gridJobId
+              ? {
+                  label: 'Analyzing',
+                  done: gridJob.data?.done ?? 0,
+                  total: gridJob.data?.total ?? 0,
+                  detail: gridJob.data?.message,
+                  cancelling: gridCancelling,
+                  onCancel: () => {
+                    setGridCancelling(true)
+                    api.cancelJob(gridJobId).catch((e) => onError((e as Error).message))
+                  },
+                }
+              : null
+          }
           loading={loading}
           collectionName={capabilities.data ? libraryName : null}
           onChangeCollection={() => setForcePicker(true)}

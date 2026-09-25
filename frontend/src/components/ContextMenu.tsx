@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 
 /** One row of a menu: an action, a submenu (`label ▸`), or a section heading. */
 export type MenuItem =
-  | { label: string; onClick: () => void; danger?: boolean; hint?: string; icon?: string }
+  | { label: string; onClick: () => void; danger?: boolean; hint?: string; icon?: string; disabled?: boolean }
   | { label: string; submenu: MenuItem[] }
   | { heading: string; empty?: string }
 
@@ -122,15 +122,18 @@ function MenuPanel({
           return (
             <button
               key={i}
+              disabled={item.disabled}
               onMouseEnter={() => setOpen(null)}
               onClick={() => {
                 item.onClick()
                 onClose()
               }}
               className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm ${
-                item.danger
-                  ? 'text-pink hover:bg-ink-800'
-                  : 'text-muted hover:bg-ink-800 hover:text-text'
+                item.disabled
+                  ? 'cursor-default text-faint'
+                  : item.danger
+                    ? 'text-pink hover:bg-ink-800'
+                    : 'text-muted hover:bg-ink-800 hover:text-text'
               }`}
             >
               {item.icon && <span className="shrink-0 text-[11px] text-gold">{item.icon}</span>}

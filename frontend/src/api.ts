@@ -345,6 +345,14 @@ export interface JobStatus {
   finished_at: number | null
 }
 
+/** What a batch grid analysis did, per track outcome. */
+export interface GridBatchResult {
+  analysed: string[]
+  locked: number
+  existing: number
+  failed: { title: string; reason: string }[]
+}
+
 export interface SourceCandidate {
   path: string
   /** What a person recognises, e.g. "OneLibrary — Hardy". */
@@ -665,6 +673,14 @@ export const api = {
   // Backend detects tempo + first beat: sets BPM, hotcue 1, and grid anchor.
   autoGrid: (trackId: string) =>
     send<TrackCues>('POST', '/api/tracks/grid/auto', { track_id: trackId }),
+  /** Many tracks at once, as a job — poll `job()`. Locked grids are always
+   *  skipped; existing ones unless `replaceExisting`. The finished job's
+   *  `result` is a `GridBatchResult`. */
+  autoGridBatch: (trackIds: string[], replaceExisting: boolean) =>
+    send<JobStatus>('POST', '/api/tracks/grid/auto-batch', {
+      track_ids: trackIds,
+      replace_existing: replaceExisting,
+    }),
   setCueType: (trackId: string, slot: number, type: CueType) =>
     send<TrackCues>('PATCH', '/api/tracks/cue', { track_id: trackId, slot, type }),
   deleteCue: (trackId: string, slot: number) =>

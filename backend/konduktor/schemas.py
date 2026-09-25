@@ -119,6 +119,13 @@ class AutoGridRequest(BaseModel):
     track_id: str
 
 
+class AutoGridBatchRequest(BaseModel):
+    track_ids: list[str]
+    # False skips tracks that already have a grid. Locked grids are skipped
+    # either way: a lock is the user saying "never re-analyse this".
+    replace_existing: bool = False
+
+
 class SetCueType(BaseModel):
     track_id: str
     slot: int

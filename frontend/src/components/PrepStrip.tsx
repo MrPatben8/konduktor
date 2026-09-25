@@ -39,6 +39,9 @@ interface Props {
    * deck gates on those — so this only needs to redirect the two READS.
    */
   fromDevice?: boolean
+  /** Bumped when something outside the deck (batch grid analysis) rewrote the
+   *  loaded track's cues/grid, so the deck re-reads them. */
+  cuesRefresh?: number
 }
 
 function fmt(secs: number): string {
@@ -73,7 +76,14 @@ const LOOP_SIZES = [1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32]
  * Web Audio PlaybackEngine (seamless loops); the same decoded buffer feeds the
  * scratch engine and both waveform views.
  */
-export function PrepStrip({ track, playRequest = 0, onError, onNotify, fromDevice = false }: Props) {
+export function PrepStrip({
+  track,
+  playRequest = 0,
+  onError,
+  onNotify,
+  fromDevice = false,
+  cuesRefresh = 0,
+}: Props) {
   const qc = useQueryClient()
   const [playing, setPlaying] = useState(false)
   const [previewing, setPreviewing] = useState(false) // momentary hold-to-play active
@@ -286,6 +296,19 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify, fromDevic
       cancelled = true
     }
   }, [trackId, fromDevice])
+
+  // Re-read after an outside edit. Deliberately NOT the effect above: that one
+  // resets `originalGridRef`, and "Reset" should still restore the grid the
+  // track had before the outside edit replaced it.
+  useEffect(() => {
+    if (!trackId || !cuesRefresh) return
+    let cancelled = false
+    api.trackCues(trackId).then((d) => !cancelled && setCueData(d)).catch(() => {})
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cuesRefresh])
 
   const toggle = () => {
     const eng = playbackRef.current

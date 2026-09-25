@@ -32,6 +32,7 @@ from .core.capabilities import Capabilities
 from .jobs import JOBS
 from .core.pathmap import PathMapping
 from .schemas import (
+    AutoGridBatchRequest,
     AutoGridRequest,
     AutoCueOutcome,
     AutoHotcue,
@@ -147,6 +148,9 @@ def open_collection(body: OpenCollection) -> CollectionStatus:
     # This checks only that the path is there at all; `can_open()` decides.
     if not path.exists():
         raise HTTPException(400, f"Not found: {path}")
+    # A running analysis writes into the library being replaced; stop it.
+    for job in JOBS.active(GRID_JOB):
+        JOBS.cancel(job.id)
     try:
         STATE.open(path)
     except AdapterError as ex:
@@ -886,16 +890,78 @@ def auto_grid(body: AutoGridRequest) -> TrackCues:
     a = require_adapter()
     if a.track(body.track_id) is None:
         raise HTTPException(404, "Track not found")
-    path = a.audio_path(body.track_id)
+    try:
+        return _analyse_grid(a, body.track_id)
+    except _GridAnalysisError as ex:
+        raise HTTPException(400, str(ex))
+
+
+class _GridAnalysisError(Exception):
+    """A track that could not be analysed; the message is user-facing."""
+
+
+def _analyse_grid(a, track_id: str) -> TrackCues:
+    """Detect and write one track's grid — shared by the deck's Analyze and the
+    batch job, so the two cannot come to mean different things."""
+    path = a.audio_path(track_id)
     if path is None or not path.exists():
-        raise HTTPException(400, "Audio file not found (is the drive mounted?)")
+        raise _GridAnalysisError("Audio file not found (is the drive mounted?)")
     try:
         found = grid_detect.detect_grid(str(path))
     except Exception as ex:  # analysis is best-effort; never 500 the UI
-        raise HTTPException(400, f"Analysis failed: {ex}")
+        raise _GridAnalysisError(f"Analysis failed: {ex}") from ex
     # "Analysed", not "replace": each platform writes an analysis result in its
     # own shape (Traktor pairs the first marker with a beat-1 cue).
-    return a.set_analysed_grid(body.track_id, [(found.anchor, found.bpm)])
+    return a.set_analysed_grid(track_id, [(found.anchor, found.bpm)])
+
+
+GRID_JOB = "grid-analysis"
+
+
+@app.post("/api/tracks/grid/auto-batch", response_model=JobStatus)
+def auto_grid_batch(body: AutoGridBatchRequest) -> JobStatus:
+    """Analyse many tracks' grids as a JOB; poll `/api/jobs/{id}`.
+
+    Each track is written as it finishes, into the in-memory model like any
+    other edit — so a cancel keeps what is done (it is all unsaved until Save),
+    and the result is returned even from a cancelled run. A track that fails is
+    reported and skipped, never fatal: one unmounted drive must not stop 400
+    other tracks."""
+    a = require_adapter()
+    if not a.capabilities().grid.editable:
+        raise HTTPException(422, "This library's beatgrids cannot be edited")
+    # One at a time: two runs over overlapping selections would analyse the
+    # same track twice and race on its grid.
+    if JOBS.active(GRID_JOB):
+        raise HTTPException(409, "Grid analysis is already running")
+    ids = list(dict.fromkeys(body.track_ids))
+
+    def run(handle) -> dict:
+        result = {"analysed": [], "locked": 0, "existing": 0, "failed": []}
+        handle.progress(done=0, total=len(ids))
+        for i, track_id in enumerate(ids):
+            if handle.cancelled:
+                break  # keep what is done; return it rather than raise
+            track = a.track(track_id)
+            title = (track.title or track_id) if track else track_id
+            handle.progress(message=title)
+            if track is None:
+                result["failed"].append({"title": title, "reason": "Track not found"})
+            elif track.grid_locked:
+                result["locked"] += 1
+            elif track.grid_marker_count > 0 and not body.replace_existing:
+                result["existing"] += 1
+            else:
+                try:
+                    _analyse_grid(a, track_id)
+                    result["analysed"].append(track_id)
+                except (_GridAnalysisError, AdapterError) as ex:
+                    result["failed"].append({"title": title, "reason": str(ex)})
+            handle.progress(done=i + 1)
+        return result
+
+    job = JOBS.submit(GRID_JOB, run)
+    return JobStatus(**job.as_dict())
 
 
 @app.patch("/api/tracks/cue", response_model=TrackCues)

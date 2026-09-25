@@ -487,6 +487,13 @@ serialization path.** It enforces:
   (across a tempo change), and the ROUTE end to end on a temp copy of the real
   collection — the previous implementation's route returned 500 on every call
   for a week while its helper's tests passed.
+- `test_grid_batch.py` — **batch grid analysis** (context menu → Analyze Grid &
+  BPM → `POST /api/tracks/grid/auto-batch`, a `jobs.py` job shown in the status
+  bar). Pins the batch-only decisions: locked grids are skipped always, existing
+  grids unless `replace_existing`, a failing track is reported not fatal, one
+  run at a time, a cancel KEEPS finished tracks (unsaved edits like any other)
+  and still returns its result, and opening another library cancels the run.
+  Shares `_analyse_grid` with the deck's single-track Analyze.
 - `test_picker.py` — the picker's routes. Pins the scoping, because the bug it
   replaced was invisible: `/api/library/options` flattened every driver's
   detections and returned `[0]`, so a plugged-in USB stick could be offered as
