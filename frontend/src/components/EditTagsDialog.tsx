@@ -5,7 +5,7 @@ import { api, type Track } from '../api'
 import { formatBpm, formatDuration } from '../lib/format'
 import { useCaps } from '../lib/capabilities'
 import { RatingStars } from './RatingStars'
-import { saveLabel, writeHint } from '../lib/platformCopy'
+import { writeHint } from '../lib/platformCopy'
 
 interface Props {
   track: Track
@@ -222,14 +222,6 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
               Path: <span className="text-text">{track.filepath ?? '—'}</span>
             </div>
           </div>
-          <p className="text-[11px] leading-snug text-faint">
-            BPM, key and path aren’t editable here. Changes apply in-app; click
-            <span className="text-muted"> {saveLabel(caps.save)}</span> to write them to disk.
-            New album art is written into the file.{' '}
-            {caps.tracks.artwork_note}
-            {'' /* platform-specific footnote, supplied by the adapter */}
-            “Import Cover Art” to refresh its own cached thumbnail.
-          </p>
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-3">
