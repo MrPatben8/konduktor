@@ -4,6 +4,7 @@ import { api, type ExportSet } from '../api'
 import { ExportDialog } from './ExportDialog'
 import { ExportRunDialog } from './ExportRunDialog'
 import type { Source } from './Sidebar'
+import { askConfirm } from '../lib/confirm'
 import { Icon } from '../lib/icons'
 
 /**
@@ -104,10 +105,16 @@ export function ExportsSection({ source, onSelect, onDone, onError }: Props) {
             onSelect={onSelect}
             onEdit={() => setDialog({ editing: set })}
             onRun={() => setRunning(set)}
-            onDelete={() => {
+            onDelete={async () => {
               // Deleting a set never touches its destination folder — the files
               // already exported are the user's, not Konduktor's to clean up.
-              if (confirm(`Delete the export “${set.name}”? Nothing already exported is removed.`))
+              if (
+                await askConfirm({
+                  title: `Delete the export “${set.name}”?`,
+                  body: 'Nothing already exported is removed — the files in its folder stay where they are.',
+                  confirmLabel: 'Delete export',
+                })
+              )
                 remove.mutate(set.id)
             }}
             onError={onError}

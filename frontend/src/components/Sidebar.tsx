@@ -7,6 +7,7 @@ import { SettingsMenu } from './SettingsMenu'
 import { DevicesSection } from './DevicesSection'
 import { ExportsSection } from './ExportsSection'
 import { ConfirmDialog, type ConfirmRequest } from './ConfirmDialog'
+import { askConfirm } from '../lib/confirm'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { Icon, type IconName } from '../lib/icons'
 import { PlatformIcon } from '../lib/platformIcons'
@@ -325,10 +326,14 @@ export function Sidebar({
   // Switching library throws away every unsaved edit — the adapter holds them in
   // its native model, and opening another library replaces it. Worth a confirm:
   // until now there was no way to switch at all, so this hazard is new.
-  const switchLibrary = () => {
+  const switchLibrary = async () => {
     if (
       dirty &&
-      !confirm('You have unsaved changes. Opening a different library will discard them.')
+      !(await askConfirm({
+        title: 'Discard unsaved changes?',
+        body: 'You have unsaved changes. Opening a different library will discard them.',
+        confirmLabel: 'Discard and switch',
+      }))
     )
       return
     onSwitchLibrary()

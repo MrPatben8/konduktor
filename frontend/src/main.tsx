@@ -7,6 +7,7 @@ import './index.css'
 import App from './App.tsx'
 import { UpdateCheck } from './components/UpdateDialog.tsx'
 import { AmbientBackdrop } from './components/AmbientBackdrop.tsx'
+import { ConfirmHost } from './lib/confirm.tsx'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -25,6 +26,8 @@ createRoot(document.getElementById('root')!).render(
       <App />
       {/* Mounted beside App so the update dialog shows even on the picker screen. */}
       <UpdateCheck />
+      {/* askConfirm()'s dialogs — the app's replacement for window.confirm. */}
+      <ConfirmHost />
     </QueryClientProvider>
   </StrictMode>,
 )

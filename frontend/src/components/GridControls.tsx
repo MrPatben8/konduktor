@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { askConfirm } from '../lib/confirm'
 import { Icon } from '../lib/icons'
 import { MIN_TAPS, RESET_MS, TapTempo } from '../lib/tapTempo'
 
@@ -278,13 +279,15 @@ export function GridEditStrip({
           <span className="hidden @[34rem]:inline">Marker</span>
         </button>
         <button
-          onClick={() => {
+          onClick={async () => {
             if (
-              confirm(
-                flexible
-                  ? `Delete this track's beatgrid? All ${markerCount} grid markers will be removed.`
-                  : "Delete this track's beatgrid?",
-              )
+              await askConfirm({
+                title: "Delete this track's beatgrid?",
+                body: flexible
+                  ? `All ${markerCount} grid markers will be removed.`
+                  : 'The grid marker will be removed.',
+                confirmLabel: 'Delete grid',
+              })
             ) {
               onDeleteGrid()
             }

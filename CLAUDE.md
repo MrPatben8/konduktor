@@ -681,6 +681,13 @@ frontend at `http://localhost:5173`.
   can show a mark twice). That file is a lookup of display ASSETS by platform
   id, not platform branching; an unknown id falls back to a generic mark, so a
   new adapter needs no change there to appear. Keep `api.ts` types aligned with `schemas.py`.
+- **Never `window.confirm` / `alert` / `prompt`.** They cannot be themed, they
+  block the event loop (a playing deck stutters), and under Tauri they read as a
+  web page. Use `await askConfirm({ title, body, confirmLabel, tone? })` from
+  `lib/confirm.tsx` — same one-line shape as `confirm()`, rendered as the themed
+  `ConfirmDialog` by the `ConfirmHost` mounted once in `main.tsx`. `tone` is
+  `danger` (default, pink) or `primary`. Components that already hold dialog
+  state may still render `ConfirmDialog` directly.
 
 ## Theme — "dark liquid glass"
 

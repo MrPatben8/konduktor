@@ -7,6 +7,9 @@ export interface ConfirmRequest {
   body: ReactNode
   /** The confirm button's label, e.g. "Remove 3 tracks". */
   confirmLabel: string
+  /** `danger` (default) for destructive actions — a pink button; `primary`
+   *  for a caution that is not destruction, e.g. switching library. */
+  tone?: 'danger' | 'primary'
   onConfirm: () => Promise<void> | void
 }
 
@@ -16,7 +19,7 @@ interface Props extends ConfirmRequest {
 
 /** A yes/no confirmation for destructive actions. Enter confirms and Esc
  *  cancels, so a confirmed Delete key stays a two-keystroke action. */
-export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onClose }: Props) {
+export function ConfirmDialog({ title, body, confirmLabel, tone = 'danger', onConfirm, onClose }: Props) {
   const [busy, setBusy] = useState(false)
 
   const confirm = async () => {
@@ -62,14 +65,18 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onClose }:
           <button
             onClick={onClose}
             disabled={busy}
-            className="rounded-md px-3 py-1.5 text-sm text-muted hover:bg-ink-800 hover:text-text disabled:opacity-40"
+            className="btn-glass rounded-full px-4 py-1.5 text-sm text-muted hover:text-text disabled:opacity-40"
           >
             Cancel
           </button>
           <button
             onClick={() => void confirm()}
             disabled={busy}
-            className="rounded-full bg-pink/15 shadow-[inset_0_1px_0_rgb(255_255_255/0.12),inset_0_0_0_1px_rgb(255_122_154/0.55)] hover:bg-pink/25 px-4 py-1.5 text-sm font-semibold text-[#ffd0da] disabled:opacity-50"
+            className={`rounded-full px-4 py-1.5 text-sm font-semibold disabled:opacity-50 ${
+              tone === 'primary'
+                ? 'btn-primary'
+                : 'bg-pink/15 text-[#ffd0da] shadow-[inset_0_1px_0_rgb(255_255_255/0.12),inset_0_0_0_1px_rgb(255_122_154/0.55)] hover:bg-pink/25'
+            }`}
           >
             {confirmLabel}
           </button>
