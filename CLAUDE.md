@@ -393,7 +393,8 @@ Two independent apps that talk over HTTP:
     click to type an exact BPM), SNAP, Analyze, Auto hotcues. **Waveforms**:
     `MainWaveform` (scrolling; zoom +/− in its corner and Cmd/Ctrl+scroll, owned
     by `PrepStrip` so it survives track switches and persists) over
-    `OverviewWaveform`. **Controls**: play, CUE, `LoopControls`, then EITHER
+    `OverviewWaveform`, which frames the main view's visible range around the
+    playhead (it takes `secPerView` for exactly that). **Controls**: play, CUE, `LoopControls`, then EITHER
     `HotcueBar` OR — in **Grid mode** — `GridEditStrip`, then `TempoControls`
     (±0.01 / ±0.25, ÷2 ×2, tap, lock) and the Grid toggle. Every grid control acts
     on the marker **governing the playhead**, since a beatgrid is a marker list

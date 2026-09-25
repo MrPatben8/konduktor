@@ -1208,6 +1208,7 @@ export function PrepStrip({
                 cues={cueData?.cues ?? []}
                 cuePoint={cuePoint}
                 loop={activeLoop}
+                secPerView={secPerView}
                 onSeek={seekManual}
               />
             )}
