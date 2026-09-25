@@ -35,6 +35,17 @@ body {
     'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   font-feature-settings: 'tnum' 1; /* tabular numbers for BPM columns */
   -webkit-font-smoothing: antialiased;
+  /* An app, not a document: clicks and drags must not paint a text selection.
+     Only fields the user types into can select. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+input,
+textarea,
+[contenteditable='true'] {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* Thin, dark scrollbars that fit the deck aesthetic. */
