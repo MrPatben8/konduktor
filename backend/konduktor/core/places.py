@@ -31,6 +31,34 @@ import platformdirs
 log = logging.getLogger(__name__)
 
 
+#: Entries an OS writes into a volume or folder BY ITSELF — on mount, on
+#: indexing, or when Finder/Explorer merely browses it. They say nothing about
+#: whether a person keeps things there, so "is this folder empty?" must not
+#: count them: a freshly formatted stick mounted once on a Mac is not empty to
+#: `iterdir()`, and treating it as occupied made its root unexportable.
+#: Compared case-insensitively — Windows' names are, and FAT/exFAT sticks are.
+OS_HOUSEKEEPING = frozenset(
+    name.lower()
+    for name in (
+        # macOS
+        ".Spotlight-V100", ".fseventsd", ".Trashes", ".TemporaryItems",
+        ".DocumentRevisions-V100", ".DS_Store", ".apdisk",
+        ".com.apple.timemachine.donotpresent",
+        # Windows
+        "System Volume Information", "$RECYCLE.BIN", "desktop.ini", "Thumbs.db",
+    )
+)
+
+
+def is_os_housekeeping(name: str) -> bool:
+    """Whether a directory entry is the OS's bookkeeping rather than the user's.
+
+    `._*` are AppleDouble files: macOS writes one beside every file it touches
+    on a volume that cannot hold extended attributes (FAT, exFAT).
+    """
+    return name.lower() in OS_HOUSEKEEPING or name.startswith("._")
+
+
 def mount_points() -> list[Path]:
     """Every mounted volume's root directory, for this OS.
 

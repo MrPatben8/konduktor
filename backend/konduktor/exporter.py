@@ -44,6 +44,7 @@ from pathlib import Path
 from . import exports
 from .core.export import ExportPayload, ExportPlaylist, ExportTrack, for_platform
 from .core.pathmap import common_dir_prefix
+from .core.places import is_os_housekeeping
 from .importer import SPACE_HEADROOM, copy_file, free_bytes
 from .jobs import JobHandle
 
@@ -123,6 +124,8 @@ def destination_blocked(destination: Path) -> str | None:
     A folder that does not exist yet, or is empty, or carries our manifest, is
     fine. Anything else is REFUSED — not confirmed — because an export clears
     its destination and Konduktor must never delete what it did not write.
+    "Empty" ignores what the OS writes by itself (`.Spotlight-V100`, `.Trashes`,
+    …), or a stick's root would be refused the moment it was first mounted.
     """
     destination = Path(destination)
     try:
@@ -132,7 +135,8 @@ def destination_blocked(destination: Path) -> str | None:
             return BLOCKED_OCCUPIED
         if is_ours(destination):
             return None
-        return BLOCKED_OCCUPIED if any(destination.iterdir()) else None
+        occupied = any(not is_os_housekeeping(p.name) for p in destination.iterdir())
+        return BLOCKED_OCCUPIED if occupied else None
     except OSError:
         return BLOCKED_OCCUPIED
 
@@ -213,13 +217,19 @@ def plan(adapter, export_set) -> ExportPlan:
     resolved = exports.resolve(adapter, export_set)
     tracks = [t for t in (adapter.track(i) for i in resolved.track_ids) if t is not None]
 
+    # The source is the adapter's `audio_path`, never `Track.filepath`: that is
+    # a DISPLAY path, which on Traktor omits the volume and ignores the active
+    # path mapping — so every track off the boot volume (or on a remapped
+    # Windows drive) read as missing and the export was "empty".
+    sources = {t.id: adapter.audio_path(t.id) for t in tracks}
+
     # Mirror relative to the deepest shared folder, so the export carries the
     # user's structure without carrying their home directory.
-    present = [t.filepath for t in tracks if t.filepath]
+    present = [str(p) for p in sources.values() if p]
     root = common_dir_prefix(present) if present else ""
 
     for track in tracks:
-        source = Path(track.filepath) if track.filepath else None
+        source = sources[track.id]
         exists = False
         size = 0
         try:

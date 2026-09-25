@@ -288,6 +288,18 @@ empty.mkdir()
 check("an empty folder is allowed", exporter.destination_blocked(empty) is None)
 check("a folder that does not exist yet is allowed",
       exporter.destination_blocked(empty / "nested" / "deeper") is None)
+# A stick's root after its first mount on a Mac: not empty to iterdir(), but
+# nothing in it is the user's.
+stick = Path(tempfile.mkdtemp()) / "STICK"
+for d in (".Spotlight-V100", ".fseventsd", ".Trashes", "System Volume Information"):
+    (stick / d).mkdir(parents=True)
+for f in (".DS_Store", "._Track.mp3", "Thumbs.db"):
+    (stick / f).write_bytes(b"")
+check("OS housekeeping does not make a folder occupied",
+      exporter.destination_blocked(stick) is None)
+(stick / "My Set.mp3").write_bytes(b"")
+check("but one file of the user's still does",
+      exporter.destination_blocked(stick) == exporter.BLOCKED_OCCUPIED)
 
 print("== cancelling rolls back, leaving an empty folder ==")
 fresh = Path(tempfile.mkdtemp()) / "Cancelled"
@@ -333,6 +345,26 @@ partial = exporter.plan(ad, exports.get(LIB, eset.id))
 check("it is reported", len([t for t in partial.tracks if t.missing]) == 1)
 check("the rest still export", len(partial.exportable) == len(built.exportable) - 1)
 check("and it is not blocking", partial.blocked is None)
+
+print("== the source is where the ADAPTER resolves it, not the display path ==")
+# The bug: a collection on a drive (or a Windows collection with an X: → /Volumes
+# mapping) exported "nothing", because the plan read `Track.filepath` — a display
+# path without the volume or the active mapping — and called every track missing.
+import shutil  # noqa: E402
+from konduktor.core.pathmap import PathMapping  # noqa: E402
+
+moved_root = Path(tempfile.mkdtemp()) / "Elsewhere"
+for sub in ("House", "Techno"):
+    shutil.copytree(lib_root / sub, moved_root / sub)
+    shutil.rmtree(lib_root / sub)
+ad.set_path_mapping(PathMapping.make(str(lib_root), str(moved_root)))
+remapped = exporter.plan(ad, exports.get(LIB, eset.id))
+check("every surviving track is found through the mapping",
+      len(remapped.exportable) == len(partial.exportable),
+      f"{len(remapped.exportable)} of {len(partial.exportable)}")
+check("and it is copied from the mapped location",
+      all(str(t.source_path).startswith(str(moved_root)) for t in remapped.exportable))
+ad.set_path_mapping(PathMapping())
 
 print("\n" + ("❌ FAILED" if failed else "✅ PASSED"))
 raise SystemExit(1 if failed else 0)

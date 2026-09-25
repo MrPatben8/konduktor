@@ -169,9 +169,18 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
                   one of its own. Edit the export and choose somewhere else.
                 </div>
               )}
-              {blocked === 'nothing_to_export' && (
+              {blocked === 'nothing_to_export' && p && p.tracks === 0 && (
                 <div className="rounded well px-3 py-2 text-xs text-muted">
                   There’s nothing to export yet — add some tracks or a playlist.
+                </div>
+              )}
+              {/* Tracks exist but none of their audio does: saying "nothing to
+                  export" here sends the user looking in the wrong place. */}
+              {blocked === 'nothing_to_export' && p && p.tracks > 0 && (
+                <div className="rounded well px-3 py-2 text-xs text-pink">
+                  None of the {p.tracks} track{p.tracks === 1 ? '' : 's'} can be exported — their
+                  audio files are not on this disk:
+                  <div className="mt-1 text-faint">{p.missing.slice(0, 4).join(', ')}</div>
                 </div>
               )}
               {blocked === 'unsupported_target' && (

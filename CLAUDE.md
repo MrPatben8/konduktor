@@ -105,6 +105,10 @@ Two independent apps that talk over HTTP:
       scanners would drift. `is_boot_volume()` compares **st_dev against `/`**,
       not the name, because macOS lists the startup disk in `/Volumes` next to
       real removable media and `Macintosh HD` is only its default name.
+      `is_os_housekeeping()` names what an OS writes into a folder by itself
+      (`.Spotlight-V100`, `.Trashes`, `._*`, `System Volume Information`, …), so
+      the export's "is this folder empty?" check does not refuse a stick's root
+      just because a Mac has mounted it once.
   - `adapters/traktor/` — everything that knows NML exists.
     - `store.py` (`TraktorStore`) — the retained native model: owns the parsed
       dataclass NML, applies every edit, renders + saves. See "Write path".
