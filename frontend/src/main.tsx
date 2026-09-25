@@ -8,6 +8,9 @@ import App from './App.tsx'
 import { UpdateCheck } from './components/UpdateDialog.tsx'
 import { AmbientBackdrop } from './components/AmbientBackdrop.tsx'
 import { ConfirmHost } from './lib/confirm.tsx'
+import { preventHistoryNavigation } from './lib/noNavigation.ts'
+
+preventHistoryNavigation()
 
 const queryClient = new QueryClient({
   defaultOptions: {

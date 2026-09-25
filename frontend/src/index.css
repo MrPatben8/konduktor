@@ -82,6 +82,9 @@ html,
 body,
 #root {
   height: 100%;
+  /* A horizontal trackpad swipe past an edge is the browser's back/forward
+     gesture; an app has no page to go back to. See lib/noNavigation.ts. */
+  overscroll-behavior: none;
 }
 
 body {
