@@ -336,7 +336,7 @@ Two independent apps that talk over HTTP:
     library meant restarting; switching confirms first when there are unsaved
     edits, since the adapter holds them in a native model that opening another
     library replaces — plus the playlist tree +
-    create/rename/delete), `SaveBar`, `Toolbar` (search/filters + `ColumnsMenu`),
+    create/rename/delete), `SaveBar` (+ the settings gear beside it), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
     `TrackTable` (**the one track list** — All Tracks, playlists, exports and
     devices. TanStack Table + **virtualized** grid; per-row play button,
     configurable columns, header sorting, inline double-click editing, and
@@ -359,7 +359,9 @@ Two independent apps that talk over HTTP:
     slot, a per-slot Replace tick for occupied slots — never remembered, since
     overwriting is a decision about THIS track — and the template itself
     persisted as `autoCueTemplate` in userprefs),
-    `ContextMenu` (supports `▸` submenus and section headings; "Add to" lists
+    `ContextMenu` (supports `▸` submenus, section headings, separators and
+    checkbox items that toggle without closing — the header row's right-click
+    column chooser uses those; "Add to" lists
     playlists + exports and acts on the whole selection) + `EditTagsDialog`
     (right-click → multi-field metadata + album-art edit), `StatusBar`,
     `RatingStars` (read-only, or click-to-set when given `onChange`), `Toast`,

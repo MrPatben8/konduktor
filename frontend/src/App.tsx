@@ -5,6 +5,7 @@ import { CapabilitiesContext } from './lib/capabilities'
 import { writeHint } from './lib/platformCopy'
 import { api, type GridBatchResult, type PlaylistNode, type Track } from './api'
 import {
+  COLUMN_MENU,
   DEFAULT_COLUMN_ORDER,
   DEFAULT_COLUMN_VISIBILITY,
 } from './lib/trackColumns'
@@ -53,6 +54,8 @@ export default function App() {
   // `ids` is what the menu acts on: the whole selection when the clicked row is
   // part of it, otherwise just that row.
   const [menu, setMenu] = useState<{ track: Track; ids: string[]; x: number; y: number } | null>(null)
+  // Right-click on the table header: the column chooser.
+  const [headerMenu, setHeaderMenu] = useState<{ x: number; y: number } | null>(null)
   const [editing, setEditing] = useState<Track | null>(null)
   const [showPaths, setShowPaths] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
@@ -624,6 +627,26 @@ export default function App() {
           onClose={() => setMenu(null)}
         />
       )}
+      {headerMenu && (
+        <ContextMenu
+          key={`${headerMenu.x}:${headerMenu.y}`}
+          x={headerMenu.x}
+          y={headerMenu.y}
+          items={[
+            { heading: 'Columns' },
+            // Default-visible unless explicitly hidden, as in the Columns menu.
+            ...COLUMN_MENU.map((c) => ({
+              label: c.label,
+              checked: columnVisibility[c.id] !== false,
+              onToggle: () =>
+                setColumnVisibility((v) => ({ ...v, [c.id]: v[c.id] === false })),
+            })),
+            { separator: true as const },
+            { label: 'Reset to defaults', onClick: resetColumns },
+          ]}
+          onClose={() => setHeaderMenu(null)}
+        />
+      )}
       {editing && (
         <EditTagsDialog
           track={editing}
@@ -690,18 +713,15 @@ export default function App() {
           onImport={() => setImporting(true)}
           onSwitchLibrary={() => setForcePicker(true)}
           onDone={(msg) => notify('success', msg)}
+          onOpenPathMapping={() => setShowPaths(true)}
         />
 
         <CapabilitiesContext.Provider value={viewCaps}>
         <main className="relative flex min-w-0 flex-1 flex-col">
-        {/* Search / filters / column settings — always visible. */}
+        {/* Search / filters — always visible. Columns are chosen by right-clicking the header. */}
         <Toolbar
           filters={filters}
           onChange={setFilters}
-          columnVisibility={columnVisibility}
-          onColumnVisibilityChange={setColumnVisibility}
-          onResetColumns={resetColumns}
-          onOpenPathMapping={() => setShowPaths(true)}
         />
         {(!isAll || viewingDevice) && (
           <div className="flex items-center gap-3 border-b border-line bg-ink-900 px-4 py-2">
@@ -791,6 +811,7 @@ export default function App() {
                 onSortingChange={setSorting}
                 selection={{ selected, onChange: setSelected }}
                 onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
+                onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
                 onEditField={canEdit ? editField : undefined}
                 activeTrackId={prepTrack?.id ?? null}
@@ -824,6 +845,7 @@ export default function App() {
                 sorting={sorting}
                 onSortingChange={setSorting}
                 onRowContextMenu={(track, x, y) => openMenu(track, x, y, false)}
+                onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
                 activeTrackId={prepTrack?.id ?? null}
                 columnVisibility={columnVisibility}
@@ -846,6 +868,7 @@ export default function App() {
                 onSortingChange={setSorting}
                 selection={{ selected, onChange: setSelected }}
                 onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
+                onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
                 onEditField={canEdit ? editField : undefined}
                 activeTrackId={prepTrack?.id ?? null}
@@ -882,6 +905,7 @@ export default function App() {
               }
               onRemove={playlistEditable ? removeFromPlaylist : undefined}
               onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
+                onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
               onPlay={playTrack}
               onEditField={canEdit ? editField : undefined}
               activeTrackId={prepTrack?.id ?? null}

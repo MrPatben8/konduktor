@@ -294,6 +294,28 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
       />
     ),
   }),
+  col.accessor('filepath', {
+    id: 'path',
+    header: 'Path',
+    size: 320,
+    // Read-only: the path is the track's identity. Truncated from the LEFT
+    // (rtl box, ltr text) so the filename — the part you are looking for —
+    // stays visible; the full path is the tooltip.
+    cell: (c) => {
+      const v = c.getValue()
+      return v ? (
+        <div
+          className="w-full truncate text-xs text-muted"
+          style={{ direction: 'rtl', textAlign: 'left' }}
+          title={v}
+        >
+          <bdi>{v}</bdi>
+        </div>
+      ) : (
+        <span className="text-faint">—</span>
+      )
+    },
+  }),
 ]
 
 // Traktor dates arrive as "YYYY/M/D" strings; show them compactly (or raw).
@@ -304,7 +326,7 @@ function formatDate(v: string | null): string {
   return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`
 }
 
-/** (id, label) pairs for the Columns menu, in the canonical definition order. */
+/** (id, label) pairs for the header's column chooser, in definition order. */
 export const COLUMN_MENU: { id: string; label: string }[] = TRACK_COLUMNS.map((c) => ({
   id: c.id as string,
   label: typeof c.header === 'string' ? c.header : (c.id as string),

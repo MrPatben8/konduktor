@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 
 interface Props {
   onOpenPathMapping: () => void
+  /** Open the menu above the button — for a button at the bottom of the window. */
+  up?: boolean
 }
 
 /** Overflow menu for low-frequency, collection-level settings. Currently holds
  * path remapping; the natural home for future advanced settings. */
-export function SettingsMenu({ onOpenPathMapping }: Props) {
+export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -26,7 +28,7 @@ export function SettingsMenu({ onOpenPathMapping }: Props) {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center justify-center rounded-md border border-line bg-ink-850 px-2 py-1.5 text-muted transition-colors hover:border-ink-600 hover:text-text"
+        className="flex h-full items-center justify-center rounded-md border border-line bg-ink-850 px-2 py-1.5 text-muted transition-colors hover:border-ink-600 hover:text-text"
         title="Settings"
         aria-label="Settings"
       >
@@ -44,7 +46,11 @@ export function SettingsMenu({ onOpenPathMapping }: Props) {
         </svg>
       </button>
       {open && (
-        <div className="absolute right-0 z-30 mt-1 w-56 rounded-md border border-line bg-ink-850 p-1 shadow-2xl">
+        <div
+          className={`absolute right-0 z-30 w-56 rounded-md border border-line bg-ink-850 p-1 shadow-2xl ${
+            up ? 'bottom-full mb-1' : 'mt-1'
+          }`}
+        >
           <button
             onClick={() => {
               onOpenPathMapping()

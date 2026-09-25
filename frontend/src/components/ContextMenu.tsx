@@ -4,7 +4,10 @@ import { useEffect, useRef, useState } from 'react'
 export type MenuItem =
   | { label: string; onClick: () => void; danger?: boolean; hint?: string; icon?: string; disabled?: boolean }
   | { label: string; submenu: MenuItem[] }
+  // Toggles in place and leaves the menu open, so several can be flipped in one go.
+  | { label: string; checked: boolean; onToggle: () => void }
   | { heading: string; empty?: string }
+  | { separator: true }
 
 interface Props {
   x: number
@@ -56,7 +59,10 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
         items={items}
         onClose={onClose}
         className="min-w-[160px]"
-        style={{ top: Math.min(y, window.innerHeight - 100), left: Math.min(x, window.innerWidth - 180) }}
+        style={(() => {
+          const top = Math.min(y, window.innerHeight - 100)
+          return { top, left: Math.min(x, window.innerWidth - 180), maxHeight: window.innerHeight - top - 8 }
+        })()}
       />
     </div>
   )
@@ -94,6 +100,30 @@ function MenuPanel({
         style={style}
       >
         {items.map((item, i) => {
+          if ('separator' in item) {
+            return <div key={i} className="my-1 border-t border-line" />
+          }
+          if ('checked' in item) {
+            return (
+              <button
+                key={i}
+                role="menuitemcheckbox"
+                aria-checked={item.checked}
+                onMouseEnter={() => setOpen(null)}
+                onClick={item.onToggle}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-muted hover:bg-ink-800 hover:text-text"
+              >
+                <span
+                  className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border text-[10px] leading-none ${
+                    item.checked ? 'border-accent bg-accent text-ink-950' : 'border-ink-600'
+                  }`}
+                >
+                  {item.checked ? '✓' : ''}
+                </span>
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+              </button>
+            )
+          }
           if ('heading' in item) {
             return (
               <div key={i}>

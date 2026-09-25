@@ -70,6 +70,8 @@ interface Props {
   /** Delete/Backspace removes the selected tracks from this view. */
   onRemove?: (ids: string[]) => void
   onRowContextMenu?: (track: Track, x: number, y: number) => void
+  /** Right-click on the header row (the column chooser). */
+  onHeaderContextMenu?: (x: number, y: number) => void
   onPlay?: (track: Track) => void
   onEditField?: (track: Track, field: keyof Track, value: string | number) => void
   activeTrackId?: string | null
@@ -184,11 +186,13 @@ function HeaderRow({
   sensors,
   onColumnDragEnd,
   hasPlay,
+  onContextMenu,
 }: {
   headers: Header<Track, unknown>[]
   sensors: ReturnType<typeof useSensors>
   onColumnDragEnd: (e: DragEndEvent) => void
   hasPlay: boolean
+  onContextMenu?: (x: number, y: number) => void
 }) {
   // True while (and just after) a column is being reordered, so the trailing
   // click a drag emits is swallowed instead of toggling the sort.
@@ -209,7 +213,14 @@ function HeaderRow({
         }, 0)
       }}
     >
-      <div className="sticky top-0 z-10 flex border-b border-line bg-ink-850">
+      <div
+        className="sticky top-0 z-10 flex border-b border-line bg-ink-850"
+        onContextMenu={(e) => {
+          if (!onContextMenu) return
+          e.preventDefault()
+          onContextMenu(e.clientX, e.clientY)
+        }}
+      >
         <span className="w-10 shrink-0" />
         {hasPlay && <span className="w-9 shrink-0" />}
         <SortableContext
@@ -247,6 +258,7 @@ export function TrackTable({
   reorder,
   onRemove,
   onRowContextMenu,
+  onHeaderContextMenu,
   onPlay,
   onEditField,
   activeTrackId,
@@ -500,6 +512,7 @@ export function TrackTable({
           sensors={sensors}
           onColumnDragEnd={onColumnDragEnd}
           hasPlay={hasPlay}
+          onContextMenu={onHeaderContextMenu}
         />
         <div ref={bodyRef} style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
           {virtualRows.map((vr) => {

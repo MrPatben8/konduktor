@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
 import { useCaps } from '../lib/capabilities'
@@ -6,11 +6,13 @@ import { overwriteWarning, readOnlyNotice, saveLabel } from '../lib/platformCopy
 
 interface Props {
   onError: (msg: string) => void
+  /** Rendered to the right of the save button (the settings gear). */
+  trailing?: ReactNode
 }
 
 // Bottom-of-sidebar save control. Shows unsaved-changes state and writes to the
 // NML; every save is recorded in the collection's version history.
-export function SaveBar({ onError }: Props) {
+export function SaveBar({ onError, trailing }: Props) {
   const qc = useQueryClient()
   const [justSaved, setJustSaved] = useState<string | null>(null)
   const { data: state } = useQuery({ queryKey: ['state'], queryFn: api.state })
@@ -37,11 +39,12 @@ export function SaveBar({ onError }: Props) {
   // point: a greyed-out button with no explanation reads as a bug.
   if (readOnly) {
     return (
-      <div className="border-t border-line bg-ink-900 px-3 py-3">
-        <div className="rounded-md bg-ink-800 px-2 py-2 text-[11px] leading-snug text-faint">
+      <div className="flex items-stretch gap-2 border-t border-line bg-ink-900 px-3 py-3">
+        <div className="min-w-0 flex-1 rounded-md bg-ink-800 px-2 py-2 text-[11px] leading-snug text-faint">
           <span className="font-medium text-ink-200">Read-only</span>
           <div className="mt-1">{readOnly}</div>
         </div>
+        {trailing}
       </div>
     )
   }
@@ -53,10 +56,11 @@ export function SaveBar({ onError }: Props) {
           ⚠ {warning}
         </div>
       )}
+      <div className="flex items-stretch gap-2">
       <button
         disabled={!dirty || save.isPending}
         onClick={() => save.mutate()}
-        className={`flex w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+        className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
           dirty
             ? 'bg-accent text-ink-950 hover:brightness-110'
             : 'cursor-not-allowed bg-ink-800 text-faint'
@@ -73,6 +77,8 @@ export function SaveBar({ onError }: Props) {
           'No unsaved changes'
         )}
       </button>
+      {trailing}
+      </div>
       {justSaved && (
         <div className="mt-2 text-center text-[11px] text-mint">{justSaved}</div>
       )}

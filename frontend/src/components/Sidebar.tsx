@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type PlaylistKind, type PlaylistNode } from '../api'
 import { useCaps } from '../lib/capabilities'
 import { SaveBar } from './SaveBar'
+import { SettingsMenu } from './SettingsMenu'
 import { DevicesSection } from './DevicesSection'
 import { ExportsSection } from './ExportsSection'
 
@@ -39,6 +40,7 @@ interface Props {
   onImport: () => void
   onSwitchLibrary: () => void
   onDone: (msg: string) => void
+  onOpenPathMapping: () => void
 }
 
 // Kind picks the icon; every behavioural question is answered by the node's own
@@ -259,6 +261,7 @@ export function Sidebar({
   onImport,
   onSwitchLibrary,
   onDone,
+  onOpenPathMapping,
 }: Props) {
   const qc = useQueryClient()
   // Both share a cache entry with App and SaveBar, so the header never
@@ -408,7 +411,7 @@ export function Sidebar({
         Collection Version History
       </button>
 
-      <SaveBar onError={onError} />
+      <SaveBar onError={onError} trailing={<SettingsMenu up onOpenPathMapping={onOpenPathMapping} />} />
     </aside>
   )
 }
