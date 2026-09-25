@@ -1,5 +1,6 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Icon } from '../lib/icons'
+import { MIN_TAPS, RESET_MS, TapTempo } from '../lib/tapTempo'
 
 // The deck's beatgrid controls, in three pieces that live in three places:
 //
@@ -94,7 +95,8 @@ export function TempoControls({
   lockable,
   flexible,
   markerIndex,
-  onSetBpm,
+  onTapStart,
+  onTapBpm,
   onNudgeBpm,
   onHalve,
   onDouble,
@@ -105,24 +107,37 @@ export function TempoControls({
   lockable: boolean
   flexible: boolean
   markerIndex: number
-  onSetBpm: (bpm: number) => void
+  /** A tap run began — the caller notes where, to anchor a grid there. */
+  onTapStart: () => void
+  /** A tapped tempo to commit; creates the grid when there is none. */
+  onTapBpm: (bpm: number) => void
   onNudgeBpm: (delta: number) => void
   onHalve: () => void
   onDouble: () => void
   onToggleLock: () => void
 }) {
-  const tapsRef = useRef<number[]>([])
+  // One run of taps; its reading is shown on the button, so a press that is
+  // not yet enough to commit still visibly counts.
+  const tapperRef = useRef(new TapTempo())
+  const committedRef = useRef<number | null>(null)
+  const idleRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const [tapCount, setTapCount] = useState(0)
   const tap = () => {
-    const now = performance.now()
-    const taps = tapsRef.current
-    if (taps.length && now - taps[taps.length - 1] > 2000) taps.length = 0 // reset after a pause
-    taps.push(now)
-    if (taps.length > 8) taps.shift()
-    if (taps.length >= 2) {
-      const avg = (now - taps[0]) / (taps.length - 1)
-      onSetBpm(Math.round((60000 / avg) * 1000) / 1000)
+    const { count, bpm: tapped } = tapperRef.current.tap(performance.now())
+    if (count === 1) {
+      committedRef.current = null
+      onTapStart()
+    }
+    setTapCount(count)
+    clearTimeout(idleRef.current)
+    idleRef.current = setTimeout(() => setTapCount(0), RESET_MS)
+    // Commit only when the snapped value moves: every set is an edit.
+    if (tapped != null && tapped !== committedRef.current) {
+      committedRef.current = tapped
+      onTapBpm(tapped)
     }
   }
+  useEffect(() => () => clearTimeout(idleRef.current), [])
   const off = bpm == null
   const of = flexible ? ` of marker ${markerIndex + 1}` : ''
   return (
@@ -135,12 +150,13 @@ export function TempoControls({
       <button className={`${T_BTN} w-7`} onClick={onHalve} disabled={off} title={`Halve the BPM${of}`}>÷2</button>
       <button className={`${T_BTN} w-7`} onClick={onDouble} disabled={off} title={`Double the BPM${of}`}>×2</button>
       <button
-        className={`${T_BTN} h-7 bg-ink-800 px-2 font-semibold tracking-[0.06em]`}
+        className={`${T_BTN} h-7 min-w-[3.25rem] px-2 font-semibold tracking-[0.06em] ${
+          tapCount ? 'bg-accent/20 text-accent' : 'bg-ink-800'
+        }`}
         onClick={tap}
-        disabled={off}
-        title="Tap tempo"
+        title={`Tap tempo — tap along for ${MIN_TAPS}+ beats; snaps to whole BPM`}
       >
-        TAP
+        {tapCount === 0 ? 'TAP' : tapCount < MIN_TAPS ? `${tapCount}/${MIN_TAPS}` : `TAP ${tapCount}`}
       </button>
       {lockable && (
         <button

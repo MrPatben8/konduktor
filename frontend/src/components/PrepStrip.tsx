@@ -877,6 +877,33 @@ export function PrepStrip({
     if (!activeMarker) return
     editMarker(activeMarkerIndex, { start: Math.max(0, activeMarker.start + deltaMs / 1000) })
   }
+  // Tap tempo retempos the governing marker, or — with no grid — creates one
+  // at the tempo tapped, anchored where the run began (the first tap is a beat
+  // when tapping along; the Grid-mode nudges fix the phase). While that create
+  // is in flight, later taps wait for it rather than creating a second grid.
+  const tapAnchorRef = useRef(0)
+  const tapCreateRef = useRef<Promise<boolean> | null>(null)
+  const tapStart = () => {
+    tapAnchorRef.current = playheadNow()
+  }
+  const tapBpm = async (bpm: number) => {
+    if (!track) return
+    // This closure predates the grid it is waiting for, so it cannot use
+    // activeMarkerIndex — but a grid created by a tap has exactly one marker.
+    if (tapCreateRef.current) {
+      if (await tapCreateRef.current) editMarker(0, { bpm })
+      return
+    }
+    if (markerCount > 0) return setBpm(bpm)
+    if (refuseGridEdit()) return
+    const create = api
+      .addGridMarker(track.id, tapAnchorRef.current, bpm)
+      .then((cues) => (applyCueEdit(cues), true))
+      .catch((e) => (onError?.((e as Error).message), false))
+      .finally(() => (tapCreateRef.current = null))
+    tapCreateRef.current = create
+    await create
+  }
   // Adds a marker at the playhead — and creates the grid when there is none.
   // Uses the raw playhead, not snapTime: a marker defines where beats are.
   const addMarkerHere = async () => {
@@ -1338,7 +1365,8 @@ export function PrepStrip({
           lockable={caps.grid.lockable}
           flexible={markerCount > 1}
           markerIndex={activeMarkerIndex}
-          onSetBpm={setBpm}
+          onTapStart={tapStart}
+          onTapBpm={tapBpm}
           onNudgeBpm={nudgeBpm}
           onHalve={halveBpm}
           onDouble={doubleBpm}
