@@ -9,6 +9,7 @@ import { ExportsSection } from './ExportsSection'
 import { ConfirmDialog, type ConfirmRequest } from './ConfirmDialog'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { Icon, type IconName } from '../lib/icons'
+import { PlatformIcon } from '../lib/platformIcons'
 
 /**
  * Which view the main table is showing.
@@ -506,10 +507,10 @@ export function Sidebar({
       >
         <span
           aria-hidden
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[13px] font-bold text-white shadow-[inset_0_1px_0_rgb(255_255_255/0.4)]"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white shadow-[inset_0_1px_0_rgb(255_255_255/0.4)]"
           style={{ background: 'linear-gradient(135deg, var(--amb-1), var(--amb-3))' }}
         >
-          {(library?.name ?? 'K').slice(0, 1).toUpperCase()}
+          <PlatformIcon platform={library?.platform ?? ''} size={20} />
         </span>
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium text-text">
