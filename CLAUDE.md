@@ -335,8 +335,14 @@ Two independent apps that talk over HTTP:
     picker used to be a one-way door with `forcePicker` never set, so changing
     library meant restarting; switching confirms first when there are unsaved
     edits, since the adapter holds them in a native model that opening another
-    library replaces — plus the playlist tree +
-    create/rename/delete), `SaveBar` (+ the settings gear beside it), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
+    library replaces — plus the playlist tree. **Creating is right-click
+    only**: a folder's menu offers New Playlist / New Folder inside it, empty
+    space below the rows creates at the top level, and the new node is named
+    in place (Esc or an empty name creates nothing). Rename/Delete are on the
+    same menu and the row's hover buttons, which share one set of actions.
+    A Traktor folder's id is its PATH of names, so the `PATCH`/`DELETE`
+    playlist routes take a `:path` param, a folder name may not contain `/`,
+    and renaming onto a sibling folder's name is refused), `SaveBar` (+ the settings gear beside it), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
     `TrackTable` (**the one track list** — All Tracks, playlists, exports and
     devices. TanStack Table + **virtualized** grid; per-row play button,
     configurable columns, header sorting, inline double-click editing, and

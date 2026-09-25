@@ -134,6 +134,44 @@ still = [
 check("playlist gone after delete+save", len(still) == 0)
 check("COLLECTION still byte-identical", collection_span(WORK.read_bytes()) == collection_before)
 
+print("== folders: create, rename, delete (nested ids contain a slash) ==")
+outer = client.post("/api/playlists/folders", json={"name": "Konduktor Test Folder"}).json()["id"]
+inner = client.post(
+    "/api/playlists/folders", json={"name": "Inner Draft", "parent_id": outer}
+).json()["id"]
+check("nested folder id is its path", inner == "fld:Konduktor Test Folder/Inner Draft")
+r = client.patch(f"/api/playlists/{inner.replace('/', '%2F')}", json={"name": "Inner"})
+check("nested folder rename accepted", r.status_code == 200)
+inner = "fld:Konduktor Test Folder/Inner"
+nodes = flat(client.get("/api/playlists").json())
+check("renamed folder found by its new path", any(n["id"] == inner for n in nodes))
+check("folder name with a slash refused",
+      client.post("/api/playlists/folders", json={"name": "a/b"}).status_code == 400)
+client.post("/api/playlists/folders", json={"name": "Sibling", "parent_id": outer})
+check("rename onto a sibling folder's name refused",
+      client.patch(f"/api/playlists/{outer}%2FSibling", json={"name": "Inner"}).status_code == 400)
+nested_uuid = client.post(
+    "/api/playlists", json={"name": "Nested", "parent_id": inner}
+).json()["id"]
+nodes = flat(client.get("/api/playlists").json())
+check("nested folder offered as deletable",
+      any(n["id"] == inner and n["can_delete"] for n in nodes))
+r = client.delete(f"/api/playlists/{inner.replace('/', '%2F')}")
+check("nested folder delete accepted", r.status_code == 200)
+nodes = flat(client.get("/api/playlists").json())
+check("folder and its playlist gone",
+      not any(n["id"] in (inner, nested_uuid) for n in nodes))
+check("parent folder kept", any(n["id"] == outer for n in nodes))
+client.delete(f"/api/playlists/{outer}")
+client.post("/api/save")
+coll3 = TraktorCollection(path=WORK)
+check("no test folder in saved file",
+      not any(n.name == "Konduktor Test Folder" for n in walk(coll3.nml.playlists.node)))
+check("COLLECTION still byte-identical after folder delete",
+      collection_span(WORK.read_bytes()) == collection_before)
+check("unknown folder is 404",
+      client.delete("/api/playlists/fld:No Such Folder").status_code == 404)
+
 print("== original untouched ==")
 check(
     "original collection.nml never modified",

@@ -721,13 +721,30 @@ def create_playlist(body: CreatePlaylist) -> PlaylistNode:
     )
 
 
-@app.patch("/api/playlists/{playlist_uuid}")
+@app.post("/api/playlists/folders", response_model=PlaylistNode)
+def create_folder(body: CreatePlaylist) -> PlaylistNode:
+    name = body.name.strip() or "New Folder"
+    new_id = require_adapter().create_folder(name, body.parent_id)
+    return PlaylistNode(
+        id=new_id,
+        name=name,
+        kind="folder",
+        can_contain_children=True,
+        can_rename=True,
+        can_delete=True,
+    )
+
+
+# `:path` for the same reason as delete: a folder id is a path of names.
+@app.patch("/api/playlists/{playlist_uuid:path}")
 def rename_playlist(playlist_uuid: str, body: RenamePlaylist) -> dict:
     require_adapter().rename_playlist(playlist_uuid, body.name.strip())
     return {"status": "renamed", "id": playlist_uuid, "name": body.name}
 
 
-@app.delete("/api/playlists/{playlist_uuid}")
+# `:path` because a folder id is a path of names (`fld:a/b`), and the slash
+# would otherwise end the segment.
+@app.delete("/api/playlists/{playlist_uuid:path}")
 def delete_playlist(playlist_uuid: str) -> dict:
     require_adapter().delete_playlist(playlist_uuid)
     return {"status": "deleted", "id": playlist_uuid}

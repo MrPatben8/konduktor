@@ -625,6 +625,8 @@ export const api = {
   state: () => getJSON<EditState>('/api/state'),
   createPlaylist: (name: string, parentId?: string) =>
     send<PlaylistNode>('POST', '/api/playlists', { name, parent_id: parentId ?? null }),
+  createFolder: (name: string, parentId?: string) =>
+    send<PlaylistNode>('POST', '/api/playlists/folders', { name, parent_id: parentId ?? null }),
   renamePlaylist: (nodeId: string, name: string) =>
     send<{ status: string }>('PATCH', `/api/playlists/${encodeURIComponent(nodeId)}`, { name }),
   deletePlaylist: (nodeId: string) =>

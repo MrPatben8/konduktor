@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type PlaylistKind, type PlaylistNode } from '../api'
 import { useCaps } from '../lib/capabilities'
@@ -6,6 +6,8 @@ import { SaveBar } from './SaveBar'
 import { SettingsMenu } from './SettingsMenu'
 import { DevicesSection } from './DevicesSection'
 import { ExportsSection } from './ExportsSection'
+import { ConfirmDialog, type ConfirmRequest } from './ConfirmDialog'
+import { ContextMenu, type MenuItem } from './ContextMenu'
 
 /**
  * Which view the main table is showing.
@@ -51,10 +53,93 @@ function playlistIdsUnder(node: PlaylistNode): string[] {
   return [...here, ...(node.children ?? []).flatMap(playlistIdsUnder)]
 }
 
+/** The confirm wording for deleting a node. A folder says what goes with it,
+ *  since the whole subtree is deleted and the row only shows the folder. */
+function deleteRequest(node: PlaylistNode) {
+  if (node.kind !== 'folder')
+    return {
+      title: 'Delete playlist',
+      body: `Delete "${node.name}"? Its tracks stay in your collection.`,
+      confirmLabel: 'Delete playlist',
+    }
+  const playlists = playlistIdsUnder(node).length
+  const inside =
+    playlists === 0
+      ? 'It is empty.'
+      : `The ${playlists === 1 ? 'playlist' : `${playlists} playlists`} inside it will be deleted too; their tracks stay in your collection.`
+  return {
+    title: 'Delete folder',
+    body: `Delete "${node.name}"? ${inside}`,
+    confirmLabel: 'Delete folder',
+  }
+}
+
 const icons: Record<PlaylistKind, string> = {
   folder: '▸',
   playlist: '♫',
   smart: '✦',
+}
+
+/** What the sidebar is naming in place: a new node, and the folder it goes in
+ *  (`null` = the top level). Nothing is created until the name is committed. */
+type Draft = { kind: 'playlist' | 'folder'; parentId: string | null }
+
+/** Actions a row can ask of the sidebar. They live there, not in the row, so
+ *  the right-click menu and the hover buttons run the very same code. */
+interface RowActions {
+  onContextMenu: (e: React.MouseEvent, node: PlaylistNode) => void
+  onRename: (node: PlaylistNode, name: string) => void
+  onDelete: (node: PlaylistNode) => void
+  onAddToExport: (node: PlaylistNode, setId: string) => void
+  onCommitDraft: (name: string) => void
+  onCancelDraft: () => void
+}
+
+/** The inline name field for a node being created. Enter or clicking away
+ *  commits a non-empty name; Esc (or an empty name) creates nothing. */
+function DraftRow({
+  draft,
+  depth,
+  actions,
+}: {
+  draft: Draft
+  depth: number
+  actions: RowActions
+}) {
+  const [name, setName] = useState('')
+  const done = useRef(false)
+  const finish = (commit: boolean) => {
+    if (done.current) return
+    done.current = true
+    if (commit && name.trim()) actions.onCommitDraft(name.trim())
+    else actions.onCancelDraft()
+  }
+  return (
+    <div
+      className="flex items-center gap-2 py-1 pr-1 text-sm"
+      style={{ paddingLeft: `${8 + depth * 14}px` }}
+    >
+      <span
+        className={`w-3 shrink-0 text-center text-[11px] ${
+          draft.kind === 'folder' ? 'text-faint' : 'text-accent'
+        }`}
+      >
+        {icons[draft.kind]}
+      </span>
+      <input
+        autoFocus
+        value={name}
+        placeholder={draft.kind === 'folder' ? 'Folder name…' : 'Playlist name…'}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') finish(true)
+          else if (e.key === 'Escape') finish(false)
+        }}
+        onBlur={() => finish(true)}
+        className="min-w-0 flex-1 rounded border border-accent bg-ink-950 px-1 py-0 text-sm text-text outline-none"
+      />
+    </div>
+  )
 }
 
 function NodeRow({
@@ -62,65 +147,43 @@ function NodeRow({
   depth,
   source,
   onSelect,
-  onError,
+  renamingId,
+  setRenamingId,
+  draft,
+  exportSets,
+  actions,
 }: {
   node: PlaylistNode
   depth: number
   source: Source
   onSelect: (s: Source) => void
-  onError: (msg: string) => void
+  renamingId: string | null
+  setRenamingId: (id: string | null) => void
+  draft: Draft | null
+  exportSets: { id: string; name: string }[]
+  actions: RowActions
 }) {
-  const qc = useQueryClient()
   const [open, setOpen] = useState(true)
-  const [renaming, setRenaming] = useState(false)
   const [adding, setAdding] = useState(false)
-  const [draft, setDraft] = useState(node.name)
-  const exportSets = useQuery({ queryKey: ['exports'], queryFn: api.exports }).data ?? []
-
-  // A FOLDER contributes its nested playlists; a playlist contributes itself.
-  // Folders are flattened here rather than stored as a folder reference: the
-  // export stores playlist ids, and a folder is a shape in the tree, not a
-  // thing with tracks.
-  const addToExport = useMutation({
-    mutationFn: (setId: string) =>
-      api.addToExport(setId, { playlist_ids: playlistIdsUnder(node) }),
-    onSuccess: (_r, setId) => {
-      qc.invalidateQueries({ queryKey: ['export-contents', setId] })
-      qc.invalidateQueries({ queryKey: ['export-tracks', setId] })
-    },
-    onError: (e: Error) => onError(e.message),
-  })
+  const renaming = renamingId === node.id
+  const [renameDraft, setRenameDraft] = useState(node.name)
   const isFolder = node.kind === 'folder'
   const selected = source.kind === 'playlist' && source.id === node.id
   const selectable = node.selectable
+  // A folder being created into shows its children, or the draft would be
+  // typed into a collapsed folder the user cannot see.
+  const draftHere = draft !== null && draft.parentId === node.id
+  const expanded = isFolder && (open || draftHere)
 
-  const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ['playlists'] })
-    qc.invalidateQueries({ queryKey: ['state'] })
+  const startRename = () => {
+    setRenameDraft(node.name)
+    setRenamingId(node.id)
   }
-
-  const rename = useMutation({
-    mutationFn: (name: string) => api.renamePlaylist(node.id, name),
-    onSuccess: (_d, name) => {
-      invalidate()
-      if (source.kind === 'playlist' && source.id === node.id)
-        onSelect({ kind: 'playlist', id: node.id, name })
-    },
-    onError: (e: Error) => onError(e.message),
-  })
-
-  const del = useMutation({
-    mutationFn: () => api.deletePlaylist(node.id),
-    onSuccess: () => {
-      invalidate()
-      if (source.kind === 'playlist' && source.id === node.id) onSelect({ kind: 'all' })
-    },
-    onError: (e: Error) => onError(e.message),
-  })
 
   return (
     <div>
       <div
+        onContextMenu={(e) => actions.onContextMenu(e, node)}
         className={`group flex items-center gap-1 rounded-md pr-1 text-sm transition-colors ${
           selected ? 'bg-accent-soft text-text' : 'text-muted hover:bg-ink-800 hover:text-text'
         }`}
@@ -138,29 +201,26 @@ function NodeRow({
           <span
             className={`w-3 shrink-0 text-center text-[11px] ${
               isFolder ? 'text-faint' : node.kind === 'smart' ? 'text-pink' : 'text-accent'
-            } ${isFolder && open ? 'rotate-90' : ''} transition-transform`}
+            } ${expanded ? 'rotate-90' : ''} transition-transform`}
           >
             {icons[node.kind]}
           </span>
           {renaming ? (
             <input
               autoFocus
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              value={renameDraft}
+              onChange={(e) => setRenameDraft(e.target.value)}
               onClick={(e) => e.stopPropagation()}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
-                  setRenaming(false)
-                  if (draft.trim() && draft !== node.name) rename.mutate(draft.trim())
+                  setRenamingId(null)
+                  if (renameDraft.trim() && renameDraft.trim() !== node.name)
+                    actions.onRename(node, renameDraft.trim())
                 } else if (e.key === 'Escape') {
-                  setRenaming(false)
-                  setDraft(node.name)
+                  setRenamingId(null)
                 }
               }}
-              onBlur={() => {
-                setRenaming(false)
-                setDraft(node.name)
-              }}
+              onBlur={() => setRenamingId(null)}
               className="min-w-0 flex-1 rounded border border-accent bg-ink-950 px-1 py-0 text-sm text-text outline-none"
             />
           ) : (
@@ -190,7 +250,7 @@ function NodeRow({
                     key={set.id}
                     onClick={() => {
                       setAdding(false)
-                      addToExport.mutate(set.id)
+                      actions.onAddToExport(node, set.id)
                     }}
                     className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted hover:bg-ink-800 hover:text-text"
                   >
@@ -205,10 +265,7 @@ function NodeRow({
         {!renaming && node.can_rename && (
           <button
             title="Rename"
-            onClick={() => {
-              setDraft(node.name)
-              setRenaming(true)
-            }}
+            onClick={startRename}
             className="hidden shrink-0 rounded px-1 text-xs text-faint hover:text-text group-hover:block"
           >
             ✎
@@ -216,10 +273,8 @@ function NodeRow({
         )}
         {!renaming && node.can_delete && (
           <button
-            title="Delete playlist"
-            onClick={() => {
-              if (confirm(`Delete playlist "${node.name}"?`)) del.mutate()
-            }}
+            title={isFolder ? 'Delete folder' : 'Delete playlist'}
+            onClick={() => actions.onDelete(node)}
             className="hidden shrink-0 rounded px-1 text-xs text-faint hover:text-pink group-hover:block"
           >
             ×
@@ -235,8 +290,9 @@ function NodeRow({
           </span>
         )}
       </div>
-      {isFolder && open && node.children.length > 0 && (
+      {expanded && (
         <div>
+          {draftHere && <DraftRow draft={draft} depth={depth + 1} actions={actions} />}
           {node.children.map((c) => (
             <NodeRow
               key={c.id}
@@ -244,7 +300,11 @@ function NodeRow({
               depth={depth + 1}
               source={source}
               onSelect={onSelect}
-              onError={onError}
+              renamingId={renamingId}
+              setRenamingId={setRenamingId}
+              draft={draft}
+              exportSets={exportSets}
+              actions={actions}
             />
           ))}
         </div>
@@ -283,27 +343,144 @@ export function Sidebar({
   // There is no per-node flag for "you may create a NEW playlist" — the node
   // flags describe existing nodes — so this is the library-level gate.
   const canCreate = useCaps().writable
-  const [creating, setCreating] = useState(false)
-  const [newName, setNewName] = useState('')
+  const foldersSupported = useCaps().playlists.folders
   const { data: playlists, isLoading } = useQuery({
     queryKey: ['playlists'],
     queryFn: api.playlists,
   })
+  const exportSets = useQuery({ queryKey: ['exports'], queryFn: api.exports }).data ?? []
+
+  const [draft, setDraft] = useState<Draft | null>(null)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
+  const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null)
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['playlists'] })
+    qc.invalidateQueries({ queryKey: ['state'] })
+  }
 
   const create = useMutation({
-    mutationFn: (name: string) => api.createPlaylist(name),
-    onSuccess: (pl) => {
-      qc.invalidateQueries({ queryKey: ['playlists'] })
-      qc.invalidateQueries({ queryKey: ['state'] })
-      onSelect({ kind: 'playlist', id: pl.id, name: pl.name })
+    mutationFn: ({ kind, parentId, name }: Draft & { name: string }) =>
+      kind === 'folder'
+        ? api.createFolder(name, parentId ?? undefined)
+        : api.createPlaylist(name, parentId ?? undefined),
+    onSuccess: (node) => {
+      invalidate()
+      if (node.kind === 'playlist') onSelect({ kind: 'playlist', id: node.id, name: node.name })
     },
     onError: (e: Error) => onError(e.message),
   })
 
-  const submitNew = () => {
-    setCreating(false)
-    if (newName.trim()) create.mutate(newName.trim())
-    setNewName('')
+  const rename = useMutation({
+    mutationFn: ({ node, name }: { node: PlaylistNode; name: string }) =>
+      api.renamePlaylist(node.id, name),
+    onSuccess: (_d, { node, name }) => {
+      invalidate()
+      if (source.kind === 'playlist' && source.id === node.id)
+        onSelect({ kind: 'playlist', id: node.id, name })
+    },
+    onError: (e: Error) => onError(e.message),
+  })
+
+  const del = useMutation({
+    mutationFn: (node: PlaylistNode) => api.deletePlaylist(node.id),
+    onSuccess: (_d, node) => {
+      invalidate()
+      // A folder takes its nested playlists with it, so the open view may be
+      // one of those rather than the node itself.
+      if (source.kind === 'playlist' && playlistIdsUnder(node).concat(node.id).includes(source.id))
+        onSelect({ kind: 'all' })
+    },
+    onError: (e: Error) => onError(e.message),
+  })
+
+  // A FOLDER contributes its nested playlists; a playlist contributes itself.
+  // Folders are flattened here rather than stored as a folder reference: the
+  // export stores playlist ids, and a folder is a shape in the tree, not a
+  // thing with tracks.
+  const addToExport = useMutation({
+    mutationFn: ({ node, setId }: { node: PlaylistNode; setId: string }) =>
+      api.addToExport(setId, { playlist_ids: playlistIdsUnder(node) }),
+    onSuccess: (_r, { setId }) => {
+      qc.invalidateQueries({ queryKey: ['export-contents', setId] })
+      qc.invalidateQueries({ queryKey: ['export-tracks', setId] })
+    },
+    onError: (e: Error) => onError(e.message),
+  })
+
+  const startDraft = (kind: Draft['kind'], parentId: string | null) => {
+    setRenamingId(null)
+    setDraft({ kind, parentId })
+  }
+
+  // Creating is the library-level gate (there is no per-node "may create"
+  // flag); WHERE is the node's own `can_contain_children`; and a folder also
+  // needs the platform to have folders at all.
+  const createItems = (parentId: string | null): MenuItem[] =>
+    canCreate
+      ? [
+          { label: 'New Playlist', icon: '♫', onClick: () => startDraft('playlist', parentId) },
+          ...(foldersSupported
+            ? [{ label: 'New Folder', icon: '▸', onClick: () => startDraft('folder', parentId) }]
+            : []),
+        ]
+      : []
+
+  const confirmDelete = (node: PlaylistNode) =>
+    setConfirmReq({ ...deleteRequest(node), onConfirm: async () => void (await del.mutateAsync(node)) })
+
+  const nodeItems = (node: PlaylistNode): MenuItem[] => {
+    const groups: MenuItem[][] = [
+      node.can_contain_children ? createItems(node.id) : [],
+      exportSets.length > 0
+        ? [
+            {
+              label: 'Add to export',
+              submenu: exportSets.map((set) => ({
+                label: set.name,
+                icon: '◈',
+                onClick: () => addToExport.mutate({ node, setId: set.id }),
+              })),
+            },
+          ]
+        : [],
+      [
+        ...(node.can_rename
+          ? [{ label: 'Rename', onClick: () => { setDraft(null); setRenamingId(node.id) } }]
+          : []),
+        ...(node.can_delete
+          ? [
+              {
+                label: node.kind === 'folder' ? 'Delete Folder…' : 'Delete Playlist…',
+                danger: true,
+                onClick: () => confirmDelete(node),
+              },
+            ]
+          : []),
+      ],
+    ]
+    return groups
+      .filter((g) => g.length > 0)
+      .flatMap((g, i) => (i === 0 ? g : [{ separator: true } as MenuItem, ...g]))
+  }
+
+  const openMenu = (e: React.MouseEvent, items: MenuItem[]) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (items.length > 0) setMenu({ x: e.clientX, y: e.clientY, items })
+  }
+
+  const actions: RowActions = {
+    onContextMenu: (e, node) => openMenu(e, nodeItems(node)),
+    onRename: (node, name) => rename.mutate({ node, name }),
+    onDelete: confirmDelete,
+    onAddToExport: (node, setId) => addToExport.mutate({ node, setId }),
+    onCommitDraft: (name) => {
+      if (draft) create.mutate({ ...draft, name })
+      setDraft(null)
+    },
+    onCancelDraft: () => setDraft(null),
   }
 
   return (
@@ -346,42 +523,19 @@ export function Sidebar({
         </button>
       </div>
 
-      <div className="mt-3 flex items-center justify-between px-4">
+      <div className="mt-3 px-4">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-faint">
           Playlists
         </span>
-        {canCreate && (
-          <button
-            title="New playlist"
-            onClick={() => {
-              setCreating(true)
-              setNewName('')
-            }}
-            className="rounded px-1 text-sm text-faint hover:text-text"
-          >
-            +
-          </button>
-        )}
       </div>
 
-      <div className="mt-1 flex-1 overflow-y-auto px-2 pb-4">
-        {creating && (
-          <input
-            autoFocus
-            value={newName}
-            placeholder="Playlist name…"
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') submitNew()
-              else if (e.key === 'Escape') {
-                setCreating(false)
-                setNewName('')
-              }
-            }}
-            onBlur={submitNew}
-            className="mb-1 w-full rounded-md border border-accent bg-ink-950 px-2 py-1.5 text-sm text-text outline-none"
-          />
-        )}
+      {/* Right-click here (below the rows) creates at the top level; rows
+          stop the event so they get their own menu. */}
+      <div
+        className="mt-1 flex-1 overflow-y-auto px-2 pb-4"
+        onContextMenu={(e) => openMenu(e, createItems(null))}
+      >
+        {draft?.parentId === null && <DraftRow draft={draft} depth={0} actions={actions} />}
         {isLoading && <div className="px-2 py-2 text-sm text-faint">Loading…</div>}
         {playlists?.map((n) => (
           <NodeRow
@@ -390,10 +544,17 @@ export function Sidebar({
             depth={0}
             source={source}
             onSelect={onSelect}
-            onError={onError}
+            renamingId={renamingId}
+            setRenamingId={setRenamingId}
+            draft={draft}
+            exportSets={exportSets}
+            actions={actions}
           />
         ))}
       </div>
+
+      {menu && <ContextMenu {...menu} onClose={() => setMenu(null)} />}
+      {confirmReq && <ConfirmDialog {...confirmReq} onClose={() => setConfirmReq(null)} />}
 
       <ExportsSection source={source} onSelect={onSelect} onDone={onDone} onError={onError} />
 

@@ -236,11 +236,8 @@ class RekordboxAdapter:
         return self._store.create_playlist(name, parent_id)
 
     def create_folder(self, name: str, parent_id: str | None = None) -> str:
-        # Rekordbox CAN hold folders (`capabilities.playlists.folders` is
-        # True, and pyrekordbox has `add_playlist_folder`), so this is a
-        # gap rather than a refusal in principle. Traktor is the only
-        # import target for now, so it is the only one that needed it.
-        self._refuse("Creating playlist folders")
+        self._require_writable("Creating playlist folders")
+        return self._store.create_folder(name, parent_id)
 
     def rename_playlist(self, node_id: str, name: str) -> None:
         self._require_writable("Renaming playlists")

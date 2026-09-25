@@ -237,6 +237,25 @@ with tempfile.TemporaryDirectory() as d:
           len(final.playlist_tree()) == len(before_tree),
           f"{len(final.playlist_tree())} vs {len(before_tree)}")
 
+    # A folder, a playlist inside it, and deleting the folder takes both.
+    folder_id = final.create_folder("Konduktor Test Folder")
+    inner_id = final.create_playlist("Konduktor Inner", folder_id)
+    final.save()
+    folder_reopened = RekordboxAdapter(work)
+    folder = next((n for n in folder_reopened.playlist_tree() if n.id == folder_id), None)
+    check("a folder round-trips as a folder",
+          folder is not None and folder.kind == "folder")
+    check("a playlist created inside it is its child",
+          folder is not None and [c.id for c in folder.children] == [inner_id])
+    folder_reopened.delete_playlist(folder_id)
+    folder_reopened.save()
+    after_folder = RekordboxAdapter(work)
+    flat_ids = lambda ns: [x for n in ns for x in [n.id] + flat_ids(n.children)]
+    check("deleting the folder removes it AND its playlist",
+          not {folder_id, inner_id} & set(flat_ids(after_folder.playlist_tree())))
+    folder_reopened.close()
+    after_folder.close()
+
     # ---- F: a cue write touches the cue row AND its mirror ---------------
     print("== F: a hot cue write is localized, and keeps the mirror in step ==")
     clean_copy(REAL, work, closing=[adapter, again, final, reopened])

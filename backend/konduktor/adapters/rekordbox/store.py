@@ -391,6 +391,19 @@ class RekordboxStore:
         self._journal.record("playlist", "create", name)
         return str(row.ID)
 
+    def create_folder(self, name: str, parent_id: str | None = None) -> str:
+        name = (name or "").strip()
+        if not name:
+            raise InvalidCommand("A folder needs a name")
+        parent = self._playlist(parent_id) if parent_id else None
+        if parent is not None and int(parent.Attribute or 0) != int(
+            self._tables.PlaylistType.FOLDER
+        ):
+            raise InvalidCommand("A folder can only be created inside a folder")
+        row = self._db.create_playlist_folder(name, parent=parent)
+        self._journal.record("playlist", "create-folder", name)
+        return str(row.ID)
+
     def rename_playlist(self, node_id: str, name: str) -> None:
         name = (name or "").strip()
         if not name:

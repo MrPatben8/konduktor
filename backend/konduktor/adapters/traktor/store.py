@@ -168,6 +168,8 @@ class TraktorStore:
             kind="folder",
             children=[self._to_model(c, path) for c in self._children(node)],
             can_contain_children=True,
+            can_rename=True,
+            can_delete=True,
         )
 
     @staticmethod
@@ -252,6 +254,7 @@ class TraktorStore:
         second import from the same stick should land beside the first rather
         than next to an identically-named twin.
         """
+        self._check_folder_name(name)
         with self._lock:
             parent = self._find_folder(parent_id)
             existing = next(
@@ -276,8 +279,38 @@ class TraktorStore:
             self.dirty = True
             return folder_id
 
+    @staticmethod
+    def _check_folder_name(name: str) -> None:
+        # A folder is addressed by its path of names, so a "/" in one would
+        # split it into two path segments and the folder could never be found.
+        if not name:
+            raise PlaylistError("A folder needs a name")
+        if "/" in name:
+            raise PlaylistError('A folder name cannot contain "/"')
+
+    def _rename_folder(self, folder_id: str, name: str) -> None:
+        """Rename a folder. Its id is its path, so the id changes with it —
+        and a sibling folder of the same name would make both unaddressable,
+        so that is refused rather than silently merged."""
+        self._check_folder_name(name)
+        node = self._find_folder(folder_id)
+        if node is self._root():
+            raise PlaylistError("Cannot rename the root folder")
+        parent = self._find_parent_of(node)
+        if any(
+            c is not node and (c.type or "FOLDER") == "FOLDER" and c.name == name
+            for c in self._children(parent)
+        ):
+            raise PlaylistError(f'There is already a folder called "{name}" here')
+        node.name = name
+        self._note("playlist-rename", name)
+        self.dirty = True
+
     def rename_playlist(self, playlist_uuid: str, name: str) -> None:
         with self._lock:
+            if playlist_uuid.startswith("fld:"):
+                self._rename_folder(playlist_uuid, name)
+                return
             node = self._find_playlist_node(playlist_uuid)
             if node is None:
                 raise PlaylistError(f"Playlist not found: {playlist_uuid}")
@@ -286,8 +319,20 @@ class TraktorStore:
             self.dirty = True
 
     def delete_playlist(self, playlist_uuid: str) -> None:
+        """Delete a playlist, or a FOLDER and everything nested in it.
+
+        A folder is addressed by its synthetic `fld:` path id. Removing its node
+        removes its subtree with it — the NML nests children inside the parent's
+        SUBNODES, so there is nothing elsewhere to clean up; the tracks stay in
+        the collection.
+        """
         with self._lock:
-            node = self._find_playlist_node(playlist_uuid)
+            if playlist_uuid.startswith("fld:"):
+                if playlist_uuid == "fld:":
+                    raise PlaylistError("Cannot delete the root folder")
+                node = self._find_folder(playlist_uuid)
+            else:
+                node = self._find_playlist_node(playlist_uuid)
             if node is None:
                 raise PlaylistError(f"Playlist not found: {playlist_uuid}")
             parent = self._find_parent_of(node)
