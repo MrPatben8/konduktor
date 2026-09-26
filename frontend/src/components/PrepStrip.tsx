@@ -405,6 +405,7 @@ export function PrepStrip({
     setCueHeld(true)
     getCtx()
     if (eng.playing) {
+      leaveLoopFor(cuePoint)
       eng.pause()
       eng.seek(cuePoint)
       setPlaying(false)
@@ -417,6 +418,7 @@ export function PrepStrip({
       eng.seek(t)
       setCurrent(t)
     } else {
+      leaveLoopFor(cuePoint)
       beginPreview('cue', cuePoint)
     }
   }
@@ -472,6 +474,16 @@ export function PrepStrip({
     if (!eng) return
     eng.seek(t)
     setCurrent(t)
+  }
+
+  // A cue jump that lands outside the engaged loop leaves it, Traktor-style.
+  // Without this the loop stays in force and Web Audio, started past a loop's
+  // end, wraps straight back into it. A jump inside the loop keeps it.
+  const leaveLoopFor = (t: number) => {
+    if (!loopActive || !loopRegion) return
+    if (t >= loopRegion.start && t < loopRegion.end) return
+    playbackRef.current?.setLoopEnabled(false)
+    setLoopActive(false)
   }
 
   // User-driven seek from the waveforms: navigating away drops the active loop
@@ -770,13 +782,14 @@ export function PrepStrip({
     const eng = playbackRef.current
     if (!eng || !eng.ready) return
     getCtx()
-    // A loop hotcue jumps to its start AND re-engages a loop of its length.
+    // A loop hotcue jumps to its start AND engages a loop of its length — the
+    // new loop FIRST, so the seek is not wrapped back into the old one.
     if (cue.type === 'loop' && cue.length > 0) {
-      seek(cue.start)
       engagLoop(cue.start, cue.start + cue.length, beatsForLoop(cue.start, cue.length))
     } else {
-      seek(cue.start)
+      leaveLoopFor(cue.start)
     }
+    seek(cue.start)
     // Paused at press → momentary preview: play while held.
     if (!eng.playing) beginPreview(`hc:${slot}`, cue.start)
   }
