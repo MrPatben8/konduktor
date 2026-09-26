@@ -20,6 +20,10 @@ interface Props {
   onRenameCancel: () => void
 }
 
+// The narrowest a pad gets (a letter-only square) and the gap between pads.
+const PAD_MIN = 40
+const PAD_GAP = 6
+
 const READONLY_LABELS: Record<string, string> = {
   platform_managed: 'Managed by the DJ app — not editable here',
 }
@@ -51,8 +55,13 @@ export function HotcueBar({
   return (
     // The group takes the row's spare width; each pad is capped, so on a wide
     // window the pads keep a pad's proportions and the space is left empty
-    // rather than stretching them into bars.
-    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+    // rather than stretching them into bars. It never goes below a bank of
+    // PAD_MIN pads: squeezed further, the pads' padding spilled them out of
+    // the group and over the tempo controls.
+    <div
+      className="flex flex-1 items-center gap-1.5"
+      style={{ minWidth: slotCount * PAD_MIN + (slotCount - 1) * PAD_GAP }}
+    >
       {Array.from({ length: slotCount }, (_, i) => i).map((slot) => {
         const cue = cues.find((c) => c.role === 'hotcue' && c.slot === slot) ?? null
         // Gate on `editable`, never on why: a platform-owned cue is a read-only
@@ -91,7 +100,11 @@ export function HotcueBar({
             }
             style={color ? padStyle(color, selected) : undefined}
             className={
-              'relative flex h-11 min-w-0 max-w-[7.5rem] flex-1 flex-col items-start justify-center gap-1 rounded-xl px-2.5 text-left transition-[filter,background-color] ' +
+              // Each pad is a container, so it decides for itself when it is
+              // too narrow for a name — under 4rem wide (2.75rem inside its
+              // padding, which is what a container query measures) it is a
+              // letter-only square, whatever the bank size or the rest of the row.
+              '@container relative flex h-11 min-w-0 max-w-[7.5rem] flex-1 flex-col items-start justify-center gap-1 rounded-xl px-2.5 text-left transition-[filter,background-color] ' +
               (color
                 ? 'hover:brightness-115'
                 : // An empty pad gets the same dark ground, so the row reads as
@@ -101,7 +114,7 @@ export function HotcueBar({
             }
           >
             <span
-              className="font-mono text-[11px] font-bold leading-none"
+              className="font-mono text-[11px] font-bold leading-none @max-[2.75rem]:self-center"
               style={color ? { color: lighten(color) } : undefined}
             >
               {locked ? <Icon name="lock" size={11} strokeWidth={2.2} /> : slotLabel(slot)}
@@ -116,7 +129,7 @@ export function HotcueBar({
               // A cue without a name shows its type, dimmed, rather than a
               // blank line — the pad still says what it holds.
               <span
-                className={`w-full truncate text-[11px] leading-none ${
+                className={`w-full truncate text-[11px] leading-none @max-[2.75rem]:hidden ${
                   cue && cue.name && cue.name !== 'n.n.' ? 'text-text' : 'text-text/60'
                 }`}
               >
@@ -126,7 +139,7 @@ export function HotcueBar({
             {/* The type icon, top right on the number's line — the name below
                 is free to run the full width. */}
             {icon && color && (
-              <span className="absolute right-2 top-[7px] flex" style={{ color: lighten(color) }}>
+              <span className="absolute right-2 top-[7px] flex @max-[2.75rem]:hidden" style={{ color: lighten(color) }}>
                 <Icon name={icon} size={14} strokeWidth={2} />
               </span>
             )}

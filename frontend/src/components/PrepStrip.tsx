@@ -24,7 +24,7 @@ import { ScratchEngine } from '../lib/scratchEngine'
 import { PlaybackEngine } from '../lib/playbackEngine'
 import { AutoCueDialog, eventLabel } from './AutoCueDialog'
 import { ContextMenu, type MenuItem } from './ContextMenu'
-import { BpmReadout, GridEditStrip, TempoControls } from './GridControls'
+import { BpmReadout, GridEditStrip, TempoControls, TempoFold } from './GridControls'
 import { HotcueBar } from './HotcueBar'
 import { LoopControls, LOOP_SIZES, type LoopMode } from './LoopControls'
 import { MainWaveform, MIN_SEC, MAX_SEC, DEFAULT_SEC } from './MainWaveform'
@@ -1158,6 +1158,20 @@ export function PrepStrip({
   }
 
   const DIVIDER = <span aria-hidden className="h-7 w-px shrink-0 bg-line" />
+  // Rendered twice — inline on a wide row, inside TempoFold on a narrow one.
+  const tempoProps = {
+    bpm: activeMarker?.bpm ?? null,
+    locked: cueData?.grid_locked ?? false,
+    lockable: caps.grid.lockable,
+    flexible: markerCount > 1,
+    markerIndex: activeMarkerIndex,
+    onTapStart: tapStart,
+    onTapBpm: (bpm: number) => commitBpm(bpm, tapAnchorRef.current),
+    onNudgeBpm: nudgeBpm,
+    onHalve: halveBpm,
+    onDouble: doubleBpm,
+    onToggleLock: toggleLock,
+  }
 
   return (
     <div className="glass flex h-[19.75rem] shrink-0 flex-col gap-2 p-4">
@@ -1311,8 +1325,15 @@ export function PrepStrip({
         </>
       )}
 
-      {/* ---- Controls: transport · loop/jump · pads or grid · tempo ---- */}
-      <div className="flex h-11 shrink-0 items-center gap-3">
+      {/* ---- Controls: transport · loop/jump · pads or grid · tempo ----
+          A container, so the row gives way in stages as the window narrows
+          instead of the pads sliding under the tempo group: the pads drop
+          their names first (each pad queries its own width, see HotcueBar),
+          then below 74rem the tempo group folds into one BPM button, and below
+          60rem the Grid toggle keeps only its icon. Those are the row's
+          measured widths just before the pad bank would hit its minimum (with
+          a lockable grid's extra Lock button), so move them with the controls. */}
+      <div className="@container flex h-11 shrink-0 items-center gap-3">
         <button
           onClick={toggle}
           disabled={!ready}
@@ -1405,19 +1426,10 @@ export function PrepStrip({
           />
         )}
         {DIVIDER}
-        <TempoControls
-          bpm={activeMarker?.bpm ?? null}
-          locked={cueData?.grid_locked ?? false}
-          lockable={caps.grid.lockable}
-          flexible={markerCount > 1}
-          markerIndex={activeMarkerIndex}
-          onTapStart={tapStart}
-          onTapBpm={(bpm) => commitBpm(bpm, tapAnchorRef.current)}
-          onNudgeBpm={nudgeBpm}
-          onHalve={halveBpm}
-          onDouble={doubleBpm}
-          onToggleLock={toggleLock}
-        />
+        <TempoControls {...tempoProps} className="@max-[74rem]:hidden" />
+        <TempoFold locked={tempoProps.locked} className="hidden @max-[74rem]:flex">
+          <TempoControls {...tempoProps} />
+        </TempoFold>
         <button
           onClick={() => {
             setGridMode((g) => !g)
@@ -1427,14 +1439,15 @@ export function PrepStrip({
           aria-pressed={gridMode}
           disabled={!track}
           title={gridMode ? 'Back to the hotcue pads' : 'Edit the beatgrid: markers, phase, reset'}
-          className={`flex h-10 shrink-0 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold transition-colors disabled:opacity-40 ${
+          aria-label="Grid"
+          className={`flex h-10 shrink-0 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold transition-colors disabled:opacity-40 @max-[60rem]:w-10 @max-[60rem]:justify-center @max-[60rem]:px-0 ${
             gridMode
               ? 'bg-gold/15 text-gold shadow-[inset_0_0_0_1px_rgb(255_200_97/0.5),0_0_16px_-4px_rgb(255_200_97/0.6)]'
               : 'btn-glass text-text'
           }`}
         >
           <Icon name="grid" size={14} />
-          Grid
+          <span className="@max-[60rem]:hidden">Grid</span>
         </button>
       </div>
 

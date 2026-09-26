@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { askConfirm } from '../lib/confirm'
 import { Icon } from '../lib/icons'
 import { MIN_TAPS, RESET_MS, TapTempo } from '../lib/tapTempo'
@@ -8,7 +9,8 @@ import { MIN_TAPS, RESET_MS, TapTempo } from '../lib/tapTempo'
 //   BpmReadout      — the header's BPM: shows the governing marker's tempo, and
 //                     is where an exact BPM is typed (click it).
 //   TempoControls   — the everyday tempo tools, always on the control row:
-//                     nudge ±0.01 / ±0.25, ÷2 ×2, tap tempo, lock.
+//                     nudge ±0.01 / ±0.25, ÷2 ×2, tap tempo, lock. On a
+//                     narrow window they fold into TempoFold's popover.
 //   GridEditStrip   — only in Grid mode, in place of the hotcue pads: step
 //                     between markers, nudge the marker ±1 / ±10 ms, add or
 //                     delete a marker, delete the grid, reset it.
@@ -129,6 +131,7 @@ export function TempoControls({
   onHalve,
   onDouble,
   onToggleLock,
+  className = '',
 }: {
   bpm: number | null
   locked: boolean
@@ -143,6 +146,7 @@ export function TempoControls({
   onHalve: () => void
   onDouble: () => void
   onToggleLock: () => void
+  className?: string
 }) {
   // One run of taps; its reading is shown on the button, so a press that is
   // not yet enough to commit still visibly counts.
@@ -169,7 +173,7 @@ export function TempoControls({
   const off = bpm == null
   const of = flexible ? ` of marker ${markerIndex + 1}` : ''
   return (
-    <div role="group" aria-label="Tempo" className="glass-group flex h-10 shrink-0 items-center gap-0.5 rounded-xl px-1">
+    <div role="group" aria-label="Tempo" className={`glass-group flex h-10 shrink-0 items-center gap-0.5 rounded-xl px-1 ${className}`}>
       <button className={`${T_BTN} w-7`} onClick={() => onNudgeBpm(-0.25)} disabled={off} title={`BPM −0.25${of}`}>−−</button>
       <button className={`${T_BTN} w-[22px]`} onClick={() => onNudgeBpm(-0.01)} disabled={off} title={`BPM −0.01${of}`}>−</button>
       <button className={`${T_BTN} w-[22px]`} onClick={() => onNudgeBpm(0.01)} disabled={off} title={`BPM +0.01${of}`}>+</button>
@@ -197,6 +201,81 @@ export function TempoControls({
         </button>
       )}
     </div>
+  )
+}
+
+/**
+ * TempoControls folded into one button, for a control row too narrow to hold
+ * them beside the pads. The popover holds the same controls rather than a
+ * reduced set, and stays open while you tap — only a click elsewhere, Esc, or
+ * a window resize (which can unfold the row under it) closes it. Portalled,
+ * like every overlay: the deck's panel is a stacking context.
+ */
+export function TempoFold({
+  locked,
+  className = '',
+  children,
+}: {
+  locked: boolean
+  className?: string
+  children: ReactNode
+}) {
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const popRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!pos) return
+    const close = () => setPos(null)
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (!popRef.current?.contains(t) && !buttonRef.current?.contains(t)) close()
+    }
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close()
+    document.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('resize', close)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', close)
+    }
+  }, [pos])
+  const toggle = () => {
+    if (pos) return setPos(null)
+    const r = buttonRef.current!.getBoundingClientRect()
+    // Right-aligned under the button: it sits near the row's right end, so
+    // hanging left keeps the popover on screen.
+    setPos({ x: window.innerWidth - r.right, y: r.bottom + 6 })
+  }
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        onClick={toggle}
+        aria-expanded={pos != null}
+        title="Tempo — nudge, halve/double, tap, lock"
+        className={`h-10 shrink-0 items-center gap-1.5 rounded-xl px-3 font-mono text-xs font-semibold ${
+          pos ? 'is-selected text-text' : 'btn-glass text-text'
+        } ${className}`}
+      >
+        {locked && <Icon name="lock" size={12} strokeWidth={2.2} />}
+        BPM
+        <Icon name="chevronDown" size={12} strokeWidth={2.4} />
+      </button>
+      {pos &&
+        createPortal(
+          <div
+            ref={popRef}
+            role="dialog"
+            aria-label="Tempo"
+            className="glass-overlay fixed z-[70] !rounded-2xl p-1.5"
+            style={{ right: pos.x, top: pos.y }}
+          >
+            {children}
+          </div>,
+          document.body,
+        )}
+    </>
   )
 }
 
