@@ -851,7 +851,8 @@ that number and nothing else — everything derives from it:
   `test_rekordbox_fidelity.py`, end to end through the API, and in Rekordbox 7
   itself. Research is captured in `.claude/handoffs/rekordbox-adapter.md` §8,
   incl. the verified result that Rekordbox accepts Konduktor-written rows when
-  USNs are maintained. Remaining gap: **cover art**. **No version history on Rekordbox** — accepted scope decision,
+  USNs are maintained. Remaining gap: **writing cover art** (reading works: the file's embedded art,
+  else Rekordbox's own `ImagePath` copy under `share/`). **No version history on Rekordbox** — accepted scope decision,
   see handoff §11.
 - ✅ **Import a OneLibrary stick into Traktor** — done end to end. A plugged-in
   drive appears under **Devices** in the sidebar, browses in the ordinary table

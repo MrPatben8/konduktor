@@ -292,6 +292,31 @@ class RekordboxStore:
             return None
         return self._mapping.apply(Path(str(folder)))
 
+    def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
+        """The art embedded in the audio file, else Rekordbox's own copy.
+
+        The file comes first because it is what Traktor reads too, so one track
+        shows the same art on both platforms. Rekordbox's copy (`ImagePath`,
+        rooted at `share/` like `AnalysisDataPath`) covers files it cannot be
+        read from — a WAV, or a drive that is not mounted.
+        """
+        from ...core import audio_tags
+
+        path = self.audio_path(track_id)
+        if path is not None and path.is_file():
+            art = audio_tags.read_cover(path)
+            if art:
+                return art
+        rel = getattr(self.content(track_id), "ImagePath", None)
+        if not rel:
+            return None
+        image = self.path.parent / "share" / str(rel).lstrip("/\\")
+        try:
+            data = image.read_bytes()
+        except OSError:
+            return None
+        return data, "image/png" if image.suffix.lower() == ".png" else "image/jpeg"
+
     def all_audio_paths(self) -> list[str]:
         return [
             str(c.FolderPath) for c in self.iter_content() if getattr(c, "FolderPath", None)

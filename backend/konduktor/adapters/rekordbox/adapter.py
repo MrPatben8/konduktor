@@ -407,7 +407,7 @@ class RekordboxAdapter:
         self._refuse("Editing cover art")
 
     def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
-        return None
+        return self._store.cover_art(track_id)
 
     def set_grid_lock(self, track_id: str, locked: bool) -> TrackCues:
         # Rekordbox has no per-track grid lock; capabilities.grid.lockable says so.
