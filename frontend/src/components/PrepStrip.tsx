@@ -885,40 +885,53 @@ export function PrepStrip({
     if (!activeMarker) return
     editMarker(activeMarkerIndex, { start: Math.max(0, activeMarker.start + deltaMs / 1000) })
   }
-  // Tap tempo retempos the governing marker, or — with no grid — creates one
-  // at the tempo tapped, anchored where the run began (the first tap is a beat
-  // when tapping along; the Grid-mode nudges fix the phase). While that create
-  // is in flight, later taps wait for it rather than creating a second grid.
+  // With no grid, a tempo from TAP or the typed readout CREATES one, with its
+  // first marker at an anchor captured when the gesture began: the first tap
+  // (a beat, when tapping along), or where the playhead stood when Set grid
+  // asked for a BPM. The Grid-mode nudges fix the phase. While that create is
+  // in flight, later tempos wait for it rather than creating a second grid.
   const tapAnchorRef = useRef(0)
-  const tapCreateRef = useRef<Promise<boolean> | null>(null)
+  const gridAnchorRef = useRef<number | null>(null) // Set grid's, while the readout asks
+  const gridCreateRef = useRef<Promise<boolean> | null>(null)
+  const [bpmEntryRequest, setBpmEntryRequest] = useState(0) // bump → readout opens for typing
   const tapStart = () => {
     tapAnchorRef.current = playheadNow()
   }
-  const tapBpm = async (bpm: number) => {
+  const commitBpm = async (bpm: number, anchor: number) => {
     if (!track) return
     // This closure predates the grid it is waiting for, so it cannot use
-    // activeMarkerIndex — but a grid created by a tap has exactly one marker.
-    if (tapCreateRef.current) {
-      if (await tapCreateRef.current) editMarker(0, { bpm })
+    // activeMarkerIndex — but a grid created here has exactly one marker.
+    if (gridCreateRef.current) {
+      if (await gridCreateRef.current) editMarker(0, { bpm })
       return
     }
     if (markerCount > 0) return setBpm(bpm)
     if (refuseGridEdit()) return
     const create = api
-      .addGridMarker(track.id, tapAnchorRef.current, bpm)
+      .addGridMarker(track.id, anchor, bpm)
       .then((cues) => (applyCueEdit(cues), true))
       .catch((e) => (onError?.((e as Error).message), false))
-      .finally(() => (tapCreateRef.current = null))
-    tapCreateRef.current = create
+      .finally(() => (gridCreateRef.current = null))
+    gridCreateRef.current = create
     await create
   }
   // Adds a marker at the playhead — and creates the grid when there is none.
   // Uses the raw playhead, not snapTime: a marker defines where beats are.
+  // A first marker needs a tempo: the track's own BPM when it has one (passed
+  // explicitly — Rekordbox does not fall back to it), else the readout opens
+  // to ask, and the marker lands where the playhead is NOW once it is typed.
   const addMarkerHere = async () => {
     if (!track) return
     if (refuseGridEdit()) return
+    if (markerCount === 0 && !track.bpm) {
+      gridAnchorRef.current = playheadNow()
+      setBpmEntryRequest((n) => n + 1)
+      return
+    }
     try {
-      applyCueEdit(await api.addGridMarker(track.id, playheadNow()))
+      applyCueEdit(
+        await api.addGridMarker(track.id, playheadNow(), markerCount === 0 ? (track.bpm ?? undefined) : undefined),
+      )
     } catch (e) {
       onError?.((e as Error).message)
     }
@@ -1182,7 +1195,13 @@ export function PrepStrip({
             </span>
           </div>
           <span aria-hidden className="my-2 w-px bg-line" />
-          <BpmReadout bpm={activeMarker?.bpm ?? null} editable={canEditGrid} onSetBpm={setBpm} />
+          <BpmReadout
+            bpm={activeMarker?.bpm ?? null}
+            editable={canEditGrid}
+            onSetBpm={(bpm) => commitBpm(bpm, gridAnchorRef.current ?? playheadNow())}
+            onClose={() => (gridAnchorRef.current = null)}
+            openRequest={bpmEntryRequest}
+          />
         </div>
 
         <button
@@ -1374,7 +1393,7 @@ export function PrepStrip({
           flexible={markerCount > 1}
           markerIndex={activeMarkerIndex}
           onTapStart={tapStart}
-          onTapBpm={tapBpm}
+          onTapBpm={(bpm) => commitBpm(bpm, tapAnchorRef.current)}
           onNudgeBpm={nudgeBpm}
           onHalve={halveBpm}
           onDouble={doubleBpm}

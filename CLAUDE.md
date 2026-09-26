@@ -431,7 +431,8 @@ Two independent apps that talk over HTTP:
   - **Prep strip** (DJ deck across the top of the window): `PrepStrip` owns it,
     in three rows. **Header**: cover, title/artist · album · genre, a Read-only
     badge, the readout well (ELAPSED / REMAIN to tenths, KEY, and `BpmReadout` —
-    click to type an exact BPM), SNAP, Analyze, Auto hotcues. **Waveforms**:
+    click to type an exact BPM; with no grid, a typed or tapped BPM CREATES one at the playhead, and
+    Set grid on a track with no BPM opens the readout to ask rather than failing), SNAP, Analyze, Auto hotcues. **Waveforms**:
     `MainWaveform` (scrolling; zoom +/− in its corner and Cmd/Ctrl+scroll, owned
     by `PrepStrip` so it survives track switches and persists) over
     `OverviewWaveform`, which frames the main view's visible range around the

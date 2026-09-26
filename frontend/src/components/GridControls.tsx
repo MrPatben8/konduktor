@@ -25,27 +25,51 @@ function markerTime(t: number): string {
   return `${m}:${s < 10 ? '0' : ''}${s.toFixed(3)}`
 }
 
-/** The header readout's BPM cell. Click to type an exact tempo. */
+/** The header readout's BPM cell. Click to type an exact tempo — with no grid,
+ *  typing one creates it (the caller decides where its first marker goes). */
 export function BpmReadout({
   bpm,
   editable,
   onSetBpm,
+  onClose,
+  openRequest = 0,
 }: {
   /** Tempo of the marker governing the playhead; null without a grid. */
   bpm: number | null
   editable: boolean
   onSetBpm: (bpm: number) => void
+  /** The editor closed, committed or not. */
+  onClose?: () => void
+  /** Bump to open the editor from elsewhere (Set grid on a track with no BPM). */
+  openRequest?: number
 }) {
   const [editing, setEditing] = useState(false)
+  const editingRef = useRef(false)
   const [val, setVal] = useState('')
-  const commit = () => {
+  const open = () => {
+    setVal(bpm != null ? bpm.toFixed(3) : '')
+    editingRef.current = true
+    setEditing(true)
+  }
+  // Only a CHANGE opens it, so remounting with a non-zero count does not.
+  const seenRequestRef = useRef(openRequest)
+  useEffect(() => {
+    if (openRequest === seenRequestRef.current) return
+    seenRequestRef.current = openRequest
+    open()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openRequest])
+  const close = (commit: boolean) => {
+    if (!editingRef.current) return // Enter commits; a blur as it unmounts must not again
+    editingRef.current = false
     const n = parseFloat(val)
-    if (isFinite(n) && n > 0) onSetBpm(Math.round(n * 1000) / 1000)
+    if (commit && isFinite(n) && n > 0) onSetBpm(Math.round(n * 1000) / 1000)
     setEditing(false)
+    onClose?.()
   }
   const label = (
     <span className="text-[10px] tracking-[0.08em] text-faint">
-      BPM{editable && bpm != null ? ' ✎' : ''}
+      BPM{editable ? ' ✎' : ''}
     </span>
   )
   if (editing) {
@@ -55,26 +79,29 @@ export function BpmReadout({
         <input
           autoFocus
           value={val}
+          placeholder={bpm == null ? 'BPM?' : undefined}
           onChange={(e) => setVal(e.target.value)}
-          onBlur={commit}
+          onBlur={() => close(true)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') commit()
-            if (e.key === 'Escape') setEditing(false)
+            if (e.key === 'Enter') close(true)
+            if (e.key === 'Escape') close(false)
             e.stopPropagation() // Space/arrows must not drive the deck while typing
           }}
-          className="w-[5.5rem] rounded-md bg-ink-800 px-1 font-mono text-[17px] font-semibold text-accent outline-none ring-1 ring-accent"
+          className="w-[5.5rem] rounded-md bg-ink-800 px-1 font-mono text-[17px] font-semibold text-accent outline-none ring-1 ring-accent placeholder:text-faint"
         />
       </div>
     )
   }
   return (
     <button
-      onClick={() => {
-        if (!editable || bpm == null) return
-        setVal(bpm.toFixed(3))
-        setEditing(true)
-      }}
-      title={editable && bpm != null ? 'Click to type an exact BPM' : undefined}
+      onClick={() => editable && open()}
+      title={
+        !editable
+          ? undefined
+          : bpm != null
+            ? 'Click to type an exact BPM'
+            : 'Click to type a BPM — starts the beatgrid at the playhead'
+      }
       className="flex flex-col justify-center gap-px rounded-r-xl px-4 text-left hover:bg-ink-850"
     >
       {label}
