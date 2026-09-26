@@ -511,7 +511,7 @@ export function Sidebar({
       <button
         onClick={switchLibrary}
         title={library ? `${library.path} — click to open a different library` : undefined}
-        className="btn-glass group m-2.5 mb-0 flex items-center gap-2.5 rounded-[14px] px-2.5 py-2 text-left"
+        className="btn-glass group m-2.5 mb-0 flex shrink-0 items-center gap-2.5 rounded-[14px] px-2.5 py-2 text-left"
       >
         <span
           aria-hidden
@@ -535,67 +535,75 @@ export function Sidebar({
         </span>
       </button>
 
-      <div className="px-2 pt-3">
-        <button
-          onClick={() => onSelect({ kind: 'all' })}
-          className={`flex w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-sm transition-colors ${
-            source.kind === 'all'
-              ? 'is-selected font-medium text-text'
-              : 'text-muted hover:bg-ink-800 hover:text-text'
-          }`}
-        >
-          <span className={`flex w-4 justify-center ${source.kind === 'all' ? 'text-accent' : ''}`}>
-            <Icon name="music" size={15} />
+      {/* Everything between the library header and the footer scrolls as one
+          when the window is too short for it. Each section keeps its own
+          minimum (the playlists 6 rows, Devices 7) and inner scroll, so on a
+          tall window nothing changes; on a short one the sections stop
+          shrinking at those minimums and this takes over, instead of the
+          sidebar's contents running off the bottom of its panel. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <div className="shrink-0 px-2 pt-3">
+          <button
+            onClick={() => onSelect({ kind: 'all' })}
+            className={`flex w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-sm transition-colors ${
+              source.kind === 'all'
+                ? 'is-selected font-medium text-text'
+                : 'text-muted hover:bg-ink-800 hover:text-text'
+            }`}
+          >
+            <span className={`flex w-4 justify-center ${source.kind === 'all' ? 'text-accent' : ''}`}>
+              <Icon name="music" size={15} />
+            </span>
+            <span className="flex-1">All Tracks</span>
+          </button>
+        </div>
+
+        <div className="mt-3 shrink-0 px-4">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-faint">
+            Playlists
           </span>
-          <span className="flex-1">All Tracks</span>
-        </button>
+        </div>
+
+        {/* Right-click here (below the rows) creates at the top level; rows
+            stop the event so they get their own menu. */}
+        <div
+          className="mt-1 min-h-24 flex-1 overflow-y-auto px-2 pb-4"
+          onContextMenu={(e) => openMenu(e, createItems(null))}
+        >
+          {draft?.parentId === null && <DraftRow draft={draft} depth={0} actions={actions} />}
+          {isLoading && <div className="px-2 py-2 text-sm text-faint">Loading…</div>}
+          {playlists?.map((n) => (
+            <NodeRow
+              key={n.id}
+              node={n}
+              depth={0}
+              source={source}
+              onSelect={onSelect}
+              renamingId={renamingId}
+              setRenamingId={setRenamingId}
+              draft={draft}
+              exportSets={exportSets}
+              actions={actions}
+            />
+          ))}
+        </div>
+
+        {menu && <ContextMenu {...menu} onClose={() => setMenu(null)} />}
+        {confirmReq && <ConfirmDialog {...confirmReq} onClose={() => setConfirmReq(null)} />}
+
+        <ExportsSection source={source} onSelect={onSelect} onDone={onDone} onError={onError} />
+
+        <DevicesSection
+          source={source}
+          onSelect={onSelect}
+          onError={onError}
+          onImport={onImport}
+        />
       </div>
-
-      <div className="mt-3 px-4">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-faint">
-          Playlists
-        </span>
-      </div>
-
-      {/* Right-click here (below the rows) creates at the top level; rows
-          stop the event so they get their own menu. */}
-      <div
-        className="mt-1 min-h-24 flex-1 overflow-y-auto px-2 pb-4"
-        onContextMenu={(e) => openMenu(e, createItems(null))}
-      >
-        {draft?.parentId === null && <DraftRow draft={draft} depth={0} actions={actions} />}
-        {isLoading && <div className="px-2 py-2 text-sm text-faint">Loading…</div>}
-        {playlists?.map((n) => (
-          <NodeRow
-            key={n.id}
-            node={n}
-            depth={0}
-            source={source}
-            onSelect={onSelect}
-            renamingId={renamingId}
-            setRenamingId={setRenamingId}
-            draft={draft}
-            exportSets={exportSets}
-            actions={actions}
-          />
-        ))}
-      </div>
-
-      {menu && <ContextMenu {...menu} onClose={() => setMenu(null)} />}
-      {confirmReq && <ConfirmDialog {...confirmReq} onClose={() => setConfirmReq(null)} />}
-
-      <ExportsSection source={source} onSelect={onSelect} onDone={onDone} onError={onError} />
-
-      <DevicesSection
-        source={source}
-        onSelect={onSelect}
-        onError={onError}
-        onImport={onImport}
-      />
 
       <button
         onClick={onOpenHistory}
-        className="flex items-center justify-center gap-2 border-t border-line px-4 py-2 text-center text-xs text-muted hover:bg-ink-800 hover:text-text"
+        className="flex shrink-0 items-center justify-center gap-2 border-t border-line px-4 py-2 text-center text-xs text-muted hover:bg-ink-800 hover:text-text"
       >
         <Icon name="history" size={13} />
         Collection Version History
