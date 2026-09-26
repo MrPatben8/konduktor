@@ -41,6 +41,10 @@ class Track(BaseModel):
     producer: str | None = None
     mix: str | None = None
     comment: str | None = None
+    # A second free-text comment. Traktor's "Comment 2", which it keeps only in
+    # the collection (`INFO@RATING` — not the star rating, that is RANKING) and
+    # never writes into the audio file.
+    comment2: str | None = None
     bpm: float | None = None
     # The platform's own display string, shown verbatim ("10m", "8A", "Am").
     key: str | None = None

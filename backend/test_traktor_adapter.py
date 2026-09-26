@@ -136,6 +136,42 @@ with tempfile.TemporaryDirectory() as d:
     check("marker count reached the track projection",
           adapter.track(tid2).grid_marker_count == grid_before + 1)
 
+# ---- "Comment 2" ----------------------------------------------------------
+# Traktor keeps it in INFO@RATING — a free-text attribute despite its name; the
+# stars are RANKING. Mixing the two up would corrupt either field silently.
+print("== Comment 2 is INFO@RATING, collection-only ==")
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    adapter = TraktorAdapter(work)
+
+    with_c2 = [t for t in adapter.tracks if t.comment2]
+    check("real Comment 2 values are projected", len(with_c2) > 0, "none found")
+    check("comment2 is advertised as editable",
+          "comment2" in adapter.capabilities().tracks.editable_fields)
+
+    t = next(t for t in adapter.tracks if t.title and t.rating and not t.comment2)
+    adapter.set_track_metadata(t.id, {"comment2": "Konduktor C2"})
+    after = adapter.track(t.id)
+    check("comment2 edit is visible in the projection", after.comment2 == "Konduktor C2")
+    check("comment2 edit leaves the star rating alone", after.rating == t.rating)
+    outcome = adapter.save()
+    check("comment2 alone writes no file tags", not outcome.tag_results,
+          str(outcome.tag_results))
+    text = work.read_text(encoding="utf-8")
+    check("stored as INFO RATING", 'RATING="Konduktor C2"' in text)
+    reopened = TraktorAdapter(work).track(t.id)
+    check("comment2 round-trips through save",
+          reopened.comment2 == "Konduktor C2" and reopened.rating == t.rating)
+
+    # Clearing it removes the attribute entirely.
+    a2 = TraktorAdapter(work)
+    a2.set_track_metadata(t.id, {"comment2": ""})
+    a2.save()
+    check("clearing comment2 drops the attribute",
+          'RATING="Konduktor C2"' not in work.read_text(encoding="utf-8")
+          and TraktorAdapter(work).track(t.id).comment2 is None)
+
 # ---- analysed grid vs plain replace --------------------------------------
 print("== set_analysed_grid writes Traktor's own shape, replace_grid does not ==")
 with tempfile.TemporaryDirectory() as d:

@@ -75,7 +75,7 @@ class TraktorExporter:
             Path(self.library_filename),
             [
                 "title", "artist", "album", "genre", "label", "remixer",
-                "producer", "mix", "release_date", "comment", "rating",
+                "producer", "mix", "release_date", "comment", "comment2", "rating",
             ],
         )
 

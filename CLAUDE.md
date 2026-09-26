@@ -1020,7 +1020,10 @@ diff — no COLLECTION splicing needed.
   child (`CollectionService.stem_keys`, resolved via `entries_for`), else `TRACK`.
 - **Track metadata**: `set_track_metadata(track_id, fields)` edits only the SAFE
   set — title, artist, album, genre, label, remixer, producer, mix,
-  release_date, comment, rating (0–5 stars → `RANKING = stars*51`). Path, BPM and
+  release_date, comment, comment2, rating (0–5 stars → `RANKING = stars*51`).
+  **`comment2` is Traktor's "Comment 2", stored in `INFO@RATING`** — free
+  text despite the name, unrelated to the stars — and it is collection-only:
+  Traktor writes no file tag for it, so `_sync_file_tags` skips it too. Path, BPM and
   key are intentionally NOT editable via metadata (path = identity; BPM/key are
   audio/grid — BPM is edited through the grid path below). This is the set the
   Edit Tags dialog AND the inline table editing (double-click cell, click rating

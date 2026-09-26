@@ -362,7 +362,10 @@ class TraktorStore:
     # (it's the primary key), bpm/key (audio/grid territory), and read-only info
     # like bitrate/playcount.
     _INFO_FIELDS = {"genre", "label", "remixer", "producer", "comment", "mix", "release_date"}
-    EDITABLE_FIELDS = {"title", "artist", "album", "rating"} | _INFO_FIELDS
+    EDITABLE_FIELDS = {"title", "artist", "album", "rating", "comment2"} | _INFO_FIELDS
+    # Fields that live only in the collection: Traktor itself writes no file tag
+    # for "Comment 2" (verified on an m4a it had just edited), so neither do we.
+    _COLLECTION_ONLY_FIELDS = {"comment2"}
 
     def set_track_metadata(self, track_id: str, fields: dict) -> None:
         with self._lock:
@@ -380,6 +383,10 @@ class TraktorStore:
                     entry.album.title = v or None
                 elif k in self._INFO_FIELDS:
                     setattr(entry.info, k, v or None)
+                elif k == "comment2":
+                    # Traktor's "Comment 2" is INFO@RATING — a free-text
+                    # attribute, unrelated to the star rating (RANKING).
+                    entry.info.rating = v or None
                 elif k == "rating":
                     stars = max(0, min(5, int(v))) if v is not None else 0
                     # Traktor RANKING = stars * 51; unrated has no RANKING attr.
@@ -422,6 +429,7 @@ class TraktorStore:
                 genre=getattr(track, "genre", None) or None,
                 label=getattr(track, "label", None) or None,
                 comment=getattr(track, "comment", None) or None,
+                rating=getattr(track, "comment2", None) or None,  # "Comment 2"
                 remixer=getattr(track, "remixer", None) or None,
                 producer=getattr(track, "producer", None) or None,
                 mix=getattr(track, "mix", None) or None,
@@ -1118,6 +1126,8 @@ class TraktorStore:
         if field == "rating":
             r = entry.info.ranking if entry.info else None
             return round(r / 51) if r else 0
+        if field == "comment2":
+            return entry.info.rating if entry.info else None
         return getattr(entry.info, field, None) if entry.info else None
 
     def count_playlists(self) -> int:
@@ -1159,7 +1169,8 @@ class TraktorStore:
             # Report BOTH writes: a failed tag write must not be masked by a
             # successful art write on the same track.
             written = []
-            if fields := self._journal.fields_for(track_id):
+            fields = self._journal.fields_for(track_id) - self._COLLECTION_ONLY_FIELDS
+            if fields:
                 meta = {f: self._entry_field_value(entry, f) for f in fields}
                 written.append(file_tags.write_tags(path, meta, popm_email=TRAKTOR_POPM_EMAIL))
             if track_id in self._track_art:

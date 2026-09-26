@@ -26,6 +26,7 @@ const TEXT_FIELDS: { key: keyof Track; label: string; textarea?: boolean }[] = [
   { key: 'mix', label: 'Mix' },
   { key: 'release_date', label: 'Release date' },
   { key: 'comment', label: 'Comment', textarea: true },
+  { key: 'comment2', label: 'Comment 2', textarea: true },
 ]
 
 export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {

@@ -11,6 +11,8 @@ export interface Track {
   producer: string | null
   mix: string | null
   comment: string | null
+  /** A second free-text comment (Traktor's "Comment 2"). */
+  comment2: string | null
   bpm: number | null
   /** The platform's own display string, shown verbatim: "10m", "8A", "Am". */
   key: string | null
@@ -116,7 +118,7 @@ export type MediaKind = 'audio' | 'stem' | 'video'
 export type PlaylistKind = 'folder' | 'playlist' | 'smart'
 export type TrackField =
   | 'title' | 'artist' | 'album' | 'genre' | 'label' | 'remixer'
-  | 'producer' | 'mix' | 'release_date' | 'comment' | 'rating'
+  | 'producer' | 'mix' | 'release_date' | 'comment' | 'comment2' | 'rating'
 
 export interface CuePoint {
   name: string | null

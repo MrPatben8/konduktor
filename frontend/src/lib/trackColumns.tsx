@@ -179,6 +179,7 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
   col.accessor('producer', { id: 'producer', header: 'Producer', size: 140, cell: editable('producer') }),
   col.accessor('mix', { id: 'mix', header: 'Mix', size: 120, cell: editable('mix') }),
   col.accessor('comment', { id: 'comment', header: 'Comment', size: 200, cell: editable('comment') }),
+  col.accessor('comment2', { id: 'comment2', header: 'Comment 2', size: 200, cell: editable('comment2') }),
   col.accessor('bpm', {
     id: 'bpm',
     header: 'BPM',

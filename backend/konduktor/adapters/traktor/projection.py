@@ -109,6 +109,8 @@ def to_track(e) -> Track:
         producer=info.producer if info else None,
         mix=info.mix if info else None,
         comment=info.comment if info else None,
+        # Traktor's "Comment 2" is stored in INFO@RATING (stars are RANKING).
+        comment2=info.rating if info else None,
         bpm=beatgrid.effective_bpm(e),
         key=info.key if info else None,
         key_wheel=wheel,
