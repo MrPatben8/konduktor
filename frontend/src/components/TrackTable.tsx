@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import {
   flexRender,
   getCoreRowModel,
@@ -300,11 +300,26 @@ export function TrackTable({
   const parentRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
 
+  // The rows start BELOW the sticky header, inside the same scroller, so the
+  // virtualizer is told where they start (scrollMargin) and how much of the
+  // top the header covers (scrollPaddingStart). Without both, scrollToIndex
+  // lands a row too far down on ↓ — just out of view — and under the header on ↑.
+  const [bodyOffset, setBodyOffset] = useState({ top: 0, header: 0 })
+  useLayoutEffect(() => {
+    const body = bodyRef.current
+    const scroller = parentRef.current
+    if (!body || !scroller) return
+    const top = body.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+    const header = (body.previousElementSibling as HTMLElement | null)?.offsetHeight ?? 0
+    setBodyOffset((o) => (o.top === top && o.header === header ? o : { top, header }))
+  }, [])
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => ROW_HEIGHT,
     overscan: 12,
+    scrollMargin: bodyOffset.top,
+    scrollPaddingStart: bodyOffset.header,
   })
   const virtualRows = virtualizer.getVirtualItems()
 
@@ -552,7 +567,7 @@ export function TrackTable({
                 className={`group absolute left-0 flex items-center border-b border-ink-850 text-sm ${
                   isSelected ? 'bg-accent-soft/50' : drag ? '' : 'hover:bg-ink-850'
                 } ${isMoving ? 'opacity-40' : ''}`}
-                style={{ top: 0, transform: `translateY(${vr.start}px)`, height: vr.size, width: '100%' }}
+                style={{ top: 0, transform: `translateY(${vr.start - bodyOffset.top}px)`, height: vr.size, width: '100%' }}
                 onMouseDown={(e) => {
                   // Shift/Cmd-click would otherwise also select page text.
                   if (selection && (e.shiftKey || e.metaKey || e.ctrlKey)) e.preventDefault()
