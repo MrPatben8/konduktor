@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { CuePoint } from '../api'
-import { drawBeatgrid, drawCuePoint, drawCues, drawLoop } from '../lib/cues'
+import type { BeatGrid } from '../lib/beatgrid'
+import { drawBeatgrid, drawCuePoint, drawCues, drawLoop, drawLoopIn, drawPlayhead } from '../lib/cues'
 import { paintWave, type WaveColumn } from '../lib/waveform'
 
 interface Props {
@@ -9,9 +10,16 @@ interface Props {
   duration: number
   cues: CuePoint[]
   cuePoint: number | null
-  bpm: number | null
-  gridAnchor: number | null
+  grid: BeatGrid | null
+  /** Marker governing the playhead — drawn gold, its segment tinted. */
+  activeMarker: number
+  /** Grid mode is on: draw the beat lines brighter. */
+  emphasizeGrid?: boolean
   loop: { start: number; end: number } | null
+  /** A loop that exists but is switched off — drawn as a dim outline. */
+  idleLoop?: { start: number; end: number } | null
+  /** An armed manual loop-in point, waiting for OUT. */
+  loopIn?: number | null
   /** Seconds across the view — the zoom level, owned by the parent so it
       survives track switches and persists to prefs. */
   secPerView: number
@@ -40,9 +48,12 @@ export function MainWaveform({
   duration,
   cues,
   cuePoint,
-  bpm,
-  gridAnchor,
+  grid,
+  activeMarker,
+  emphasizeGrid = false,
   loop,
+  idleLoop = null,
+  loopIn = null,
   secPerView,
   onZoomChange,
   onSeek,
@@ -77,15 +88,24 @@ export function MainWaveform({
       const half = secPerView / 2
       const startSec = currentTime - half
       const endSec = currentTime + half
-      paintWave(ctx, cols, w, h, startSec / duration, endSec / duration)
+      // 2 px bars with a 1 px gap: the texture that makes the scrolling view
+      // read as discrete energy rather than a smear.
+      paintWave(ctx, cols, w, h, startSec / duration, endSec / duration, {
+        bar: Math.max(1, Math.round(2 * dpr)),
+        gap: Math.max(1, Math.round(dpr)),
+      })
 
       const timeToX = (t: number) => ((t - startSec) / secPerView) * w
       // Loop band (under the grid/cues), then beatgrid, then cue markers.
       if (loop) {
         drawLoop(ctx, timeToX(loop.start), timeToX(loop.end), h, dpr)
+      } else if (idleLoop) {
+        drawLoop(ctx, timeToX(idleLoop.start), timeToX(idleLoop.end), h, dpr, true)
       }
-      if (bpm && gridAnchor != null) {
-        drawBeatgrid(ctx, bpm, gridAnchor, startSec, endSec, w, h, dpr)
+      // An armed IN, and the loop OUT would make right now: IN → playhead.
+      if (loopIn != null) drawLoopIn(ctx, timeToX(loopIn), w / 2, h, dpr)
+      if (grid) {
+        drawBeatgrid(ctx, grid, startSec, endSec, w, h, dpr, activeMarker, emphasizeGrid)
       }
       if (cues.length) {
         drawCues(ctx, cues, w, h, dpr, timeToX, true)
@@ -95,32 +115,7 @@ export function MainWaveform({
       }
     }
 
-    // Fixed centre playhead — red core with a translucent black outline so it
-    // separates from the waveform, plus inward-pointing triangle caps top and
-    // bottom that anchor the eye in the quiet margins.
-    const core = Math.max(2, Math.round(2 * dpr))
-    const edge = Math.max(1, Math.round(dpr))
-    const cx = Math.floor(w / 2)
-    const px = cx - Math.floor(core / 2)
-    ctx.fillStyle = 'rgba(0,0,0,0.5)'
-    ctx.fillRect(px - edge, 0, core + edge * 2, h)
-    ctx.fillStyle = '#ff3b30'
-    ctx.fillRect(px, 0, core, h)
-
-    const cap = Math.round(6 * dpr)
-    ctx.fillStyle = '#ff3b30'
-    ctx.beginPath()
-    ctx.moveTo(cx - cap, 0)
-    ctx.lineTo(cx + cap, 0)
-    ctx.lineTo(cx, cap)
-    ctx.closePath()
-    ctx.fill()
-    ctx.beginPath()
-    ctx.moveTo(cx - cap, h)
-    ctx.lineTo(cx + cap, h)
-    ctx.lineTo(cx, h - cap)
-    ctx.closePath()
-    ctx.fill()
+    drawPlayhead(ctx, Math.floor(w / 2), h, dpr, true)
   }
 
   const drawRef = useRef(draw)
@@ -137,6 +132,29 @@ export function MainWaveform({
     const ro = new ResizeObserver(() => drawRef.current())
     ro.observe(wrap)
     return () => ro.disconnect()
+  }, [])
+
+  // Cmd/Ctrl + scroll zooms (a trackpad pinch arrives as ctrl+wheel too).
+  // Attached by hand because React's onWheel is passive, so it could not stop
+  // the page scrolling. Accumulated so a trackpad's many tiny deltas step the
+  // zoom as evenly as a mouse wheel's notches do.
+  const zoomRef = useRef({ secPerView, onZoomChange })
+  zoomRef.current = { secPerView, onZoomChange }
+  useEffect(() => {
+    const wrap = wrapRef.current
+    if (!wrap) return
+    let acc = 0
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return
+      e.preventDefault()
+      acc += e.deltaY
+      if (Math.abs(acc) < 40) return
+      const { secPerView: sec, onZoomChange: set } = zoomRef.current
+      set(Math.min(MAX_SEC, Math.max(MIN_SEC, acc > 0 ? sec * 2 : sec / 2)))
+      acc = 0
+    }
+    wrap.addEventListener('wheel', onWheel, { passive: false })
+    return () => wrap.removeEventListener('wheel', onWheel)
   }, [])
 
   // A press that doesn't move is a seek (map offset from centre to a time);
@@ -197,7 +215,7 @@ export function MainWaveform({
           onPointerDown={(e) => e.stopPropagation()}
           onClick={zoomIn}
           disabled={secPerView <= MIN_SEC}
-          className="flex h-6 w-6 items-center justify-center rounded border border-line bg-ink-950/70 text-sm text-text hover:border-accent disabled:opacity-30"
+          className="btn-glass flex h-6 w-6 items-center justify-center rounded-lg text-sm text-text backdrop-blur-md disabled:opacity-30"
           title="Zoom in"
         >
           +
@@ -206,7 +224,7 @@ export function MainWaveform({
           onPointerDown={(e) => e.stopPropagation()}
           onClick={zoomOut}
           disabled={secPerView >= MAX_SEC}
-          className="flex h-6 w-6 items-center justify-center rounded border border-line bg-ink-950/70 text-sm text-text hover:border-accent disabled:opacity-30"
+          className="btn-glass flex h-6 w-6 items-center justify-center rounded-lg text-sm text-text backdrop-blur-md disabled:opacity-30"
           title="Zoom out"
         >
           −

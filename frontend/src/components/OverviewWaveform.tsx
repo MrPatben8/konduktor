@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { CuePoint } from '../api'
-import { drawCuePoint, drawCues, drawLoop } from '../lib/cues'
+import { drawCuePoint, drawCues, drawLoop, drawPlayhead } from '../lib/cues'
 import { paintWave, type WaveColumn } from '../lib/waveform'
 
 interface Props {
@@ -10,6 +10,9 @@ interface Props {
   cues: CuePoint[]
   cuePoint: number | null
   loop: { start: number; end: number } | null
+  /** Seconds the MAIN waveform shows — drawn here as a window around the
+   *  playhead, so the overview says which part of the track is on screen. */
+  secPerView: number
   onSeek: (t: number) => void
 }
 
@@ -25,6 +28,7 @@ export function OverviewWaveform({
   cues,
   cuePoint,
   loop,
+  secPerView,
   onSeek,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -33,6 +37,7 @@ export function OverviewWaveform({
   const timeRef = useRef(0)
   const durRef = useRef(0)
   const cuesRef = useRef<CuePoint[]>(cues)
+  const viewRef = useRef(secPerView)
   const cuePointRef = useRef<number | null>(cuePoint)
   const loopRef = useRef(loop)
 
@@ -63,7 +68,7 @@ export function OverviewWaveform({
     const dur = durRef.current
     if (dur > 0) {
       const px = Math.round((timeRef.current / dur) * w)
-      ctx.fillStyle = 'rgba(10,11,15,0.55)'
+      ctx.fillStyle = 'rgba(5,6,10,0.5)'
       ctx.fillRect(0, 0, px, h)
       const dpr = window.devicePixelRatio || 1
       const lp = loopRef.current
@@ -72,13 +77,8 @@ export function OverviewWaveform({
       drawCues(ctx, cuesRef.current, w, h, dpr, (t) => (t / dur) * w, false)
       const cp = cuePointRef.current
       if (cp != null) drawCuePoint(ctx, Math.round((cp / dur) * w), h, dpr)
-      const pw = Math.max(2, Math.round(2 * dpr))
-      const px0 = px - Math.floor(pw / 2)
-      const po = Math.max(1, Math.round(dpr))
-      ctx.fillStyle = 'rgba(0,0,0,0.6)'
-      ctx.fillRect(px0 - po, 0, pw + po * 2, h)
-      ctx.fillStyle = '#ff3b30'
-      ctx.fillRect(px0, 0, pw, h)
+      drawViewWindow(ctx, timeRef.current, viewRef.current, dur, w, h, dpr)
+      drawPlayhead(ctx, px, h, dpr, false)
     }
   }, [])
 
@@ -113,13 +113,14 @@ export function OverviewWaveform({
     draw()
   }, [currentTime, duration, draw])
 
-  // Redraw when the cue set, cue point, or loop changes.
+  // Redraw when the cue set, cue point, loop or main-view zoom changes.
   useEffect(() => {
     cuesRef.current = cues
     cuePointRef.current = cuePoint
     loopRef.current = loop
+    viewRef.current = secPerView
     draw()
-  }, [cues, cuePoint, loop, draw])
+  }, [cues, cuePoint, loop, secPerView, draw])
 
   const seek = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!duration) return
@@ -133,4 +134,46 @@ export function OverviewWaveform({
       <canvas ref={canvasRef} className="block h-full w-full" />
     </div>
   )
+}
+
+/**
+ * The main waveform's visible range: a frosted, outlined window centred on the
+ * playhead, `secPerView` wide. Clipped to the track at either end, as the main
+ * view is (it shows blank past the edges), and never narrower than a few
+ * pixels, so it stays findable when zoomed right in on a long track.
+ */
+function drawViewWindow(
+  ctx: CanvasRenderingContext2D,
+  t: number,
+  secPerView: number,
+  dur: number,
+  w: number,
+  h: number,
+  dpr: number,
+): void {
+  if (!(secPerView > 0)) return
+  const minW = 6 * dpr
+  let x0 = ((t - secPerView / 2) / dur) * w
+  let x1 = ((t + secPerView / 2) / dur) * w
+  if (x1 - x0 < minW) {
+    const c = (x0 + x1) / 2
+    x0 = c - minW / 2
+    x1 = c + minW / 2
+  }
+  x0 = Math.max(0, x0)
+  x1 = Math.min(w, x1)
+  if (x1 <= x0) return
+  const inset = dpr
+  const r = Math.min(4 * dpr, (x1 - x0) / 2)
+  ctx.save()
+  ctx.beginPath()
+  ctx.roundRect(x0 + inset / 2, inset, x1 - x0 - inset, h - inset * 2, r)
+  ctx.fillStyle = 'rgba(255,255,255,0.10)'
+  ctx.fill()
+  ctx.shadowColor = 'rgba(255,255,255,0.35)'
+  ctx.shadowBlur = 8 * dpr
+  ctx.lineWidth = Math.max(1, dpr)
+  ctx.strokeStyle = 'rgba(255,255,255,0.75)'
+  ctx.stroke()
+  ctx.restore()
 }

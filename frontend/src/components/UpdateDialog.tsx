@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
@@ -146,13 +147,13 @@ export function UpdateCheck() {
 
   const changes = whatsChanged(latest.body)
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+      aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
       onClick={close}
     >
       <div
-        className="flex max-h-[80vh] w-full max-w-md flex-col overflow-hidden rounded-xl border border-line bg-ink-900 shadow-2xl"
+        className="flex max-h-[80vh] w-full max-w-md flex-col overflow-hidden glass-overlay"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-line px-5 py-4">
@@ -200,12 +201,13 @@ export function UpdateCheck() {
           </button>
           <button
             onClick={download}
-            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-ink-950 hover:brightness-110"
+            className="rounded-full btn-primary px-3 py-1.5 text-sm font-semibold"
           >
             Download
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

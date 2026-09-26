@@ -1,7 +1,11 @@
+import { createPortal } from 'react-dom'
 import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Track } from '../api'
 import { formatBpm, formatDuration } from '../lib/format'
+import { useCaps } from '../lib/capabilities'
+import { RatingStars } from './RatingStars'
+import { writeHint } from '../lib/platformCopy'
 
 interface Props {
   track: Track
@@ -25,6 +29,14 @@ const TEXT_FIELDS: { key: keyof Track; label: string; textarea?: boolean }[] = [
 ]
 
 export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
+  const caps = useCaps()
+  // Only offer fields THIS platform can persist. Platforms differ in which ones
+  // they have — Rekordbox has no Producer or Mix column — and a field the
+  // adapter ignores would take the user's typing and silently drop it on save,
+  // which is the exact failure the capability system exists to prevent.
+  const editable = new Set<string>(caps.tracks.editable_fields)
+  const fields = TEXT_FIELDS.filter((f) => editable.has(f.key as string))
+  const canRate = editable.has('rating')
   const qc = useQueryClient()
   const { data: facets } = useQuery({ queryKey: ['facets'], queryFn: api.facets })
 
@@ -41,11 +53,11 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
 
   const changedFields = () => {
     const changed: Record<string, string | number | null> = {}
-    for (const { key } of TEXT_FIELDS) {
+    for (const { key } of fields) {
       const orig = (track[key] as string | null) ?? ''
       if (form[key] !== orig) changed[key] = form[key]
     }
-    if (rating !== track.rating) changed.rating = rating
+    if (canRate && rating !== track.rating) changed.rating = rating
     return changed
   }
 
@@ -61,7 +73,9 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
       qc.invalidateQueries({ queryKey: ['state'] })
       qc.invalidateQueries({ queryKey: ['facets'] })
       qc.invalidateQueries({ queryKey: ['stats'] })
-      onApplied(`Updated “${form.title || track.title || 'track'}” — Save to write to Traktor`)
+      onApplied(
+        `Updated “${form.title || track.title || 'track'}” — ${writeHint(caps.save)}`,
+      )
       onClose()
     },
     onError: (e: Error) => onError(e.message),
@@ -82,13 +96,13 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
     apply.mutate()
   }
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6"
+      aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-line bg-ink-900 shadow-2xl"
+        className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden glass-overlay"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-line px-5 py-4">
@@ -119,26 +133,38 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
               <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-faint">
                 Album art
               </span>
-              <input
-                ref={fileInput}
-                type="file"
-                accept="image/jpeg,image/png"
-                className="hidden"
-                onChange={(e) => pickArt(e.target.files?.[0] ?? null)}
-              />
-              <button
-                onClick={() => fileInput.current?.click()}
-                className="rounded-md border border-line bg-ink-850 px-3 py-1.5 text-sm text-text hover:border-ink-600"
-              >
-                {artFile ? 'Change image…' : 'Replace…'}
-              </button>
-              {artFile && (
-                <div className="mt-1 truncate text-[11px] text-mint">{artFile.name} (applies on Save)</div>
+              {/* Replacing art is only offered where the adapter can write it;
+                  the existing image is still shown either way. */}
+              {caps.tracks.artwork ? (
+                <>
+                  <input
+                    ref={fileInput}
+                    type="file"
+                    accept="image/jpeg,image/png"
+                    className="hidden"
+                    onChange={(e) => pickArt(e.target.files?.[0] ?? null)}
+                  />
+                  <button
+                    onClick={() => fileInput.current?.click()}
+                    className="rounded-md border border-line bg-ink-850 px-3 py-1.5 text-sm text-text hover:border-ink-600"
+                  >
+                    {artFile ? 'Change image…' : 'Replace…'}
+                  </button>
+                  {artFile && (
+                    <div className="mt-1 truncate text-[11px] text-mint">
+                      {artFile.name} (applies on Save)
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="text-[11px] text-faint">
+                  Cover art can’t be changed on {caps.save.app_name} libraries.
+                </div>
               )}
             </div>
           </div>
 
-          {TEXT_FIELDS.map(({ key, label, textarea }) => (
+          {fields.map(({ key, label, textarea }) => (
             <label key={key} className="block">
               <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-faint">
                 {label}
@@ -148,14 +174,14 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
                   value={form[key]}
                   onChange={(e) => setForm({ ...form, [key]: e.target.value })}
                   rows={2}
-                  className="w-full resize-y rounded-md border border-line bg-ink-850 px-2.5 py-1.5 text-sm text-text outline-none focus:border-accent"
+                  className="w-full resize-y rounded-lg well px-2.5 py-1.5 text-sm text-text outline-none focus:ring-1 focus:ring-accent"
                 />
               ) : (
                 <input
                   value={form[key]}
                   onChange={(e) => setForm({ ...form, [key]: e.target.value })}
                   list={key === 'genre' ? 'genre-suggestions' : undefined}
-                  className="w-full rounded-md border border-line bg-ink-850 px-2.5 py-1.5 text-sm text-text outline-none focus:border-accent"
+                  className="w-full rounded-lg well px-2.5 py-1.5 text-sm text-text outline-none focus:ring-1 focus:ring-accent"
                 />
               )}
             </label>
@@ -165,20 +191,13 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
           </datalist>
 
           {/* Rating */}
+          {canRate && (
           <div>
             <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-faint">
               Rating
             </span>
             <div className="flex items-center gap-1 text-xl">
-              {[1, 2, 3, 4, 5].map((i) => (
-                <button
-                  key={i}
-                  onClick={() => setRating(i === rating ? 0 : i)}
-                  className={i <= rating ? 'text-gold' : 'text-ink-600 hover:text-faint'}
-                >
-                  ★
-                </button>
-              ))}
+              <RatingStars value={rating} max={caps.tracks.rating_max} onChange={setRating} />
               {rating > 0 && (
                 <button
                   onClick={() => setRating(0)}
@@ -189,6 +208,7 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
               )}
             </div>
           </div>
+          )}
 
           {/* Read-only technical fields */}
           <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 rounded-md bg-ink-850 px-3 py-2 text-xs text-muted">
@@ -202,12 +222,6 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
               Path: <span className="text-text">{track.filepath ?? '—'}</span>
             </div>
           </div>
-          <p className="text-[11px] leading-snug text-faint">
-            BPM, key and path aren’t editable here. Changes apply in-app; click
-            <span className="text-muted"> Save to Traktor</span> to write them to disk.
-            New album art is written into the file; Traktor may need a manual
-            “Import Cover Art” to refresh its own cached thumbnail.
-          </p>
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-3">
@@ -220,12 +234,13 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
           <button
             onClick={submit}
             disabled={apply.isPending}
-            className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-ink-950 hover:brightness-110 disabled:opacity-50"
+            className="rounded-full btn-primary px-4 py-1.5 text-sm font-semibold disabled:opacity-50"
           >
             {apply.isPending ? 'Applying…' : 'Apply'}
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

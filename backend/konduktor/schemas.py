@@ -1,89 +1,11 @@
 """API response models (Pydantic)."""
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
-
-class Track(BaseModel):
-    """A single track, flattened from a Traktor collection ENTRY."""
-
-    id: str  # primary key: "<VOLUME><DIR><FILE>", used to join playlist entries
-    artist: str | None = None
-    title: str | None = None
-    album: str | None = None
-    genre: str | None = None
-    label: str | None = None
-    remixer: str | None = None
-    producer: str | None = None
-    mix: str | None = None
-    comment: str | None = None
-    bpm: float | None = None
-    key: str | None = None  # Traktor display key, e.g. "10m"
-    rating: int = 0  # 0-5 stars (derived from RANKING/51)
-    playcount: int | None = None
-    length: int | None = None  # seconds
-    bitrate: int | None = None
-    import_date: str | None = None
-    last_played: str | None = None
-    release_date: str | None = None
-    filepath: str | None = None  # human-readable OS path
-    cue_count: int = 0
-    hotcue_count: int = 0
-    has_grid: bool = False
-    is_stem: bool = False  # a Stem file (<STEMS> child) vs a normal audio track
-
-
-class TrackPage(BaseModel):
-    total: int  # total matching the filter (before pagination)
-    offset: int
-    limit: int
-    items: list[Track]
-
-
-class GenreCount(BaseModel):
-    name: str
-    count: int
-
-
-class Facets(BaseModel):
-    """Distinct values available for building filter UI."""
-
-    genres: list[GenreCount]
-    keys: list[GenreCount]
-    bpm_min: float | None
-    bpm_max: float | None
-    total_tracks: int
-
-
-class Stats(BaseModel):
-    total_tracks: int
-    total_playlists: int
-    rated: int
-    unrated: int
-    missing_key: int
-    missing_genre: int
-    missing_bpm: int
-    no_cues: int
-    rating_breakdown: dict[int, int]  # stars -> count
-    bpm_histogram: list[dict]  # [{bucket: "120-130", count: n}]
-    top_genres: list[GenreCount]
-
-
-class PlaylistNode(BaseModel):
-    """A node in the playlist tree — either a FOLDER or a PLAYLIST/SMARTLIST."""
-
-    id: str  # stable synthetic id ("pl-<n>" / "fld-<n>")
-    name: str
-    type: str  # "FOLDER" | "PLAYLIST" | "SMARTLIST"
-    uuid: str | None = None
-    count: int = 0  # track count (for playlists)
-    children: list["PlaylistNode"] = []
-
-
-PlaylistNode.model_rebuild()
-
-
-# ---- write request bodies ----
+from .core.capabilities import CueRole, CueType
 
 
 class CreatePlaylist(BaseModel):
@@ -125,68 +47,108 @@ class HistoryEntry(BaseModel):
     summary: str  # human-readable edit summary
 
 
-class CuePoint(BaseModel):
-    name: str | None = None
-    type: int  # Traktor: 0 cue, 1 fade-in, 2 fade-out, 3 load, 4 grid, 5 loop
-    start: float  # seconds
-    length: float  # seconds (>0 for loops)
-    hotcue: int  # -1 if not assigned to a hotcue slot
-    color: str | None = None  # "#RRGGBB" if set
-
-
-class TrackCues(BaseModel):
-    bpm: float | None = None  # beatgrid BPM (from the grid marker; falls back to tempo)
-    grid_anchor: float | None = None  # seconds — first grid marker (beat 1 of the grid)
-    locked: bool = False  # Traktor LOCK flag
-    cues: list[CuePoint] = []  # cue/loop markers (grid markers excluded)
-
-
-class GridEdit(BaseModel):
+class AddGridMarker(BaseModel):
     track_id: str
-    bpm: float | None = None  # set the beatgrid tempo
-    anchor: float | None = None  # set the grid marker (beat 1) position, in seconds
+    start: float  # seconds
+    bpm: float | None = None  # unset = inherit the tempo governing that position
 
 
-class SetLock(BaseModel):
+class GridMarkerEdit(BaseModel):
+    track_id: str
+    index: int  # into the start-ordered marker list
+    start: float | None = None  # move it (clamped between its neighbours)
+    bpm: float | None = None  # retempo the section it opens
+
+
+class ReplaceGrid(BaseModel):
+    track_id: str
+    markers: list[GridMarker] = []  # [] is equivalent to deleting the grid
+
+
+class SetGridLock(BaseModel):
     track_id: str
     locked: bool
 
 
-class SetHotcue(BaseModel):
+class SetCue(BaseModel):
     track_id: str
-    slot: int  # 0–7
+    slot: int  # bank slot; capabilities.cues.hotcue_slots bounds it
     start: float  # seconds
-    type: int  # 0 cue, 1 fade-in, 2 fade-out, 3 load, 5 loop
-    length: float = 0.0  # seconds (>0 for a loop hotcue)
-    name: str | None = None  # cue label; defaults to Traktor's "n.n." when unset
+    type: CueType = "cue"
+    role: CueRole = "hotcue"
+    length: float = 0.0  # seconds (>0 for a loop cue)
+    name: str | None = None
+    color: str | None = None
 
 
-class AutoHotcue(BaseModel):
-    slot: int  # 0–7
-    start: float  # seconds
-    name: str | None = None  # positional label (e.g. "Drop")
-    type: int = 0  # plain cue
-    length: float = 0.0  # seconds (>0 for a loop hotcue)
+AutoCueEvent = Literal[
+    "first_beat", "intro_end",
+    "build_1", "drop_1", "breakdown_1",
+    "build_2", "drop_2", "breakdown_2",
+    "build_3", "drop_3", "breakdown_3",
+    "outro", "last_beat",
+]
+AutoCueStatus = Literal["placed", "not_found", "out_of_range", "occupied", "protected", "duplicate"]
+
+
+class AutoCueSlot(BaseModel):
+    """One row of the Auto Hotcues template: bind a slot to a structural event."""
+
+    slot: int
+    event: AutoCueEvent
+    offset_beats: int = 0
+    overwrite: bool = False  # replace a cue already in this slot
 
 
 class AutoHotcuesRequest(BaseModel):
     track_id: str
-    max_cues: int | None = None  # defaults to MAX_HOTCUES (8) server-side
+    slots: list[AutoCueSlot]
+
+
+class TrackIds(BaseModel):
+    """A body naming a set of tracks — the bulk Remove commands."""
+
+    track_ids: list[str]
+
+
+class AutoHotcuesBatchRequest(BaseModel):
+    """The same template applied to every track. `overwrite` on a slot means
+    "replace this slot's cue on every track that has one"."""
+
+    track_ids: list[str]
+    slots: list[AutoCueSlot]
+
+
+class AutoCueOutcome(BaseModel):
+    slot: int
+    event: AutoCueEvent
+    status: AutoCueStatus
+    start: float | None = None  # seconds, when placed
+    name: str | None = None
+    duplicate_of: int | None = None  # for "duplicate": the slot whose cue (kept or new) has this beat
+
 
 
 class AutoGridRequest(BaseModel):
     track_id: str
 
 
-class SetHotcueType(BaseModel):
+class AutoGridBatchRequest(BaseModel):
+    track_ids: list[str]
+    # False skips tracks that already have a grid. Locked grids are skipped
+    # either way: a lock is the user saying "never re-analyse this".
+    replace_existing: bool = False
+
+
+class SetCueType(BaseModel):
     track_id: str
     slot: int
-    type: int
+    type: CueType
 
 
 class EditState(BaseModel):
-    dirty: bool  # unsaved in-memory playlist changes exist
-    nml_path: str
+    dirty: bool  # unsaved in-memory changes exist
+    library: LibraryInfo
 
 
 # ---- collection selection ----
@@ -197,6 +159,9 @@ class CollectionStatus(BaseModel):
     path: str | None = None
     tracks: int | None = None
     playlists: int | None = None
+    # Identity of the loaded library, so the UI can name it without parsing the
+    # path (a Serato library is a directory, not a file).
+    library: LibraryInfo | None = None
 
 
 class OpenCollection(BaseModel):
@@ -213,7 +178,99 @@ class CollectionCandidate(BaseModel):
 
 class CollectionOptions(BaseModel):
     auto: CollectionCandidate | None = None  # best auto-detected (latest version)
+    # EVERY library detected, best first. `auto` is simply the first of these.
+    # Carried in full because one platform can genuinely have several at once —
+    # two Traktor versions installed, or two sticks plugged in — and silently
+    # anointing one of them is how the old single-candidate route could open a
+    # USB drive as the user's collection.
+    detected: list[CollectionCandidate] = []
     recent: CollectionCandidate | None = None  # last opened (from userprefs)
+
+
+# ---- export sets -------------------------------------------------------------
+#
+# Konduktor's own data, never written into the user's library, and keyed by the
+# library's stable ID rather than its path. See `exports.py`.
+
+
+class ExportSetOut(BaseModel):
+    id: str
+    name: str
+    target: str          # platform id of the export TARGET
+    destination: str
+    playlist_ids: list[str] = []
+    track_ids: list[str] = []   # loose tracks only
+    created: float = 0.0
+    modified: float = 0.0
+
+
+class CreateExportSet(BaseModel):
+    name: str
+    target: str = "traktor"
+    destination: str
+
+
+class UpdateExportSet(BaseModel):
+    name: str | None = None
+    target: str | None = None
+    destination: str | None = None
+
+
+class ExportSetMembers(BaseModel):
+    track_ids: list[str] = []
+    playlist_ids: list[str] = []
+
+
+class ExportPlaylistOut(BaseModel):
+    id: str
+    name: str
+    #: The playlist has been deleted since it was added to the set.
+    missing: bool = False
+    count: int = 0
+
+
+class ExportContents(BaseModel):
+    """What a set holds RIGHT NOW. Never cached — the references are live."""
+
+    playlists: list[ExportPlaylistOut] = []
+    loose: int = 0
+    #: Deduped across playlists and loose tracks: one track, one file copy.
+    tracks: int = 0
+    #: Track ids the library no longer has, surfaced rather than dropped.
+    dangling: list[str] = []
+    #: Another set already writes to this destination, and an export CLEARS it.
+    destination_conflict: str | None = None
+
+
+class ExportPreview(BaseModel):
+    """What an export would do if run now. Computed fresh; never stored."""
+
+    tracks: int = 0
+    exportable: int = 0
+    missing: list[str] = []
+    playlists: list[str] = []
+    total_bytes: int = 0
+    destination: str | None = None
+    free_bytes: int | None = None
+    enough_space: bool | None = None
+    #: A FACT, not a sentence — the UI words it. One of `destination_not_empty`,
+    #: `nothing_to_export`, `unsupported_target`, or null when it can run.
+    blocked: str | None = None
+    #: The destination already holds a Konduktor export, which will be replaced.
+    replacing: bool = False
+
+
+class FsPlace(BaseModel):
+    """A shortcut in the file browser's sidebar.
+
+    `kind` groups it and picks its icon; it is never a finished sentence, and
+    the browser decides what "volume" looks like. A place is always a DIRECTORY
+    that exists right now — one that does not is omitted rather than disabled.
+    """
+
+    kind: str  # home | music | desktop | documents | downloads | volume | library
+    name: str
+    path: str
 
 
 class FsEntry(BaseModel):
@@ -242,30 +299,138 @@ class PathMappingInfo(BaseModel):
     to: str = ""
 
 
-class RemapSample(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-    from_: str = Field(alias="from")
-    to: str
-    exists: bool
-
-
-class RemapPreview(BaseModel):
-    total: int  # tracks with a resolvable location
-    matched: int  # how many match the `from` prefix
-    existing: int  # of matched, how many exist at the `to` target
-    samples: list[RemapSample] = []
-
-
 class RemapResult(BaseModel):
     rewritten: int  # tracks whose LOCATION was rewritten
     commit: str | None = None  # sha of the version-history commit for the rewrite
 
 
-class PrefixGroup(BaseModel):
-    prefix: str  # common directory prefix of a group of tracks
-    count: int  # tracks sharing it
+# The generic model lives in core.model; re-exported here so the HTTP layer has
+# one import site. The dependency runs schemas -> core, never the reverse.
+from .core.model import (  # noqa: E402,F401
+    AutoHotcue,
+    LibraryInfo,
+    PlatformOption,
+    CuePoint,
+    Facets,
+    GenreCount,
+    GridMarker,
+    HotcueChip,
+    PlaylistNode,
+    PrefixGroup,
+    PrefixSuggestions,
+    RemapPreview,
+    RemapSample,
+    Stats,
+    Track,
+    TrackCues,
+    TrackPage,
+)
 
 
-class PrefixSuggestions(BaseModel):
-    primary: str  # best guess for the `from` prefix (largest group)
-    groups: list[PrefixGroup] = []  # alternatives, ranked by count
+class AutoHotcuesResult(BaseModel):
+    """The refreshed cues, plus what happened to every requested slot."""
+
+    cues: TrackCues
+    outcomes: list[AutoCueOutcome]
+
+
+# ---- import sources ---------------------------------------------------
+#
+# A SOURCE is a library being read FROM — a plugged-in OneLibrary stick whose
+# tracks are about to be imported. It is deliberately not a `CollectionStatus`:
+# a source is never saved, never edited and never the fallback when nothing is
+# loaded, so reusing the loaded-library shape would invite routes to treat the
+# two as interchangeable.
+
+
+class SourceCandidate(BaseModel):
+    """A removable library Konduktor can currently see."""
+
+    path: str
+    label: str  # what a person recognises, e.g. "OneLibrary — Hardy"
+    platform: str
+    tracks: int | None = None  # None until it is opened; a probe would be slow
+    modified: float | None = None
+
+
+class SourceStatus(BaseModel):
+    loaded: bool
+    path: str | None = None
+    label: str | None = None
+    platform: str | None = None
+    tracks: int | None = None
+    playlists: int | None = None
+
+
+class OpenSource(BaseModel):
+    path: str
+
+
+class ImportRequest(BaseModel):
+    """What to import, and where its audio should land.
+
+    Empty `track_ids` AND empty `playlist_ids` means the whole drive — an
+    explicit "import everything" rather than a mistake, matching the settled
+    export design's separate "export entire library" action.
+    """
+
+    destination: str  # folder the audio is copied into
+    track_ids: list[str] = []
+    playlist_ids: list[str] = []
+    # Playlists land in a folder named after the drive. Null keeps them at the
+    # root; the default is filled in from the source's label.
+    folder_name: str | None = None
+
+
+class Drive(BaseModel):
+    """A drive in the sidebar, under Devices (`external`) or Local Storage.
+
+    `library` is the OneLibrary database on it, when there is one — the same
+    candidate `/api/sources` reports, attached to the drive it lives on so the
+    sidebar can show one row per drive rather than a device list and a drive
+    list that disagree about what is plugged in.
+    """
+
+    name: str
+    path: str
+    kind: Literal["local", "external"]
+    library: SourceCandidate | None = None
+
+
+class FolderTracks(BaseModel):
+    """The audio files directly inside one folder, projected as tracks."""
+
+    path: str
+    tracks: list[Track]
+    # Ids (= absolute paths) of the files the collection already points at.
+    in_collection: list[str]
+    # On an external drive: a track referenced in place goes missing when the
+    # drive is unplugged, which the add dialog has to say.
+    removable: bool
+
+
+class FolderAddRequest(BaseModel):
+    """Add browsed files to the collection, and optionally to a playlist/export.
+
+    `mode` is asked every time rather than defaulted, because the right answer
+    depends on the drive and on how the DJ keeps their music.
+    """
+
+    track_ids: list[str]
+    mode: Literal["copy", "reference"]
+    destination: str | None = None  # required for `copy`
+    playlist_id: str | None = None
+    export_id: str | None = None
+
+
+class JobStatus(BaseModel):
+    id: str
+    kind: str
+    state: str  # running | done | failed | cancelled
+    total: int
+    done: int
+    message: str
+    result: dict | None = None
+    error: str | None = None
+    started_at: float
+    finished_at: float | None = None

@@ -49,7 +49,7 @@ client = TestClient(main.app)
 
 def first_playlist(nodes):
     for n in nodes:
-        if n["type"] == "PLAYLIST":
+        if n["kind"] == "playlist":
             return n
         if n.get("children"):
             found = first_playlist(n["children"])

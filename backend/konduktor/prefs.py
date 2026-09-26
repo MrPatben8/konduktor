@@ -81,12 +81,36 @@ def set_path_mapping(
     save_prefs(prefs)
 
 
-def get_last_collection() -> str | None:
-    val = load_prefs().get("last_collection")
+def get_last_collection(platform: str | None = None) -> str | None:
+    """The last library opened — overall, or on one platform.
+
+    Per-platform because the picker asks which platform FIRST: offering a
+    Rekordbox ``master.db`` under "Open last" to someone who just chose Traktor
+    is an offer that cannot be taken. A platform with no record returns None
+    rather than falling back to the global one, for the same reason.
+
+    The flat ``last_collection`` stays: it is the global answer, and it is what
+    libraries opened before this existed are recorded in.
+    """
+    prefs = load_prefs()
+    if platform:
+        by_platform = prefs.get("last_collection_by_platform")
+        if isinstance(by_platform, dict):
+            val = by_platform.get(platform)
+            return val if isinstance(val, str) else None
+        return None
+    val = prefs.get("last_collection")
     return val if isinstance(val, str) else None
 
 
-def set_last_collection(path: str) -> None:
+def set_last_collection(path: str, platform: str | None = None) -> None:
+    """Record a library as the last opened, globally and for its platform."""
     prefs = load_prefs()
     prefs["last_collection"] = path
+    if platform:
+        by_platform = prefs.get("last_collection_by_platform")
+        if not isinstance(by_platform, dict):
+            by_platform = {}
+        by_platform[platform] = path
+        prefs["last_collection_by_platform"] = by_platform
     save_prefs(prefs)

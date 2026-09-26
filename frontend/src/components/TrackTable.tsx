@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MutableRefObject } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import {
   flexRender,
   getCoreRowModel,
@@ -11,6 +11,8 @@ import {
   type VisibilityState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { Icon } from '../lib/icons'
+import { useCaps } from '../lib/capabilities'
 import {
   DndContext,
   PointerSensor,
@@ -19,60 +21,67 @@ import {
   useSensors,
   type DragEndEvent,
 } from '@dnd-kit/core'
-import { restrictToHorizontalAxis, restrictToVerticalAxis, restrictToParentElement } from '@dnd-kit/modifiers'
+import { restrictToHorizontalAxis } from '@dnd-kit/modifiers'
 import {
   SortableContext,
   arrayMove,
   horizontalListSortingStrategy,
-  verticalListSortingStrategy,
   useSortable,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { Track } from '../api'
 import { TRACK_COLUMNS } from '../lib/trackColumns'
 
-const ROW_HEIGHT = 44
-// Stable reference. A controlled `state.sorting` that's a fresh `[]` each render
-// (with no `onSortingChange`) makes TanStack Table re-sync its internal state
-// every commit → infinite re-render loop. Playlists never sort, so share one array.
-const NO_SORTING: SortingState = []
-
-interface Selection {
-  selected: Set<string>
-  onToggle: (id: string) => void
-  onToggleAll: () => void
-  allSelected: boolean
+/** Fields this platform can persist, for the table's per-cell edit gating.
+ *  Platforms differ in WHICH fields they accept, so the all-or-nothing
+ *  `onEditField` handler is not enough on its own. */
+function useEditableFields(): ReadonlySet<string> {
+  const caps = useCaps()
+  return useMemo(() => new Set(caps.tracks.editable_fields), [caps.tracks.editable_fields])
 }
 
-interface CommonProps {
+
+const ROW_HEIGHT = 44
+
+/** Row selection, Finder-style: click selects one row, Cmd/Ctrl+click toggles,
+ *  Shift+click selects a range from the anchor (the last row clicked without
+ *  Shift) in the table's SORTED order. The table owns the anchor; the caller
+ *  owns the set. */
+interface Selection {
+  selected: Set<string>
+  onChange: (next: Set<string>) => void
+}
+
+interface Props {
+  tracks: Track[]
+  sorting: SortingState
+  onSortingChange: (s: SortingState) => void
   columnVisibility: VisibilityState
   columnOrder: string[]
   columnSizing: ColumnSizingState
   onColumnOrderChange: (o: string[]) => void
   onColumnSizingChange: (s: ColumnSizingState) => void
+  selection?: Selection
+  /** The row-number column shows these (a playlist's own 1-based positions)
+   *  instead of the row's place in the current view. */
+  positions?: Map<string, number>
+  /** Rows to flag in the # column with a check and this tooltip — a browsed
+   *  folder uses it for files the collection already holds. */
+  marked?: { ids: Set<string>; title: string }
+  /** A view with a manual order. `enabled` is false while a sort or filter is
+   *  active: reordering a partial or re-sorted list would lose the real order. */
+  reorder?: { enabled: boolean; onReorder: (ids: string[]) => void }
+  /** Delete/Backspace removes the selected tracks from this view. */
+  onRemove?: (ids: string[]) => void
   onRowContextMenu?: (track: Track, x: number, y: number) => void
+  /** Right-click on the header row (the column chooser). */
+  onHeaderContextMenu?: (x: number, y: number) => void
   onPlay?: (track: Track) => void
   onEditField?: (track: Track, field: keyof Track, value: string | number) => void
   activeTrackId?: string | null
 }
 
-interface Props extends CommonProps {
-  tracks: Track[]
-  sorting: SortingState
-  onSortingChange: (s: SortingState) => void
-  selection?: Selection
-}
-
-interface PlaylistProps extends CommonProps {
-  tracks: Track[]
-  onReorder: (ids: string[]) => void
-  onRemove: (id: string) => void
-  /** False while a filter/search is active: reordering a filtered subset would
-   *  drop the hidden entries, so the drag handle goes inert. */
-  canReorder: boolean
-}
-
-/** The per-row play button (shared by the library grid and the playlist list).
+/** The per-row play button.
  *  Fades in on row hover; stays lit for the active deck track. */
 function PlayButton({
   track,
@@ -101,7 +110,7 @@ function PlayButton({
   )
 }
 
-/** The configurable data cells for one row — identical in both views. */
+/** The configurable data cells for one row. */
 function RowCells({ row }: { row: Row<Track> }) {
   return (
     <>
@@ -118,8 +127,7 @@ function RowCells({ row }: { row: Row<Track> }) {
   )
 }
 
-/** One draggable + resizable header cell. `sortable` is false in playlists,
- *  where the manual order stands (the header still reorders/resizes columns).
+/** One draggable + resizable header cell.
  *  `draggedRef` is set true for the duration of a reorder so the stray `click`
  *  the browser fires after a drag doesn't also toggle the sort. */
 function SortableHeader({
@@ -181,18 +189,14 @@ function HeaderRow({
   headers,
   sensors,
   onColumnDragEnd,
-  lead,
-  trail,
   hasPlay,
-  selection,
+  onContextMenu,
 }: {
   headers: Header<Track, unknown>[]
   sensors: ReturnType<typeof useSensors>
   onColumnDragEnd: (e: DragEndEvent) => void
-  lead?: boolean // playlist drag-handle spacer
-  trail?: boolean // playlist remove spacer
   hasPlay: boolean
-  selection?: Selection
+  onContextMenu?: (x: number, y: number) => void
 }) {
   // True while (and just after) a column is being reordered, so the trailing
   // click a drag emits is swallowed instead of toggling the sort.
@@ -213,21 +217,23 @@ function HeaderRow({
         }, 0)
       }}
     >
-      <div className="sticky top-0 z-10 flex border-b border-line bg-ink-850">
-        {lead && <span className="w-8 shrink-0" />}
-        {selection ? (
-          <span className="flex w-10 shrink-0 items-center justify-center">
-            <input
-              type="checkbox"
-              checked={selection.allSelected}
-              onChange={selection.onToggleAll}
-              className="accent-accent"
-              title="Select all"
-            />
-          </span>
-        ) : (
-          <span className="w-10 shrink-0" />
-        )}
+      <div
+        // Frosted glass: rows scroll UNDER the sticky header, so it blurs
+        // them rather than hiding them behind a solid bar. Safe to filter —
+        // the column menu it opens is portalled (see "Theme" in CLAUDE.md).
+        // Keep the radius SMALL: on a strip this short, Chrome silently skips
+        // a large backdrop blur (12 px and up left the rows perfectly sharp).
+        // A LIGHT tint, as frosted glass is lighter than what it covers, and
+        // inset from the panel's edges so it never blurs the panel's bright
+        // rim into a glowing band along its side.
+        className="sticky top-0 z-10 mt-1.5 flex rounded-xl bg-white/[0.07] shadow-[inset_0_1px_0_rgb(255_255_255/0.14),inset_0_0_0_1px_rgb(255_255_255/0.07),0_6px_16px_-8px_rgb(0_0_0/0.6)] backdrop-blur-[8px]"
+        onContextMenu={(e) => {
+          if (!onContextMenu) return
+          e.preventDefault()
+          onContextMenu(e.clientX, e.clientY)
+        }}
+      >
+        <span className="w-10 shrink-0" />
         {hasPlay && <span className="w-9 shrink-0" />}
         <SortableContext
           items={headers.map((h) => h.column.id)}
@@ -237,13 +243,19 @@ function HeaderRow({
             <SortableHeader key={header.id} header={header} draggedRef={draggedRef} />
           ))}
         </SortableContext>
-        {trail && <span className="w-10 shrink-0" />}
       </div>
     </DndContext>
   )
 }
 
-/** The virtualized library grid (All Tracks). */
+/** The one track list — All Tracks, playlists, exports and devices alike.
+ *  Virtualized, sortable, with Finder-style selection; a view that has a manual
+ *  order passes `reorder`, and one whose entries can be removed, `onRemove`.
+ *
+ *  Row reordering is hand-rolled rather than dnd-kit's sortable: wrapping the
+ *  virtualizer in a SortableContext loops on its flushSync-driven measurement,
+ *  which is why playlists used to be a separate, non-virtualized table. Rows are
+ *  a fixed height, so the drop position is just pointer-y / ROW_HEIGHT. */
 export function TrackTable({
   tracks,
   sorting,
@@ -254,16 +266,26 @@ export function TrackTable({
   onColumnOrderChange,
   onColumnSizingChange,
   selection,
+  positions,
+  marked,
+  reorder,
+  onRemove,
   onRowContextMenu,
+  onHeaderContextMenu,
   onPlay,
   onEditField,
   activeTrackId,
 }: Props) {
+  // A local copy so a reorder shows instantly; re-syncs when the data changes.
+  const [data, setData] = useState<Track[]>(tracks)
+  useEffect(() => setData(tracks), [tracks])
+
+  const editableFields = useEditableFields()
   const table = useReactTable({
-    data: tracks,
+    data,
     columns: TRACK_COLUMNS,
     state: { sorting, columnVisibility, columnOrder, columnSizing },
-    meta: { onEditField },
+    meta: { onEditField, editableFields },
     onSortingChange: (updater) =>
       onSortingChange(typeof updater === 'function' ? updater(sorting) : updater),
     onColumnSizingChange: (updater) =>
@@ -276,12 +298,28 @@ export function TrackTable({
 
   const rows = table.getRowModel().rows
   const parentRef = useRef<HTMLDivElement>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
 
+  // The rows start BELOW the sticky header, inside the same scroller, so the
+  // virtualizer is told where they start (scrollMargin) and how much of the
+  // top the header covers (scrollPaddingStart). Without both, scrollToIndex
+  // lands a row too far down on ↓ — just out of view — and under the header on ↑.
+  const [bodyOffset, setBodyOffset] = useState({ top: 0, header: 0 })
+  useLayoutEffect(() => {
+    const body = bodyRef.current
+    const scroller = parentRef.current
+    if (!body || !scroller) return
+    const top = body.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+    const header = (body.previousElementSibling as HTMLElement | null)?.offsetHeight ?? 0
+    setBodyOffset((o) => (o.top === top && o.header === header ? o : { top, header }))
+  }, [])
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => ROW_HEIGHT,
     overscan: 12,
+    scrollMargin: bodyOffset.top,
+    scrollPaddingStart: bodyOffset.header,
   })
   const virtualRows = virtualizer.getVirtualItems()
 
@@ -300,48 +338,265 @@ export function TrackTable({
     onColumnOrderChange(arrayMove(columnOrder, from, to))
   }
 
+  // Range selection runs from the anchor; arrow keys move from the lead (the
+  // row most recently clicked or arrowed to). Both are ids, not indices, so a
+  // re-sort keeps them on the same track.
+  const anchorRef = useRef<string | null>(null)
+  const leadRef = useRef<string | null>(null)
+  const indexOf = (id: string | null) => (id == null ? -1 : rows.findIndex((r) => r.original.id === id))
+  const rangeIds = (a: number, b: number) =>
+    rows.slice(Math.min(a, b), Math.max(a, b) + 1).map((r) => r.original.id)
+
+  const selectOnly = (index: number) => {
+    const id = rows[index].original.id
+    anchorRef.current = leadRef.current = id
+    selection?.onChange(new Set([id]))
+  }
+
+  const clickRow = (index: number, e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => {
+    if (!selection || justDraggedRef.current) return
+    const id = rows[index].original.id
+    const toggle = e.metaKey || e.ctrlKey
+    const anchor = indexOf(anchorRef.current)
+    if (e.shiftKey && anchor >= 0) {
+      const range = rangeIds(anchor, index)
+      selection.onChange(toggle ? new Set([...selection.selected, ...range]) : new Set(range))
+      leadRef.current = id
+    } else if (toggle) {
+      const next = new Set(selection.selected)
+      next.has(id) ? next.delete(id) : next.add(id)
+      anchorRef.current = leadRef.current = id
+      selection.onChange(next)
+    } else {
+      selectOnly(index)
+    }
+  }
+
+  // ---- row drag-to-reorder ----------------------------------------------
+  // `drop` is the gap the dragged rows would land in (0 = above the first row).
+  const [drag, setDrag] = useState<{ moving: Set<number>; drop: number } | null>(null)
+  const pressRef = useRef<{ x: number; y: number; index: number } | null>(null)
+  const justDraggedRef = useRef(false)
+  const canDrag = !!reorder?.enabled
+
+  useEffect(() => {
+    if (!canDrag) return
+    let raf = 0
+    let lastY = 0
+    let active: { moving: Set<number>; drop: number } | null = null
+
+    const dropAt = (clientY: number) => {
+      const top = bodyRef.current?.getBoundingClientRect().top ?? 0
+      return Math.max(0, Math.min(rowsRef.current.length, Math.round((clientY - top) / ROW_HEIGHT)))
+    }
+    // Hold near the top/bottom edge to scroll while dragging.
+    const autoScroll = () => {
+      const el = parentRef.current
+      if (el && active) {
+        const r = el.getBoundingClientRect()
+        const edge = 48
+        const dy =
+          lastY < r.top + edge + ROW_HEIGHT ? -12 : lastY > r.bottom - edge ? 12 : 0
+        if (dy) {
+          el.scrollTop += dy
+          active = { ...active, drop: dropAt(lastY) }
+          setDrag(active)
+        }
+      }
+      raf = requestAnimationFrame(autoScroll)
+    }
+    const onMove = (e: PointerEvent) => {
+      const press = pressRef.current
+      if (!press) return
+      lastY = e.clientY
+      if (!active) {
+        if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 6) return
+        // Dragging a selected row moves the whole selection; any other row
+        // moves alone (and becomes the selection, so what moves is visible).
+        const rs = rowsRef.current
+        const sel = selectionRef.current
+        const pressedId = rs[press.index].original.id
+        let moving: Set<number>
+        if (sel?.selected.has(pressedId)) {
+          moving = new Set(rs.flatMap((r, i) => (sel.selected.has(r.original.id) ? [i] : [])))
+        } else {
+          moving = new Set([press.index])
+          sel?.onChange(new Set([pressedId]))
+          anchorRef.current = leadRef.current = pressedId
+        }
+        active = { moving, drop: dropAt(e.clientY) }
+        document.body.style.userSelect = 'none'
+        document.body.style.cursor = 'grabbing'
+        window.getSelection()?.removeAllRanges()
+        raf = requestAnimationFrame(autoScroll)
+      } else {
+        active = { ...active, drop: dropAt(e.clientY) }
+      }
+      setDrag(active)
+    }
+    const end = () => {
+      pressRef.current = null
+      if (!active) return
+      const { moving, drop } = active
+      active = null
+      cancelAnimationFrame(raf)
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+      setDrag(null)
+      // Swallow the click that follows the pointerup, so a drop is not also a
+      // click that re-selects the row it ended on.
+      justDraggedRef.current = true
+      setTimeout(() => (justDraggedRef.current = false), 0)
+      const rs = rowsRef.current.map((r) => r.original)
+      const kept = rs.filter((_, i) => !moving.has(i))
+      const block = rs.filter((_, i) => moving.has(i))
+      const at = drop - [...moving].filter((i) => i < drop).length
+      const next = [...kept.slice(0, at), ...block, ...kept.slice(at)]
+      if (next.every((t, i) => t === rs[i])) return
+      setData(next)
+      reorderRef.current?.onReorder(next.map((t) => t.id))
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', end)
+    window.addEventListener('pointercancel', end)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', end)
+      window.removeEventListener('pointercancel', end)
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+    }
+  }, [canDrag])
+
+  // Latest values for the once-attached window listeners.
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+  const selectionRef = useRef(selection)
+  selectionRef.current = selection
+  const reorderRef = useRef(reorder)
+  reorderRef.current = reorder
+
+  // Keyboard: ↑/↓ move the selection (Shift extends it), Cmd/Ctrl+A selects
+  // every visible row, Esc clears, Delete/Backspace removes (where the view
+  // allows it), Enter loads the highlighted row into the deck and plays it.
+  // Read through a ref so the listener is attached once.
+  // ←/→, Space, C and digits belong to the deck (PrepStrip).
+  const keysRef = useRef<(e: KeyboardEvent) => void>(() => {})
+  keysRef.current = (e) => {
+    if (!selection || rows.length === 0) return
+    const t = e.target as HTMLElement | null
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
+    // A dialog or menu on top owns the keyboard (and its own Esc).
+    if (document.querySelector('[aria-modal="true"], [role="menu"]')) return
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.code === 'KeyA') {
+      e.preventDefault()
+      selection.onChange(new Set(rows.map((r) => r.original.id)))
+      return
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+    if (e.key === 'Escape') {
+      if (selection.selected.size > 0) selection.onChange(new Set())
+      return
+    }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && onRemove && selection.selected.size > 0) {
+      e.preventDefault()
+      onRemove([...selection.selected])
+      selection.onChange(new Set())
+      return
+    }
+    if (e.key === 'Enter' && onPlay) {
+      // The highlighted row is the lead — the one last clicked or arrowed to,
+      // which in a multi-selection is the row the cursor is on.
+      const lead = indexOf(leadRef.current)
+      if (lead < 0 || !selection.selected.has(rows[lead].original.id)) return
+      // Wins over a focused button, as Space does for the deck: after clicking
+      // a playlist and arrowing down, Enter must not re-press that playlist.
+      e.preventDefault()
+      if (!e.repeat) onPlay(rows[lead].original)
+      return
+    }
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+    e.preventDefault()
+    const lead = indexOf(leadRef.current)
+    const step = e.key === 'ArrowDown' ? 1 : -1
+    const next = lead < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, lead + step))
+    const anchor = indexOf(anchorRef.current)
+    if (e.shiftKey && anchor >= 0) {
+      leadRef.current = rows[next].original.id
+      selection.onChange(new Set(rangeIds(anchor, next)))
+    } else {
+      selectOnly(next)
+    }
+    virtualizer.scrollToIndex(next)
+  }
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keysRef.current(e)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   return (
-    <div ref={parentRef} className="h-full overflow-auto">
+    <div
+      ref={parentRef}
+      className="h-full overflow-auto px-1.5"
+      onClick={(e) => {
+        // A click in the empty space below the rows clears the selection.
+        const t = e.target as HTMLElement
+        if (selection && !t.closest('[data-row]') && !t.closest('.sticky')) selection.onChange(new Set())
+      }}
+    >
       <div style={{ width: totalWidth, minWidth: '100%' }}>
         <HeaderRow
           headers={headers}
           sensors={sensors}
           onColumnDragEnd={onColumnDragEnd}
           hasPlay={hasPlay}
-          selection={selection}
+          onContextMenu={onHeaderContextMenu}
         />
-        <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+        <div ref={bodyRef} style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
           {virtualRows.map((vr) => {
             const row = rows[vr.index]
             const isSelected = selection?.selected.has(row.original.id) ?? false
             const isActive = activeTrackId === row.original.id
+            const isMoving = drag?.moving.has(vr.index) ?? false
             return (
               <div
                 key={row.id}
+                data-row
                 className={`group absolute left-0 flex items-center border-b border-ink-850 text-sm ${
-                  isSelected ? 'bg-accent-soft/50' : 'hover:bg-ink-850'
-                }`}
-                style={{ top: 0, transform: `translateY(${vr.start}px)`, height: vr.size, width: '100%' }}
+                  isSelected ? 'bg-accent-soft/50' : drag ? '' : 'hover:bg-ink-850'
+                } ${isMoving ? 'opacity-40' : ''}`}
+                style={{ top: 0, transform: `translateY(${vr.start - bodyOffset.top}px)`, height: vr.size, width: '100%' }}
+                onMouseDown={(e) => {
+                  // Shift/Cmd-click would otherwise also select page text.
+                  if (selection && (e.shiftKey || e.metaKey || e.ctrlKey)) e.preventDefault()
+                }}
+                onPointerDown={(e) => {
+                  if (!canDrag || e.button !== 0 || e.shiftKey || e.metaKey || e.ctrlKey) return
+                  // Not from a control inside the row (play, stars, an edit field).
+                  if ((e.target as HTMLElement).closest('button, input, textarea, select, a')) return
+                  pressRef.current = { x: e.clientX, y: e.clientY, index: vr.index }
+                }}
+                onClick={(e) => selection && clickRow(vr.index, e)}
                 onContextMenu={(e) => {
                   if (!onRowContextMenu) return
                   e.preventDefault()
+                  // Right-clicking outside the selection retargets it, so the
+                  // menu always acts on what is highlighted.
+                  if (selection && !isSelected) selectOnly(vr.index)
                   onRowContextMenu(row.original, e.clientX, e.clientY)
                 }}
               >
-                {selection ? (
-                  <span className="flex w-10 shrink-0 items-center justify-center">
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      onChange={() => selection.onToggle(row.original.id)}
-                      className="accent-accent"
-                    />
-                  </span>
-                ) : (
-                  <span className="w-10 shrink-0 pr-2 text-right text-xs tabular-nums text-faint">
-                    {vr.index + 1}
-                  </span>
-                )}
+                <span className="w-10 shrink-0 pr-2 text-right text-xs tabular-nums text-faint">
+                  {marked?.ids.has(row.original.id) ? (
+                    <span title={marked.title} className="inline-flex text-mint">
+                      <Icon name="check" size={13} />
+                    </span>
+                  ) : (
+                    (positions?.get(row.original.id) ?? vr.index + 1)
+                  )}
+                </span>
                 {hasPlay && (
                   <span className="flex w-9 shrink-0 items-center justify-center">
                     {onPlay && <PlayButton track={row.original} isActive={isActive} onPlay={onPlay} />}
@@ -351,189 +606,13 @@ export function TrackTable({
               </div>
             )
           })}
+          {drag && (
+            <div
+              className="pointer-events-none absolute left-0 z-10 h-0.5 w-full bg-accent"
+              style={{ top: drag.drop * ROW_HEIGHT - 1 }}
+            />
+          )}
         </div>
-      </div>
-    </div>
-  )
-}
-
-/** One reorderable playlist row — standard (non-virtualized) dnd-kit sortable,
- *  in normal document flow. This is the proven-stable arrangement; the virtualizer
- *  is intentionally NOT used here (its flushSync-driven measurement loops when
- *  wrapped in a sortable context). */
-function PlaylistRow({
-  row,
-  index,
-  hasPlay,
-  canReorder,
-  activeTrackId,
-  onPlay,
-  onRemove,
-  onRowContextMenu,
-}: {
-  row: Row<Track>
-  index: number
-  hasPlay: boolean
-  canReorder: boolean
-  activeTrackId?: string | null
-  onPlay?: (track: Track) => void
-  onRemove: (id: string) => void
-  onRowContextMenu?: (track: Track, x: number, y: number) => void
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: row.original.id,
-    disabled: !canReorder,
-  })
-  const isActive = activeTrackId === row.original.id
-  return (
-    <div
-      ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition, height: ROW_HEIGHT }}
-      className={`group flex items-center border-b border-ink-850 text-sm ${
-        isDragging ? 'relative z-10 bg-ink-800 shadow-lg' : 'hover:bg-ink-850'
-      }`}
-      onContextMenu={(e) => {
-        if (!onRowContextMenu) return
-        e.preventDefault()
-        onRowContextMenu(row.original, e.clientX, e.clientY)
-      }}
-    >
-      {canReorder ? (
-        <button
-          {...attributes}
-          {...listeners}
-          title="Drag to reorder"
-          className="flex w-8 shrink-0 cursor-grab items-center justify-center text-faint hover:text-text active:cursor-grabbing"
-        >
-          ⠿
-        </button>
-      ) : (
-        <span
-          title="Clear the search / filters to reorder"
-          className="flex w-8 shrink-0 cursor-default items-center justify-center text-faint/25"
-        >
-          ⠿
-        </span>
-      )}
-      <span className="w-10 shrink-0 pr-2 text-right text-xs tabular-nums text-faint">
-        {index + 1}
-      </span>
-      {hasPlay && (
-        <span className="flex w-9 shrink-0 items-center justify-center">
-          {onPlay && <PlayButton track={row.original} isActive={isActive} onPlay={onPlay} />}
-        </span>
-      )}
-      <RowCells row={row} />
-      <button
-        title="Remove from playlist"
-        onClick={() => onRemove(row.original.id)}
-        className="flex w-10 shrink-0 items-center justify-center text-faint hover:text-pink"
-      >
-        ×
-      </button>
-    </div>
-  )
-}
-
-/** The playlist view: the same columns / play button / inline editing as the
- *  library, plus drag-to-reorder + remove. Non-virtualized (playlists are small),
- *  which keeps it clear of the react-virtual + dnd-kit re-render loop. */
-export function PlaylistTable({
-  tracks,
-  columnVisibility,
-  columnOrder,
-  columnSizing,
-  onColumnOrderChange,
-  onColumnSizingChange,
-  onRowContextMenu,
-  onPlay,
-  onEditField,
-  activeTrackId,
-  onReorder,
-  onRemove,
-  canReorder,
-}: PlaylistProps) {
-  // Local manual order so a drag feels instant; re-syncs when the server data changes.
-  const [items, setItems] = useState<Track[]>(tracks)
-  useEffect(() => setItems(tracks), [tracks])
-
-  const table = useReactTable({
-    data: items,
-    columns: TRACK_COLUMNS,
-    state: { sorting: NO_SORTING, columnVisibility, columnOrder, columnSizing },
-    meta: { onEditField },
-    enableSorting: false, // playlist order is manual
-    onColumnSizingChange: (updater) =>
-      onColumnSizingChange(typeof updater === 'function' ? updater(columnSizing) : updater),
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    enableColumnResizing: true,
-    columnResizeMode: 'onChange',
-  })
-
-  const rows = table.getRowModel().rows
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }))
-  const headers = table.getHeaderGroups()[0].headers
-  const hasPlay = !!onPlay
-  const leadWidth = 32 + 40 + (hasPlay ? 36 : 0)
-  const totalWidth = table.getTotalSize() + leadWidth + 40
-
-  const onColumnDragEnd = (e: DragEndEvent) => {
-    const { active, over } = e
-    if (!over || active.id === over.id) return
-    const from = columnOrder.indexOf(active.id as string)
-    const to = columnOrder.indexOf(over.id as string)
-    if (from < 0 || to < 0) return
-    onColumnOrderChange(arrayMove(columnOrder, from, to))
-  }
-
-  const onRowDragEnd = (e: DragEndEvent) => {
-    const { active, over } = e
-    if (!over || active.id === over.id) return
-    const from = items.findIndex((t) => t.id === active.id)
-    const to = items.findIndex((t) => t.id === over.id)
-    if (from < 0 || to < 0) return
-    const next = arrayMove(items, from, to)
-    setItems(next)
-    onReorder(next.map((t) => t.id))
-  }
-
-  return (
-    <div className="h-full overflow-auto">
-      <div style={{ width: totalWidth, minWidth: '100%' }}>
-        <HeaderRow
-          headers={headers}
-          sensors={sensors}
-          onColumnDragEnd={onColumnDragEnd}
-          hasPlay={hasPlay}
-          lead
-          trail
-        />
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          modifiers={[restrictToVerticalAxis, restrictToParentElement]}
-          onDragEnd={onRowDragEnd}
-        >
-          <SortableContext
-            items={rows.map((r) => r.original.id)}
-            strategy={verticalListSortingStrategy}
-          >
-            {rows.map((row, i) => (
-              <PlaylistRow
-                key={row.original.id}
-                row={row}
-                index={i}
-                hasPlay={hasPlay}
-                canReorder={canReorder}
-                activeTrackId={activeTrackId}
-                onPlay={onPlay}
-                onRemove={onRemove}
-                onRowContextMenu={onRowContextMenu}
-              />
-            ))}
-          </SortableContext>
-        </DndContext>
       </div>
     </div>
   )

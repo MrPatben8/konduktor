@@ -1,7 +1,9 @@
+import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type RemapPreview } from '../api'
 import type { ToastMsg } from './Toast'
+import { Icon } from '../lib/icons'
 
 interface Props {
   onClose: () => void
@@ -101,13 +103,13 @@ export function PathMappingDialog({ onClose, onNotify, onError }: Props) {
 
   const canCommit = !!from.trim() && !!to.trim()
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6"
+      aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-line bg-ink-900 shadow-2xl"
+        className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden glass-overlay"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-line px-5 py-4">
@@ -159,7 +161,7 @@ export function PathMappingDialog({ onClose, onNotify, onError }: Props) {
               />
               <button
                 onClick={() => setBrowsing((b) => !b)}
-                className="shrink-0 rounded-md border border-line px-3 py-1.5 text-sm text-muted hover:bg-ink-800 hover:text-text"
+                className="shrink-0 btn-glass rounded-full px-3 py-1.5 text-sm text-muted hover:text-text"
               >
                 {browsing ? 'Close' : 'Browse…'}
               </button>
@@ -239,13 +241,14 @@ export function PathMappingDialog({ onClose, onNotify, onError }: Props) {
           <button
             onClick={saveMapping}
             disabled={saving}
-            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-ink-950 hover:brightness-110 disabled:opacity-50"
+            className="rounded-full btn-primary px-3 py-1.5 text-sm font-semibold disabled:opacity-50"
           >
             {saving ? 'Saving…' : 'Save mapping'}
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -289,7 +292,7 @@ function FolderBrowser({
               onClick={() => setDir(d.path)}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-text hover:bg-ink-800"
             >
-              <span className="text-faint">📁</span>
+              <span className="flex text-faint"><Icon name="folder" size={15} /></span>
               <span className="truncate">{d.name}</span>
             </button>
           ))

@@ -16,6 +16,7 @@ anyway; callers already treat all data I/O as best-effort.
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -23,6 +24,37 @@ import platformdirs
 
 _APP_NAME = "Konduktor"
 _APP_AUTHOR = "Liquid Ice Studios"
+
+
+def write_json(path: Path, data) -> None:
+    """Write JSON so a crash mid-write cannot leave a truncated file.
+
+    Deliberately NOT best-effort, unlike `prefs.save_prefs`: this is for data the
+    user CURATED — export sets, library identity — where losing it is real work
+    lost, not a forgotten window size. Failures raise so a caller can say so.
+
+    Written to a temp file in the SAME directory and then `os.replace`d, which is
+    atomic on POSIX and on Windows: a reader sees either the whole old file or
+    the whole new one, never half of either.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(data, indent=2))
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass  # already replaced, which is the success path
+
+
+def read_json(path: Path, default=None):
+    """Read JSON, or `default` if it is missing or unreadable."""
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return default
 
 
 def app_data_dir() -> Path:

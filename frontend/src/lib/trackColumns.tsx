@@ -16,12 +16,19 @@ import {
 } from '@tanstack/react-table'
 import type { Track } from '../api'
 import { formatBpm, formatDuration, keyColor } from './format'
+import { cueTypeColor } from './cues'
 import { RatingStars } from '../components/RatingStars'
 
 declare module '@tanstack/react-table' {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   interface TableMeta<TData extends RowData> {
     onEditField?: (track: Track, field: keyof Track, value: string | number) => void
+    /** Fields the loaded platform can actually persist
+     *  (`capabilities.tracks.editable_fields`). A field outside this set renders
+     *  read-only: the platform-level `onEditField` gate is all-or-nothing, and
+     *  platforms genuinely differ in WHICH fields they accept. Undefined means
+     *  "not gated" — every field with a handler stays editable. */
+    editableFields?: ReadonlySet<string>
   }
 }
 
@@ -34,11 +41,14 @@ function InlineEdit({
   display,
   onCommit,
   className = 'w-full min-w-0 truncate text-muted',
+  readOnly = false,
 }: {
   value: string | null
   display?: ReactNode
   onCommit: (v: string) => void
   className?: string
+  /** Render the value without offering an editor. */
+  readOnly?: boolean
 }) {
   const [editing, setEditing] = useState(false)
   const [val, setVal] = useState('')
@@ -66,8 +76,15 @@ function InlineEdit({
         }}
         onClick={(e) => e.stopPropagation()}
         onDoubleClick={(e) => e.stopPropagation()}
-        className="w-full min-w-0 rounded bg-ink-800 px-1 py-0.5 text-sm text-text outline-none ring-1 ring-accent"
+        className="w-full min-w-0 rounded-md bg-well px-1 py-0.5 text-sm text-text outline-none ring-1 ring-accent"
       />
+    )
+  }
+  if (readOnly) {
+    return (
+      <div className={className}>
+        {display ?? (value?.trim() ? value : <span className="text-faint">—</span>)}
+      </div>
     )
   }
   return (
@@ -85,12 +102,20 @@ function InlineEdit({
   )
 }
 
+/** Whether this table may edit `field`, per the platform's capabilities. */
+function canEdit(c: CellContext<Track, unknown>, field: string): boolean {
+  const meta = c.table.options.meta
+  if (!meta?.onEditField) return false
+  return meta.editableFields ? meta.editableFields.has(field) : true
+}
+
 // Cell renderer factory for a plain editable text field.
 function editable(field: keyof Track, className?: string) {
   return (c: CellContext<Track, unknown>) => (
     <InlineEdit
       value={c.getValue() as string | null}
       className={className}
+      readOnly={!canEdit(c, field)}
       onCommit={(v) => c.table.options.meta?.onEditField?.(c.row.original, field, v)}
     />
   )
@@ -110,24 +135,26 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
           <InlineEdit
             value={title}
             display={title || <span className="text-faint">Untitled</span>}
-            className="w-full min-w-0 truncate font-medium text-text"
+            className="w-full min-w-0 truncate font-medium text-text group-data-[active]:text-accent"
+            readOnly={!canEdit(c, 'title')}
             onCommit={(v) => edit?.(r, 'title', v)}
           />
           <InlineEdit
             value={r.artist}
             className="w-full min-w-0 truncate text-xs text-muted"
+            readOnly={!canEdit(c, 'artist')}
             onCommit={(v) => edit?.(r, 'artist', v)}
           />
         </div>
       )
     },
   }),
-  col.accessor('is_stem', {
+  col.accessor('media_kind', {
     id: 'type',
     header: 'Type',
     size: 64,
     cell: (c) =>
-      c.getValue() ? (
+      c.getValue() === 'stem' ? (
         // Stem file → stacked lines ("burger"), the usual stem glyph.
         <span title="Stem file" className="text-accent">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-label="Stem">
@@ -156,7 +183,7 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
     id: 'bpm',
     header: 'BPM',
     size: 74,
-    cell: (c) => <span className="tabular-nums text-text">{formatBpm(c.getValue())}</span>,
+    cell: (c) => <span className="font-mono text-xs text-text">{formatBpm(c.getValue())}</span>,
   }),
   col.accessor('key', {
     id: 'key',
@@ -167,8 +194,12 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
       if (!k) return <span className="text-faint">—</span>
       return (
         <span
-          className="rounded px-1.5 py-0.5 text-xs font-semibold"
-          style={{ color: keyColor(k), background: 'color-mix(in srgb, currentColor 14%, transparent)' }}
+          className="inline-block min-w-[2.1rem] rounded-md px-1.5 py-0.5 text-center font-mono text-[11px] font-semibold"
+          style={{
+            color: keyColor(c.row.original.key_wheel),
+            background: 'color-mix(in srgb, currentColor 16%, transparent)',
+            boxShadow: 'inset 0 0 0 1px color-mix(in srgb, currentColor 32%, transparent)',
+          }}
         >
           {k}
         </span>
@@ -182,7 +213,13 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
     cell: (c) => (
       <RatingStars
         value={c.getValue() as number}
-        onChange={(v) => c.table.options.meta?.onEditField?.(c.row.original, 'rating', v)}
+        // RatingStars is read-only without an onChange, which is exactly the
+        // behaviour wanted when the platform cannot persist a rating.
+        onChange={
+          canEdit(c, 'rating')
+            ? (v) => c.table.options.meta?.onEditField?.(c.row.original, 'rating', v)
+            : undefined
+        }
       />
     ),
   }),
@@ -190,7 +227,7 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
     id: 'length',
     header: 'Time',
     size: 64,
-    cell: (c) => <span className="tabular-nums text-muted">{formatDuration(c.getValue())}</span>,
+    cell: (c) => <span className="font-mono text-xs text-muted">{formatDuration(c.getValue())}</span>,
   }),
   col.accessor('bitrate', {
     id: 'bitrate',
@@ -208,14 +245,39 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
   col.accessor('cue_count', {
     id: 'cue_count',
     header: 'Cues',
-    size: 72,
+    size: 104,
     cell: (c) => {
-      const n = c.getValue()
-      const grid = c.row.original.has_grid
+      const r = c.row.original
+      const n = c.getValue() as number
+      const markers = r.grid_marker_count
+      // One lit dot per occupied hotcue slot, in the cue's colour, so a row
+      // previews the track's prep without loading it. Cues that exist but are
+      // not in the bank (memory cues), or not yet read (a lazily-parsed
+      // device), fall back to the count so a prepped track never looks bare.
       return (
-        <span className="flex items-center gap-1 tabular-nums">
-          <span className={n > 0 ? 'text-text' : 'text-faint'}>{n}</span>
-          {grid && <span className="text-[10px] text-mint" title="Beatgrid analyzed">⊞</span>}
+        <span
+          className="flex items-center gap-1"
+          title={`${n} cue${n === 1 ? '' : 's'}${
+            markers > 1 ? ` · flexible beatgrid (${markers} markers)` : markers ? ' · beatgrid analyzed' : ''
+          }`}
+        >
+          {r.hotcues.map((h) => {
+            const color = h.color ?? cueTypeColor(h.type)
+            return (
+              <span
+                key={h.slot}
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{ background: color, boxShadow: `0 0 6px ${color}` }}
+              />
+            )
+          })}
+          {r.hotcues.length === 0 && (
+            <span className={`font-mono text-xs ${n > 0 ? 'text-text' : 'text-faint'}`}>{n || '—'}</span>
+          )}
+          {markers > 1 && (
+            // Gold marks a flexible (multi-tempo) grid — rare, and worth seeing.
+            <span className="ml-0.5 text-[10px] text-gold">⊞</span>
+          )}
         </span>
       )
     },
@@ -224,7 +286,7 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
     id: 'playcount',
     header: 'Plays',
     size: 68,
-    cell: (c) => <span className="tabular-nums text-muted">{c.getValue() || 0}</span>,
+    cell: (c) => <span className="font-mono text-xs text-muted">{c.getValue() || 0}</span>,
   }),
   col.accessor('import_date', {
     id: 'import_date',
@@ -246,9 +308,32 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
       <InlineEdit
         value={c.getValue() as string | null}
         display={<span className="tabular-nums text-muted">{formatDate(c.getValue() as string | null)}</span>}
+        readOnly={!canEdit(c, 'release_date')}
         onCommit={(v) => c.table.options.meta?.onEditField?.(c.row.original, 'release_date', v)}
       />
     ),
+  }),
+  col.accessor('filepath', {
+    id: 'path',
+    header: 'Path',
+    size: 320,
+    // Read-only: the path is the track's identity. Truncated from the LEFT
+    // (rtl box, ltr text) so the filename — the part you are looking for —
+    // stays visible; the full path is the tooltip.
+    cell: (c) => {
+      const v = c.getValue()
+      return v ? (
+        <div
+          className="w-full truncate text-xs text-muted"
+          style={{ direction: 'rtl', textAlign: 'left' }}
+          title={v}
+        >
+          <bdi>{v}</bdi>
+        </div>
+      ) : (
+        <span className="text-faint">—</span>
+      )
+    },
   }),
 ]
 
@@ -260,7 +345,7 @@ function formatDate(v: string | null): string {
   return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`
 }
 
-/** (id, label) pairs for the Columns menu, in the canonical definition order. */
+/** (id, label) pairs for the header's column chooser, in definition order. */
 export const COLUMN_MENU: { id: string; label: string }[] = TRACK_COLUMNS.map((c) => ({
   id: c.id as string,
   label: typeof c.header === 'string' ? c.header : (c.id as string),

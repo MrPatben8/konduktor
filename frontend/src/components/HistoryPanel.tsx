@@ -1,6 +1,9 @@
+import { createPortal } from 'react-dom'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type HistoryEntry } from '../api'
+import { useCaps } from '../lib/capabilities'
+import { restoreWarning } from '../lib/platformCopy'
 import type { ToastMsg } from './Toast'
 
 interface Props {
@@ -37,9 +40,10 @@ function summaryChips(summary: string): string[] {
  * a purely-local git repo (see backend history.py); this lists them newest-first
  * and lets the user restore any past version (written back as a new forward save)
  * or wipe the entire history. Restore overwrites the collection on disk, so the
- * user must close Traktor first (it rewrites the .nml on exit).
+ * user is warned first, in the loaded platform's own terms.
  */
 export function HistoryPanel({ onClose, onNotify, onError }: Props) {
+  const caps = useCaps()
   const qc = useQueryClient()
   const history = useQuery({ queryKey: ['history'], queryFn: api.history })
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
@@ -75,20 +79,19 @@ export function HistoryPanel({ onClose, onNotify, onError }: Props) {
 
   const entries = history.data ?? []
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6"
+      aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-line bg-ink-900 shadow-2xl"
+        className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden glass-overlay"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-line px-5 py-4">
           <div className="text-[15px] font-semibold tracking-tight">Version History</div>
           <div className="text-xs text-muted">
-            Every save is a restorable version of this collection. Close Traktor before
-            restoring — it overwrites the collection on exit.
+            Every save is a restorable version of this library. {restoreWarning(caps.save)}
           </div>
         </div>
 
@@ -150,7 +153,7 @@ export function HistoryPanel({ onClose, onNotify, onError }: Props) {
                         onClick={() => setConfirmingId(e.id)}
                         disabled={isCurrent}
                         title={isCurrent ? 'This is the current version' : 'Restore this version'}
-                        className="mt-0.5 shrink-0 rounded-md border border-line px-2.5 py-1 text-xs text-muted opacity-0 transition-opacity hover:bg-ink-800 hover:text-text group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-0"
+                        className="mt-0.5 shrink-0 btn-glass rounded-full px-2.5 py-1 text-xs text-muted opacity-0 transition-opacity hover:text-text group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-0"
                       >
                         Restore
                       </button>
@@ -205,6 +208,7 @@ export function HistoryPanel({ onClose, onNotify, onError }: Props) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

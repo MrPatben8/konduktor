@@ -1,13 +1,32 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type Track, type TrackCues } from '../api'
+import {
+  api,
+  type AutoHotcuesResult,
+  type CuePoint,
+  type CueType,
+  type GridMarker,
+  type Track,
+  type TrackCues,
+  type TrackOrigin,
+  trackAudioUrl,
+  trackCuesFor,
+} from '../api'
+import { buildBeatGrid, GRID_EPS } from '../lib/beatgrid'
+import { slotLabeller, useCaps } from '../lib/capabilities'
+import { CUE_TYPE_LABELS, cueTypeColor } from '../lib/cues'
+import { keyColor } from '../lib/format'
+import { readOnlyShort, readOnlyNotice } from '../lib/platformCopy'
 import { analyzeWaveform, type WaveColumn } from '../lib/waveform'
+import { setAmbientFromArt } from '../lib/ambient'
+import { Icon } from '../lib/icons'
 import { ScratchEngine } from '../lib/scratchEngine'
 import { PlaybackEngine } from '../lib/playbackEngine'
-import { BeatJumpControls, BEAT_JUMP_SIZES } from './BeatJumpControls'
-import { GridControls } from './GridControls'
+import { AutoCueDialog, eventLabel } from './AutoCueDialog'
+import { ContextMenu, type MenuItem } from './ContextMenu'
+import { BpmReadout, GridEditStrip, TempoControls } from './GridControls'
 import { HotcueBar } from './HotcueBar'
-import { LoopControls } from './LoopControls'
+import { LoopControls, LOOP_SIZES, type LoopMode } from './LoopControls'
 import { MainWaveform, MIN_SEC, MAX_SEC, DEFAULT_SEC } from './MainWaveform'
 import { OverviewWaveform } from './OverviewWaveform'
 
@@ -19,23 +38,44 @@ interface Props {
   onError?: (msg: string) => void
   /** Neutral/success feedback (e.g. Auto Hotcues result). */
   onNotify?: (kind: 'success' | 'error', msg: string) => void
+  /**
+   * Which library the track belongs to, and so which endpoints serve its audio
+   * and cues: the loaded collection, a browsed DEVICE, or a browsed FOLDER of
+   * loose files. Every EDIT control is already inert for the last two — their
+   * capabilities say `writable: false`, and the deck gates on those — so this
+   * only needs to redirect the two READS.
+   */
+  origin?: TrackOrigin
+  /** Bumped when something outside the deck (batch grid analysis) rewrote the
+   *  loaded track's cues/grid, so the deck re-reads them. */
+  cuesRefresh?: number
 }
 
-function fmt(secs: number): string {
-  if (!isFinite(secs) || secs < 0) return '0:00'
-  const m = Math.floor(secs / 60)
-  const s = Math.floor(secs % 60)
-  return `${m}:${s.toString().padStart(2, '0')}`
+/** m:ss.t — the deck's readouts show tenths, as a CDJ does. */
+function fmtTenths(secs: number): string {
+  if (!isFinite(secs) || secs < 0) secs = 0
+  const tenths = Math.floor(secs * 10)
+  const m = Math.floor(tenths / 600)
+  const s = Math.floor((tenths % 600) / 10)
+  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${tenths % 10}`
 }
 
-const CUE_TYPES: { value: number; label: string }[] = [
-  { value: 0, label: 'Cue' },
-  { value: 1, label: 'Fade-In' },
-  { value: 2, label: 'Fade-Out' },
-  { value: 3, label: 'Load' },
-]
-const LOOP_TYPE = 5
-const LOOP_SIZES = [1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32]
+/**
+ * Digit key -> bank slot: 1..9 map to slots 0..8 and 0 maps to slot 10.
+ *
+ * Ten digits is the physical ceiling, so a bank larger than that simply has no
+ * shortcut for its tail. Returns null when the key is not a digit or the slot is
+ * beyond this platform's bank — an 8-slot bank behaves exactly as before.
+ */
+const DIGIT_RE = /^(?:Digit|Numpad)([0-9])$/
+
+function slotForDigit(code: string, slotCount: number): number | null {
+  const m = code.match(DIGIT_RE)
+  if (!m) return null
+  const slot = m[1] === '0' ? 9 : Number(m[1]) - 1
+  return slot < slotCount ? slot : null
+}
+
 
 /**
  * The DJ-style "prep strip" across the top of the window: transport controls on
@@ -44,28 +84,49 @@ const LOOP_SIZES = [1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32]
  * Web Audio PlaybackEngine (seamless loops); the same decoded buffer feeds the
  * scratch engine and both waveform views.
  */
-export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) {
+export function PrepStrip({
+  track,
+  playRequest = 0,
+  onError,
+  onNotify,
+  origin = 'collection',
+  cuesRefresh = 0,
+}: Props) {
   const qc = useQueryClient()
   const [playing, setPlaying] = useState(false)
   const [previewing, setPreviewing] = useState(false) // momentary hold-to-play active
+  // CUE is held down (mouse OR the C key) — drives the button's pressed look,
+  // which the pointer's :active alone cannot, since the key never touches it.
+  const [cueHeld, setCueHeld] = useState(false)
   const [current, setCurrent] = useState(0)
   const [duration, setDuration] = useState(0)
   const [ready, setReady] = useState(false)
   const [cols, setCols] = useState<WaveColumn[] | null>(null)
   const [waveStatus, setWaveStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [cueData, setCueData] = useState<TrackCues | null>(null)
+  // The beatgrid, rebuilt whenever the cue data is replaced (every edit returns
+  // a fresh TrackCues, so this stays in step automatically). Null = no grid.
+  const grid = useMemo(() => buildBeatGrid(cueData?.grid_markers), [cueData?.grid_markers])
   const [snap, setSnap] = useState(true)
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null)
   const [cuePoint, setCuePoint] = useState(0) // floating "CUE" point (frontend-only)
   const [secPerView, setSecPerView] = useState(DEFAULT_SEC) // main-waveform zoom (persisted)
-  const [jumpBeats, setJumpBeats] = useState(4) // beat-jump size in beats (persisted)
+  // ONE size, in beats, for beat loops and beat jump alike (persisted).
+  const [beatSize, setBeatSize] = useState(4)
+  const [loopMode, setLoopMode] = useState<LoopMode>('beat')
+  // Grid mode swaps the hotcue pads for the grid-editing strip.
+  const [gridMode, setGridMode] = useState(false)
+  const [padMenu, setPadMenu] = useState<{ slot: number; x: number; y: number } | null>(null)
+  const [renamingSlot, setRenamingSlot] = useState<number | null>(null)
 
   // Loop state (transient — persisted only when saved as a hotcue later).
   const [loopRegion, setLoopRegion] = useState<{ start: number; end: number } | null>(null)
   const [loopActive, setLoopActive] = useState(false)
   const [activeBeats, setActiveBeats] = useState<number | null>(null)
-  const loopInRef = useRef<number | null>(null) // armed manual loop-in point
-  const originalGridRef = useRef<{ bpm: number | null; anchor: number | null } | null>(null)
+  // The armed manual loop-in point: IN was pressed, OUT not yet. STATE, not a
+  // ref, because the IN button and the waveform both show it while it waits.
+  const [loopInPoint, setLoopInPoint] = useState<number | null>(null)
+  const originalGridRef = useRef<GridMarker[] | null>(null)
 
   const audioCtxRef = useRef<AudioContext | null>(null) // playback
   const scratchCtxRef = useRef<AudioContext | null>(null) // scratch (kept separate!)
@@ -76,7 +137,6 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   const engagedRef = useRef(false) // scratch engine is dragging or coasting
   const pendingPlayRef = useRef(false) // a play was requested; start once ready
   const loadedIdRef = useRef<string | null>(null) // trackId whose buffer is loaded
-  const [autoBusy, setAutoBusy] = useState(false)
   const [gridBusy, setGridBusy] = useState(false)
   // Active momentary "cue preview": a hotcue OR the CUE button held while paused
   // plays from its point and stops on release, unless `latched` (play pressed
@@ -111,25 +171,28 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     }
   }, [secPerView])
 
-  // Beat-jump size persists the same way (survives track switches + restarts).
-  const jumpHydratedRef = useRef(false)
-  const jumpSaveTimer = useRef<number | null>(null)
+  // The loop/jump size persists the same way (survives track switches +
+  // restarts). `beatJumpBeats` is its name from when only beat jump had a size;
+  // it is read once so an upgrade keeps the user's choice.
+  const sizeHydratedRef = useRef(false)
+  const sizeSaveTimer = useRef<number | null>(null)
   useEffect(() => {
-    if (jumpHydratedRef.current || !prefsQuery.data) return
-    jumpHydratedRef.current = true
-    const b = (prefsQuery.data as { beatJumpBeats?: unknown }).beatJumpBeats
-    if (typeof b === 'number' && BEAT_JUMP_SIZES.includes(b)) setJumpBeats(b)
+    if (sizeHydratedRef.current || !prefsQuery.data) return
+    sizeHydratedRef.current = true
+    const prefs = prefsQuery.data as { beatSize?: unknown; beatJumpBeats?: unknown }
+    const b = prefs.beatSize ?? prefs.beatJumpBeats
+    if (typeof b === 'number' && LOOP_SIZES.includes(b)) setBeatSize(b)
   }, [prefsQuery.data])
   useEffect(() => {
-    if (!jumpHydratedRef.current) return // don't clobber saved prefs pre-hydration
-    if (jumpSaveTimer.current) window.clearTimeout(jumpSaveTimer.current)
-    jumpSaveTimer.current = window.setTimeout(() => {
-      api.patchPrefs({ beatJumpBeats: jumpBeats }).catch(() => {})
+    if (!sizeHydratedRef.current) return // don't clobber saved prefs pre-hydration
+    if (sizeSaveTimer.current) window.clearTimeout(sizeSaveTimer.current)
+    sizeSaveTimer.current = window.setTimeout(() => {
+      api.patchPrefs({ beatSize }).catch(() => {})
     }, 500)
     return () => {
-      if (jumpSaveTimer.current) window.clearTimeout(jumpSaveTimer.current)
+      if (sizeSaveTimer.current) window.clearTimeout(sizeSaveTimer.current)
     }
-  }, [jumpBeats])
+  }, [beatSize])
 
   const getCtx = (): AudioContext => {
     if (!audioCtxRef.current) {
@@ -176,14 +239,23 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     setDuration(0)
     setReady(false)
     setSelectedSlot(null)
+    setPadMenu(null)
+    setRenamingSlot(null)
     setLoopRegion(null)
     setLoopActive(false)
     setActiveBeats(null)
     setCuePoint(0)
-    loopInRef.current = null
+    setLoopInPoint(null)
     previewRef.current = null
     setPreviewing(false)
+    setCueHeld(false)
   }, [trackId])
+
+  // Recolour the whole app from this track's cover art. A device's art is not
+  // served (only its audio is), so a device track keeps the default look.
+  useEffect(() => {
+    void setAmbientFromArt(trackId && origin === 'collection' ? api.artUrl(trackId) : null)
+  }, [trackId, origin])
 
   // Analyse once per track; the decoded buffer feeds both the playback and
   // scratch engines (no re-decode) and both waveform views share the columns.
@@ -198,7 +270,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     let cancelled = false
     setCols(null)
     setWaveStatus('loading')
-    analyzeWaveform(api.audioUrl(trackId))
+    analyzeWaveform(trackAudioUrl(origin, trackId))
       .then((res) => {
         if (cancelled) return
         setCols(res.cols)
@@ -229,7 +301,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     return () => {
       cancelled = true
     }
-  }, [trackId])
+  }, [trackId, origin])
 
   // Fetch beatgrid + cue markers for the loaded track.
   useEffect(() => {
@@ -239,13 +311,14 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     }
     let cancelled = false
     setCueData(null)
-    api
-      .trackCues(trackId)
+    ;trackCuesFor(origin, trackId)
       .then((d) => {
         if (cancelled) return
         setCueData(d)
-        // Remember the loaded grid values for "Reset".
-        originalGridRef.current = { bpm: d.bpm, anchor: d.grid_anchor }
+        // Remember the grid as loaded, for "Reset". Flexible-grid editing is
+        // multi-step and destructive, so restoring exactly what Traktor had is
+        // the safety net. Set only here (keyed on trackId), never by an edit.
+        originalGridRef.current = d.grid_markers
       })
       .catch(() => {
         if (!cancelled) setCueData(null)
@@ -253,7 +326,20 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     return () => {
       cancelled = true
     }
-  }, [trackId])
+  }, [trackId, origin])
+
+  // Re-read after an outside edit. Deliberately NOT the effect above: that one
+  // resets `originalGridRef`, and "Reset" should still restore the grid the
+  // track had before the outside edit replaced it.
+  useEffect(() => {
+    if (!trackId || !cuesRefresh) return
+    let cancelled = false
+    api.trackCues(trackId).then((d) => !cancelled && setCueData(d)).catch(() => {})
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cuesRefresh])
 
   const toggle = () => {
     const eng = playbackRef.current
@@ -316,8 +402,10 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   const onCuePress = () => {
     const eng = playbackRef.current
     if (!eng || !eng.ready) return
+    setCueHeld(true)
     getCtx()
     if (eng.playing) {
+      leaveLoopFor(cuePoint)
       eng.pause()
       eng.seek(cuePoint)
       setPlaying(false)
@@ -330,16 +418,32 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
       eng.seek(t)
       setCurrent(t)
     } else {
+      leaveLoopFor(cuePoint)
       beginPreview('cue', cuePoint)
     }
   }
-  const onCueRelease = () => endPreview('cue')
+  const onCueRelease = () => {
+    setCueHeld(false)
+    endPreview('cue')
+  }
+
+  // A key-up that happens in another window never arrives, which would leave
+  // the button looking held; letting go of the window lets go of CUE.
+  useEffect(() => {
+    const letGo = () => setCueHeld(false)
+    window.addEventListener('blur', letGo)
+    return () => window.removeEventListener('blur', letGo)
+  }, [])
 
   // A library row's play button bumps `playRequest`: load (if needed) + play.
   // If the requested track is already loaded and ready, start immediately;
   // otherwise flag it and the analysis effect starts playback once ready.
+  // Only a CHANGE is a request: the deck unmounts behind the library picker,
+  // and remounting with a non-zero count must not start playback.
+  const seenPlayRequestRef = useRef(playRequest)
   useEffect(() => {
-    if (playRequest === 0) return
+    if (playRequest === seenPlayRequestRef.current) return
+    seenPlayRequestRef.current = playRequest
     pendingPlayRef.current = true
     const eng = playbackRef.current
     if (loadedIdRef.current === trackId && eng?.ready) {
@@ -372,6 +476,16 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     setCurrent(t)
   }
 
+  // A cue jump that lands outside the engaged loop leaves it, Traktor-style.
+  // Without this the loop stays in force and Web Audio, started past a loop's
+  // end, wraps straight back into it. A jump inside the loop keeps it.
+  const leaveLoopFor = (t: number) => {
+    if (!loopActive || !loopRegion) return
+    if (t >= loopRegion.start && t < loopRegion.end) return
+    playbackRef.current?.setLoopEnabled(false)
+    setLoopActive(false)
+  }
+
   // User-driven seek from the waveforms: navigating away drops the active loop
   // (otherwise it would just pull playback back into the loop region).
   const seekManual = (t: number) => {
@@ -382,28 +496,42 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     seek(t)
   }
 
-  // ---- beat jump --------------------------------------------------------
-  // Step the jump size through BEAT_JUMP_SIZES, clamping at both ends (no wrap).
-  const stepJumpSize = (dir: -1 | 1) => {
-    setJumpBeats((b) => {
-      const i = BEAT_JUMP_SIZES.indexOf(b)
-      const next = Math.min(BEAT_JUMP_SIZES.length - 1, Math.max(0, (i < 0 ? 4 : i) + dir))
-      return BEAT_JUMP_SIZES[next]
-    })
-  }
-
-  // Move the playhead exactly `jumpBeats` beats fwd/back, preserving sub-beat
-  // phase (pure translation, no grid snap). Like seekManual, jumping escapes an
-  // active loop. seek() clamps to [0, duration], preserves play/pause state.
-  const beatJump = (dir: -1 | 1) => {
+  // ---- beat jump / loop move ------------------------------------------
+  // ‹ › (and ←/→): an engaged loop MOVES by its own length and keeps playing,
+  // Traktor-style; otherwise the playhead jumps `beatSize` beats. Both preserve
+  // sub-beat phase (pure translation, no grid snap), and seek() keeps the
+  // play/pause state.
+  const moveOrJump = (dir: -1 | 1) => {
     const eng = playbackRef.current
-    const bpm = cueData?.bpm ?? null
-    if (!eng || !bpm || bpm <= 0) return
-    if (loopActive) {
-      eng.setLoopEnabled(false)
-      setLoopActive(false)
+    if (!eng || !eng.ready) return
+    if (loopActive && loopRegion) {
+      const { start, end } = loopRegion
+      // A beat loop moves in BEATS, so it lands right across a tempo change; a
+      // manual loop has no beat length, so it moves by its duration.
+      let nStart: number
+      let nEnd: number
+      if (activeBeats != null && grid) {
+        nStart = grid.advanceBeats(start, dir * activeBeats)
+        nEnd = grid.advanceBeats(nStart, activeBeats)
+      } else {
+        const len = end - start
+        nStart = start + dir * len
+        nEnd = nStart + len
+      }
+      if (nStart < 0 || nEnd > duration) return // would leave the track
+      // The playhead travels with the loop, keeping its place inside it. The
+      // NEW loop is set first: the engine's seek honours the loop in force, so
+      // seeking first would wrap the playhead straight back into the old one.
+      const pos = eng.getPosition() + (nStart - start)
+      engagLoop(nStart, nEnd, activeBeats)
+      eng.seek(Math.min(nEnd - 0.001, Math.max(nStart, pos)))
+      setCurrent(eng.getPosition())
+      return
     }
-    eng.seek(eng.getPosition() + dir * jumpBeats * (60 / bpm))
+    if (!grid) return
+    // Phase is preserved in BEAT space, so a jump crossing a tempo change lands
+    // on the musically right beat rather than a fixed number of seconds away.
+    eng.seek(grid.advanceBeats(eng.getPosition(), dir * beatSize))
     setCurrent(eng.getPosition())
   }
 
@@ -475,13 +603,7 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
 
   // ---- loops ------------------------------------------------------------
   // Snap a time to the nearest beat when Snap is on (needs a beatgrid).
-  const snapTime = (t: number) => {
-    const bpm = cueData?.bpm ?? null
-    const anchor = cueData?.grid_anchor ?? null
-    if (!snap || !bpm || bpm <= 0 || anchor == null) return Math.max(0, t)
-    const beat = 60 / bpm
-    return Math.max(0, anchor + Math.round((t - anchor) / beat) * beat)
-  }
+  const snapTime = (t: number) => (snap && grid ? grid.snapToBeat(t) : Math.max(0, t))
 
   const engagLoop = (start: number, end: number, beats: number | null) => {
     const eng = playbackRef.current
@@ -490,14 +612,13 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     setLoopRegion({ start, end })
     setLoopActive(true)
     setActiveBeats(beats)
-    loopInRef.current = null
+    setLoopInPoint(null)
     setCurrent(eng.getPosition())
   }
 
   const setBeatLoop = (beats: number) => {
     const eng = playbackRef.current
-    const bpm = cueData?.bpm ?? null
-    if (!eng || !eng.ready || !bpm || bpm <= 0) return
+    if (!eng || !eng.ready || !grid) return
     // Pressing the size of the loop that's already playing disables it.
     if (loopActive && activeBeats === beats) {
       eng.setLoopEnabled(false)
@@ -508,21 +629,26 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     // Resizing an active loop keeps its start locked; only a fresh loop starts
     // at the current playhead.
     const start = loopActive && loopRegion ? loopRegion.start : snapTime(eng.getPosition())
-    engagLoop(start, start + beats * (60 / bpm), beats)
+    // Measured from the loop's own start, so a loop spanning a tempo change
+    // still covers the right number of beats.
+    engagLoop(start, grid.advanceBeats(start, beats), beats)
   }
 
   const loopIn = () => {
     const eng = playbackRef.current
     if (!eng || !eng.ready) return
-    loopInRef.current = snapTime(eng.getPosition())
+    setLoopInPoint(snapTime(eng.getPosition()))
   }
 
   const loopOut = () => {
     const eng = playbackRef.current
-    if (!eng || !eng.ready || loopInRef.current == null) return
+    if (!eng || !eng.ready) return
     const end = snapTime(eng.getPosition())
-    if (end <= loopInRef.current) return
-    engagLoop(loopInRef.current, end, null)
+    // OUT closes an armed IN — or, with a manual loop already set, moves that
+    // loop's end to the playhead (Traktor's loop-out adjust).
+    const start = loopInPoint ?? (loopRegion && activeBeats == null ? loopRegion.start : null)
+    if (start == null || end <= start) return
+    engagLoop(start, end, null)
   }
 
   const toggleLoop = () => {
@@ -534,8 +660,72 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     setCurrent(eng.getPosition())
   }
 
+  // − / + (and Cmd/Ctrl+↓/↑): step the shared size, clamping at both ends. An
+  // engaged BEAT loop follows it — halving or doubling from its locked start, as
+  // on a CDJ. A manual loop has no beat size to follow, so it is left alone.
+  const stepSize = (dir: -1 | 1) => {
+    const i = LOOP_SIZES.indexOf(beatSize)
+    const next = LOOP_SIZES[Math.min(LOOP_SIZES.length - 1, Math.max(0, (i < 0 ? 7 : i) + dir))]
+    if (next === beatSize) return
+    setBeatSize(next)
+    if (loopActive && activeBeats != null) setBeatLoop(next)
+  }
+
+  // The size key: a loop of exactly this size switches off; otherwise a loop of
+  // this size is set (from the playhead, or resized from an engaged loop's start).
+  const toggleSizeLoop = () => setBeatLoop(beatSize)
+
+  // A beat loop's end is stored in seconds, so editing the tempo of a marker
+  // inside it would silently detune it. Re-derive the end whenever the grid
+  // changes, keeping the loop the beat length the user actually asked for.
+  useEffect(() => {
+    if (!grid || !loopActive || !loopRegion || activeBeats == null) return
+    const end = grid.advanceBeats(loopRegion.start, activeBeats)
+    if (Math.abs(end - loopRegion.end) < 1e-4) return
+    playbackRef.current?.setLoop(loopRegion.start, end, true)
+    setLoopRegion({ start: loopRegion.start, end })
+    // Only the grid should trigger this; loop state changes set the end already.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grid])
+
+  // ---- capability-derived -----------------------------------------------
+  const caps = useCaps()
+  // Edits are guarded at the point of INTENT, so the user gets the reason
+  // instead of a 422 from the adapter's backstop, and the deck stays fully
+  // usable for listening — which is most of its value on a library you cannot
+  // write.
+  //
+  // TWO gates, not one. `writable` is the library; `cues.editable` and
+  // `grid.editable` are the features. A platform can be writable overall while
+  // its cue or grid store is not implemented yet, so gating only on `writable`
+  // would re-expose these controls the moment that flips — which is exactly how
+  // this would regress unnoticed when Rekordbox writes land.
+  const canEditCues = caps.writable && caps.cues.editable
+  const canEditGrid = caps.writable && caps.grid.editable
+  const refuseCueEdit = () => {
+    if (canEditCues) return false
+    onError?.(
+      readOnlyNotice(caps) ?? `Cues cannot be edited on ${caps.save.app_name} libraries yet.`,
+    )
+    return true
+  }
+  const refuseGridEdit = () => {
+    if (canEditGrid) return false
+    onError?.(
+      readOnlyNotice(caps) ??
+        `The beatgrid cannot be edited on ${caps.save.app_name} libraries yet.`,
+    )
+    return true
+  }
+  const slotCount = caps.cues.hotcue_slots
+  const slotLabel = slotLabeller(caps)
+  // Loops are a cue TYPE on some platforms and a separate bank on others; the
+  // dropdown only ever offers the point types.
+  const pointCueTypes = caps.cues.types.filter((t) => t !== 'loop')
+
   // ---- hotcues ----------------------------------------------------------
-  const hotcueAt = (slot: number) => cueData?.cues.find((c) => c.hotcue === slot) ?? null
+  const hotcueAt = (slot: number) =>
+    cueData?.cues.find((c) => c.role === 'hotcue' && c.slot === slot) ?? null
 
   const applyCueEdit = (fresh: TrackCues) => {
     setCueData(fresh)
@@ -546,10 +736,11 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
 
   // Map a loop length (seconds) back to a preset beat count for the size
   // highlight, snapping to the nearest preset when it's close (float tolerance).
-  const beatsForLength = (length: number): number | null => {
-    const bpm = cueData?.bpm ?? null
-    if (!bpm || bpm <= 0) return null
-    const beats = length / (60 / bpm)
+  // Needs the start as well as the length: under a marker list a duration
+  // alone no longer identifies a beat count.
+  const beatsForLoop = (start: number, length: number): number | null => {
+    if (!grid) return null
+    const beats = grid.beatsBetween(start, start + length)
     let best: number | null = null
     let bestDiff = Infinity
     for (const s of LOOP_SIZES) {
@@ -571,14 +762,15 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     if (!track) return
     const cue = hotcueAt(slot)
     if (!cue) {
+      if (refuseCueEdit()) return
       try {
         // Setting a hotcue while a loop is active stores it as a loop hotcue.
         if (loopActive && loopRegion) {
           const len = loopRegion.end - loopRegion.start
-          applyCueEdit(await api.createHotcue(track.id, slot, loopRegion.start, LOOP_TYPE, len))
+          applyCueEdit(await api.createCue(track.id, slot, loopRegion.start, 'loop', len))
         } else {
           const t = snapTime(playbackRef.current?.getPosition() ?? current)
-          applyCueEdit(await api.createHotcue(track.id, slot, t, 0))
+          applyCueEdit(await api.createCue(track.id, slot, t, 'cue'))
         }
         setSelectedSlot(slot)
       } catch (e) {
@@ -590,13 +782,14 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     const eng = playbackRef.current
     if (!eng || !eng.ready) return
     getCtx()
-    // A loop hotcue jumps to its start AND re-engages a loop of its length.
-    if (cue.type === LOOP_TYPE && cue.length > 0) {
-      seek(cue.start)
-      engagLoop(cue.start, cue.start + cue.length, beatsForLength(cue.length))
+    // A loop hotcue jumps to its start AND engages a loop of its length — the
+    // new loop FIRST, so the seek is not wrapped back into the old one.
+    if (cue.type === 'loop' && cue.length > 0) {
+      engagLoop(cue.start, cue.start + cue.length, beatsForLoop(cue.start, cue.length))
     } else {
-      seek(cue.start)
+      leaveLoopFor(cue.start)
     }
+    seek(cue.start)
     // Paused at press → momentary preview: play while held.
     if (!eng.playing) beginPreview(`hc:${slot}`, cue.start)
   }
@@ -604,67 +797,227 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
   // Hotcue slot released (mouse/touch up, or key up). Ends its momentary preview.
   const onSlotRelease = (slot: number) => endPreview(`hc:${slot}`)
 
-  // Auto Hotcues: the backend analyses the track's audio (librosa structural
-  // segmentation), snaps boundaries to the beatgrid, and fills empty slots only.
-  // Requires a beatgrid (button disabled otherwise).
-  const canAutoCue = !!(cueData?.bpm && cueData.bpm > 0 && cueData.grid_anchor != null)
-  const runAutoHotcues = async () => {
-    if (!track || !canAutoCue || autoBusy) return
-    const hotcueCount = (c: TrackCues | null) =>
-      c?.cues.filter((x) => x.hotcue >= 0).length ?? 0
-    if (hotcueCount(cueData) >= 8) {
-      onError?.('No free hotcue slots — delete some first')
-      return
-    }
-    setAutoBusy(true)
+  // Auto Hotcues: the button opens the slot-template dialog; the backend finds
+  // the track's structure on its beatgrid and places the template. Requires a
+  // beatgrid (button disabled otherwise) — every event is a bar on it.
+  const canAutoCue = grid != null
+  const [autoOpen, setAutoOpen] = useState(false)
+  const openAutoHotcues = () => {
+    if (!track || !canAutoCue) return
+    if (refuseCueEdit()) return
+    setAutoOpen(true)
+  }
+  const existingHotcues = useMemo(() => {
+    const m = new Map<number, CuePoint>()
+    for (const c of cueData?.cues ?? []) if (c.role === 'hotcue' && c.slot != null) m.set(c.slot, c)
+    return m
+  }, [cueData])
+  const autoHotcuesDone = (result: AutoHotcuesResult) => {
+    applyCueEdit(result.cues)
+    const by = (st: string) => result.outcomes.filter((o) => o.status === st)
+    const placed = by('placed').length
+    const missing = [...by('not_found'), ...by('out_of_range')].map((o) => eventLabel(o.event))
+    const kept = by('occupied').length + by('protected').length
+    const dupes = by('duplicate').map(
+      (o) => `${slotLabel(o.slot)} (same beat as ${slotLabel(o.duplicate_of ?? o.slot)})`,
+    )
+    const parts = [`Placed ${placed} hotcue${placed === 1 ? '' : 's'}`]
+    if (missing.length) parts.push(`not in this track: ${missing.join(', ')}`)
+    if (dupes.length) parts.push(`skipped ${dupes.join(', ')}`)
+    if (kept) parts.push(`${kept} occupied slot${kept === 1 ? '' : 's'} kept`)
+    onNotify?.(placed ? 'success' : 'error', parts.join(' · '))
+  }
+
+  const setSlotType = async (slot: number, type: CueType) => {
+    if (!track) return
+    if (refuseCueEdit()) return
     try {
-      const before = hotcueCount(cueData)
-      const fresh = await api.autoHotcues(track.id)
-      applyCueEdit(fresh)
-      const placed = Math.max(0, hotcueCount(fresh) - before)
-      if (placed === 0) {
-        onNotify?.('error', 'No clear structure found — no hotcues placed')
-      } else {
-        onNotify?.('success', `Placed ${placed} auto hotcue${placed === 1 ? '' : 's'}`)
-      }
+      applyCueEdit(await api.setCueType(track.id, slot, type))
     } catch (e) {
       onError?.((e as Error).message)
-    } finally {
-      setAutoBusy(false)
     }
   }
 
-  const changeSelectedType = async (type: number) => {
-    if (!track || selectedSlot == null) return
+  // Renaming re-sets the slot with its own position, type and length plus the
+  // new name — the adapter's set_cue replaces a slot, and keeps a name only
+  // when called without one. An empty name clears it.
+  const renameSlot = async (slot: number, name: string) => {
+    setRenamingSlot(null)
+    const cue = hotcueAt(slot)
+    if (!track || !cue) return
+    if (refuseCueEdit()) return
     try {
-      applyCueEdit(await api.setHotcueType(track.id, selectedSlot, type))
-    } catch (e) {
-      onError?.((e as Error).message)
-    }
-  }
-
-  const deleteSelected = async () => {
-    if (!track || selectedSlot == null) return
-    try {
-      applyCueEdit(await api.deleteHotcue(track.id, selectedSlot))
-      setSelectedSlot(null)
+      applyCueEdit(await api.createCue(track.id, slot, cue.start, cue.type, cue.length, name))
     } catch (e) {
       onError?.((e as Error).message)
     }
   }
 
   const deleteHotcueSlot = async (slot: number) => {
-    if (!track || !hotcueAt(slot)) return // nothing to remove in an empty slot
+    const existing = hotcueAt(slot)
+    if (!track || !existing) return // nothing to remove in an empty slot
+    if (!existing.editable) return // the adapter would refuse it
+    if (refuseCueEdit()) return
     try {
-      applyCueEdit(await api.deleteHotcue(track.id, slot))
+      applyCueEdit(await api.deleteCue(track.id, slot))
       if (selectedSlot === slot) setSelectedSlot(null)
     } catch (e) {
       onError?.((e as Error).message)
     }
   }
 
+  // ---- beatgrid ---------------------------------------------------------
+  // Which marker the grid controls act on is derived from the playhead — there
+  // is no separate selection state to keep in sync.
+  const activeMarkerIndex = grid ? grid.markerIndexAt(current) : -1
+  const activeMarker = activeMarkerIndex >= 0 ? grid!.markers[activeMarkerIndex] : null
+  // ~4px of the current zoom, so "on the marker" stays usable at 2s and 64s/view.
+  const markerHitSec = Math.max(0.01, secPerView / 250)
+  const atMarker = !!grid && grid.isOnMarker(current, markerHitSec)
+  const beforeFirstMarker = !!grid && current < grid.markers[0].start - GRID_EPS
+
+  const playheadNow = () => playbackRef.current?.getPosition() ?? current
+
+  const editMarker = async (index: number, patch: { bpm?: number; start?: number }) => {
+    if (!track || index < 0) return
+    if (refuseGridEdit()) return
+    try {
+      applyCueEdit(await api.setGridMarker(track.id, index, patch))
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+  const setBpm = (bpm: number) =>
+    editMarker(activeMarkerIndex, { bpm: Math.round(bpm * 1000) / 1000 })
+  const nudgeBpm = (delta: number) => activeMarker && setBpm(activeMarker.bpm + delta)
+  // /2 and x2 retempo the governing marker only, like every other tempo control
+  // in this panel — a section can be octave-wrong on its own.
+  const halveBpm = () => activeMarker && setBpm(activeMarker.bpm / 2)
+  const doubleBpm = () => activeMarker && setBpm(activeMarker.bpm * 2)
+  // A beat is the governing marker's own beat: moving a marker by whole beats
+  // shifts which beat is the downbeat without changing the phase.
+  const nudgeGridBeats = (beats: number) => {
+    if (activeMarker) nudgeGrid((beats * 60000) / activeMarker.bpm)
+  }
+  const nudgeGrid = (deltaMs: number) => {
+    if (!activeMarker) return
+    editMarker(activeMarkerIndex, { start: Math.max(0, activeMarker.start + deltaMs / 1000) })
+  }
+  // With no grid, a tempo from TAP or the typed readout CREATES one, with its
+  // first marker at an anchor captured when the gesture began: the first tap
+  // (a beat, when tapping along), or where the playhead stood when Set grid
+  // asked for a BPM. The Grid-mode nudges fix the phase. While that create is
+  // in flight, later tempos wait for it rather than creating a second grid.
+  const tapAnchorRef = useRef(0)
+  const gridAnchorRef = useRef<number | null>(null) // Set grid's, while the readout asks
+  const gridCreateRef = useRef<Promise<boolean> | null>(null)
+  const [bpmEntryRequest, setBpmEntryRequest] = useState(0) // bump → readout opens for typing
+  const tapStart = () => {
+    tapAnchorRef.current = playheadNow()
+  }
+  const commitBpm = async (bpm: number, anchor: number) => {
+    if (!track) return
+    // This closure predates the grid it is waiting for, so it cannot use
+    // activeMarkerIndex — but a grid created here has exactly one marker.
+    if (gridCreateRef.current) {
+      if (await gridCreateRef.current) editMarker(0, { bpm })
+      return
+    }
+    if (markerCount > 0) return setBpm(bpm)
+    if (refuseGridEdit()) return
+    const create = api
+      .addGridMarker(track.id, anchor, bpm)
+      .then((cues) => (applyCueEdit(cues), true))
+      .catch((e) => (onError?.((e as Error).message), false))
+      .finally(() => (gridCreateRef.current = null))
+    gridCreateRef.current = create
+    await create
+  }
+  // Adds a marker at the playhead — and creates the grid when there is none.
+  // Uses the raw playhead, not snapTime: a marker defines where beats are.
+  // A first marker needs a tempo: the track's own BPM when it has one (passed
+  // explicitly — Rekordbox does not fall back to it), else the readout opens
+  // to ask, and the marker lands where the playhead is NOW once it is typed.
+  const addMarkerHere = async () => {
+    if (!track) return
+    if (refuseGridEdit()) return
+    if (markerCount === 0 && !track.bpm) {
+      gridAnchorRef.current = playheadNow()
+      setBpmEntryRequest((n) => n + 1)
+      return
+    }
+    try {
+      applyCueEdit(
+        await api.addGridMarker(track.id, playheadNow(), markerCount === 0 ? (track.bpm ?? undefined) : undefined),
+      )
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+  const deleteMarkerHere = async () => {
+    if (!track || activeMarkerIndex < 0) return
+    if (refuseGridEdit()) return
+    try {
+      applyCueEdit(await api.deleteGridMarker(track.id, activeMarkerIndex))
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+  // Seeking between markers IS how the user changes which marker is active.
+  const seekToMarker = (index: number) => {
+    if (!grid || index < 0 || index >= grid.count) return
+    seekManual(grid.markers[index].start)
+  }
+  const prevMarker = () => seekToMarker(grid ? grid.prevMarkerIndex(current, markerHitSec) : -1)
+  const nextMarker = () => seekToMarker(grid ? grid.nextMarkerIndex(current, markerHitSec) : -1)
+  const resetGrid = async () => {
+    const o = originalGridRef.current
+    if (!track || !o) return
+    if (refuseGridEdit()) return
+    try {
+      applyCueEdit(await api.replaceGridMarkers(track.id, o))
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+  const toggleLock = async () => {
+    if (!track) return
+    if (refuseGridEdit()) return
+    try {
+      applyCueEdit(await api.setGridLock(track.id, !cueData?.grid_locked))
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+  const deleteGrid = async () => {
+    if (!track) return
+    if (refuseGridEdit()) return
+    try {
+      applyCueEdit(await api.deleteGrid(track.id))
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+  // Analyze: backend detects BPM + first beat, sets the grid anchor and hotcue 1.
+  const runAnalyzeGrid = async () => {
+    if (!track || gridBusy) return
+    if (refuseGridEdit()) return
+    setGridBusy(true)
+    try {
+      applyCueEdit(await api.autoGrid(track.id))
+      onNotify?.('success', 'Analyzed — set BPM, grid, and hotcue 1')
+    } catch (e) {
+      onError?.((e as Error).message)
+    } finally {
+      setGridBusy(false)
+    }
+  }
+
   // ---- keyboard shortcuts ----------------------------------------------
   // Space → play/pause; 1–8 → the matching hotcue slot; Shift+1–8 → delete it.
+  // ←/→ → beat jump, or move an engaged loop; Shift+←/→ → step between grid
+  // markers; Cmd/Ctrl+↑/↓ → the loop/jump size, resizing an engaged beat loop
+  // (Shift+↑/↓ is the track table's extend-selection).
   // Digits are read from e.code (layout-/Shift-independent) and a ref holds the
   // latest handlers so the listener attaches once and never goes stale.
   const shortcutsRef = useRef({
@@ -674,7 +1027,11 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     deleteHotcueSlot,
     onCuePress,
     onCueRelease,
-    beatJump,
+    moveOrJump,
+    stepSize,
+    prevMarker,
+    nextMarker,
+    slotCount,
   })
   shortcutsRef.current = {
     toggle,
@@ -683,13 +1040,25 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     deleteHotcueSlot,
     onCuePress,
     onCueRelease,
-    beatJump,
+    moveOrJump,
+    stepSize,
+    prevMarker,
+    nextMarker,
+    slotCount,
   }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // Ignore while typing in a field or with a non-Shift modifier held.
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      // Cmd (macOS) / Ctrl (Windows, Linux), either accepted as Cmd/Ctrl+A is.
+      // Repeats allowed: holding it sweeps through the sizes.
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey &&
+          (e.code === 'ArrowUp' || e.code === 'ArrowDown')) {
+        e.preventDefault()
+        shortcutsRef.current.stepSize(e.code === 'ArrowUp' ? 1 : -1)
+        return
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return
       if (e.repeat) return // held key auto-repeats — treat as one press+hold
       if (e.code === 'Space') {
@@ -704,18 +1073,19 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
       }
       if (e.code === 'ArrowLeft') {
         e.preventDefault()
-        shortcutsRef.current.beatJump(-1)
+        if (e.shiftKey) shortcutsRef.current.prevMarker()
+        else shortcutsRef.current.moveOrJump(-1)
         return
       }
       if (e.code === 'ArrowRight') {
         e.preventDefault()
-        shortcutsRef.current.beatJump(1)
+        if (e.shiftKey) shortcutsRef.current.nextMarker()
+        else shortcutsRef.current.moveOrJump(1)
         return
       }
-      const digit = e.code.match(/^(?:Digit|Numpad)([1-8])$/)
-      if (digit) {
+      const slot = slotForDigit(e.code, shortcutsRef.current.slotCount)
+      if (slot != null) {
         e.preventDefault()
-        const slot = Number(digit[1]) - 1
         if (e.shiftKey) void shortcutsRef.current.deleteHotcueSlot(slot)
         else void shortcutsRef.current.onSlotPress(slot)
       }
@@ -723,8 +1093,8 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     // keyup ends a held hotcue's momentary preview (release).
     const onKeyRelease = (e: KeyboardEvent) => {
       if (e.code === 'KeyC') shortcutsRef.current.onCueRelease()
-      const digit = e.code.match(/^(?:Digit|Numpad)([1-8])$/)
-      if (digit) shortcutsRef.current.onSlotRelease(Number(digit[1]) - 1)
+      const slot = slotForDigit(e.code, shortcutsRef.current.slotCount)
+      if (slot != null) shortcutsRef.current.onSlotRelease(slot)
     }
     window.addEventListener('keydown', onKey)
     window.addEventListener('keyup', onKeyRelease)
@@ -734,81 +1104,87 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
     }
   }, [])
 
-  // ---- beatgrid ---------------------------------------------------------
-  const gridBpm = cueData?.bpm ?? null
-  const gridAnchor = cueData?.grid_anchor ?? null
-  // Beat jump needs a tempo to size beats; disabled on ungridded tracks.
-  const canBeatJump = ready && gridBpm != null && gridBpm > 0
-
-  const editGrid = async (patch: { bpm?: number; anchor?: number }) => {
-    if (!track) return
-    try {
-      applyCueEdit(await api.setGrid(track.id, patch))
-    } catch (e) {
-      onError?.((e as Error).message)
-    }
-  }
-  const setBpm = (bpm: number) => editGrid({ bpm })
-  const nudgeBpm = (delta: number) =>
-    gridBpm && editGrid({ bpm: Math.round((gridBpm + delta) * 1000) / 1000 })
-  const halveBpm = () => gridBpm && editGrid({ bpm: gridBpm / 2 })
-  const doubleBpm = () => gridBpm && editGrid({ bpm: gridBpm * 2 })
-  const nudgeGrid = (deltaMs: number) => {
-    if (gridAnchor == null) return
-    editGrid({ anchor: Math.max(0, gridAnchor + deltaMs / 1000) })
-  }
-  const setGridHere = () => editGrid({ anchor: playbackRef.current?.getPosition() ?? current })
-  const resetGrid = () => {
-    const o = originalGridRef.current
-    if (!o) return
-    editGrid({ bpm: o.bpm ?? undefined, anchor: o.anchor ?? undefined })
-  }
-  const toggleLock = async () => {
-    if (!track) return
-    try {
-      applyCueEdit(await api.setLock(track.id, !cueData?.locked))
-    } catch (e) {
-      onError?.((e as Error).message)
-    }
-  }
-  const deleteGrid = async () => {
-    if (!track) return
-    try {
-      applyCueEdit(await api.deleteGrid(track.id))
-    } catch (e) {
-      onError?.((e as Error).message)
-    }
-  }
-  // Analyze: backend detects BPM + first beat, sets the grid anchor and hotcue 1.
-  const runAnalyzeGrid = async () => {
-    if (!track || gridBusy) return
-    setGridBusy(true)
-    try {
-      applyCueEdit(await api.autoGrid(track.id))
-      onNotify?.('success', 'Analyzed — set BPM, grid, and hotcue 1')
-    } catch (e) {
-      onError?.((e as Error).message)
-    } finally {
-      setGridBusy(false)
-    }
-  }
-
-  const selectedCue = selectedSlot != null ? hotcueAt(selectedSlot) : null
   const showWaves = track && cols && waveStatus === 'ready'
   const activeLoop = loopActive && loopRegion ? loopRegion : null
+  const markerCount = grid?.count ?? 0
+  const subtitle = track
+    ? [track.artist ?? 'Unknown artist', track.album, track.genre].filter(Boolean).join(' · ')
+    : ''
+
+  // The pad's right-click menu: its type (as one-click choices, the current one
+  // ticked), Rename, Delete. A cue the adapter will not edit gets the same menu
+  // disabled, so the reason is visible instead of the menu silently not opening.
+  const padMenuItems = (slot: number): MenuItem[] => {
+    const cue = hotcueAt(slot)
+    if (!cue) return []
+    const locked = !cue.editable
+    const items: MenuItem[] = []
+    if (cue.type === 'loop') {
+      items.push({ heading: `Hotcue ${slotLabel(slot)} · Loop` })
+    } else if (pointCueTypes.length > 1) {
+      items.push({ heading: `Hotcue ${slotLabel(slot)} · Type` })
+      for (const t of pointCueTypes) {
+        const color = cueTypeColor(t)
+        items.push({
+          label: CUE_TYPE_LABELS[t],
+          icon: (
+            <span
+              className="block h-2 w-2 rounded-full"
+              style={{ background: color, boxShadow: `0 0 6px ${color}` }}
+            />
+          ),
+          hint: t === cue.type ? '✓' : undefined,
+          disabled: locked,
+          onClick: () => t !== cue.type && void setSlotType(slot, t),
+        })
+      }
+    } else {
+      items.push({ heading: `Hotcue ${slotLabel(slot)}` })
+    }
+    if (locked) items.push({ heading: 'Managed by the DJ app — not editable here' })
+    items.push({ separator: true })
+    items.push({
+      label: 'Rename…',
+      disabled: locked,
+      onClick: () => !refuseCueEdit() && setRenamingSlot(slot),
+    })
+    items.push({
+      label: 'Delete',
+      danger: true,
+      disabled: locked,
+      onClick: () => void deleteHotcueSlot(slot),
+    })
+    return items
+  }
+
+  const DIVIDER = <span aria-hidden className="h-7 w-px shrink-0 bg-line" />
 
   return (
-    <div className="flex h-[25.5rem] shrink-0 items-stretch gap-px border-b border-line bg-ink-950">
-      {/* Controls */}
-      <div className="flex w-72 shrink-0 flex-col gap-3 bg-ink-900 px-4 py-3">
-        <div className="min-w-0">
+    <div className="glass flex h-[19.75rem] shrink-0 flex-col gap-2 p-4">
+      {/* ---- Header: the track, its readouts, the analysis actions ---- */}
+      <div className="flex h-12 shrink-0 items-center gap-3">
+        <CoverThumb trackId={track && origin === 'collection' ? track.id : null} />
+        <div className="min-w-0 flex-1">
           {track ? (
             <>
-              <div className="truncate text-sm font-semibold text-text" title={track.title ?? ''}>
-                {track.title ?? 'Untitled'}
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-[17px] font-semibold tracking-tight text-text" title={track.title ?? ''}>
+                  {track.title ?? 'Untitled'}
+                </span>
+                {/* The deck stays usable for listening on a read-only library,
+                    so say which it is rather than leaving the edit controls
+                    looking live. The controls report the reason when pressed. */}
+                {readOnlyShort(caps) && (
+                  <span
+                    className="shrink-0 rounded-md bg-ink-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted"
+                    title={readOnlyNotice(caps) ?? ''}
+                  >
+                    {readOnlyShort(caps)}
+                  </span>
+                )}
               </div>
-              <div className="truncate text-xs text-muted" title={track.artist ?? ''}>
-                {track.artist ?? 'Unknown artist'}
+              <div className="truncate text-[13px] text-muted" title={subtitle}>
+                {subtitle}
               </div>
             </>
           ) : (
@@ -816,194 +1192,298 @@ export function PrepStrip({ track, playRequest = 0, onError, onNotify }: Props) 
           )}
         </div>
 
-        {track && (
-          <GridControls
-            bpm={gridBpm}
-            locked={cueData?.locked ?? false}
-            hasGrid={gridAnchor != null}
-            onSetBpm={setBpm}
-            onNudgeBpm={nudgeBpm}
-            onHalve={halveBpm}
-            onDouble={doubleBpm}
-            onNudge={nudgeGrid}
-            onSetHere={setGridHere}
-            onReset={resetGrid}
-            onToggleLock={toggleLock}
-            onDeleteGrid={deleteGrid}
-            onAnalyze={runAnalyzeGrid}
-            analyzing={gridBusy}
-          />
-        )}
-
-        <div className="mt-auto flex items-center gap-2">
-          <button
-            onPointerDown={(e) => {
-              e.preventDefault()
-              e.currentTarget.setPointerCapture(e.pointerId)
-              onCuePress()
-            }}
-            onPointerUp={onCueRelease}
-            onPointerCancel={onCueRelease}
-            disabled={!ready}
-            className="flex h-11 items-center justify-center rounded-xl border border-line bg-ink-850 px-4 text-sm font-bold tracking-wide text-gold transition-colors hover:border-gold disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line"
-            title="Cue — set the cue point (paused), hold to preview from it, or jump back to it (playing)"
-          >
-            CUE
-          </button>
-          <button
-            onClick={toggle}
-            disabled={!ready}
-            className={
-              'flex h-11 w-11 items-center justify-center rounded-xl transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 ' +
-              (previewing
-                ? 'bg-gold text-ink-950 shadow-lg shadow-gold/20 hover:brightness-110'
-                : playing
-                  ? 'bg-mint text-ink-950 shadow-lg shadow-mint/20 hover:brightness-110'
-                  : 'border border-line bg-ink-850 text-text hover:border-accent disabled:hover:border-line')
-            }
-            title={playing ? 'Pause' : 'Play'}
-          >
-            {playing ? (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-                <rect x="6" y="5" width="4" height="14" rx="1" />
-                <rect x="14" y="5" width="4" height="14" rx="1" />
-              </svg>
-            ) : (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-                <path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.29-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z" />
-              </svg>
-            )}
-          </button>
-          <div className="tabular-nums text-lg font-medium text-muted">
-            {fmt(current)} / {fmt(duration)}
+        <div className="well flex h-11 shrink-0 items-stretch rounded-xl">
+          <div className="flex flex-col justify-center gap-px px-4">
+            <span className="text-[10px] tracking-[0.08em] text-faint">ELAPSED</span>
+            <span className="font-mono text-[17px] font-medium">{fmtTenths(current)}</span>
           </div>
+          <span aria-hidden className="my-2 w-px bg-line" />
+          <div className="flex flex-col justify-center gap-px px-4">
+            <span className="text-[10px] tracking-[0.08em] text-faint">REMAIN</span>
+            <span className="font-mono text-[17px] font-medium">−{fmtTenths(Math.max(0, duration - current))}</span>
+          </div>
+          <span aria-hidden className="my-2 w-px bg-line" />
+          <div className="flex flex-col justify-center gap-px px-4">
+            <span className="text-[10px] tracking-[0.08em] text-faint">KEY</span>
+            <span
+              className="font-mono text-[17px] font-semibold"
+              style={{ color: keyColor(track?.key_wheel ?? null) }}
+            >
+              {track?.key || '—'}
+            </span>
+          </div>
+          <span aria-hidden className="my-2 w-px bg-line" />
+          <BpmReadout
+            bpm={activeMarker?.bpm ?? null}
+            editable={canEditGrid}
+            onSetBpm={(bpm) => commitBpm(bpm, gridAnchorRef.current ?? playheadNow())}
+            onClose={() => (gridAnchorRef.current = null)}
+            openRequest={bpmEntryRequest}
+          />
         </div>
 
-        <BeatJumpControls
-          beats={jumpBeats}
-          onStep={stepJumpSize}
-          onJump={beatJump}
-          disabled={!canBeatJump}
-        />
+        <button
+          onClick={() => setSnap((v) => !v)}
+          aria-pressed={snap}
+          title="Snap cues and loops to the nearest beat"
+          className={`h-9 shrink-0 rounded-full px-3.5 text-xs font-semibold tracking-[0.08em] ${
+            snap ? 'is-selected text-text' : 'btn-glass text-muted'
+          }`}
+        >
+          SNAP
+        </button>
+        <button
+          onClick={runAnalyzeGrid}
+          disabled={!track || gridBusy}
+          title="Detect BPM and first beat, then set the grid + hotcue 1 (fix the octave with ÷2 / ×2)"
+          className="btn-glass flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 text-[13px] font-medium disabled:opacity-40"
+        >
+          <Icon name="wave" size={16} />
+          {gridBusy ? 'Analyzing…' : 'Analyze'}
+        </button>
+        <button
+          onClick={openAutoHotcues}
+          disabled={!track || !canAutoCue}
+          title={
+            canAutoCue
+              ? "Place hotcues on the track's drops, breakdowns and other sections"
+              : 'Set a beatgrid first'
+          }
+          className="btn-glass flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 text-[13px] font-medium disabled:opacity-40"
+        >
+          <Icon name="sparkle" size={16} />
+          Auto hotcues
+        </button>
       </div>
 
-      {/* Waveforms + loop/hotcue controls. */}
-      <div className="relative flex min-w-0 flex-1 flex-col bg-ink-900">
-        {!track ? (
-          <div className="flex flex-1 items-center justify-center text-xs text-faint">
-            Load a track to prep it
-          </div>
-        ) : waveStatus === 'error' ? (
-          <div className="flex flex-1 items-center justify-center text-xs text-pink">
-            Could not load audio — file may be missing or an unsupported format.
-          </div>
-        ) : (
-          <>
-            <div className="relative min-h-0 flex-1">
-              {showWaves ? (
-                <MainWaveform
-                  cols={cols}
-                  currentTime={current}
-                  duration={duration}
-                  cues={cueData?.cues ?? []}
-                  cuePoint={cuePoint}
-                  bpm={cueData?.bpm ?? null}
-                  gridAnchor={cueData?.grid_anchor ?? null}
-                  loop={activeLoop}
-                  secPerView={secPerView}
-                  onZoomChange={setSecPerView}
-                  onSeek={seekManual}
-                  onScratchStart={onScratchStart}
-                  onScratchMove={onScratchMove}
-                  onScratchEnd={onScratchEnd}
-                />
-              ) : (
-                <div className="flex h-full items-center justify-center text-xs text-faint">
-                  Analysing waveform…
-                </div>
-              )}
-            </div>
-            <div className="h-10 shrink-0 border-t border-line">
-              {showWaves && (
-                <OverviewWaveform
-                  cols={cols}
-                  currentTime={current}
-                  duration={duration}
-                  cues={cueData?.cues ?? []}
-                  cuePoint={cuePoint}
-                  loop={activeLoop}
-                  onSeek={seekManual}
-                />
-              )}
-            </div>
-
-            <LoopControls
-              bpm={cueData?.bpm ?? null}
-              active={loopActive}
-              activeBeats={activeBeats}
-              canToggle={loopRegion != null}
-              snap={snap}
-              onToggleSnap={() => setSnap((s) => !s)}
-              onSetLoop={setBeatLoop}
-              onLoopIn={loopIn}
-              onLoopOut={loopOut}
-              onToggleActive={toggleLoop}
-            />
-
-            {/* Hotcue row: label · 8 slots · type of selected cue · delete. */}
-            <div className="flex h-10 shrink-0 items-stretch gap-px border-t border-line bg-ink-950">
-              <span className="flex w-16 items-center justify-center bg-ink-900 text-[10px] font-semibold uppercase tracking-wider text-faint">
-                Cues
-              </span>
-              <HotcueBar
+      {/* ---- Waveforms ---- */}
+      {!track ? (
+        <div className="well flex min-h-0 flex-1 items-center justify-center rounded-2xl text-xs text-faint">
+          Load a track to prep it
+        </div>
+      ) : waveStatus === 'error' ? (
+        <div className="well flex min-h-0 flex-1 items-center justify-center rounded-2xl text-xs text-pink">
+          Could not load audio — file may be missing or an unsupported format.
+        </div>
+      ) : (
+        <>
+          <div className="well relative min-h-0 flex-1 overflow-hidden rounded-2xl">
+            {showWaves ? (
+              <MainWaveform
+                cols={cols}
+                currentTime={current}
+                duration={duration}
                 cues={cueData?.cues ?? []}
-                selectedSlot={selectedSlot}
-                onSlotPress={onSlotPress}
-                onSlotRelease={onSlotRelease}
+                cuePoint={cuePoint}
+                grid={grid}
+                activeMarker={activeMarkerIndex}
+                emphasizeGrid={gridMode}
+                loop={activeLoop}
+                idleLoop={!loopActive ? loopRegion : null}
+                loopIn={loopInPoint}
+                secPerView={secPerView}
+                onZoomChange={setSecPerView}
+                onSeek={seekManual}
+                onScratchStart={onScratchStart}
+                onScratchMove={onScratchMove}
+                onScratchEnd={onScratchEnd}
               />
-              <div className="flex w-28 items-center justify-center bg-ink-900 px-1">
-                {selectedCue && selectedCue.type === LOOP_TYPE ? (
-                  <span className="text-sm font-semibold text-mint">Loop</span>
-                ) : (
-                  <select
-                    value={selectedCue ? selectedCue.type : ''}
-                    disabled={!selectedCue}
-                    onChange={(e) => changeSelectedType(Number(e.target.value))}
-                    className="w-full bg-transparent text-center text-sm font-semibold text-text outline-none disabled:opacity-40"
-                  >
-                    {!selectedCue && <option value="">—</option>}
-                    {CUE_TYPES.map((t) => (
-                      <option key={t.value} value={t.value}>
-                        {t.label}
-                      </option>
-                    ))}
-                  </select>
-                )}
+            ) : (
+              <div className="flex h-full items-center justify-center text-xs text-faint">
+                Analysing waveform…
               </div>
-              <button
-                onClick={runAutoHotcues}
-                disabled={!canAutoCue || autoBusy}
-                title={
-                  canAutoCue
-                    ? 'Auto-place hotcues at detected phrase boundaries (empty slots only)'
-                    : 'Set a beatgrid first'
-                }
-                className="flex w-16 items-center justify-center gap-1 bg-ink-900 text-[11px] font-semibold uppercase tracking-wider text-muted transition-colors hover:bg-ink-800 hover:text-accent disabled:opacity-30 disabled:hover:bg-ink-900 disabled:hover:text-muted"
-              >
-                {autoBusy ? '…' : '✨ Auto'}
-              </button>
-              <button
-                onClick={deleteSelected}
-                disabled={!selectedCue}
-                title="Delete selected hotcue"
-                className="flex w-12 items-center justify-center bg-ink-900 text-muted transition-colors hover:bg-ink-800 hover:text-pink disabled:opacity-30 disabled:hover:bg-ink-900 disabled:hover:text-muted"
-              >
-                🗑
-              </button>
-            </div>
-          </>
+            )}
+          </div>
+          <div className="well h-7 shrink-0 overflow-hidden rounded-[9px]">
+            {showWaves && (
+              <OverviewWaveform
+                cols={cols}
+                currentTime={current}
+                duration={duration}
+                cues={cueData?.cues ?? []}
+                cuePoint={cuePoint}
+                loop={activeLoop}
+                secPerView={secPerView}
+                onSeek={seekManual}
+              />
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ---- Controls: transport · loop/jump · pads or grid · tempo ---- */}
+      <div className="flex h-11 shrink-0 items-center gap-3">
+        <button
+          onClick={toggle}
+          disabled={!ready}
+          className={
+            'flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 ' +
+            (previewing
+              ? 'bg-gradient-to-b from-white to-gold text-ink-950 shadow-[0_0_0_4px_rgb(255_200_97/0.22),0_8px_24px_-4px_var(--color-gold)]'
+              : playing
+                ? 'btn-primary shadow-[0_0_0_4px_color-mix(in_oklab,var(--color-accent)_22%,transparent),0_8px_24px_-4px_var(--color-accent)]'
+                : 'btn-glass text-text')
+          }
+          title={playing ? 'Pause (Space)' : 'Play (Space)'}
+        >
+          <Icon name={playing ? 'pause' : 'play'} size={16} />
+        </button>
+        <button
+          onPointerDown={(e) => {
+            e.preventDefault()
+            e.currentTarget.setPointerCapture(e.pointerId)
+            onCuePress()
+          }}
+          onPointerUp={onCueRelease}
+          onPointerCancel={onCueRelease}
+          disabled={!ready}
+          aria-pressed={cueHeld}
+          className={`flex h-10 w-14 shrink-0 items-center justify-center rounded-xl font-mono text-[13px] font-semibold tracking-wider transition-[background-color,box-shadow,transform,color] duration-75 disabled:cursor-not-allowed disabled:opacity-40 ${
+            cueHeld
+              ? // Held: lit like a pressed controller button — brighter fill,
+                // solid gold rim, a glow, and a slight press-in.
+                'scale-[0.96] bg-gold/35 text-[#fff1cc] shadow-[inset_0_1px_0_rgb(255_255_255/0.3),inset_0_0_0_1px_rgb(255_200_97/0.9),0_0_20px_-2px_rgb(255_200_97/0.75)]'
+              : 'bg-gold/10 text-gold shadow-[inset_0_1px_0_rgb(255_255_255/0.12),inset_0_0_0_1px_rgb(255_200_97/0.4)] hover:bg-gold/15'
+          }`}
+          title="Cue — set the cue point (paused), hold to preview from it, or jump back to it (playing) (C)"
+        >
+          CUE
+        </button>
+        {DIVIDER}
+        <LoopControls
+          mode={loopMode}
+          onMode={setLoopMode}
+          hasGrid={grid != null}
+          ready={ready}
+          size={beatSize}
+          onSmaller={() => stepSize(-1)}
+          onBigger={() => stepSize(1)}
+          loopActive={loopActive}
+          sizeLit={loopActive && activeBeats === beatSize}
+          onToggleSize={toggleSizeLoop}
+          canToggle={loopRegion != null}
+          inArmed={loopInPoint != null}
+          manualSet={loopRegion != null && activeBeats == null}
+          onLoopIn={loopIn}
+          onLoopOut={loopOut}
+          onToggleLoop={toggleLoop}
+          onMove={moveOrJump}
+        />
+        {DIVIDER}
+        {gridMode ? (
+          <GridEditStrip
+            markerIndex={activeMarkerIndex}
+            markerCount={markerCount}
+            markerStart={activeMarker?.start ?? null}
+            atMarker={atMarker}
+            beforeFirst={beforeFirstMarker}
+            canReset={originalGridRef.current != null}
+            onPrevMarker={prevMarker}
+            onNextMarker={nextMarker}
+            onNudgeMarker={nudgeGrid}
+            onNudgeMarkerBeats={nudgeGridBeats}
+            onAddMarker={addMarkerHere}
+            onDeleteMarker={deleteMarkerHere}
+            onDeleteGrid={deleteGrid}
+            onReset={resetGrid}
+          />
+        ) : (
+          <HotcueBar
+            cues={cueData?.cues ?? []}
+            slotCount={slotCount}
+            slotLabel={slotLabel}
+            selectedSlot={selectedSlot}
+            onSlotPress={onSlotPress}
+            onSlotRelease={onSlotRelease}
+            onSlotMenu={(slot, x, y) => {
+              setSelectedSlot(slot)
+              if (hotcueAt(slot)) setPadMenu({ slot, x, y })
+            }}
+            renamingSlot={renamingSlot}
+            onRenameCommit={renameSlot}
+            onRenameCancel={() => setRenamingSlot(null)}
+          />
         )}
+        {DIVIDER}
+        <TempoControls
+          bpm={activeMarker?.bpm ?? null}
+          locked={cueData?.grid_locked ?? false}
+          lockable={caps.grid.lockable}
+          flexible={markerCount > 1}
+          markerIndex={activeMarkerIndex}
+          onTapStart={tapStart}
+          onTapBpm={(bpm) => commitBpm(bpm, tapAnchorRef.current)}
+          onNudgeBpm={nudgeBpm}
+          onHalve={halveBpm}
+          onDouble={doubleBpm}
+          onToggleLock={toggleLock}
+        />
+        <button
+          onClick={() => {
+            setGridMode((g) => !g)
+            setPadMenu(null)
+            setRenamingSlot(null)
+          }}
+          aria-pressed={gridMode}
+          disabled={!track}
+          title={gridMode ? 'Back to the hotcue pads' : 'Edit the beatgrid: markers, phase, reset'}
+          className={`flex h-10 shrink-0 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold transition-colors disabled:opacity-40 ${
+            gridMode
+              ? 'bg-gold/15 text-gold shadow-[inset_0_0_0_1px_rgb(255_200_97/0.5),0_0_16px_-4px_rgb(255_200_97/0.6)]'
+              : 'btn-glass text-text'
+          }`}
+        >
+          <Icon name="grid" size={14} />
+          Grid
+        </button>
       </div>
+
+      {padMenu && (
+        <ContextMenu
+          key={`${padMenu.slot}:${padMenu.x}:${padMenu.y}`}
+          x={padMenu.x}
+          y={padMenu.y}
+          items={padMenuItems(padMenu.slot)}
+          onClose={() => setPadMenu(null)}
+        />
+      )}
+      {autoOpen && track && (
+        <AutoCueDialog
+          track={track}
+          slotCount={slotCount}
+          slotLabel={slotLabel}
+          existing={existingHotcues}
+          onClose={() => setAutoOpen(false)}
+          onDone={autoHotcuesDone}
+          onError={(msg) => onError?.(msg)}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * The loaded track's sleeve. Until it loads — and for a track with no art — a
+ * swatch of the ambient colours stands in, so the header never has a hole in it.
+ */
+function CoverThumb({ trackId }: { trackId: string | null }) {
+  const [failed, setFailed] = useState<string | null>(null)
+  const showArt = trackId != null && failed !== trackId
+  return (
+    <div
+      aria-hidden
+      className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl shadow-[inset_0_1px_0_rgb(255_255_255/0.35),0_8px_24px_-6px_var(--amb-2)]"
+      style={{ background: 'linear-gradient(135deg, var(--amb-1), var(--amb-2) 55%, var(--amb-3))' }}
+    >
+      {showArt && (
+        <img
+          key={trackId}
+          src={api.artUrl(trackId)}
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover"
+          onError={() => setFailed(trackId)}
+        />
+      )}
     </div>
   )
 }
