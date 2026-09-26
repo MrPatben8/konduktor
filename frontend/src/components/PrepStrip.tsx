@@ -881,6 +881,11 @@ export function PrepStrip({
   // in this panel — a section can be octave-wrong on its own.
   const halveBpm = () => activeMarker && setBpm(activeMarker.bpm / 2)
   const doubleBpm = () => activeMarker && setBpm(activeMarker.bpm * 2)
+  // A beat is the governing marker's own beat: moving a marker by whole beats
+  // shifts which beat is the downbeat without changing the phase.
+  const nudgeGridBeats = (beats: number) => {
+    if (activeMarker) nudgeGrid((beats * 60000) / activeMarker.bpm)
+  }
   const nudgeGrid = (deltaMs: number) => {
     if (!activeMarker) return
     editMarker(activeMarkerIndex, { start: Math.max(0, activeMarker.start + deltaMs / 1000) })
@@ -1363,6 +1368,7 @@ export function PrepStrip({
             onPrevMarker={prevMarker}
             onNextMarker={nextMarker}
             onNudgeMarker={nudgeGrid}
+            onNudgeMarkerBeats={nudgeGridBeats}
             onAddMarker={addMarkerHere}
             onDeleteMarker={deleteMarkerHere}
             onDeleteGrid={deleteGrid}

@@ -211,6 +211,7 @@ export function GridEditStrip({
   onPrevMarker,
   onNextMarker,
   onNudgeMarker,
+  onNudgeMarkerBeats,
   onAddMarker,
   onDeleteMarker,
   onDeleteGrid,
@@ -225,6 +226,7 @@ export function GridEditStrip({
   onPrevMarker: () => void
   onNextMarker: () => void
   onNudgeMarker: (deltaMs: number) => void
+  onNudgeMarkerBeats: (beats: number) => void
   onAddMarker: () => void
   onDeleteMarker: () => void
   onDeleteGrid: () => void
@@ -273,6 +275,8 @@ export function GridEditStrip({
         <div className="glass-group flex h-10 shrink-0 items-center overflow-hidden rounded-xl">
           {/* Phase nudges move the GOVERNING marker — not gated on atMarker,
               since the drift is heard at the playhead, not at the marker. */}
+          <button className={nudge} onClick={() => onNudgeMarkerBeats(-1)} disabled={!hasGrid} title="Move the marker −1 beat">-1b</button>
+          <span aria-hidden className="h-[18px] w-px bg-line" />
           <button className={nudge} onClick={() => onNudgeMarker(-10)} disabled={!hasGrid} title="Move the marker −10 ms">−10</button>
           <button className={nudge} onClick={() => onNudgeMarker(-1)} disabled={!hasGrid} title="Move the marker −1 ms">−1</button>
           <button
@@ -285,6 +289,8 @@ export function GridEditStrip({
           </button>
           <button className={nudge} onClick={() => onNudgeMarker(1)} disabled={!hasGrid} title="Move the marker +1 ms">+1</button>
           <button className={nudge} onClick={() => onNudgeMarker(10)} disabled={!hasGrid} title="Move the marker +10 ms">+10</button>
+          <span aria-hidden className="h-[18px] w-px bg-line" />
+          <button className={nudge} onClick={() => onNudgeMarkerBeats(1)} disabled={!hasGrid} title="Move the marker +1 beat">+1b</button>
         </div>
 
         {/* Only a marker you are standing on can be deleted, so one scrolled
