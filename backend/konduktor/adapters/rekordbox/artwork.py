@@ -20,6 +20,10 @@ import logging
 log = logging.getLogger(__name__)
 
 SMALL, MEDIUM = 80, 240
+#: A master.db library also keeps a LARGE copy: the cover itself, aspect kept,
+#: scaled down to fit 800 px (never up) — Motorola's 4112 x 1112 art is stored
+#: 800 x 216, a 640 or 300 px cover unchanged.
+LARGE = 800
 _QUALITY = 85
 
 
@@ -39,6 +43,31 @@ def _jpeg(image) -> bytes:
     image.save(out, format="JPEG", quality=_QUALITY, subsampling=2,
                progressive=False, optimize=False)
     return out.getvalue()
+
+
+def _open(data: bytes):
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(data)) as src:
+            src.load()
+            return src.convert("RGB")     # PNG alpha / palette / CMYK -> RGB
+    except Exception as ex:  # noqa: BLE001 — any unreadable image
+        log.warning("could not read cover art (%s); exporting without it", ex)
+        return None
+
+
+def library_jpegs(data: bytes) -> tuple[bytes, bytes, bytes] | None:
+    """(large, 240 px, 80 px) for a `master.db` library — `artwork.jpg`,
+    `artwork_m.jpg`, `artwork_s.jpg` — or None when the image cannot be read."""
+    from PIL import Image
+
+    rgb = _open(data)
+    if rgb is None:
+        return None
+    large = rgb.copy()
+    large.thumbnail((LARGE, LARGE), Image.BICUBIC)
+    return _jpeg(large), _jpeg(_square(rgb, MEDIUM)), _jpeg(_square(rgb, SMALL))
 
 
 def pioneer_jpegs(data: bytes) -> tuple[bytes, bytes] | None:

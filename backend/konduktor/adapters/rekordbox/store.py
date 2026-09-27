@@ -647,12 +647,51 @@ class RekordboxStore:
         cue_type: str,
         length_sec: float = 0.0,
         name: str | None = None,
+        color_code: int | None = None,
     ) -> None:
-        """Create or replace the cue in `slot`. A loop is a cue with a length."""
-        if start_sec < 0:
-            raise InvalidCommand("A cue cannot be before the start of the track")
+        """Create or replace the cue in `slot`. A loop is a cue with a length.
+
+        `color_code` is a rekordbox palette code (`palette.PALETTE`); None or 0
+        writes the uncoloured convention, which is what every edit through the
+        adapter does — only the exporter passes a colour.
+        """
         if int(slot) < 0:
             raise InvalidCommand(f"Hot cue slot cannot be negative, got {slot}")
+        existing = self._cue_row(track_id, slot)
+        self._write_cue(
+            track_id, existing, kind=kind_for("hotcue", slot), start_sec=start_sec,
+            cue_type=cue_type, length_sec=length_sec, name=name, color_code=color_code,
+        )
+        self._journal.record("cue", "add" if existing is None else "modify", track_id, f"slot:{slot}")
+
+    def add_memory_cue(
+        self,
+        track_id: str,
+        *,
+        start_sec: float,
+        cue_type: str = "cue",
+        length_sec: float = 0.0,
+        name: str | None = None,
+        color_code: int | None = None,
+    ) -> None:
+        """Add a MEMORY cue (`Kind` 0) — for the exporter building a new library.
+
+        The adapter never calls this: editing memory cues in a user's library
+        stays refused under the two-platform promotion rule. A new export is not
+        an edit, and dropping the source's memory cues would lose prep.
+        """
+        self._write_cue(
+            track_id, None, kind=kind_for("memory", None), start_sec=start_sec,
+            cue_type=cue_type, length_sec=length_sec, name=name, color_code=color_code,
+        )
+        self._journal.record("cue", "add", track_id, "memory")
+
+    def _write_cue(self, track_id: str, cue, *, kind: int, start_sec: float, cue_type: str,
+                   length_sec: float, name: str | None, color_code: int | None) -> None:
+        """Fill one `djmdCue` row (a new one when `cue` is None) and resync the
+        `contentCue` mirror — the single definition of a cue row's fields."""
+        if start_sec < 0:
+            raise InvalidCommand("A cue cannot be before the start of the track")
         row = self.content(track_id)
         off = self.time_offset(track_id)
         in_ms = int(round(timebase.to_pioneer(start_sec, off) * 1000))
@@ -660,10 +699,6 @@ class RekordboxStore:
         out_ms = (int(round(timebase.to_pioneer(start_sec + length_sec, off) * 1000))
                   if is_loop else -1)
 
-        kind = kind_for("hotcue", slot)
-        existing = self._cue_row(track_id, slot)
-        op = "add" if existing is None else "modify"
-        cue = existing
         if cue is None:
             t = self._tables
             cue = t.DjmdCue.create(
@@ -703,11 +738,17 @@ class RekordboxStore:
             cue.CueMicrosec = None
             cue.Color = -1
             cue.ColorTableIndex = None
+        if color_code:
+            # A palette-coloured cue, as the real library stores one: the code in
+            # ColorTableIndex (22 = green), Color -1. How rekordbox stores a
+            # COLOURED LOOP is not in the reference library; the same column is
+            # assumed and is what the smoke test checks.
+            cue.ColorTableIndex = int(color_code)
+            cue.Color = -1
         cue.Comment = name or None
 
         self._db.flush()
         self._sync_content_cue(track_id)
-        self._journal.record("cue", op, track_id, f"slot:{slot}")
 
     def set_cue_type(self, track_id: str, slot: int, cue_type: str) -> None:
         cue = self._cue_row(track_id, slot)

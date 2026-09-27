@@ -503,5 +503,92 @@ check("every track carries contentLink 788224, beside analysedBits 41",
 check("an unreadable cover costs the artwork, not the export",
       artwork_mod.pioneer_jpegs(b"not an image") is None)
 
+print("\n== a Rekordbox library carries masterPlaylists6.xml, vouching for every playlist ==")
+# Measured by swapping an export into a real Rekordbox 7: without this file
+# Rekordbox opened the library, generated one listing our playlists with
+# Timestamp 0, and showed NONE of them in its sidebar.
+import xml.etree.ElementTree as ET  # noqa: E402
+
+rb_root = Path(tempfile.mkdtemp())
+rb_written = core_export.for_platform("rekordbox").write(build(rb_root), rb_root)
+pl_xml = rb_root / "masterPlaylists6.xml"
+check("the file is written beside master.db", pl_xml.is_file())
+check("and reported, so a re-export can clear it", pl_xml in rb_written.all_paths)
+nodes = ET.parse(pl_xml).getroot().find("PLAYLISTS").findall("NODE")
+rb_db = RekordboxDriver().open(rb_root / "master.db")
+flat = []
+
+
+def _walk(ns):
+    for n in ns:
+        flat.append(n)
+        _walk(n.children)
+
+
+_walk(rb_db.playlist_tree())
+check("one node per playlist and folder in the database", len(nodes) == len(flat), (len(nodes), len(flat)))
+_rbc = _sq.connect(str(rb_root / "master.db"))
+from pyrekordbox.masterdb.database import BLOB as _MBLOB  # noqa: E402
+_rbc.execute(f"PRAGMA key='{_deob(_MBLOB)}'")
+_links = {r[0] for r in _rbc.execute("SELECT ContentLink FROM djmdContent")}
+_rbc.close()
+check("every track carries ContentLink 0x2C060E (coloured preview, no '?')",
+      _links == {2885134}, _links)
+check("every node carries a real timestamp, not 0",
+      nodes and all(int(n.get("Timestamp", "0")) > 0 for n in nodes), [n.get("Timestamp") for n in nodes])
+rb_db.close()
+
+print("\n== the Rekordbox target: cue colours, memory cues and artwork ==")
+rbp_root = Path(tempfile.mkdtemp())
+rbp_audio = rbp_root / "Contents" / "parity.wav"
+rbp_audio.parent.mkdir(parents=True)
+sf.write(rbp_audio, tone, sr)
+parity_cues = [
+    CuePoint(type="cue", role="hotcue", start=1.0, length=0.0, slot=0),                   # -> light blue
+    CuePoint(type="loop", role="hotcue", start=2.0, length=0.96, slot=1),                 # -> green
+    CuePoint(type="cue", role="hotcue", start=0.0, length=0.0, slot=2, color="#FFFFFF"),  # grid cue
+    CuePoint(type="cue", role="memory", start=4.0, length=0.0, slot=None),
+]
+parity = ExportTrack(track=live_t.model_copy(update={"id": "parity", "title": "parity"}),
+                     destination=rbp_audio, art=(png.getvalue(), "image/png"),
+                     cues=TrackCues(track_id="parity", cues=parity_cues,
+                                    grid_markers=[GridMarker(start=0.0, bpm=125.0)]))
+rbp_written = core_export.for_platform("rekordbox").write(ExportPayload(name="PARITY", tracks=[parity]), rbp_root)
+
+_c = _sq.connect(str(rbp_root / "master.db"))
+_c.execute(f"PRAGMA key='{_deob(_MBLOB)}'")
+cue_rows = _c.execute("SELECT Kind, ColorTableIndex, Color, InMsec FROM djmdCue ORDER BY InMsec").fetchall()
+mirror = _c.execute("SELECT Cues FROM contentCue").fetchone()
+image_path = _c.execute("SELECT ImagePath FROM djmdContent").fetchone()[0]
+_c.close()
+by_kind = {k: (cti, col) for k, cti, col, _ms in cue_rows}
+check("four cue rows: three hot cues and a memory cue (Kind 0)",
+      sorted(k for k, *_ in cue_rows) == [0, 1, 2, 3], cue_rows)
+check("a plain cue is rekordbox's light blue (code 5)", by_kind.get(1) == (0x05, -1), by_kind.get(1))
+check("a loop is rekordbox's green (code 22)", by_kind.get(2) == (0x16, -1), by_kind.get(2))
+check("the white grid cue has no swatch, so stays uncoloured", by_kind.get(3) == (None, -1), by_kind.get(3))
+check("the memory cue is written, uncoloured", by_kind.get(0) == (None, -1), by_kind.get(0))
+check("the contentCue mirror holds all four, colours included",
+      mirror is not None and mirror[0].count('"Kind"') == 4 and '"ColorTableIndex": 22' in mirror[0].replace(":22", ": 22"),
+      mirror and mirror[0][:200])
+
+art_dir = rbp_root / "share" / image_path.lstrip("/").rsplit("/", 1)[0] if image_path else None
+check("ImagePath names artwork.jpg under the track's UUID folder",
+      bool(image_path) and image_path.startswith("/PIONEER/Artwork/") and image_path.endswith("/artwork.jpg"), image_path)
+sizes = {p.name: Image.open(p).size for p in art_dir.iterdir()} if art_dir and art_dir.exists() else {}
+check("three JPEGs: the cover fit to 800 px (aspect kept), 240 and 80 px squares",
+      sizes == {"artwork.jpg": (400, 100), "artwork_m.jpg": (240, 240), "artwork_s.jpg": (80, 80)}, sizes)
+check("every art file is reported, so a re-export can clear it",
+      art_dir is not None and all(p in rbp_written.extra for p in art_dir.iterdir()))
+rb_back = RekordboxDriver().open(rbp_root / "master.db")
+t_back = rb_back.tracks[0]
+served = rb_back.cover_art(t_back.id)
+check("Konduktor's Rekordbox reader serves the cover back",
+      served is not None and served[0] == (art_dir / "artwork.jpg").read_bytes())
+memory_back = [c for c in rb_back.track_cues(t_back.id).cues if c.role == "memory"]
+check("and reads the memory cue back, at its place",
+      len(memory_back) == 1 and abs(memory_back[0].start - 4.0) < 0.002, memory_back)
+rb_back.close()
+
 print("\n" + ("❌ FAILED" if failed else "✅ PASSED"))
 raise SystemExit(1 if failed else 0)

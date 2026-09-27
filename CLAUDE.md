@@ -1058,7 +1058,6 @@ that number and nothing else — everything derives from it:
   unmeasured). Type colours map by intent (cue -> light blue 0x05, loop -> green
   0x16), anything else to the nearest hue; the palette has NO white, so a grid
   companion is code 0 + RGB white (what rekordbox draws for it: unverified). The
-  `master.db` exporter still writes no cue colour (generic `set_cue` has none).
   **Artwork** (`adapters/rekordbox/artwork.py`, Pillow), measured on a rekordbox 7
   export: `PIONEER/Artwork/00001/{a,b}<n>.jpg` at 80 px and `_m` at 240 px, `a`
   byte-identical to `b`, baseline JPEG q85 4:2:0, non-square art LETTERBOXED onto
@@ -1069,7 +1068,23 @@ that number and nothing else — everything derives from it:
   The OneLibrary READER now serves `cover_art` too (the `_m` file). How rekordbox
   itself splits a large library across `Artwork/000NN` folders is unknown; one
   folder of 207 was verified to load in full.
-  The `master.db` target still writes no artwork. `adapters/rekordbox/export.py` writes a `master.db` and
+  **The `master.db` target was opened in a real Rekordbox 7** (2026-09-27, by
+  swapping an export into `~/Library/Pioneer/rekordbox` with a full backup):
+  it accepts the library, keeps our tracks/cues/analysis untouched, and shows
+  grids, cues and the playlist tree. Two things it needed: a
+  `masterPlaylists6.xml` beside `master.db` (written as a skeleton BEFORE the DB
+  is opened, so pyrekordbox registers each playlist in it), and
+  `djmdContent.ContentLink` — a bit field: NULL = blue song-list preview + "?",
+  any value = coloured, 0x200000 clears the "?", and the real library's
+  0x3D060E adds a badge claiming analysis we do not write, so the exporter uses
+  0x2C060E. **Parity with the OneLibrary target is done and verified in
+  Rekordbox 7**: cue colours (palette code in `djmdCue.ColorTableIndex`,
+  `Color` -1 — coloured loops included), memory cues (`store.add_memory_cue`,
+  export-only: the adapter still refuses memory-cue edits), and artwork
+  (`share/PIONEER/Artwork/<uuid[:3]>/<uuid[3:]>/artwork.jpg` fit to 800 px plus
+  `_m` 240 / `_s` 80 letterboxed, `ImagePath` -> artwork.jpg). The exporter writes
+  cues through `store.set_cue`/`add_memory_cue`, which share `_write_cue` with
+  every adapter edit, so the `contentCue` mirror stays in step. `adapters/rekordbox/export.py` writes a `master.db` and
   **replays cues through the ordinary `RekordboxAdapter.set_cue`**, so it inherits
   `_sync_content_cue`, the sparse `Kind` bank and their tests rather than
   redefining them; its ANLZ files go under a **`share/` directory beside
