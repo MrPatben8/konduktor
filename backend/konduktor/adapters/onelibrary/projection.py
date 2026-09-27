@@ -93,7 +93,8 @@ def to_track(row, drive_path: str | None = None) -> Track:
         rating=max(0, min(5, int(getattr(row, "rating", 0) or 0))),
         playcount=getattr(row, "djPlayCount", None),
         length=getattr(row, "length", None),
-        bitrate=getattr(row, "bitrate", None),
+        # kbps here; the generic model (and the table) carry bits per second.
+        bitrate=(getattr(row, "bitrate", None) or 0) * 1000 or None,
         import_date=_iso_date(getattr(row, "dateAdded", None)),
         last_played=None,  # the drive records history as playlists, not per track
         release_date=_iso_date(getattr(row, "releaseDate", None))

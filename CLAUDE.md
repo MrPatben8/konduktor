@@ -992,7 +992,39 @@ that number and nothing else — everything derives from it:
     Rekordbox cannot open.
   `adapters/onelibrary/export.py` writes a whole drive (`PIONEER/rekordbox/
   exportLibrary.db` from the checked-in DDL, plus ANLZ under `PIONEER/USBANLZ/`,
-  paths drive-relative). `adapters/rekordbox/export.py` writes a `master.db` and
+  paths drive-relative). **What rekordbox needs was MEASURED** — by stripping
+  tags from a rekordbox-written stick one at a time and loading each track in
+  rekordbox 7 (`goober`, 2026-09-27): a `.DAT` must carry **`PVBR` AND the preview
+  waveform (`PWAV`/`PWV2`)** or rekordbox shows NEITHER the grid NOR the hot
+  cues, even when those tags are rekordbox's own bytes. It follows the
+  `analysisDataFilePath` column (the `P0xx/xxxxxxxx` names need not match its
+  own path hash, which is no standard hash of the path), and the `.EXT`
+  waveforms and whole `.2EX` only affect drawing. So every export decodes each
+  track once (`core/waveform.py`, ~1.5 s each via librosa — CoreAudio for AAC
+  on macOS; an undecodable file gets a flat preview) and `PVBR` is 400 zeros
+  plus the MP3's length in samples. Both Pioneer exporters write the full
+  seven-tag `.DAT`; the `master.db` target's need is inferred, not measured.
+  Progress and cancel reach the writer through `ExportPayload.checkpoint`.
+  **pyrekordbox accepting an ANLZ file proves nothing**: its parser ignores
+  `len_header` and the constants (a 12-byte `PCPT` header round-tripped
+  perfectly; real: 28). The cue tags are therefore pinned **byte-for-byte** against the fixture's rekordbox-written
+  files (`test_export_pioneer.py`): both files always, every list always (hot +
+  memory `PCOB` in each, hot + memory `PCO2` in the `.EXT`, empty ones
+  included), hot cues highest pad first, the `1000`/`1` constants in `PCP2`.
+  `fixtures/onelibrary/seed.sql` holds rekordbox's browse scaffolding
+  (`menuItem`/`category`/`sort`/`color`), like the Rekordbox target's.
+  `fileType` follows the suffix (a `.stem.m4a` is 4, M4A), bitrate is written in
+  kbps — **the generic `Track.bitrate` is bits per second** (the table divides by
+  1000; the Pioneer readers multiply) — and a stale `exportLibrary.db-wal`/`-shm`
+  is deleted before writing, because Rekordbox leaves both on a stick it mounted
+  and SQLite replays a leftover WAL into a new database. **A Pioneer grid can
+  start mid-bar** (Motorola opens on beat 3): `markers_from_beats` puts the
+  first marker on the first DOWNBEAT — the generic first marker is bar 1 — and
+  `beats_from_markers` writes the lead-in beats back, numbered as they were;
+  before this every bar of such a track landed two beats early, on import to
+  Traktor as well as on export. Still NOT written: the `.EXT`/`.2EX` waveforms
+  (song-list preview, scrolling deck waveform) and artwork (`image` table +
+  `PIONEER/Artwork/00001/a<N>.jpg`, `b<N>.jpg` and `_m` variants). `adapters/rekordbox/export.py` writes a `master.db` and
   **replays cues through the ordinary `RekordboxAdapter.set_cue`**, so it inherits
   `_sync_content_cue`, the sparse `Kind` bank and their tests rather than
   redefining them; its ANLZ files go under a **`share/` directory beside

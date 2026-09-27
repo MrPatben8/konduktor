@@ -27,8 +27,8 @@ from ..rekordbox.beatgrid import BPM_EPSILON, markers_from_beats  # noqa: F401
 __all__ = ["BPM_EPSILON", "markers_from_beats", "beats_from_pqtz", "markers_from_anlz"]
 
 
-def beats_from_pqtz(anlz) -> tuple[list[float], list[float]] | None:
-    """Per-beat ``(times_sec, bpms)`` from a parsed ANLZ file's `PQTZ` tag.
+def beats_from_pqtz(anlz) -> tuple[list[float], list[float], list[int]] | None:
+    """Per-beat ``(times_sec, bpms, beat_in_bar)`` from a parsed ANLZ file's `PQTZ` tag.
 
     Returns None when the file has no `PQTZ` — which is a real state, not an
     error: rekordbox analyses one-shot samples too, and gives them an analysis
@@ -44,13 +44,16 @@ def beats_from_pqtz(anlz) -> tuple[list[float], list[float]] | None:
             return None
         times: list[float] = []
         bpms: list[float] = []
+        beats: list[int] = []
         for e in entries:
             try:
-                times.append(int(e.time) / 1000.0)
-                bpms.append(int(e.tempo) / 100.0)
+                time, tempo, beat = int(e.time) / 1000.0, int(e.tempo) / 100.0, int(e.beat)
             except (AttributeError, TypeError, ValueError):
                 continue
-        return (times, bpms) if times else None
+            times.append(time)
+            bpms.append(tempo)
+            beats.append(beat)
+        return (times, bpms, beats) if times else None
     return None
 
 

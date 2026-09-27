@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -42,6 +43,25 @@ from ...core.pathmap import PathMapping
 from .cue_types import beat_loop_size, kind_for, role_and_slot
 
 log = logging.getLogger(__name__)
+
+
+@contextmanager
+def rekordbox_probe_suppressed():
+    """Stop `pyrekordbox.commit()` refusing because a Rekordbox process exists.
+
+    Its check is process-wide, not per-file: it refuses to write ANY database
+    while Rekordbox is open — including a temp copy, or a brand-new export
+    Rekordbox cannot possibly have open. Neutralising the probe for the call
+    keeps everything else `commit()` does. SQLite's own lock still applies.
+    """
+    from pyrekordbox.masterdb import database as rb_database
+
+    original = rb_database.get_rekordbox_pid
+    rb_database.get_rekordbox_pid = lambda *a, **kw: 0
+    try:
+        yield
+    finally:
+        rb_database.get_rekordbox_pid = original
 
 
 def _iso_stamp(value) -> str:
@@ -59,7 +79,7 @@ class RekordboxStore:
     def __init__(self, path: Path):
         self.path = Path(path)
         self._mapping = PathMapping()
-        self._grid_cache: dict[str, tuple[list[float], list[float]] | None] = {}
+        self._grid_cache: dict[str, tuple[list[float], list[float], list[int]] | None] = {}
         self._journal = EditJournal()
         # Grid edits buffered until save(): ANLZ files are written to disk, so
         # applying them at command time would break the save contract.
@@ -234,8 +254,10 @@ class RekordboxStore:
         return sum(1 for p in self.playlists() if int(p.Attribute or 0) != folder)
 
     # ---- analysis files (the beatgrid) -----------------------------------
-    def anlz_grid(self, track_id: str) -> tuple[list[float], list[float]] | None:
-        """``(times_sec, bpms)`` per beat for a track, or None if unanalysed.
+    def anlz_grid(self, track_id: str) -> tuple[list[float], list[float], list[int]] | None:
+        """``(times_sec, bpms, beat_in_bar)`` per beat for a track, or None if
+        unanalysed. The beat numbers matter: they say where the first DOWNBEAT
+        is, which a grid starting mid-bar does not put first.
 
         Parsed on demand and cached — see the module docstring for why this is
         not done eagerly.
@@ -269,7 +291,8 @@ class RekordboxStore:
             # pyrekordbox 0.4.4.
             if tag.type == "PQTZ":
                 try:
-                    return [float(t) for t in tag.times], [float(b) for b in tag.bpms]
+                    return ([float(t) for t in tag.times], [float(b) for b in tag.bpms],
+                            [int(b) for b in tag.beats])
                 except Exception:  # noqa: BLE001
                     return None
         return None
@@ -524,10 +547,9 @@ class RekordboxStore:
                 "Rekordbox appears to be running; saving anyway. It may overwrite "
                 "or re-sync the library while it is open."
             )
-        original = rb_database.get_rekordbox_pid
-        rb_database.get_rekordbox_pid = lambda *a, **kw: 0
         try:
-            self._db.commit(autoinc=True)
+            with rekordbox_probe_suppressed():
+                self._db.commit(autoinc=True)
         except OperationalError as ex:
             # Suppressing pyrekordbox's veto does not remove SQLite's own lock:
             # a running Rekordbox really does hold the database, and the raw
@@ -538,8 +560,6 @@ class RekordboxStore:
                 "Rekordbox has the library open, so it cannot be written right "
                 "now. Close Rekordbox and save again — your changes are still here."
             ) from ex
-        finally:
-            rb_database.get_rekordbox_pid = original
 
     @property
     def app_running(self) -> bool:
@@ -589,7 +609,7 @@ class RekordboxStore:
         bpm = None
         grid = self.anlz_grid(track_id)
         if grid:
-            times, bpms = grid
+            times, bpms = grid[0], grid[1]
             for t, b in zip(times, bpms):
                 if t <= start_sec:
                     bpm = b
@@ -800,8 +820,7 @@ class RekordboxStore:
         grid = self.anlz_grid(track_id)
         if grid is None:
             return []
-        times, bpms = grid
-        return grid_math.markers_from_beats(times, bpms)
+        return grid_math.markers_from_beats(*grid)
 
     def track_duration(self, track_id: str) -> float:
         """Seconds, for expanding markers back into beats."""
@@ -829,7 +848,7 @@ class RekordboxStore:
         # Buffer as the same (times, bpms) shape the reader returns, so the
         # projection needs no special case for an unsaved grid.
         self._pending_grids[str(track_id)] = (beat_nums, bpms, times)
-        self._grid_cache[str(track_id)] = (times, bpms) if times else None
+        self._grid_cache[str(track_id)] = (times, bpms, beat_nums) if times else None
         # TEMPO mirrors the first marker, exactly as Traktor's <TEMPO> does —
         # Rekordbox will not do it for us.
         row = self.content(track_id)

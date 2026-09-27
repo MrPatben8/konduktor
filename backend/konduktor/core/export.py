@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Callable, Protocol, runtime_checkable
 
 from .capabilities import Capabilities
 from .model import Track, TrackCues
@@ -74,6 +74,11 @@ class ExportPayload:
     playlists: list[ExportPlaylist] = field(default_factory=list)
     #: The export's name, used for the folder its playlists are nested under.
     name: str = "Export"
+    #: Called by a writer before each slow step (e.g. decoding a track for its
+    #: waveform) with a message for the status bar. RAISES when the user has
+    #: cancelled — so a writer that analyses audio stays cancellable. The runner
+    #: sets it; a writer may call it freely and never needs to check for None.
+    checkpoint: Callable[[str], None] = field(default=lambda message: None, repr=False)
 
 
 @dataclass

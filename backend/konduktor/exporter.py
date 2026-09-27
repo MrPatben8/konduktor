@@ -379,10 +379,15 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle) -> dict:
                 )
             )
 
+        def checkpoint(message: str) -> None:
+            handle.raise_if_cancelled()
+            handle.progress(message=message)
+
         payload = ExportPayload(
             name=export_set.name,
             tracks=payload_tracks,
             playlists=built.playlists,
+            checkpoint=checkpoint,
         )
         before = _files(destination)
         libraries: list[tuple[str, Path]] = []

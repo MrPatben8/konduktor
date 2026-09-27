@@ -146,7 +146,8 @@ def to_track(row, cue_kinds=()) -> Track:
         rating=max(0, min(5, int(getattr(row, "Rating", 0) or 0))),
         playcount=getattr(row, "DJPlayCount", None),
         length=getattr(row, "Length", None),
-        bitrate=getattr(row, "BitRate", None),
+        # kbps here; the generic model (and the table) carry bits per second.
+        bitrate=(getattr(row, "BitRate", None) or 0) * 1000 or None,
         import_date=_iso_date(getattr(row, "StockDate", None)),
         last_played=None,  # not modelled as a date in master.db
         release_date=_iso_date(getattr(row, "ReleaseDate", None)),
@@ -163,7 +164,7 @@ def to_track(row, cue_kinds=()) -> Track:
 def to_track_cues(cue_rows: list, grid: tuple[list[float], list[float]] | None) -> TrackCues:
     """Project a track's cues and beatgrid.
 
-    `grid` is the per-beat ``(times, bpms)`` from the ANLZ file, collapsed here
+    `grid` is the per-beat ``(times, bpms, beats)`` from the ANLZ file, collapsed here
     into the generic marker list. Rekordbox pairs nothing with a grid marker, so
     `companion` is always None — that is a Traktor convention.
 
@@ -177,8 +178,7 @@ def to_track_cues(cue_rows: list, grid: tuple[list[float], list[float]] | None) 
     """
     markers: list[GridMarker] = []
     if grid is not None:
-        times, bpms = grid
-        markers = beatgrid.markers_from_beats(times, bpms)
+        markers = beatgrid.markers_from_beats(*grid)
 
     cues: list[CuePoint] = []
     for c in cue_rows:

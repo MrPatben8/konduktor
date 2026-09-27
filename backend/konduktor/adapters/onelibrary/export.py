@@ -41,6 +41,7 @@ import logging
 from datetime import date
 from pathlib import Path
 
+from ...core import waveform
 from ...core.export import ExportPayload, ExportTrack, WrittenLibrary
 from ..rekordbox import anlz_writer as W
 from ..rekordbox.beatgrid import beats_from_markers
@@ -51,6 +52,9 @@ from .layout import DB_SUBPATH
 log = logging.getLogger(__name__)
 
 SCHEMA = Path(__file__).resolve().parents[3] / "fixtures" / "onelibrary" / "schema.sql"
+#: rekordbox's scaffolding rows — browse menu items, categories, sort columns,
+#: the colour palette — copied from a real export. See the file's header.
+SEED = SCHEMA.with_name("seed.sql")
 
 #: rekordbox writes this in `property.dbVersion` on a real export.
 DB_VERSION = "1000"
@@ -110,8 +114,14 @@ class OneLibraryExporter:
         root = Path(destination)
         library = root / "PIONEER" / DB_SUBPATH
         library.parent.mkdir(parents=True, exist_ok=True)
-        if library.exists():
-            library.unlink()  # SQLCipher will not re-key an existing file
+        # SQLCipher will not re-key an existing file — and the WAL and shared
+        # memory files beside it must go too. rekordbox leaves both on a stick
+        # it has mounted, and SQLite REPLAYS a leftover WAL into whatever
+        # database it finds, so a fresh library would open with the old one's
+        # pages written over it.
+        for stale in (library, *(library.with_name(library.name + s) for s in ("-wal", "-shm"))):
+            if stale.exists():
+                stale.unlink()
 
         extra: list[Path] = []
         con = sqlcipher.connect(str(library))
@@ -120,6 +130,7 @@ class OneLibraryExporter:
             # stick is readable by any of them, which is the point of it.
             con.execute(f"PRAGMA key='{deobfuscate(BLOB)}'")
             con.executescript(SCHEMA.read_text())
+            con.executescript(SEED.read_text(encoding="utf-8"))
             extra += self._fill(con, payload, root)
             con.commit()
         finally:
@@ -133,7 +144,11 @@ class OneLibraryExporter:
         written: list[Path] = []
         by_source: dict[str, int] = {}
 
+        total = len(payload.tracks)
         for n, item in enumerate(payload.tracks, start=1):
+            # Each track is DECODED for its waveform, so this loop is the slow
+            # part of the write — report it, and let a cancel land between tracks.
+            payload.checkpoint(f"Analysing {item.track.title or item.destination.name} ({n}/{total})")
             by_source[item.source_id] = n
             written += self._write_track(con, n, item, root, lookups)
 
@@ -172,16 +187,17 @@ class OneLibraryExporter:
             size = item.destination.stat().st_size
         except OSError:
             size = 0
+        sample_rate, bit_depth = _audio_format(item.destination)
 
         con.execute(
             "INSERT INTO content (content_id, title, titleForSearch, bpmx100, length, "
             "trackNo, artist_id_artist, album_id, genre_id, label_id, key_id, "
             "djComment, rating, releaseDate, dateAdded, path, fileName, fileSize, "
-            "fileType, bitrate, samplingRate, isHotCueAutoLoadOn, "
+            "fileType, bitrate, bitDepth, samplingRate, isHotCueAutoLoadOn, "
             "isKuvoDeliverStatusOn, masterDbId, masterContentId, "
             "analysisDataFilePath, analysedBits, hasModified, cueUpdateCount, "
             "analysisDataUpdateCount, informationUpdateCount) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 content_id, track.title, (track.title or "").lower(),
                 int(round((track.bpm or 0) * 100)) or None, track.length,
@@ -197,7 +213,10 @@ class OneLibraryExporter:
                              render_key(track.key_wheel, track.key_mode)),
                 track.comment, track.rating or 0, track.release_date,
                 date.today().isoformat(), rel, item.destination.name, size,
-                1, track.bitrate, None, 1, 1, 0, content_id,
+                # kbps, as every Pioneer library stores it; the generic model
+                # carries bits per second.
+                _file_type(item.destination), _kbps(track.bitrate),
+                bit_depth, sample_rate, 1, 1, 0, content_id,
                 anlz_rel, ANALYSED_BITS, 0, 0, 0, 0,
             ),
         )
@@ -206,29 +225,37 @@ class OneLibraryExporter:
     # ---- the analysis files --------------------------------------------------
 
     def _write_anlz(self, item: ExportTrack, rel: str, dat: Path) -> list[Path]:
-        """The `.DAT` and, when there are cues beyond pad C, the `.EXT`.
+        """The `.DAT` and the `.EXT`, always both, as rekordbox writes them.
 
-        Always both when there are any cues: `PCO2` lives only in the `.EXT` and
-        is the complete list, which is what the reader prefers.
+        Both files, and every cue list in each, even for a track with no cues:
+        rekordbox never produces a track without them, and `PCO2` — the complete
+        list, which readers prefer — lives only in the `.EXT`.
+
+        **The `.DAT` must carry `PVBR` and the preview waveforms**, or rekordbox
+        shows neither the grid nor the cues (see `anlz_writer`). Tag order is
+        rekordbox's: PPTH, PVBR, PQTZ, PWAV, PWV2, PCOB, PCOB.
         """
-        cues = self._cue_dicts(item)
-        beats = self._beats(item)
+        measured = waveform.columns(item.destination, 400)
+        # The DECODED length where there is one: `Track.length` is whole seconds
+        # rounded down, and a grid expanded to it loses the track's last beat.
+        beats = self._beats(item, measured.duration if measured else None)
+        cues = self._cue_dicts(item, beats)
+        previews = (W.preview_tags(measured.rms, measured.brightness) if measured
+                    else W.flat_preview_tags())
 
-        tags = [W.path_tag(rel)]
+        tags = [W.path_tag(rel), W.vbr_tag(W.mp3_samples(item.destination))]
         if beats:
             tags.append(W.beatgrid_tag(beats))
+        tags += previews
         tags += W.cue_tags(cues, extended=False)
-        written = [W.write_anlz(dat, tags)]
-
-        if cues:
-            written.append(
-                W.write_anlz(dat.with_suffix(".EXT"),
-                             [W.path_tag(rel), *W.cue_tags(cues, extended=True)])
-            )
-        return written
+        return [
+            W.write_anlz(dat, tags),
+            W.write_anlz(dat.with_suffix(".EXT"),
+                         [W.path_tag(rel), *W.cue_tags(cues, extended=True)]),
+        ]
 
     @staticmethod
-    def _beats(item: ExportTrack) -> list[tuple[int, float, float]]:
+    def _beats(item: ExportTrack, duration: float | None = None) -> list[tuple[int, float, float]]:
         """Every beat, expanded from the generic marker list.
 
         A Pioneer grid has no tempo markers — it is a flat list of beats — so a
@@ -239,12 +266,13 @@ class OneLibraryExporter:
         cues = item.cues
         if not cues or not cues.grid_markers:
             return []
-        duration = float(item.track.length or 0) or (cues.grid_markers[-1].start + 60.0)
+        duration = (duration or float(item.track.length or 0)
+                    or (cues.grid_markers[-1].start + 60.0))
         nums, bpms, times = beats_from_markers(cues.grid_markers, duration)
         return list(zip(nums, bpms, times))
 
     @staticmethod
-    def _cue_dicts(item: ExportTrack) -> list[dict]:
+    def _cue_dicts(item: ExportTrack, beats: list | None = None) -> list[dict]:
         """Generic cues in the shape `anlz_writer` packs.
 
         Slot numbering is ANLZ's own: **dense 1-based**, 0 for a memory cue.
@@ -261,7 +289,7 @@ class OneLibraryExporter:
                 "time_ms": int(round(cue.start * 1000)),
                 "loop_ms": int(round((cue.start + cue.length) * 1000)) if is_loop else None,
                 "rgb": _rgb(cue.color),
-                "beats": None,
+                "beats": _loop_beats(cue.start, cue.length, beats or []) if is_loop else None,
             })
         return out
 
@@ -312,6 +340,55 @@ class OneLibraryExporter:
                     "INSERT INTO playlist_content (playlist_id, content_id, sequenceNo) "
                     "VALUES (?,?,?)", (playlist_id, content_id, seq)
                 )
+
+
+#: rekordbox's `fileType` codes, as `pyrekordbox.devicelib_plus.FileType` has them.
+#: `.stem.m4a` (a Traktor STEM) is an M4A to a Pioneer player.
+_FILE_TYPES = {".mp3": 1, ".m4a": 4, ".mp4": 4, ".aac": 4, ".flac": 5, ".wav": 11,
+               ".aif": 12, ".aiff": 12}
+
+
+def _file_type(path: Path) -> int:
+    return _FILE_TYPES.get(path.suffix.lower(), 1)
+
+
+def _kbps(bitrate: int | None) -> int | None:
+    """Generic bits per second → Pioneer's kbps."""
+    if not bitrate:
+        return None
+    return int(round(bitrate / 1000))
+
+
+def _audio_format(path: Path) -> tuple[int | None, int | None]:
+    """(sample rate, bit depth) read from the COPIED file, or Nones.
+
+    Not in the generic model, and not worth adding for one target: the file is
+    right here, and reading its header costs a millisecond.
+    """
+    try:
+        import mutagen
+
+        info = getattr(mutagen.File(str(path)), "info", None)
+    except Exception:  # an unreadable file still exports; these stay empty
+        return None, None
+    rate = getattr(info, "sample_rate", None)
+    depth = getattr(info, "bits_per_sample", None)
+    return (int(rate) if rate else None), (int(depth) if depth else None)
+
+
+def _loop_beats(start: float, length: float, beats: list[tuple[int, float, float]]) -> int | None:
+    """A loop's length in whole beats at the tempo governing its start.
+
+    rekordbox stores it (`loop_num`/`loop_den`, e.g. 4/1). A loop that is not a
+    whole number of beats — or a track with no grid — gets none, as rekordbox
+    itself writes for a loop set by hand.
+    """
+    bpm = next((b for _, b, t in reversed(beats) if t <= start + 1e-3), None)
+    if not bpm or length <= 0:
+        return None
+    count = length * bpm / 60.0
+    whole = round(count)
+    return whole if whole >= 1 and abs(count - whole) < 0.05 else None
 
 
 def _rgb(color: str | None) -> tuple[int, int, int] | None:

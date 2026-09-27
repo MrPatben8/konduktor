@@ -115,6 +115,27 @@ check("expanding one marker gives a beat every 0.5s at 120 BPM", out_times == [0
 check("beats are numbered 1-4 in bars", beat_nums == [1, 2, 3, 4], str(beat_nums))
 check("expanding no markers gives no beats", beats_from_markers([], 10.0) == ([], [], []))
 
+print("== beatgrid: a grid that starts MID-BAR keeps its bar phase ==")
+# Measured on a real rekordbox export: Motorola's grid opens on beat 3 at
+# 0.026 s. The generic first marker is bar 1, so it must sit on the first
+# DOWNBEAT — on the first beat, every bar lands two beats early.
+step = 60.0 / 125.0
+mb_times = [round(0.026 + i * step, 3) for i in range(12)]
+mb_beats = [(i + 2) % 4 + 1 for i in range(12)]          # 3, 4, 1, 2, 3, …
+mb = markers_from_beats(mb_times, [125.0] * 12, mb_beats)
+check("the first marker is the first downbeat, not the first beat",
+      len(mb) == 1 and abs(mb[0].start - 0.986) < 1e-9, [m.start for m in mb])
+nums, _, back = beats_from_markers(mb, mb_times[-1] + step / 2)
+check("expanding it restores the beats BEFORE the marker", [round(t, 3) for t in back] == mb_times,
+      [round(t, 3) for t in back][:4])
+check("numbered exactly as rekordbox numbered them", nums == mb_beats, nums[:6])
+check("without beat numbers the old behaviour holds",
+      markers_from_beats(mb_times, [125.0] * 12)[0].start == 0.026)
+# A downbeat is only looked for inside the FIRST tempo run.
+tc = markers_from_beats([0.0, 0.5, 1.0, 1.4], [120.0, 120.0, 150.0, 150.0], [3, 4, 1, 2])
+check("a downbeat after a tempo change does not move the first marker",
+      [m.start for m in tc] == [0.0, 1.0], [m.start for m in tc])
+
 # ---- the rest needs a real library --------------------------------------
 found = discovery.detect_libraries()
 if not found:

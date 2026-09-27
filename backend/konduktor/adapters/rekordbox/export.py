@@ -57,11 +57,13 @@ from pathlib import Path
 from sqlalchemy import text
 
 from ...core.export import ExportPayload, ExportTrack, WrittenLibrary
+from ...core import waveform
 from . import anlz_writer as W
 from .beatgrid import beats_from_markers
 from .capabilities import capabilities_for
 from .cue_types import kind_for
 from .projection import render_key
+from .store import rekordbox_probe_suppressed
 
 log = logging.getLogger(__name__)
 
@@ -132,13 +134,19 @@ class RekordboxExporter:
             self._seed_registry(db, models)
             self._seed_device(db, payload)
             rows = {}
-            for item in payload.tracks:
+            total = len(payload.tracks)
+            for n, item in enumerate(payload.tracks, start=1):
+                # Each track is decoded for its waveform: the slow part.
+                payload.checkpoint(f"Analysing {item.track.title or item.destination.name} ({n}/{total})")
                 content = self._add_track(db, item)
                 rows[item.source_id] = content
                 ids[item.source_id] = str(content.ID)
                 extra += self._write_anlz(item, content, root, db)
             self._write_playlists(db, payload, rows)
-            db.commit()
+            # A brand-new file: a running Rekordbox cannot have it open, so its
+            # process-wide veto protects nothing here.
+            with rekordbox_probe_suppressed():
+                db.commit()
         finally:
             db.close()
 
@@ -301,13 +309,22 @@ class RekordboxExporter:
         content.AnalysisUpdated = 1
         db.flush()
 
-        tags = [W.path_tag(str(item.destination))]
+        # The same shape as a rekordbox-analysed track's `.DAT`: PVBR and the
+        # preview waveforms are what rekordbox needs before it shows a grid at
+        # all (measured on a OneLibrary stick; the same Pioneer file here), and
+        # the cue lists are present but EMPTY — master.db keeps cues in djmdCue.
+        measured = waveform.columns(item.destination, 400)
+        tags = [W.path_tag(str(item.destination)), W.vbr_tag(W.mp3_samples(item.destination))]
         markers = item.cues.grid_markers if item.cues else []
         if markers:
-            duration = float(item.track.length or 0) or (markers[-1].start + 60.0)
+            duration = ((measured.duration if measured else 0.0)
+                        or float(item.track.length or 0) or (markers[-1].start + 60.0))
             nums, bpms, times = beats_from_markers(markers, duration)
             if nums:
                 tags.append(W.beatgrid_tag(list(zip(nums, bpms, times))))
+        tags += (W.preview_tags(measured.rms, measured.brightness) if measured
+                 else W.flat_preview_tags())
+        tags += W.cue_tags([], extended=False)
         # AnalysisDataPath is rooted at a `share` directory BESIDE master.db,
         # not at the library root — the read path joins it that way, and writing
         # it anywhere else produces a track whose grid silently reads as empty.

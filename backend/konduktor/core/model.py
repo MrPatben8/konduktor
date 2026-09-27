@@ -55,7 +55,7 @@ class Track(BaseModel):
     rating: int = 0  # 0-5 stars (derived from RANKING/51)
     playcount: int | None = None
     length: int | None = None  # seconds
-    bitrate: int | None = None
+    bitrate: int | None = None  # bits per second (Pioneer libraries store kbps)
     # ISO-8601 "YYYY-MM-DD", normalised by the adapter.
     import_date: str | None = None
     last_played: str | None = None

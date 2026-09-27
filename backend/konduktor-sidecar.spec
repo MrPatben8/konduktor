@@ -35,6 +35,16 @@ hiddenimports += ["multipart", "anyio"]
 # app version — see konduktor/__init__.py). Path is relative to this spec.
 datas += [("../frontend/package.json", ".")]
 
+# The Rekordbox and OneLibrary exporters build their databases from the real
+# DDL + scaffolding rows under fixtures/, found at `parents[3] / "fixtures"` —
+# i.e. the bundle root. Without these a packaged app cannot export to either.
+datas += [
+    ("fixtures/rekordbox/schema.sql", "fixtures/rekordbox"),
+    ("fixtures/rekordbox/seed.sql", "fixtures/rekordbox"),
+    ("fixtures/onelibrary/schema.sql", "fixtures/onelibrary"),
+    ("fixtures/onelibrary/seed.sql", "fixtures/onelibrary"),
+]
+
 a = Analysis(
     ["sidecar.py"],
     pathex=[],

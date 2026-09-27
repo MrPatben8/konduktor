@@ -31,8 +31,18 @@ def markers_from_beats(
 ) -> list[GridMarker]:
     """Collapse a per-beat grid into the generic marker list.
 
-    `times` are seconds, `bpms` the tempo in force at each beat. A marker is
-    emitted for the first beat and wherever the tempo changes.
+    `times` are seconds, `bpms` the tempo in force at each beat, `beats` the
+    beat-in-bar (1-4) of each. A marker is emitted for the start of the grid and
+    wherever the tempo changes.
+
+    **The first marker goes on the first DOWNBEAT**, not the first beat. In the
+    generic model the first marker is bar 1 (Traktor's convention), but a
+    Pioneer grid often starts mid-bar: Motorola's opens on beat 3 at 0.026 s,
+    with its first downbeat at 0.986 s. Put the marker on the first beat and
+    every bar lands two beats early — in Traktor after an import, and on the
+    CDJ after an export. The beats before it are not lost: a grid extends back
+    to the start of the track from its first marker, and `beats_from_markers`
+    writes them back numbered as they were.
     """
     if not times or not bpms:
         return []
@@ -42,6 +52,12 @@ def markers_from_beats(
         if last_bpm is None or abs(bpm - last_bpm) > BPM_EPSILON:
             out.append(GridMarker(start=float(t), bpm=float(bpm), name=None, companion=None))
             last_bpm = float(bpm)
+    if beats and out:
+        # The first tempo run ends where the second marker starts (or never).
+        run_end = out[1].start if len(out) > 1 else float("inf")
+        downbeat = next((t for t, b in zip(times, beats) if int(b) == 1 and t < run_end), None)
+        if downbeat is not None:
+            out[0] = out[0].model_copy(update={"start": float(downbeat)})
     return out
 
 
@@ -54,8 +70,10 @@ def beats_from_markers(
     Returns ``(beat_in_bar, bpms, times)`` with beat numbers cycling 1-4 from
     each marker, which is how Rekordbox numbers bars.
 
-    Not used by the read-only adapter, but it is the inverse of
-    `markers_from_beats` and belongs beside it.
+    The first marker's tempo also runs BACKWARDS to the start of the track: a
+    grid covers the whole track in Traktor and in rekordbox alike, and a marker
+    placed on the first downbeat (see `markers_from_beats`) has beats before it
+    — numbered 4, 3, … counting back, which reproduces rekordbox's own grid.
     """
     beat_nums: list[int] = []
     bpms: list[float] = []
@@ -63,6 +81,15 @@ def beats_from_markers(
     if not markers:
         return beat_nums, bpms, times
     ordered = sorted(markers, key=lambda m: m.start)
+
+    first = next((m for m in ordered if m.bpm > 0), None)
+    if first is not None:
+        step = 60.0 / first.bpm
+        lead = int((first.start + 1e-9) // step)   # whole beats that fit before it
+        for k in range(lead, 0, -1):
+            beat_nums.append((-k) % 4 + 1)
+            bpms.append(first.bpm)
+            times.append(first.start - k * step)
     for i, m in enumerate(ordered):
         if m.bpm <= 0:
             continue

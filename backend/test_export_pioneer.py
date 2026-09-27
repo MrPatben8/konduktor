@@ -35,6 +35,7 @@ from konduktor.adapters.traktor.driver import TraktorDriver  # noqa: E402
 from konduktor.adapters.traktor.projection import parse_key as traktor_key_parse  # noqa: E402
 from konduktor.core import export as core_export  # noqa: E402
 from konduktor.core.export import ExportPayload, ExportPlaylist, ExportTrack  # noqa: E402
+from konduktor.core.model import GridMarker, TrackCues  # noqa: E402
 
 failed = False
 
@@ -180,6 +181,153 @@ for platform, reopen in (
           str(len(reopened.tracks)))
     check("nor did the tree", len(reopened.playlist_tree()) == 1)
     check("and it still reports its files", len(again.all_paths) == len(written.all_paths))
+
+print("\n== OneLibrary cue tags are rekordbox's BYTES, not merely parseable ==")
+# pyrekordbox ignores `len_header` and the constants, so an early writer with a
+# 12-byte PCPT header round-tripped through our own reader perfectly while
+# rekordbox showed no cues and no grid. So: read the fixture's cues with the
+# reader, pack them with the writer, and demand rekordbox's exact bytes back.
+import struct  # noqa: E402
+
+from konduktor.adapters.onelibrary.export import OneLibraryExporter, _file_type, _kbps  # noqa: E402
+from konduktor.adapters.rekordbox import anlz_writer as W  # noqa: E402
+
+ol_root = Path(__file__).resolve().parent / "fixtures" / "onelibrary"
+ol = OneLibraryDriver().open(ol_root)
+demo = next(t for t in ol.tracks if "Demo Track 1" in (t.title or ""))
+demo_item = ExportTrack(track=demo, destination=ol_root / demo.id.lstrip("/"),
+                        cues=ol.track_cues(demo.id))
+demo_beats = OneLibraryExporter._beats(demo_item)
+demo_cues = OneLibraryExporter._cue_dicts(demo_item, demo_beats)
+
+
+def _real_cue_tags(path: Path) -> list[bytes]:
+    b = path.read_bytes()
+    off, out = struct.unpack(">I", b[4:8])[0], []
+    while off < len(b):
+        kind, length = b[off:off + 4], struct.unpack(">I", b[off + 8:off + 12])[0]
+        if kind in (b"PCOB", b"PCO2"):
+            out.append(b[off:off + length])
+        off += length
+    return out
+
+
+anlz = ol_root / "PIONEER" / "USBANLZ" / "P016" / "0000875E" / "ANLZ0000"
+for suffix, extended, shape in ((".DAT", False, "hot + memory PCOB"),
+                                (".EXT", True, "hot + memory PCOB, hot + memory PCO2")):
+    real = _real_cue_tags(anlz.with_suffix(suffix))
+    ours = W.cue_tags(demo_cues, extended=extended)
+    check(f"{suffix}: the same tags in the same order ({shape})", len(real) == len(ours),
+          f"{len(ours)} vs rekordbox's {len(real)}")
+    check(f"{suffix}: every cue tag is byte-identical to rekordbox's",
+          all(r == o for r, o in zip(real, ours)),
+          [i for i, (r, o) in enumerate(zip(real, ours)) if r != o])
+check("a track with no cues still gets every list, empty",
+      [t[:4] for t in W.cue_tags([], extended=True)] == [b"PCOB", b"PCOB", b"PCO2", b"PCO2"])
+check("a Traktor STEM file is an M4A to a Pioneer player",
+      _file_type(Path("x.stem.m4a")) == 4 and _file_type(Path("x.MP3")) == 1)
+check("bitrate is written in kbps", _kbps(320_000) == 320 and _kbps(None) is None)
+check("the reader hands back bits per second, as the table expects",
+      all((t.bitrate or 0) >= 1000 for t in ol.tracks if t.bitrate))
+
+print("\n== every OneLibrary .DAT carries what rekordbox needs to show a grid ==")
+# Measured by stripping tags from a rekordbox-written stick: with only PPTH +
+# PQTZ + PCOB in the .DAT, rekordbox shows NO grid and NO hot cues. PVBR alone
+# is not enough, nor PWAV + PWV2 alone.
+import numpy as np  # noqa: E402
+import soundfile as sf  # noqa: E402
+
+from konduktor.core import waveform  # noqa: E402
+
+REKORDBOX_DAT_ORDER = [b"PPTH", b"PVBR", b"PQTZ", b"PWAV", b"PWV2", b"PCOB", b"PCOB"]
+
+
+def _tag_kinds(path: Path) -> list[bytes]:
+    b = path.read_bytes()
+    off, out = struct.unpack(">I", b[4:8])[0], []
+    while off < len(b):
+        out.append(b[off:off + 4])
+        off += struct.unpack(">I", b[off + 8:off + 12])[0]
+    return out
+
+
+def _tag(path: Path, kind: bytes) -> bytes:
+    b = path.read_bytes()
+    off = struct.unpack(">I", b[4:8])[0]
+    while off < len(b):
+        tl = struct.unpack(">I", b[off + 8:off + 12])[0]
+        if b[off:off + 4] == kind:
+            return b[off:off + tl]
+        off += tl
+    raise LookupError(kind)
+
+
+wf_root = Path(tempfile.mkdtemp())
+# Placeholder bytes nothing can decode: the grid must STILL be accepted.
+dead = wf_root / "Contents" / "dead.mp3"
+dead.parent.mkdir(parents=True)
+dead.write_bytes(b"\0" * 4096)
+# Real audio: 8 s of continuous noise, loud for the first half, quiet after.
+# (Continuous: a column is 20 ms here, so sparse clicks would leave most silent.)
+sr = 22050
+tone = np.random.default_rng(0).uniform(-1, 1, sr * 8).astype(np.float32)
+tone[: sr * 4] *= 0.5
+tone[sr * 4:] *= 0.02
+live = wf_root / "Contents" / "live.wav"
+sf.write(live, tone, sr)
+
+grid = TrackCues(track_id="x", cues=[], grid_markers=[GridMarker(start=0.0, bpm=125.0)])
+dead_t = cued.model_copy(update={"id": "dead", "title": "dead"})
+live_t = cued.model_copy(update={"id": "live", "title": "live", "length": 8})
+seen: list[str] = []
+wf_written = core_export.for_platform("onelibrary").write(
+    ExportPayload(name="WF", tracks=[ExportTrack(track=dead_t, destination=dead, cues=grid),
+                                     ExportTrack(track=live_t, destination=live, cues=grid)],
+                  checkpoint=seen.append),
+    wf_root,
+)
+dats = [p for p in wf_written.extra if p.suffix == ".DAT"]
+check("two tracks, two .DAT files", len(dats) == 2)
+for dat in dats:
+    check(f"{dat.parent.name}: rekordbox's tag set, in rekordbox's order",
+          _tag_kinds(dat) == REKORDBOX_DAT_ORDER, _tag_kinds(dat))
+pvbr = _tag(dats[0], b"PVBR")
+check("PVBR is 400 seek points plus a trailing length, as rekordbox writes",
+      len(pvbr) == 1620, len(pvbr))
+check("the writer reported each track to the status bar",
+      len(seen) == 2 and all("Analysing" in m for m in seen), seen)
+
+cols = waveform.columns(live, 400)
+check("decodable audio is measured", cols is not None and abs(cols.duration - 8.0) < 0.05)
+check("a loud half measures louder than a quiet half",
+      cols is not None and cols.rms[:200].mean() > 5 * cols.rms[200:].mean())
+check("undecodable bytes are no overview, not an error", waveform.columns(dead, 400) is None)
+heights = {dat: np.frombuffer(_tag(dat, b"PWAV")[20:], np.uint8) & 31 for dat in dats}
+check("the undecodable file still gets a (flat) preview", any(h.max() == 0 for h in heights.values()))
+check("the decodable one gets a real one, loud where the audio is loud",
+      any(h[:200].mean() > h[200:].mean() + 3 for h in heights.values()))
+
+
+class _Stop(Exception):
+    pass
+
+
+def _cancel_on_second(message: str, calls=[]):  # noqa: B006 — deliberate counter
+    calls.append(message)
+    if len(calls) == 2:
+        raise _Stop()
+
+
+try:
+    core_export.for_platform("onelibrary").write(
+        ExportPayload(name="WF", tracks=[ExportTrack(track=dead_t, destination=dead, cues=grid),
+                                         ExportTrack(track=live_t, destination=live, cues=grid)],
+                      checkpoint=_cancel_on_second),
+        wf_root,
+    )
+    check("a cancel between tracks stops the writer", False, "it finished")
+except _Stop:
+    check("a cancel between tracks stops the writer", True)
 
 print("\n" + ("❌ FAILED" if failed else "✅ PASSED"))
 raise SystemExit(1 if failed else 0)
