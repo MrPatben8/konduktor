@@ -35,7 +35,7 @@ from konduktor.adapters.traktor.driver import TraktorDriver  # noqa: E402
 from konduktor.adapters.traktor.projection import parse_key as traktor_key_parse  # noqa: E402
 from konduktor.core import export as core_export  # noqa: E402
 from konduktor.core.export import ExportPayload, ExportPlaylist, ExportTrack  # noqa: E402
-from konduktor.core.model import GridMarker, TrackCues  # noqa: E402
+from konduktor.core.model import CuePoint, GridMarker, TrackCues  # noqa: E402
 
 failed = False
 
@@ -149,8 +149,13 @@ for platform, reopen in (
     print(f"-- {platform}: the prep crossed")
     for track in chosen:
         s, o = src.track_cues(track.id), back.track_cues(by_title[track.title].id)
+        # Same pads, same places — to the millisecond Pioneer stores (a position
+        # now crosses a 25 ms clock shift and back, so 2-dp rounding can flip).
+        ho, hs = hotcues(o), hotcues(s)
         check(f"{track.title[:22]}: hot cues keep their PAD",
-              hotcues(o) == hotcues(s), f"{hotcues(o)} vs {hotcues(s)}")
+              [p for p, _ in ho] == [p for p, _ in hs]
+              and all(abs(a - b) <= 0.011 for (_, a), (_, b) in zip(ho, hs)),
+              f"{ho} vs {hs}")
         check(f"{track.title[:22]}: the grid survives expansion + collapse",
               grid(o) == grid(s), f"{grid(o)} vs {grid(s)}")
     check("the flexible grid really is multi-tempo",
@@ -191,6 +196,7 @@ import struct  # noqa: E402
 
 from konduktor.adapters.onelibrary.export import OneLibraryExporter, _file_type, _kbps  # noqa: E402
 from konduktor.adapters.rekordbox import anlz_writer as W  # noqa: E402
+from konduktor.adapters.rekordbox import artwork as artwork_mod  # noqa: E402
 
 ol_root = Path(__file__).resolve().parent / "fixtures" / "onelibrary"
 ol = OneLibraryDriver().open(ol_root)
@@ -198,7 +204,10 @@ demo = next(t for t in ol.tracks if "Demo Track 1" in (t.title or ""))
 demo_item = ExportTrack(track=demo, destination=ol_root / demo.id.lstrip("/"),
                         cues=ol.track_cues(demo.id))
 demo_beats = OneLibraryExporter._beats(demo_item)
-demo_cues = OneLibraryExporter._cue_dicts(demo_item, demo_beats)
+# The reader moved the fixture's positions onto the decoded clock; packing puts
+# them back on rekordbox's, so the bytes must come back unchanged.
+from konduktor.adapters.rekordbox import timebase  # noqa: E402
+demo_cues = OneLibraryExporter._cue_dicts(demo_item, demo_beats, timebase.offset(demo_item.destination))
 
 
 def _real_cue_tags(path: Path) -> list[bytes]:
@@ -212,6 +221,19 @@ def _real_cue_tags(path: Path) -> list[bytes]:
     return out
 
 
+def _mask_colour(tag: bytes) -> bytes:
+    """A PCO2 tag with each entry's code + RGB (after its comment) zeroed."""
+    if tag[:4] != b"PCO2":
+        return tag
+    out, off = bytearray(tag), struct.unpack(">I", tag[4:8])[0]
+    while off < len(tag):
+        length = struct.unpack(">I", tag[off + 8:off + 12])[0]
+        at = off + 44 + struct.unpack(">I", tag[off + 40:off + 44])[0]
+        out[at:at + 4] = bytes(4)
+        off += length
+    return bytes(out)
+
+
 anlz = ol_root / "PIONEER" / "USBANLZ" / "P016" / "0000875E" / "ANLZ0000"
 for suffix, extended, shape in ((".DAT", False, "hot + memory PCOB"),
                                 (".EXT", True, "hot + memory PCOB, hot + memory PCO2")):
@@ -219,9 +241,13 @@ for suffix, extended, shape in ((".DAT", False, "hot + memory PCOB"),
     ours = W.cue_tags(demo_cues, extended=extended)
     check(f"{suffix}: the same tags in the same order ({shape})", len(real) == len(ours),
           f"{len(ours)} vs rekordbox's {len(real)}")
-    check(f"{suffix}: every cue tag is byte-identical to rekordbox's",
-          all(r == o for r, o in zip(real, ours)),
-          [i for i, (r, o) in enumerate(zip(real, ours)) if r != o])
+    # Byte-identical EXCEPT the four colour bytes of each PCP2 entry. The
+    # fixture's cues carry rekordbox's OLD form (code 0 + an arbitrary RGB); the
+    # writer now stores a palette code, which is what rekordbox 7 draws from —
+    # pinned separately below against a real rekordbox 7 palette export.
+    check(f"{suffix}: every cue tag is byte-identical to rekordbox's (colour aside)",
+          all(_mask_colour(r) == _mask_colour(o) for r, o in zip(real, ours)),
+          [i for i, (r, o) in enumerate(zip(real, ours)) if _mask_colour(r) != _mask_colour(o)])
 check("a track with no cues still gets every list, empty",
       [t[:4] for t in W.cue_tags([], extended=True)] == [b"PCOB", b"PCOB", b"PCO2", b"PCO2"])
 check("a Traktor STEM file is an M4A to a Pioneer player",
@@ -288,6 +314,9 @@ wf_written = core_export.for_platform("onelibrary").write(
 )
 dats = [p for p in wf_written.extra if p.suffix == ".DAT"]
 check("two tracks, two .DAT files", len(dats) == 2)
+check("every file written is reported, so a re-export can clear it",
+      all(p.exists() for p in wf_written.all_paths)
+      and {p.suffix for p in wf_written.extra} == {".DAT", ".EXT", ".2EX"})
 for dat in dats:
     check(f"{dat.parent.name}: rekordbox's tag set, in rekordbox's order",
           _tag_kinds(dat) == REKORDBOX_DAT_ORDER, _tag_kinds(dat))
@@ -296,6 +325,36 @@ check("PVBR is 400 seek points plus a trailing length, as rekordbox writes",
       len(pvbr) == 1620, len(pvbr))
 check("the writer reported each track to the status bar",
       len(seen) == 2 and all("Analysing" in m for m in seen), seen)
+
+# The drawn waveforms: rekordbox 7's song-list preview and scrolling deck read
+# the .2EX (3-band) and .EXT. Same tags, same order as rekordbox writes.
+live_dat = next(d for d in dats if (d.with_suffix(".2EX")).exists())
+check("a decodable track gets all three analysis files",
+      live_dat.with_suffix(".EXT").exists() and live_dat.with_suffix(".2EX").exists())
+check(".EXT: rekordbox's tag order",
+      _tag_kinds(live_dat.with_suffix(".EXT")) == [b"PPTH", b"PWV3", b"PCOB", b"PCOB", b"PCO2", b"PCO2", b"PWV5", b"PWV4"],
+      _tag_kinds(live_dat.with_suffix(".EXT")))
+check(".2EX: rekordbox's tag order",
+      _tag_kinds(live_dat.with_suffix(".2EX")) == [b"PPTH", b"PWV7", b"PWV6", b"PWVC"],
+      _tag_kinds(live_dat.with_suffix(".2EX")))
+pwv7 = _tag(live_dat.with_suffix(".2EX"), b"PWV7")
+n7 = struct.unpack(">I", pwv7[16:20])[0]
+check("PWV7 is 150 frames a second, 3 bytes each", abs(n7 - 8 * 150) <= 2 and len(pwv7) == 24 + 3 * n7, n7)
+check("PWV6 is 1200 overview columns of 3 bytes", len(_tag(live_dat.with_suffix(".2EX"), b"PWV6")) == 20 + 3600)
+# The song list's colour overview: without it rekordbox draws the row plain blue.
+pwv4 = _tag(live_dat.with_suffix(".EXT"), b"PWV4")
+check("PWV4 is 1200 columns of 6 bytes, with rekordbox's header",
+      len(pwv4) == 24 + 7200 and pwv4[12:24] == bytes.fromhex("00000006000004b000000000"), pwv4[12:24].hex())
+p4 = np.frombuffer(pwv4[24:], np.uint8).reshape(-1, 6).astype(int)
+check("its colour overview is loud where the audio is loud (height byte)",
+      p4[:600, 2].mean() > p4[600:, 2].mean() + 10, (p4[:600, 2].mean(), p4[600:, 2].mean()))
+p7 = np.frombuffer(pwv7[24:], np.uint8).reshape(-1, 3).astype(int)
+check("the 3-band detail is loud where the audio is loud",
+      p7[: n7 // 2].mean() > p7[n7 // 2:].mean() + 10, (p7[: n7 // 2].mean(), p7[n7 // 2:].mean()))
+dead_dat = next(d for d in dats if d != live_dat)
+check("an undecodable track still gets its .EXT cue lists, but no invented waveform",
+      dead_dat.with_suffix(".EXT").exists() and not dead_dat.with_suffix(".2EX").exists()
+      and b"PWV3" not in _tag_kinds(dead_dat.with_suffix(".EXT")))
 
 cols = waveform.columns(live, 400)
 check("decodable audio is measured", cols is not None and abs(cols.duration - 8.0) < 0.05)
@@ -328,6 +387,121 @@ try:
     check("a cancel between tracks stops the writer", False, "it finished")
 except _Stop:
     check("a cancel between tracks stops the writer", True)
+
+print("\n== positions cross onto rekordbox's clock (25 ms later on MP3/AAC) ==")
+# Measured: rekordbox's grids sit a median 25.0 ms later than the decoded audio
+# on 16 MP3s and 24.5 ms on 4 M4As, 0 on WAV — the codec delay it does not trim.
+# Written at the decoded time, every cue showed ~25 ms early in rekordbox.
+check("an MP3's offset is 1105 samples", abs(timebase.offset("a.mp3") - 1105 / 44100) < 1e-9)
+check("a Traktor STEM (AAC) has it too", timebase.offset("a.stem.m4a") > 0.02)
+check("a lossless file has none", timebase.offset("a.wav") == 0.0 and timebase.offset("a.flac") == 0.0)
+check("a file of unknown location has none", timebase.offset(None) == 0.0)
+probe = [CuePoint(type="cue", role="hotcue", start=30.0, length=0.0, slot=1)]
+for name, want in (("probe.mp3", 30025), ("probe.wav", 30000)):
+    it = ExportTrack(track=cued, destination=Path(name), cues=TrackCues(track_id="p", cues=probe, grid_markers=[]))
+    got = OneLibraryExporter._cue_dicts(it, [], timebase.offset(it.destination))[0]["time_ms"]
+    check(f"a cue at 30.000 s in {name} is stored at {want} ms", got == want, got)
+check("reading it back undoes it exactly",
+      abs(timebase.from_pioneer(30025 / 1000, timebase.offset("a.mp3")) - 30.0) < 0.0005)
+check("a position inside the codec delay reads as the track's start",
+      timebase.from_pioneer(0.010, timebase.offset("a.mp3")) == 0.0)
+
+print("\n== cue colours cross as rekordbox PALETTE CODES ==")
+# rekordbox draws a hot cue from the palette code, not the RGB: an export writing
+# code 0 had every cue drawn in rekordbox's defaults (green cues, orange loops).
+# The table was measured from a rekordbox 7 export of all 16 swatches.
+from konduktor.adapters.rekordbox import palette  # noqa: E402
+
+check("a measured swatch keeps its exact code and RGB",
+      palette.code_for("#1AFF00") == (0x16, (0x1A, 0xFF, 0x00))
+      and palette.code_for("#FF00A1") == (0x31, (0xFF, 0x00, 0xA1)))
+check("a Konduktor cue (blue) is rekordbox's light blue", palette.code_for("#4D94FF")[0] == 0x05)
+check("a Konduktor loop (green) is rekordbox's GREEN, not the nearer-hued teal",
+      palette.code_for("#3DDC84")[0] == 0x16)
+check("white has no swatch: code 0, RGB kept", palette.code_for("#FFFFFF") == (0, (255, 255, 255)))
+check("no colour is code 0, black", palette.code_for(None) == (0, (0, 0, 0)))
+check("any other colour takes the nearest-hue swatch, and that swatch's RGB",
+      palette.code_for("#FF8C00") == (0x26, palette.PALETTE[0x26]))
+typed = [CuePoint(type="cue", role="hotcue", start=1.0, length=0.0, slot=0),
+         CuePoint(type="loop", role="hotcue", start=2.0, length=1.0, slot=1),
+         CuePoint(type="cue", role="hotcue", start=3.0, length=0.0, slot=2, color="#FFFFFF"),
+         CuePoint(type="cue", role="memory", start=4.0, length=0.0, slot=None)]
+got = {c["hot_cue"]: (c["code"], c["rgb"]) for c in OneLibraryExporter._cue_dicts(
+    ExportTrack(track=cued, destination=Path("t.wav"),
+                cues=TrackCues(track_id="t", cues=typed, grid_markers=[])), [], 0.0)}
+check("an uncoloured Traktor cue exports blue, a loop green, the grid cue white",
+      got[1][0] == 0x05 and got[2][0] == 0x16 and got[3] == (0, (255, 255, 255)), got)
+check("a memory cue stays uncoloured, as rekordbox writes it", got[0] == (0, (0, 0, 0)), got[0])
+entry = W.cue_tags([{"hot_cue": 1, "kind": 1, "time_ms": 1000, "loop_ms": None,
+                     "rgb": (0x1A, 0xFF, 0x00), "code": 0x16, "beats": None}], extended=True)[2]
+check("the code is packed where rekordbox 7 puts it — byte 44, before the RGB",
+      entry[20 + 44:20 + 48] == bytes([0x16, 0x1A, 0xFF, 0x00]), entry[64:68].hex())
+
+print("\n== artwork crosses the way rekordbox 7 writes it ==")
+# Measured on a rekordbox 7 export: PIONEER/Artwork/00001/{a,b}<n>{,_m}.jpg at
+# 80 and 240 px (a == b byte for byte), baseline JPEG q85 4:2:0, non-square art
+# letterboxed onto black, image.path -> the b file, content.image_id -> the row.
+import io  # noqa: E402
+
+from PIL import Image, JpegImagePlugin  # noqa: E402
+
+art_root = Path(tempfile.mkdtemp())
+art_audio = art_root / "Contents" / "art.wav"
+art_audio.parent.mkdir(parents=True)
+sf.write(art_audio, tone, sr)
+plain_audio = art_root / "Contents" / "plain.wav"
+sf.write(plain_audio, tone, sr)
+wide = Image.new("RGB", (400, 100), (220, 30, 30))          # a wide red banner
+png = io.BytesIO(); wide.save(png, format="PNG")
+with_art = ExportTrack(track=live_t.model_copy(update={"id": "art", "title": "art"}),
+                       destination=art_audio, cues=grid, art=(png.getvalue(), "image/png"))
+without = ExportTrack(track=live_t.model_copy(update={"id": "plain", "title": "plain"}),
+                      destination=plain_audio, cues=grid)
+art_written = core_export.for_platform("onelibrary").write(
+    ExportPayload(name="ART", tracks=[with_art, without]), art_root)
+folder = art_root / "PIONEER" / "Artwork" / "00001"
+names = sorted(p.name for p in folder.iterdir()) if folder.exists() else []
+check("one image: a1, a1_m, b1, b1_m — and none for the track without art",
+      names == ["a1.jpg", "a1_m.jpg", "b1.jpg", "b1_m.jpg"], names)
+check("every art file is reported, so a re-export can clear it",
+      all((folder / n) in art_written.extra for n in names))
+check("the a and b copies are byte-identical, as rekordbox writes them",
+      (folder / "a1.jpg").read_bytes() == (folder / "b1.jpg").read_bytes()
+      and (folder / "a1_m.jpg").read_bytes() == (folder / "b1_m.jpg").read_bytes())
+small_img, medium_img = Image.open(folder / "b1.jpg"), Image.open(folder / "b1_m.jpg")
+check("80 px and 240 px", small_img.size == (80, 80) and medium_img.size == (240, 240))
+ref = io.BytesIO(); Image.new("RGB", (8, 8)).save(ref, format="JPEG", quality=85, subsampling=2)
+check("baseline JPEG, quality 85, 4:2:0 — rekordbox's own tables",
+      medium_img.quantization == Image.open(ref).quantization
+      and JpegImagePlugin.get_sampling(medium_img) == 2 and not medium_img.info.get("progressive"))
+px = np.asarray(medium_img.convert("RGB")).astype(int)
+check("a wide cover is letterboxed onto black, not cropped or stretched",
+      px[:40].mean() < 8 and px[-40:].mean() < 8 and px[120, 120, 0] > 150,
+      (px[:40].mean(), px[120, 120].tolist()))
+reopened = OneLibraryDriver().open(art_root)
+by_title_art = {t.title: t for t in reopened.tracks}
+served = reopened.cover_art(by_title_art["art"].id)
+check("Konduktor's reader serves it back (the 240 px file)",
+      served is not None and served[0] == (folder / "b1_m.jpg").read_bytes())
+check("and a track without art has none", reopened.cover_art(by_title_art["plain"].id) is None)
+
+print("\n== content.contentLink is what rekordbox writes ==")
+# Measured: blanking it on ONE track of a rekordbox-written stick turned that
+# row's song-list preview plain blue and put a "?" beside CUE — exactly what
+# every row of Konduktor's exports showed while it was NULL.
+import sqlcipher3.dbapi2 as _sq  # noqa: E402
+from pyrekordbox.devicelib_plus.database import BLOB as _BLOB  # noqa: E402
+from pyrekordbox.utils import deobfuscate as _deob  # noqa: E402
+
+_con = _sq.connect(str(art_written.library))
+_con.execute(f"PRAGMA key='{_deob(_BLOB)}'")
+links = {r[0] for r in _con.execute("SELECT contentLink FROM content")}
+bits = {r[0] for r in _con.execute("SELECT analysedBits FROM content")}
+_con.close()
+check("every track carries contentLink 788224, beside analysedBits 41",
+      links == {788224} and bits == {41}, (links, bits))
+check("an unreadable cover costs the artwork, not the export",
+      artwork_mod.pioneer_jpegs(b"not an image") is None)
 
 print("\n" + ("❌ FAILED" if failed else "✅ PASSED"))
 raise SystemExit(1 if failed else 0)

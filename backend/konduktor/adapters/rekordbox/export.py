@@ -59,6 +59,7 @@ from sqlalchemy import text
 from ...core.export import ExportPayload, ExportTrack, WrittenLibrary
 from ...core import waveform
 from . import anlz_writer as W
+from . import timebase
 from .beatgrid import beats_from_markers
 from .capabilities import capabilities_for
 from .cue_types import kind_for
@@ -309,26 +310,45 @@ class RekordboxExporter:
         content.AnalysisUpdated = 1
         db.flush()
 
-        # The same shape as a rekordbox-analysed track's `.DAT`: PVBR and the
-        # preview waveforms are what rekordbox needs before it shows a grid at
-        # all (measured on a OneLibrary stick; the same Pioneer file here), and
-        # the cue lists are present but EMPTY — master.db keeps cues in djmdCue.
-        measured = waveform.columns(item.destination, 400)
-        tags = [W.path_tag(str(item.destination)), W.vbr_tag(W.mp3_samples(item.destination))]
+        # The same three files as a rekordbox-analysed track. The `.DAT` needs
+        # PVBR and the preview waveforms before rekordbox shows a grid at all
+        # (measured on a OneLibrary stick; the same Pioneer file here); the
+        # `.EXT`/`.2EX` carry the drawn waveforms. Cue lists are present but
+        # EMPTY — master.db keeps cues in djmdCue.
+        off = timebase.offset(item.destination)
+        measured = waveform.analyse(item.destination, lead=off)
+        path = str(item.destination)
+        tags = [W.path_tag(path), W.vbr_tag(W.mp3_samples(item.destination))]
         markers = item.cues.grid_markers if item.cues else []
         if markers:
             duration = ((measured.duration if measured else 0.0)
                         or float(item.track.length or 0) or (markers[-1].start + 60.0))
             nums, bpms, times = beats_from_markers(markers, duration)
             if nums:
-                tags.append(W.beatgrid_tag(list(zip(nums, bpms, times))))
-        tags += (W.preview_tags(measured.rms, measured.brightness) if measured
-                 else W.flat_preview_tags())
+                # Onto rekordbox's clock (~25 ms behind on MP3/AAC — `timebase`).
+                # The cues need no such line: they are replayed through
+                # `set_cue`, which applies the same offset itself.
+                tags.append(W.beatgrid_tag(
+                    [(n, bpm, timebase.to_pioneer(t, off)) for n, bpm, t in zip(nums, bpms, times)]))
+        if measured:
+            tags += W.preview_tags(measured.columns.rms, measured.columns.brightness)
+            ext_waves, two_ex = W.waveform_tags(measured.frames.bands)
+        else:
+            tags += W.flat_preview_tags()
+            ext_waves, two_ex = [], []
         tags += W.cue_tags([], extended=False)
         # AnalysisDataPath is rooted at a `share` directory BESIDE master.db,
         # not at the library root — the read path joins it that way, and writing
         # it anywhere else produces a track whose grid silently reads as empty.
-        return [W.write_anlz(root / "share" / rel.lstrip("/"), tags)]
+        dat = root / "share" / rel.lstrip("/")
+        written = [
+            W.write_anlz(dat, tags),
+            W.write_anlz(dat.with_suffix(".EXT"), [W.path_tag(path), *ext_waves[:1],
+                                                   *W.cue_tags([], extended=True), *ext_waves[1:]]),
+        ]
+        if two_ex:
+            written.append(W.write_anlz(dat.with_suffix(".2EX"), [W.path_tag(path), *two_ex]))
+        return written
 
     # ---- playlists ---------------------------------------------------------------
 

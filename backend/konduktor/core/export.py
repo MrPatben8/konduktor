@@ -45,6 +45,11 @@ class ExportTrack:
     #: write should be discovering.
     destination: Path
     cues: TrackCues | None = None
+    #: The cover as the SOURCE library serves it — `(bytes, mime)` from
+    #: `LibraryAdapter.cover_art` — or None. Carried rather than re-read from the
+    #: copied file, because a library's art is not always embedded in the audio
+    #: (rekordbox keeps its own copy under `share/`).
+    art: tuple[bytes, str] | None = None
 
     @property
     def source_id(self) -> str:

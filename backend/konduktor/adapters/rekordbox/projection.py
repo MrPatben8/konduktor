@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 
 from ...core.model import CuePoint, GridMarker, HotcueChip, Track, TrackCues
-from . import beatgrid
+from . import beatgrid, timebase
 from .cue_types import cue_type, role_and_slot
 
 # Rekordbox names keys musically ("Abm", "F", "Ebm") rather than in Camelot or
@@ -161,7 +161,7 @@ def to_track(row, cue_kinds=()) -> Track:
     )
 
 
-def to_track_cues(cue_rows: list, grid: tuple[list[float], list[float]] | None) -> TrackCues:
+def to_track_cues(cue_rows: list, grid: tuple | None, time_offset: float = 0.0) -> TrackCues:
     """Project a track's cues and beatgrid.
 
     `grid` is the per-beat ``(times, bpms, beats)`` from the ANLZ file, collapsed here
@@ -195,7 +195,9 @@ def to_track_cues(cue_rows: list, grid: tuple[list[float], list[float]] | None) 
                 name=(getattr(c, "Comment", None) or None),
                 type=kind,
                 role=role,
-                start=in_msec / 1000.0,
+                # rekordbox's clock -> the decoded audio's (see `timebase`); the
+                # grid arrives already converted by the store.
+                start=timebase.from_pioneer(in_msec / 1000.0, time_offset),
                 length=length,
                 slot=slot,
                 color=_cue_color(c),

@@ -2,7 +2,8 @@ import type { CuePoint, CueType } from '../api'
 import { BEATS_PER_BAR, type BeatGrid } from './beatgrid'
 import type { IconName } from './icons'
 
-// Fallback colour by cue type, used when the platform stored none.
+// Fallback colour by cue type, used when the platform stored none. Mirrored by
+// `backend/konduktor/core/cue_colors.py` (what an export writes) — keep in lockstep.
 const TYPE_COLORS: Record<CueType, string> = {
   cue: '#4d94ff', // blue
   fade_in: '#ff9a3d', // orange

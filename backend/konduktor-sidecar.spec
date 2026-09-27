@@ -20,8 +20,9 @@ binaries = []
 for pkg in ("uvicorn", "xsdata", "dulwich"):
     hiddenimports += collect_submodules(pkg)
 
-# Native standard extras — grab modules + shared libs + any data.
-for pkg in ("uvloop", "httptools", "websockets"):
+# Native standard extras — grab modules + shared libs + any data. PyAV (`av`)
+# carries FFmpeg's shared libraries, which the export's waveform analysis needs.
+for pkg in ("uvloop", "httptools", "websockets", "av"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b

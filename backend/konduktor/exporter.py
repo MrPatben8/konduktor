@@ -376,6 +376,7 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle) -> dict:
                     track=adapter.track(planned.track_id),
                     destination=target,
                     cues=adapter.track_cues(planned.track_id),
+                    art=_cover(adapter, planned.track_id),
                 )
             )
 
@@ -436,6 +437,16 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle) -> dict:
             pass
         _prune_empty(destination)
         raise
+
+
+def _cover(adapter, track_id: str):
+    """The source's cover art, or None. A missing or unreadable cover costs the
+    artwork on the stick, never the export."""
+    try:
+        return adapter.cover_art(track_id)
+    except Exception as ex:  # noqa: BLE001
+        log.warning("no cover art for %s: %s", track_id, ex)
+        return None
 
 
 def _files(root: Path) -> set[Path]:

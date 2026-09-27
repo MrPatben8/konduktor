@@ -28,6 +28,7 @@ os.environ["KONDUKTOR_DATA_DIR"] = tempfile.mkdtemp(prefix="konduktor-ol-appdata
 from konduktor.adapters.onelibrary import discovery  # noqa: E402
 from konduktor.adapters.onelibrary.adapter import OneLibraryAdapter  # noqa: E402
 from konduktor.adapters.onelibrary.beatgrid import markers_from_beats  # noqa: E402
+from konduktor.adapters.rekordbox import timebase  # noqa: E402
 from konduktor.adapters.onelibrary.cues import (  # noqa: E402
     MEMORY_SLOT,
     NO_LOOP,
@@ -235,7 +236,12 @@ markers = cues.grid_markers
 check("a flexible grid stays flexible", len(markers) == 2, str(len(markers)))
 check("the first segment is 128 BPM", markers[0].bpm == 128.0)
 check("the second segment is 90 BPM", markers[1].bpm == 90.0)
-check("and it starts at 60 s", abs(markers[1].start - 60.0) < 0.001, str(markers[1].start))
+# Stored positions are on rekordbox's clock, 1105 samples behind the decoded
+# audio on an MP3 (`timebase`); the generic model reports the decoded time.
+OFF = timebase.offset("x.mp3")
+check("the reader converts rekordbox's clock to the decoded audio's (~25 ms on MP3)",
+      abs(OFF - 1105 / 44100) < 1e-9, OFF)
+check("and it starts at 60 s", abs(markers[1].start - (60.0 - OFF)) < 0.001, str(markers[1].start))
 check("markers are ordered by position", [m.start for m in markers] == sorted(m.start for m in markers))
 
 print("== cues, cross-checked against the same cues in master.db ==")
@@ -246,20 +252,20 @@ print("== cues, cross-checked against the same cues in master.db ==")
 hot = {c.slot: c for c in cues.cues if c.role == "hotcue"}
 check("four hot cues, on pads A-D", sorted(hot) == [0, 1, 2, 3], str(sorted(hot)))
 check("pad A is the loop at 40.000 s",
-      hot[0].type == "loop" and abs(hot[0].start - 40.0) < 0.001)
+      hot[0].type == "loop" and abs(hot[0].start - (40.0 - OFF)) < 0.001)
 check("pad A's loop is 4 beats at 128 BPM = 1.875 s", abs(hot[0].length - 1.875) < 0.001)
-check("pad B is at 18.775 s", abs(hot[1].start - 18.775) < 0.001, str(hot[1].start))
-check("pad C is at 90.667 s", abs(hot[2].start - 90.667) < 0.001, str(hot[2].start))
+check("pad B is at 18.775 s", abs(hot[1].start - (18.775 - OFF)) < 0.001, str(hot[1].start))
+check("pad C is at 90.667 s", abs(hot[2].start - (90.667 - OFF)) < 0.001, str(hot[2].start))
 # Pad D exists ONLY in the .EXT. A reader that stopped at the .DAT would lose it,
 # and would do so silently.
 check("pad D is at 120.000 s — the cue that lives only in the .EXT",
-      abs(hot[3].start - 120.0) < 0.001, str(hot[3].start))
+      abs(hot[3].start - (120.0 - OFF)) < 0.001, str(hot[3].start))
 check("hot cues carry their RGB colour", all(c.color and c.color.startswith("#") for c in hot.values()))
 
 memory = [c for c in cues.cues if c.role == "memory"]
 check("the memory cue is preserved", len(memory) == 1)
 check("it has no slot", memory[0].slot is None)
-check("it is the same loop, at the same place", abs(memory[0].start - 40.0) < 0.001)
+check("it is the same loop, at the same place", abs(memory[0].start - (40.0 - OFF)) < 0.001)
 check("no cue on a read-only drive is editable", all(not c.editable for c in cues.cues))
 
 print("== playlists ==")

@@ -40,6 +40,7 @@ from sqlalchemy.orm import joinedload
 from ...core.adapter import InvalidCommand, LibraryNotSupported, NotFound, SaveOutcome
 from ...core.edit_journal import EditJournal
 from ...core.pathmap import PathMapping
+from . import timebase
 from .cue_types import beat_loop_size, kind_for, role_and_slot
 
 log = logging.getLogger(__name__)
@@ -266,6 +267,10 @@ class RekordboxStore:
         if key in self._grid_cache:
             return self._grid_cache[key]
         result = self._read_anlz_grid(key)
+        if result is not None:
+            off = self.time_offset(key)
+            times, bpms, beats = result
+            result = ([timebase.from_pioneer(t, off) for t in times], bpms, beats)
         self._grid_cache[key] = result
         return result
 
@@ -314,6 +319,14 @@ class RekordboxStore:
         if not folder:
             return None
         return self._mapping.apply(Path(str(folder)))
+
+    def time_offset(self, track_id: str) -> float:
+        """Seconds rekordbox's clock runs behind the decoded audio for this
+        track (~25 ms on MP3/AAC, 0 lossless). Added on every position written,
+        subtracted on every position read — see `timebase`. Decided by the
+        stored FolderPath's format, so it holds even when the file is offline."""
+        folder = getattr(self.content(track_id), "FolderPath", None)
+        return timebase.offset(str(folder) if folder else None)
 
     def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
         """The art embedded in the audio file, else Rekordbox's own copy.
@@ -641,9 +654,11 @@ class RekordboxStore:
         if int(slot) < 0:
             raise InvalidCommand(f"Hot cue slot cannot be negative, got {slot}")
         row = self.content(track_id)
-        in_ms = int(round(start_sec * 1000))
+        off = self.time_offset(track_id)
+        in_ms = int(round(timebase.to_pioneer(start_sec, off) * 1000))
         is_loop = cue_type == "loop" and length_sec > 0
-        out_ms = int(round((start_sec + length_sec) * 1000)) if is_loop else -1
+        out_ms = (int(round(timebase.to_pioneer(start_sec + length_sec, off) * 1000))
+                  if is_loop else -1)
 
         kind = kind_for("hotcue", slot)
         existing = self._cue_row(track_id, slot)
@@ -698,7 +713,8 @@ class RekordboxStore:
         cue = self._cue_row(track_id, slot)
         if cue is None:
             raise NotFound(f"No cue in slot {slot}")
-        start = (cue.InMsec or 0) / 1000.0
+        # Back to the decoded time base: set_cue re-applies the offset.
+        start = timebase.from_pioneer((cue.InMsec or 0) / 1000.0, self.time_offset(track_id))
         length = 0.0
         if cue_type == "loop":
             if cue.OutMsec and cue.OutMsec > 0:
@@ -920,5 +936,7 @@ class RekordboxStore:
             path = self.path.parent / "share" / str(rel).lstrip("/\\")
             if not path.is_file():
                 raise InvalidCommand(f"Analysis file is missing: {path}")
-            grid_math.write_pqtz(path, beat_nums, bpms, times)
+            off = self.time_offset(track_id)
+            grid_math.write_pqtz(path, beat_nums, bpms,
+                                 [timebase.to_pioneer(t, off) for t in times])
         self._pending_grids.clear()

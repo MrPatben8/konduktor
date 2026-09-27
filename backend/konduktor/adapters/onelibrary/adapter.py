@@ -264,7 +264,7 @@ class OneLibraryAdapter:
         self._refuse("Editing cover art")
 
     def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
-        return None
+        return self._store.cover_art(track_id)
 
     def create_playlist(self, name: str, parent_id: str | None = None) -> str:
         self._refuse("Creating playlists")

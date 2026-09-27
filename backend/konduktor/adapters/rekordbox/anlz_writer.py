@@ -70,7 +70,8 @@ _TAG_PREFIX = 12
 #: Each tag counts a different number of its leading CONTENT fields as part of
 #: its header. Read off `pyrekordbox`'s own tag classes rather than guessed.
 _LEN_HEADER = {"PPTH": 16, "PQTZ": 24, "PCOB": 24, "PCO2": 20,
-               "PVBR": 16, "PWAV": 20, "PWV2": 20}
+               "PVBR": 16, "PWAV": 20, "PWV2": 20,
+               "PWV3": 24, "PWV5": 24, "PWV4": 24, "PWV7": 24, "PWV6": 20, "PWVC": 14}
 
 
 def _wrap(kind: str, body: bytes) -> bytes:
@@ -181,6 +182,128 @@ def preview_tags(rms, brightness) -> list[bytes]:
     ]
 
 
+# ---- the detail and 3-band waveforms (`.EXT` / `.2EX`) -------------------------
+#
+# These only affect DRAWING — rekordbox shows the grid and cues without them — but
+# without them its song list has no preview and its deck draws a flat blue line,
+# and it warns the device was "analyzed by an older version". All constants are
+# fitted against rekordbox 7's own files for 12 local tracks, measured through
+# `core.waveform` exactly as the exporter measures (per-band mean error ~8 on the
+# 0-127 scale). rekordbox 7's song list draws `PWV6` — but ONLY for a track
+# whose `content.contentLink` is set (see the OneLibrary exporter); with it NULL
+# the row is plain blue whatever the files hold. `PWV4` is written by
+# distribution matching, not per-column fitting (see `_PWV4_MAPS`).
+
+#: PWV7 byte per band = top * (energy / its 99.5th percentile) ** gamma.
+_PWV7 = ((88, 0.6), (92, 0.9), (68, 1.7))            # low, mid, high
+#: PWV6: the same, over 1200 overview columns (column = mean of its frames).
+_PWV6 = ((40, 0.5), (34, 0.5), (34, 0.5))
+#: PWVC: a per-band gain, = C / (the band's 99.5th percentile), floored at 80 —
+#: rekordbox's own values follow this to about +/-20%. What rekordbox does with
+#: it is not known; it is reproduced rather than invented.
+_PWVC_C, _PWVC_FLOOR = (20763.0, 15220.0, 12571.0), 80
+#: PWV3/PWV5 height (5 bits) from overall energy: 28 * x ** 1.5.
+_HEIGHT = (28, 1.5)
+#: PWV5 colour (3 bits each) from each band's SHARE of the frame's energy.
+_RGB = ((8.47, 0.54), (7.60, 0.47), (13.78, 1.83))   # red<-low, green<-mid, blue<-high
+_OVERVIEW_COLUMNS = 1200
+
+#: PWV4 — the 6-byte colour overview. NOT what rekordbox 7's song list draws
+#: (that is PWV6: removing PWV6 from a rekordbox-written track left its row
+#: empty, removing PWV4 changed nothing); written because every rekordbox file
+#: carries it and its RGB mode and older players may read it. Per column: b0 overall level, b1 a
+#: companion of b0, b2 the height, b3/b4/b5 the low/mid/high (red/green/blue)
+#: levels. Two measured facts shape it: b4 and b5 are sampled at ONE instant per
+#: column (their column-to-column correlation is 0.05 and 0.16, against ~0.6 for
+#: the rest), and rekordbox's per-column bytes are too jumpy to reproduce one by
+#: one — so each byte is a QUANTILE MAP, (normalised measurement knots, byte
+#: knots), fitted on 12 tracks so the distribution matches rekordbox's (held-out
+#: medians within a few levels, the same spiky top end). b2 and b1 follow from
+#: the others by linear fits on rekordbox's own bytes (mean error 10 and 12).
+_PWV4_MAPS = {
+    "b0": ((0.0, 0.1027, 0.1843, 0.3094, 0.3971, 0.4832, 0.5759, 0.6569, 0.731, 0.8102, 0.8973, 0.9419, 0.971, 1.1784),
+           (0, 17, 28, 45, 56, 62, 65, 69, 74, 115, 127, 127, 127, 127)),
+    "b3": ((0.0, 0.0135, 0.0473, 0.1407, 0.26, 0.3841, 0.5027, 0.5911, 0.6686, 0.7617, 0.8646, 0.9209, 0.9645, 1.1825),
+           (0, 1, 4, 15, 24.7, 37, 44, 54, 62, 68, 89, 107, 120, 127)),
+    "b4": ((0.0, 0.0305, 0.0654, 0.1307, 0.1855, 0.2325, 0.2819, 0.3342, 0.3977, 0.4809, 0.6036, 0.708, 0.8719, 1.2804),
+           (0, 2, 7, 12, 17, 21, 25, 30, 35, 43, 62, 109, 127, 127)),
+    "b5": ((0.0, 0.0077, 0.0223, 0.0511, 0.09, 0.1298, 0.1809, 0.2427, 0.3167, 0.4143, 0.5749, 0.7209, 0.863, 1.4313),
+           (0, 1, 4, 7, 10, 12, 16, 20, 24, 31, 60, 127, 127, 127)),
+}
+
+
+def _pwv4(bands) -> bytes:
+    import numpy as np
+
+    full = np.sqrt((bands ** 2).sum(axis=1))
+    x = np.column_stack([bands, full])                       # low, mid, high, full
+    cols = [idx for idx in np.array_split(np.arange(len(x)), _OVERVIEW_COLUMNS)]
+    mean = np.array([x[i].mean(axis=0) if len(i) else np.zeros(4) for i in cols])
+    instant = np.array([x[i[len(i) // 2]] if len(i) else np.zeros(4) for i in cols])
+
+    def mapped(values, key):
+        ref = float(np.percentile(values, 99.5)) or 1.0
+        knots_x, knots_y = _PWV4_MAPS[key]
+        return np.clip(np.round(np.interp(values / ref, knots_x, knots_y)), 0, 127).astype(int)
+
+    b0, b3 = mapped(mean[:, 3], "b0"), mapped(mean[:, 0], "b3")
+    b4, b5 = mapped(instant[:, 1], "b4"), mapped(instant[:, 2], "b5")
+    b2 = np.clip(np.round(0.83 * np.maximum(b3, np.maximum(b4, b5)) + 11.6), 0, 127).astype(int)
+    b1 = np.clip(np.round(235.2 - 0.77 * b0), 0, 255).astype(int)
+    return np.column_stack([b0, b1, b2, b3, b4, b5]).astype(np.uint8).tobytes()
+
+
+def _norm(x, top: float, gamma: float, cap: int):
+    import numpy as np
+
+    ref = float(np.percentile(x, 99.5)) or 1.0
+    return np.clip(np.round(top * np.clip(x / ref, 0, None) ** gamma), 0, cap).astype(int)
+
+
+def waveform_tags(bands) -> tuple[list[bytes], list[bytes]]:
+    """(`.EXT` tags, `.2EX` tags) from 150-per-second low/mid/high band energy.
+
+    `.EXT`: `PWV3` (detail, 1 byte: whiteness << 5 | height), `PWV5` (detail
+    colour, 2 bytes: rrr ggg bbb hhhhh 00) and `PWV4` (the RGB-mode colour
+    overview, 1200 x 6 bytes — see `_PWV4_MAPS`). `.2EX`: `PWV7` (3-band detail, one
+    byte per band), `PWV6` (3-band overview, 1200 columns) and `PWVC`. The frames
+    must already be on rekordbox's clock (`waveform.analyse(lead=offset)`).
+    """
+    import numpy as np
+
+    bands = np.asarray(bands, dtype=float)
+    n = len(bands)
+    full = np.sqrt((bands ** 2).sum(axis=1))
+    share = bands / (bands.sum(axis=1, keepdims=True) + 1e-12)
+
+    height = _norm(full, *_HEIGHT, 31)
+    white = np.clip(np.round(2.5 + 10.0 * share[:, 2]), 0, 7).astype(int)
+    pwv3 = bytes(int((w << 5) | h) for w, h in zip(white, height))
+    rgb = [np.clip(np.round(k * share[:, i] + c), 0, 7).astype(int)
+           for i, (k, c) in enumerate(_RGB)]
+    pwv5 = b"".join(struct.pack(">H", (int(r) << 13) | (int(g) << 10) | (int(b) << 7) | (int(h) << 2))
+                    for r, g, b, h in zip(*rgb, height))
+
+    pwv7 = np.stack([_norm(bands[:, i], top, g, 127) for i, (top, g) in enumerate(_PWV7)], axis=1)
+    cols = np.array([bands[idx].mean(axis=0) if len(idx) else np.zeros(3)
+                     for idx in np.array_split(np.arange(n), _OVERVIEW_COLUMNS)])
+    pwv6 = np.stack([_norm(cols[:, i], top, g, 127) for i, (top, g) in enumerate(_PWV6)], axis=1)
+    gains = [max(_PWVC_FLOOR, int(round(c / (float(np.percentile(bands[:, i], 99.5)) or 1.0))))
+             for i, c in enumerate(_PWVC_C)]
+
+    ext = [
+        _wrap("PWV3", struct.pack(">III", 1, n, 0x00960000) + pwv3),
+        _wrap("PWV5", struct.pack(">III", 2, n, 0x00960305) + pwv5),
+        _wrap("PWV4", struct.pack(">III", 6, _OVERVIEW_COLUMNS, 0) + _pwv4(bands)),
+    ]
+    two_ex = [
+        _wrap("PWV7", struct.pack(">III", 3, n, 0x00960000) + pwv7.astype(np.uint8).tobytes()),
+        _wrap("PWV6", struct.pack(">II", 3, _OVERVIEW_COLUMNS) + pwv6.astype(np.uint8).tobytes()),
+        _wrap("PWVC", struct.pack(">H", 0) + struct.pack(">HHH", *[min(g, 0xFFFF) for g in gains])),
+    ]
+    return ext, two_ex
+
+
 def flat_preview_tags() -> list[bytes]:
     """Empty previews, for a file nothing could decode, so the grid and cues can
     still show. That an all-zero preview satisfies rekordbox is an assumption,
@@ -189,7 +312,7 @@ def flat_preview_tags() -> list[bytes]:
 
 
 def _pcp2_entry(*, hot_cue: int, kind: int, time_ms: int, loop_ms: int | None,
-                rgb: tuple[int, int, int] | None, beats: int | None) -> bytes:
+                rgb: tuple[int, int, int] | None, beats: int | None, code: int = 0) -> bytes:
     """One `PCP2` entry, byte-for-byte as rekordbox 7 writes it.
 
     Two constants in here are rekordbox's, not the documented struct's: the
@@ -204,7 +327,9 @@ def _pcp2_entry(*, hot_cue: int, kind: int, time_ms: int, loop_ms: int | None,
         b"PCP2", 16, PCP2_ENTRY_LEN, hot_cue, kind, 1000,
         int(time_ms), NO_LOOP if loop_ms is None else int(loop_ms),
         0, 1, beats or 0, 1 if beats else 0, len(comment),
-    ) + comment + struct.pack(">4B", 0, red, green, blue) + bytes(
+    # The colour is the palette CODE, then RGB: rekordbox draws from the code
+    # (`palette`); a code of 0 draws its default colour whatever the RGB says.
+    ) + comment + struct.pack(">4B", code & 0xFF, red, green, blue) + bytes(
         PCP2_ENTRY_LEN - 48 - len(comment)
     )
 
@@ -243,7 +368,8 @@ def _pcob(cue_type: int, chosen: list[dict]) -> bytes:
 def _pco2(cue_type: int, chosen: list[dict]) -> bytes:
     blob = b"".join(
         _pcp2_entry(hot_cue=c["hot_cue"], kind=c["kind"], time_ms=c["time_ms"],
-                    loop_ms=c["loop_ms"], rgb=c.get("rgb"), beats=c.get("beats"))
+                    loop_ms=c["loop_ms"], rgb=c.get("rgb"), beats=c.get("beats"),
+                    code=c.get("code", 0))
         for c in chosen
     )
     return _wrap("PCO2", struct.pack(">IHH", cue_type, len(chosen), 0) + blob)

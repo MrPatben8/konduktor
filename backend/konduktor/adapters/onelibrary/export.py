@@ -43,7 +43,9 @@ from pathlib import Path
 
 from ...core import waveform
 from ...core.export import ExportPayload, ExportTrack, WrittenLibrary
+from ...core.cue_colors import effective_color
 from ..rekordbox import anlz_writer as W
+from ..rekordbox import artwork, palette, timebase
 from ..rekordbox.beatgrid import beats_from_markers
 from ..rekordbox.projection import render_key
 from .capabilities import capabilities_for
@@ -60,6 +62,13 @@ SEED = SCHEMA.with_name("seed.sql")
 DB_VERSION = "1000"
 #: Seen on every track of a real export; semantics undocumented, copied as-is.
 ANALYSED_BITS = 41
+#: `content.contentLink`, as rekordbox 7 writes it beside `analysedBits` 41 (a
+#: re-analysed track carried 1902336 beside 105; what the bits mean is unknown).
+#: NOT optional: measured by blanking it on one track of a rekordbox-written
+#: stick — that row's song-list preview fell back to plain blue and gained a "?"
+#: beside CUE, exactly as every row of Konduktor's exports did while it was NULL.
+#: `masterDbId`/`masterContentId` were cleared the same way and changed nothing.
+CONTENT_LINK = 788224
 
 OTHER_PLAYLIST = "Other"
 
@@ -102,9 +111,13 @@ class OneLibraryExporter:
         yes to. Leaving the adapter's answer here would have the UI report that
         the thing it just wrote cannot be written.
         """
-        return capabilities_for().model_copy(
-            update={"writable": True, "readonly_cause": None}
-        )
+        caps = capabilities_for()
+        # An exported drive CARRIES artwork (`_write_art`); the adapter's False
+        # means "cannot edit a plugged-in drive's art", a different question.
+        return caps.model_copy(update={
+            "writable": True, "readonly_cause": None,
+            "tracks": caps.tracks.model_copy(update={"artwork": True}),
+        })
 
     def write(self, payload: ExportPayload, destination: Path) -> WrittenLibrary:
         import sqlcipher3.dbapi2 as sqlcipher
@@ -141,6 +154,9 @@ class OneLibraryExporter:
 
     def _fill(self, con, payload: ExportPayload, root: Path) -> list[Path]:
         lookups = {name: {} for name in ("artist", "album", "genre", "label", "key")}
+        # Image ids are handed out in track order, one per track that HAS art —
+        # rekordbox does not share an image between tracks, even identical ones.
+        lookups["image"] = {"next": 0}
         written: list[Path] = []
         by_source: dict[str, int] = {}
 
@@ -188,16 +204,17 @@ class OneLibraryExporter:
         except OSError:
             size = 0
         sample_rate, bit_depth = _audio_format(item.destination)
+        image_id, art_files = self._write_art(con, item, root, lookups["image"])
 
         con.execute(
             "INSERT INTO content (content_id, title, titleForSearch, bpmx100, length, "
-            "trackNo, artist_id_artist, album_id, genre_id, label_id, key_id, "
+            "trackNo, artist_id_artist, album_id, genre_id, label_id, key_id, image_id, "
             "djComment, rating, releaseDate, dateAdded, path, fileName, fileSize, "
             "fileType, bitrate, bitDepth, samplingRate, isHotCueAutoLoadOn, "
             "isKuvoDeliverStatusOn, masterDbId, masterContentId, "
-            "analysisDataFilePath, analysedBits, hasModified, cueUpdateCount, "
+            "analysisDataFilePath, analysedBits, contentLink, hasModified, cueUpdateCount, "
             "analysisDataUpdateCount, informationUpdateCount) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 content_id, track.title, (track.title or "").lower(),
                 int(round((track.bpm or 0) * 100)) or None, track.length,
@@ -211,48 +228,100 @@ class OneLibraryExporter:
                 # where the deck expects "Cm". Rendered from the parsed wheel.
                 self._lookup(con, "key", lookups["key"],
                              render_key(track.key_wheel, track.key_mode)),
+                image_id,
                 track.comment, track.rating or 0, track.release_date,
                 date.today().isoformat(), rel, item.destination.name, size,
                 # kbps, as every Pioneer library stores it; the generic model
                 # carries bits per second.
                 _file_type(item.destination), _kbps(track.bitrate),
                 bit_depth, sample_rate, 1, 1, 0, content_id,
-                anlz_rel, ANALYSED_BITS, 0, 0, 0, 0,
+                anlz_rel, ANALYSED_BITS, CONTENT_LINK, 0, 0, 0, 0,
             ),
         )
-        return self._write_anlz(item, rel, root / anlz_rel.lstrip("/"))
+        return art_files + self._write_anlz(item, rel, root / anlz_rel.lstrip("/"))
+
+    # ---- artwork -------------------------------------------------------------
+
+    @staticmethod
+    def _write_art(con, item: ExportTrack, root: Path, counter: dict) -> tuple[int | None, list[Path]]:
+        """One track's cover: four JPEGs and an `image` row, as rekordbox 7 writes.
+
+        `PIONEER/Artwork/00001/` holds `a<n>.jpg` / `a<n>_m.jpg` and a byte-
+        identical `b<n>.jpg` / `b<n>_m.jpg` (80 and 240 px); `image.path` names the
+        `b` file and `content.image_id` points at the row. rekordbox's own export
+        writes both letters — the `a` pair presumably for the legacy `export.pdb`
+        readers — so both are written here too.
+
+        Everything goes in folder `00001`. How rekordbox splits a large library
+        across folders is not known (the reference export has 6 images); a single
+        folder is what it demonstrably reads.
+        """
+        if not item.art:
+            return None, []
+        jpegs = artwork.pioneer_jpegs(item.art[0])
+        if jpegs is None:
+            return None, []
+        counter["next"] += 1
+        n = counter["next"]
+        folder = root / "PIONEER" / "Artwork" / "00001"
+        folder.mkdir(parents=True, exist_ok=True)
+        small, medium = jpegs
+        files = []
+        for letter in ("a", "b"):
+            for suffix, data in (("", small), ("_m", medium)):
+                path = folder / f"{letter}{n}{suffix}.jpg"
+                path.write_bytes(data)
+                files.append(path)
+        con.execute("INSERT INTO image (image_id, path) VALUES (?, ?)",
+                    (n, f"/PIONEER/Artwork/00001/b{n}.jpg"))
+        return n, files
 
     # ---- the analysis files --------------------------------------------------
 
     def _write_anlz(self, item: ExportTrack, rel: str, dat: Path) -> list[Path]:
-        """The `.DAT` and the `.EXT`, always both, as rekordbox writes them.
+        """The `.DAT`, `.EXT` and `.2EX`, as rekordbox 7 writes them.
 
-        Both files, and every cue list in each, even for a track with no cues:
-        rekordbox never produces a track without them, and `PCO2` — the complete
-        list, which readers prefer — lives only in the `.EXT`.
+        All three, and every cue list, even for a track with no cues: rekordbox
+        never produces a track without them, and `PCO2` — the complete list,
+        which readers prefer — lives only in the `.EXT`.
 
         **The `.DAT` must carry `PVBR` and the preview waveforms**, or rekordbox
-        shows neither the grid nor the cues (see `anlz_writer`). Tag order is
-        rekordbox's: PPTH, PVBR, PQTZ, PWAV, PWV2, PCOB, PCOB.
+        shows neither the grid nor the cues (see `anlz_writer`). The `.EXT` and
+        `.2EX` waveforms only affect drawing: the song-list preview and the
+        deck's scrolling waveform. Tag order is rekordbox's in each file:
+          .DAT  PPTH PVBR PQTZ PWAV PWV2 PCOB PCOB
+          .EXT  PPTH PWV3 PCOB PCOB PCO2 PCO2 PWV5 PWV4
+          .2EX  PPTH PWV7 PWV6 PWVC
+        An undecodable file still gets the `.DAT` (with a flat preview) and the
+        `.EXT` cue lists — its grid and cues must show — but no drawn waveforms.
         """
-        measured = waveform.columns(item.destination, 400)
+        # rekordbox's clock runs ~25 ms behind the decoded audio on MP3/AAC (see
+        # `timebase`): beats and cues are computed in the decoded time base and
+        # shifted as they are packed, and the waveform frames are measured with
+        # the same lead so they line up with the beats.
+        off = timebase.offset(item.destination)
+        measured = waveform.analyse(item.destination, lead=off)
         # The DECODED length where there is one: `Track.length` is whole seconds
         # rounded down, and a grid expanded to it loses the track's last beat.
         beats = self._beats(item, measured.duration if measured else None)
-        cues = self._cue_dicts(item, beats)
-        previews = (W.preview_tags(measured.rms, measured.brightness) if measured
-                    else W.flat_preview_tags())
+        cues = self._cue_dicts(item, beats, off)
+        if measured:
+            previews = W.preview_tags(measured.columns.rms, measured.columns.brightness)
+            ext_waves, two_ex = W.waveform_tags(measured.frames.bands)
+        else:
+            previews, ext_waves, two_ex = W.flat_preview_tags(), [], []
 
         tags = [W.path_tag(rel), W.vbr_tag(W.mp3_samples(item.destination))]
         if beats:
-            tags.append(W.beatgrid_tag(beats))
+            tags.append(W.beatgrid_tag([(n, bpm, timebase.to_pioneer(t, off))
+                                        for n, bpm, t in beats]))
         tags += previews
         tags += W.cue_tags(cues, extended=False)
-        return [
-            W.write_anlz(dat, tags),
-            W.write_anlz(dat.with_suffix(".EXT"),
-                         [W.path_tag(rel), *W.cue_tags(cues, extended=True)]),
-        ]
+        ext = [W.path_tag(rel), *ext_waves[:1], *W.cue_tags(cues, extended=True), *ext_waves[1:]]
+        written = [W.write_anlz(dat, tags), W.write_anlz(dat.with_suffix(".EXT"), ext)]
+        if two_ex:
+            written.append(W.write_anlz(dat.with_suffix(".2EX"), [W.path_tag(rel), *two_ex]))
+        return written
 
     @staticmethod
     def _beats(item: ExportTrack, duration: float | None = None) -> list[tuple[int, float, float]]:
@@ -272,7 +341,7 @@ class OneLibraryExporter:
         return list(zip(nums, bpms, times))
 
     @staticmethod
-    def _cue_dicts(item: ExportTrack, beats: list | None = None) -> list[dict]:
+    def _cue_dicts(item: ExportTrack, beats: list | None = None, off: float = 0.0) -> list[dict]:
         """Generic cues in the shape `anlz_writer` packs.
 
         Slot numbering is ANLZ's own: **dense 1-based**, 0 for a memory cue.
@@ -283,12 +352,19 @@ class OneLibraryExporter:
         out: list[dict] = []
         for cue in (item.cues.cues if item.cues else []):
             is_loop = cue.type == "loop" or cue.length > 0
+            # A hot cue carries what Konduktor SHOWS — stored colour, else the
+            # type's (blue cue, green loop) — as a rekordbox palette CODE, which
+            # is what rekordbox draws from; "unset" draws its own defaults. A
+            # memory cue keeps rekordbox's own "unset".
+            code, rgb = palette.code_for(cue.color if cue.role == "memory" else effective_color(cue))
             out.append({
                 "hot_cue": 0 if cue.role == "memory" or cue.slot is None else cue.slot + 1,
                 "kind": 2 if is_loop else 1,
-                "time_ms": int(round(cue.start * 1000)),
-                "loop_ms": int(round((cue.start + cue.length) * 1000)) if is_loop else None,
-                "rgb": _rgb(cue.color),
+                "time_ms": int(round(timebase.to_pioneer(cue.start, off) * 1000)),
+                "loop_ms": (int(round(timebase.to_pioneer(cue.start + cue.length, off) * 1000))
+                            if is_loop else None),
+                "rgb": rgb,
+                "code": code,
                 "beats": _loop_beats(cue.start, cue.length, beats or []) if is_loop else None,
             })
         return out
@@ -390,11 +466,3 @@ def _loop_beats(start: float, length: float, beats: list[tuple[int, float, float
     whole = round(count)
     return whole if whole >= 1 and abs(count - whole) < 0.05 else None
 
-
-def _rgb(color: str | None) -> tuple[int, int, int] | None:
-    if not color or not color.startswith("#") or len(color) != 7:
-        return None
-    try:
-        return (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16))
-    except ValueError:
-        return None

@@ -124,7 +124,8 @@ class RekordboxAdapter:
         if self._index.get(track_id) is None:
             return None
         cues = projection.to_track_cues(
-            self._store.cues(track_id), self._store.anlz_grid(track_id)
+            self._store.cues(track_id), self._store.anlz_grid(track_id),
+            self._store.time_offset(track_id),
         )
         # The track projection carries an APPROXIMATE grid_marker_count until the
         # grid is actually read (see projection.to_track). This is that moment —

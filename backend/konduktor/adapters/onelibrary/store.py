@@ -25,6 +25,7 @@ from pathlib import Path
 from ...core.adapter import LibraryNotSupported, NotFound
 from ...core.model import CuePoint
 from . import beatgrid, cues as cue_reader
+from ..rekordbox import timebase
 from .layout import DriveLayout
 
 log = logging.getLogger(__name__)
@@ -148,6 +149,30 @@ class OneLibraryStore:
     def audio_path(self, track_id: str) -> Path | None:
         return self.layout.resolve(getattr(self.content(track_id), "path", None))
 
+    def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
+        """The track's artwork: `content.image_id` -> `image.path` -> the file.
+
+        The row names the 80 px JPEG (`.../b<n>.jpg`); a `_m` sibling at 240 px
+        sits beside it on every export seen, and is what is served — 80 px is a
+        CDJ browse thumbnail, too small for anything Konduktor draws.
+        """
+        image_id = getattr(self.content(track_id), "image_id", None)
+        if not image_id:
+            return None
+        from pyrekordbox.devicelib_plus import models
+
+        row = self._require_db().query(models.Image).filter_by(image_id=image_id).one_or_none()
+        small = self.layout.resolve(getattr(row, "path", None)) if row is not None else None
+        if small is None:
+            return None
+        medium = small.with_name(small.stem + "_m" + small.suffix)
+        for path in (medium, small):
+            try:
+                return path.read_bytes(), "image/jpeg"
+            except OSError:
+                continue
+        return None
+
     def all_audio_paths(self) -> list[str]:
         out: list[str] = []
         for row in self.iter_content():
@@ -185,8 +210,9 @@ class OneLibraryStore:
             return None
         return cache[key]
 
-    def anlz_grid(self, track_id: str) -> tuple[list[float], list[float]] | None:
-        """The per-beat ``(times, bpms)`` from the track's `PQTZ` tag.
+    def anlz_grid(self, track_id: str) -> tuple[list[float], list[float], list[int]] | None:
+        """The per-beat ``(times, bpms, beat_in_bar)`` from the track's `PQTZ`
+        tag, in the DECODED time base (see `rekordbox.timebase`).
 
         `PQTZ` is in the `.DAT`, which is the cheap file — a grid read does not
         pay for the `.EXT`'s waveforms.
@@ -194,7 +220,12 @@ class OneLibraryStore:
         anlz = self._anlz(track_id, extended=False)
         if anlz is None:
             return None
-        return beatgrid.beats_from_pqtz(anlz)
+        grid = beatgrid.beats_from_pqtz(anlz)
+        if grid is None:
+            return None
+        off = timebase.offset(self.audio_path(track_id))
+        times, bpms, beats = grid
+        return [timebase.from_pioneer(t, off) for t in times], bpms, beats
 
     def cues(self, track_id: str) -> list[CuePoint]:
         """The track's cues, already generic.
@@ -204,10 +235,15 @@ class OneLibraryStore:
         only mean anything once merged across two files, and handing that to the
         projection would put ANLZ knowledge on both sides of the boundary.
         """
-        return cue_reader.cues_from_anlz(
+        cues = cue_reader.cues_from_anlz(
             self._anlz(track_id, extended=False),
             self._anlz(track_id, extended=True),
         )
+        # Positions are stored on rekordbox's clock; the generic model is the
+        # decoded audio's. A loop keeps its length.
+        off = timebase.offset(self.audio_path(track_id))
+        return [c.model_copy(update={"start": timebase.from_pioneer(c.start, off)})
+                for c in cues] if off else cues
 
     # ---- playlists -------------------------------------------------------
     def playlists(self) -> list:

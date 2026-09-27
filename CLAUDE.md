@@ -1022,9 +1022,54 @@ that number and nothing else — everything derives from it:
   first marker on the first DOWNBEAT — the generic first marker is bar 1 — and
   `beats_from_markers` writes the lead-in beats back, numbered as they were;
   before this every bar of such a track landed two beats early, on import to
-  Traktor as well as on export. Still NOT written: the `.EXT`/`.2EX` waveforms
-  (song-list preview, scrolling deck waveform) and artwork (`image` table +
-  `PIONEER/Artwork/00001/a<N>.jpg`, `b<N>.jpg` and `_m` variants). `adapters/rekordbox/export.py` writes a `master.db` and
+  Traktor as well as on export. **Rekordbox's clock runs 1105 samples (~25 ms)
+  behind the decoded audio on MP3/AAC** — the codec delay it does not trim;
+  measured +25.0 ms on 16 MP3s, +24.5 on 4 M4As, 0 on WAV. The generic model is
+  the decoded time base, so `adapters/rekordbox/timebase.py` is applied at EVERY
+  Pioneer boundary: both exporters add it, the OneLibrary reader and the
+  Rekordbox adapter subtract it on read and add it on write (`set_cue`,
+  `set_cue_type`, grid save). Without it every cue sat 25 ms early in rekordbox.
+  **Drawn waveforms** (`.EXT` `PWV3`/`PWV5`, `.2EX` `PWV7`/`PWV6`/`PWVC`) are
+  generated from one decode (`core/waveform.py`: 150 frames/s, bands split at
+  200 Hz / 2.5 kHz) with constants fitted to rekordbox's own files for 12 local
+  tracks and checked on 5 held-out ones (per-band correlation 0.77-0.96).
+  **rekordbox 7's SONG LIST draws `PWV6` — and only when `content.contentLink`
+  is set.** Both measured by bisecting a rekordbox-written stick: removing a
+  track's `PWV6` emptied its row (removing `PWV4` changed nothing), and blanking
+  its `contentLink` alone turned the row plain blue with a "?" beside CUE — what
+  every Konduktor-exported row showed while the exporter left it NULL. It now
+  writes rekordbox's 788224 (beside `analysedBits` 41; meaning unknown).
+  `masterDbId`/`masterContentId` do NOT matter, so no link to a rekordbox
+  collection is claimed. `PWV4` is still written (every rekordbox file has it);
+  its low/mid/high bytes cannot be matched per column (b4/b5 are sampled
+  at one instant: column-to-column correlation 0.05/0.16), so each byte is a
+  QUANTILE MAP fitted to rekordbox's distribution (`_PWV4_MAPS`); smoothed, it
+  tracks rekordbox's at 0.5-0.99. A very loud master draws smaller than in
+  rekordbox, whose PWV4 keeps some absolute level. rekordbox reads 200+ covers
+  from one `Artwork/00001` folder (verified on a 207-track export). Decoding is
+  **PyAV** first (FFmpeg in its wheel: AAC on every OS; measured to start on the
+  same sample as librosa) with librosa as fallback. **Cue colour on export** is
+  what Konduktor SHOWS (`core/cue_colors.py`, mirroring `lib/cues.ts`): a stored
+  colour, else the type's — blue cue, green loop — because "unset" makes
+  rekordbox draw its own defaults (green/orange). **rekordbox draws a hot cue
+  from its palette CODE** (`PCP2` byte 44, before the RGB; `djmdCue.ColorTableIndex`
+  in master.db), not the RGB — `adapters/rekordbox/palette.py` holds the 16-swatch
+  table MEASURED from a rekordbox 7 export (one swatch, ~0x12 teal-green, still
+  unmeasured). Type colours map by intent (cue -> light blue 0x05, loop -> green
+  0x16), anything else to the nearest hue; the palette has NO white, so a grid
+  companion is code 0 + RGB white (what rekordbox draws for it: unverified). The
+  `master.db` exporter still writes no cue colour (generic `set_cue` has none).
+  **Artwork** (`adapters/rekordbox/artwork.py`, Pillow), measured on a rekordbox 7
+  export: `PIONEER/Artwork/00001/{a,b}<n>.jpg` at 80 px and `_m` at 240 px, `a`
+  byte-identical to `b`, baseline JPEG q85 4:2:0, non-square art LETTERBOXED onto
+  black (a crop or stretch is visibly wrong); `image.path` names the `b` file and
+  `content.image_id` points at it; one image per track, never shared. The runner
+  carries each cover as `ExportTrack.art` from `LibraryAdapter.cover_art` — not
+  re-read from the copied file, since a library's art is not always embedded.
+  The OneLibrary READER now serves `cover_art` too (the `_m` file). How rekordbox
+  itself splits a large library across `Artwork/000NN` folders is unknown; one
+  folder of 207 was verified to load in full.
+  The `master.db` target still writes no artwork. `adapters/rekordbox/export.py` writes a `master.db` and
   **replays cues through the ordinary `RekordboxAdapter.set_cue`**, so it inherits
   `_sync_content_cue`, the sparse `Kind` bank and their tests rather than
   redefining them; its ANLZ files go under a **`share/` directory beside

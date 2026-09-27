@@ -288,9 +288,16 @@ with tempfile.TemporaryDirectory() as d:
         row = cue_rows[0][3]
         check("the 0-based slot is stored as its measured Kind",
               row["Kind"] == 7, str(row["Kind"]))
-        check("positions are stored in ms AND frames at 150fps",
-              row["InMsec"] == 30000 and row["InFrame"] == 4500,
-              f"{row['InMsec']}/{row['InFrame']}")
+        # On rekordbox's clock: 30.000 s of DECODED audio is stored 1105 samples
+        # later on an MP3/AAC (`timebase`), and exactly at 30.000 s lossless.
+        from konduktor.adapters.rekordbox import timebase
+        want_ms = int(round((30.0 + adapter._store.time_offset(cue_track.id)) * 1000))
+        check("positions are stored in ms AND frames at 150fps, on rekordbox's clock",
+              row["InMsec"] == want_ms and row["InFrame"] == int(want_ms * 150 / 1000),
+              f"{row['InMsec']}/{row['InFrame']} (want {want_ms})")
+        check("and read back at exactly the position that was set",
+              abs(next(c.start for c in adapter.track_cues(cue_track.id).cues if c.slot == 5)
+                  - 30.0) < 0.0005)
         check("a non-loop has no out-point", row["OutMsec"] == -1, str(row["OutMsec"]))
         check("an uncoloured cue matches Rekordbox's own convention",
               row["Color"] == -1 and row["ColorTableIndex"] is None,
