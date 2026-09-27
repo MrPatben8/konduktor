@@ -44,6 +44,9 @@ datas += [
     ("fixtures/rekordbox/seed.sql", "fixtures/rekordbox"),
     ("fixtures/onelibrary/schema.sql", "fixtures/onelibrary"),
     ("fixtures/onelibrary/seed.sql", "fixtures/onelibrary"),
+    # The "Rekordbox Export" target starts from rekordbox's own empty device library.
+    ("fixtures/rekordbox/device/export.pdb", "fixtures/rekordbox/device"),
+    ("fixtures/rekordbox/device/exportExt.pdb", "fixtures/rekordbox/device"),
 ]
 
 a = Analysis(

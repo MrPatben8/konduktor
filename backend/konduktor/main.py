@@ -621,19 +621,39 @@ def export_targets() -> list[PlatformOption]:
     absent option reads as a missing feature; a disabled one reads as a roadmap.
     """
     supported = _export_targets()
-    return [
-        PlatformOption(
+    options = []
+    for d in registry.drivers():
+        exporter = core_export.for_platform(d.platform)
+        options.append(PlatformOption(
             platform=d.platform,
-            name=d.display_name,
+            name=getattr(exporter, "display_name", None) or d.display_name,
             library_label=getattr(d, "library_label", ""),
             selects="directory",   # an export destination is always a folder
             installed=d.platform in supported,
             found=0,
             removable=bool(getattr(d, "removable", False)),
-            drive_root=bool(getattr(core_export.for_platform(d.platform), "drive_root", False)),
-        )
-        for d in registry.drivers()
-    ]
+            drive_root=bool(getattr(exporter, "drive_root", False)),
+        ))
+    # Targets with no reader of their own (the stick's legacy Device Library):
+    # listed too, or registering one would not make it selectable.
+    readers = {d.platform for d in registry.drivers()}
+    order = {e.platform: getattr(e, "menu_order", 1000) for e in core_export.exporters()}
+    for exporter in core_export.exporters():
+        if exporter.platform in readers:
+            continue
+        options.append(PlatformOption(
+            platform=exporter.platform,
+            name=getattr(exporter, "display_name", exporter.platform),
+            library_label="",
+            selects="directory",
+            installed=True,
+            found=0,
+            removable=bool(getattr(exporter, "drive_root", False)),
+            drive_root=bool(getattr(exporter, "drive_root", False)),
+        ))
+    # Each exporter states its own place; a platform with no exporter (not yet a
+    # target, shown disabled) goes last. Stable, so equal places keep their order.
+    return sorted(options, key=lambda o: order.get(o.platform, 1000))
 
 
 # ---- health / state ---------------------------------------------------

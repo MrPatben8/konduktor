@@ -1084,7 +1084,30 @@ that number and nothing else — everything derives from it:
   (`share/PIONEER/Artwork/<uuid[:3]>/<uuid[3:]>/artwork.jpg` fit to 800 px plus
   `_m` 240 / `_s` 80 letterboxed, `ImagePath` -> artwork.jpg). The exporter writes
   cues through `store.set_cue`/`add_memory_cue`, which share `_write_cue` with
-  every adapter edit, so the `contentCue` mirror stays in step. `adapters/rekordbox/export.py` writes a `master.db` and
+  every adapter edit, so the `contentCue` mirror stays in step.
+  **Two Rekordbox targets, named for what they are:** "Rekordbox Library"
+  (`export.py`, a COMPUTER `master.db` — Rekordbox never reads one from a stick)
+  and **"Rekordbox Export"** (`device_export.py`, platform `rekordbox_export`: a
+  stick's legacy **Device Library**, `PIONEER/rekordbox/export.pdb` +
+  `exportExt.pdb`, what Rekordbox lists as "Device Library" and pre-OneLibrary
+  players read). `pdb.py` reads and writes the DeviceSQL format — no public spec;
+  the layout is crate-digger's, CONFIRMED byte for byte against a real rekordbox 7
+  device export (every row re-encodes identically; a data page rebuilt from its
+  rows is identical). It writes from rekordbox's OWN empty device library
+  (`fixtures/rekordbox/device/`, the fixed colour/column/menu tables) and follows
+  rekordbox's page allocation (a table's first data page is its reserved
+  candidate; further pages and the new candidate come from next-unused). The
+  track row's `bitmask` is 0xC0700 = OneLibrary's `contentLink`; `u3`/`u4` are
+  the halves of rekordbox's `masterDbId` and stay 0. **A table's HEADER page is
+  not empty: it indexes its data** (first data page; for tracks, playlist tree
+  and history an entry per data page, `page << 3 | 3` if it has room) and the
+  history row counts the tracks — left as in the empty template, Rekordbox 7
+  said "Device library is corrupted". It shares the stick's
+  analysis files and `a<n>.jpg` artwork with the OneLibrary target — the same
+  paths, and whichever target runs second REUSES what the first just wrote, so a
+  two-format stick costs one decode per track. A target with no reader is listed
+  by `/api/export-targets` from the exporter registry; `LibraryExporter.
+  display_name` names a target where one platform has two. `adapters/rekordbox/export.py` writes a `master.db` and
   **replays cues through the ordinary `RekordboxAdapter.set_cue`**, so it inherits
   `_sync_content_cue`, the sparse `Kind` bank and their tests rather than
   redefining them; its ANLZ files go under a **`share/` directory beside

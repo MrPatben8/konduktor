@@ -97,6 +97,7 @@ def _anlz_dir(drive_relative: str) -> str:
 
 class OneLibraryExporter:
     platform = "onelibrary"
+    menu_order = 10
     #: Relative to the drive root, which is what the destination folder is.
     library_filename = str(Path("PIONEER") / DB_SUBPATH)
     #: A CDJ looks for `PIONEER/` at the root of the stick and nowhere else.

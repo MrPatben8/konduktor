@@ -63,6 +63,7 @@ OTHER_PLAYLIST = "Other"
 
 class TraktorExporter:
     platform = "traktor"
+    menu_order = 20
     library_filename = "collection.nml"
     drive_root = False
 

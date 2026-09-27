@@ -115,6 +115,11 @@ class LibraryExporter(Protocol):
     platform: str
     #: What the written library file is called, e.g. "collection.nml".
     library_filename: str
+    #: Where the target sits in the export dialog's list, lowest first. Optional
+    #: (unset sorts last): a stick's formats lead, a computer library trails.
+    #: The name the export dialog shows. Optional: a target named after its
+    #: platform omits it and the driver's `display_name` is used. Needed where
+    #: one platform has two targets ("Rekordbox Library" / "Rekordbox Export").
     #: The library is only found when the destination is a DRIVE'S ROOT — a
     #: player looks for it there and nowhere else. Several targets can share one
     #: destination, so this is a warning the UI raises, not a refusal: the other

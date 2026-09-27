@@ -110,6 +110,10 @@ OTHER_PLAYLIST = "Other"
 
 class RekordboxExporter:
     platform = "rekordbox"
+    menu_order = 40
+    #: A COMPUTER library (master.db), which Rekordbox never reads from a stick —
+    #: named so, beside "Rekordbox Export" (the stick's Device Library).
+    display_name = "Rekordbox Library"
     library_filename = "master.db"
     drive_root = False
 
