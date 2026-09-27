@@ -38,6 +38,10 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
   const [starting, setStarting] = useState(false)
   const pollRef = useRef<number | null>(null)
 
+  // Platform names for wording the facts the preview and result carry as ids.
+  const platforms = useQuery({ queryKey: ['export-targets'], queryFn: api.exportTargets })
+  const nameOf = (id: string) => platforms.data?.find((p) => p.platform === id)?.name ?? id
+
   const preview = useQuery<ExportPreview>({
     queryKey: ['export-preview', set.id],
     queryFn: () => api.exportPreview(set.id),
@@ -155,9 +159,19 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
                       This folder already holds an export. Its files will be replaced.
                     </div>
                   )}
+                  {/* A warning, not a block: the other targets are fine anywhere,
+                      and staging a stick's contents in a folder is legitimate. */}
+                  {p.not_drive_root.length > 0 && (
+                    <div className="rounded well px-3 py-2 text-xs text-gold">
+                      {p.not_drive_root.map(nameOf).join(' and ')} is only found at the top of a
+                      drive, and this folder isn’t one — players won’t see it unless you move the
+                      folder’s contents to a drive’s top level.
+                    </div>
+                  )}
                   <div className="text-xs text-faint">
-                    Writes a <span className="font-mono">collection.nml</span> plus a copy of every
-                    track, in your own folder structure.
+                    Writes a library for {set.targets.map(nameOf).join(' and ')}, sharing one copy
+                    of every track under <span className="font-mono">Contents/</span>, in your own
+                    folder structure.
                   </div>
                 </div>
               )}
@@ -209,21 +223,26 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
               )}
               {job.state === 'cancelled' && (
                 <div className="text-xs text-muted">
-                  Cancelled. Everything this export copied was removed, and no library file was
+                  Cancelled. Everything this export copied was removed, and no library was
                   written.
                 </div>
               )}
-              {job.state === 'failed' && <div className="text-xs text-pink">{job.error}</div>}
+              {job.state === 'failed' && (
+                <div className="text-xs text-pink">
+                  {job.error} — nothing was left behind: no audio, and no library for any platform.
+                </div>
+              )}
               {job.state === 'done' && (
                 <div className="space-y-1 text-xs text-mint">
                   <div>Done — the folder is ready.</div>
-                  {/* Ben's workflow: the exported collection.nml is swapped into
-                      a Traktor install, which REPLACES that machine's own. */}
-                  <div className="text-faint">
-                    To use it: quit Traktor, back up its existing{' '}
-                    <span className="font-mono">collection.nml</span>, then put this one in its
-                    place.
-                  </div>
+                  {(
+                    (job.result as { libraries?: { platform: string; library: string }[] } | null)
+                      ?.libraries ?? []
+                  ).map((l) => (
+                    <div key={l.platform} className="text-faint">
+                      {nameOf(l.platform)}: <span className="font-mono">{l.library}</span>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

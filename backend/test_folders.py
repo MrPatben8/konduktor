@@ -158,7 +158,7 @@ with TestClient(main.app, raise_server_exceptions=False) as c:
 
     print("== a held file is never added twice, but still reaches its target ==")
     library = STATE.library_id
-    eset = exports.create(library, name="Folder Export", target="traktor",
+    eset = exports.create(library, name="Folder Export", targets=["traktor"],
                           destination=str(Path(tempfile.mkdtemp()) / "out"))
     req = {"track_ids": [str(one), str(two)], "mode": "reference",
            "playlist_id": playlist, "export_id": eset.id}

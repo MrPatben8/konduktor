@@ -14,6 +14,7 @@ work perfectly on the machine that made it and resolve to nothing at the gig.
 Runs against the 8,485-entry fixture collection, so the tracks have real prep —
 flexible grids, hot cues on specific pads — rather than anything invented here.
 """
+import json
 import os
 import re
 import tempfile
@@ -216,7 +217,7 @@ ad = STATE.adapter
 LIB = STATE.library_id
 
 dest = Path(tempfile.mkdtemp()) / "GIG"
-eset = exports.create(LIB, name="GIG", target="traktor", destination=str(dest))
+eset = exports.create(LIB, name="GIG", targets=["traktor"], destination=str(dest))
 source_pl = next(n for n in ad.playlist_tree()[0].children if n.kind == "playlist")
 exports.add(LIB, eset.id, playlist_ids=[source_pl.id], track_ids=[ad.tracks[3].id])
 eset = exports.get(LIB, eset.id)
@@ -229,14 +230,18 @@ def run_now(plan):
     return job
 
 
-print("== the plan mirrors the source tree, relative to its shared root ==")
+print("== the plan mirrors the source tree under Contents/, relative to its shared root ==")
 built = exporter.plan(ad, eset)
 check("nothing is blocking it", built.blocked is None, str(built.blocked))
 check("every track has somewhere to go", all(t.destination for t in built.exportable))
 rel = [str(t.destination.relative_to(dest)) for t in built.exportable]
+# Under Contents/, so the audio can never land on top of a library's own path.
+check("all audio lives under Contents/",
+      all(r.startswith(exporter.AUDIO_DIR + "/") for r in rel), rel)
 # Mirroring ABSOLUTE paths would put the user's home directory on the stick.
 check("the user's own folders are preserved",
-      all(r.startswith(("House/", "Techno/")) for r in rel), rel)
+      all(r.startswith(("Contents/House/", "Contents/Techno/")) for r in rel), rel)
+check("a Traktor-only export never warns about a drive root", built.not_drive_root == [])
 check("and nothing above the shared root comes with them",
       not any("Users" in r or r.startswith("/") for r in rel), rel)
 check("space is checked before starting", exporter.space_for(built) is not None)
@@ -337,6 +342,109 @@ check("no manifest either", not (fresh / exporter.MANIFEST_NAME).exists())
 # COMPLETED copies leaves the in-flight one behind — the bug import had.
 leftover = [p for p in fresh.rglob("*") if p.is_file()] if fresh.exists() else []
 check("and no audio was left behind", leftover == [], [str(p) for p in leftover])
+
+print("== several targets share ONE copy of the audio ==")
+from konduktor.adapters.onelibrary.driver import OneLibraryDriver  # noqa: E402
+
+multi = Path(tempfile.mkdtemp()) / "STICK"
+exports.update(LIB, eset.id, destination=str(multi), targets=["traktor", "onelibrary"])
+eset = exports.get(LIB, eset.id)
+check("the set keeps both targets, in order", eset.targets == ["traktor", "onelibrary"], eset.targets)
+mplan = exporter.plan(ad, eset)
+check("nothing is blocking it", mplan.blocked is None, str(mplan.blocked))
+# A temp folder is not a drive's root, and only OneLibrary cares.
+check("only the drive-root target is warned about", mplan.not_drive_root == ["onelibrary"],
+      mplan.not_drive_root)
+mjob = run_now(mplan)
+check("it finishes", mjob.state == "done", f"{mjob.state}: {mjob.error}")
+check("the result names both libraries",
+      [l["platform"] for l in mjob.result["libraries"]] == ["traktor", "onelibrary"],
+      mjob.result.get("libraries"))
+mrel = [t.destination.relative_to(multi) for t in mplan.exportable]
+audio_files = [p for p in multi.rglob("*") if p.is_file() and p.parts[len(multi.parts)] == "Contents"]
+check("the audio was copied once, not once per target", len(audio_files) == len(mrel),
+      f"{len(audio_files)} files for {len(mrel)} tracks")
+t_lib = TraktorDriver().open(multi / "collection.nml")
+o_lib = OneLibraryDriver().open(multi)
+check("the Traktor collection re-opens with every track", len(t_lib.tracks) == len(mrel))
+check("so does the OneLibrary drive", len(o_lib.tracks) == len(mrel))
+# Both libraries must point at the SAME files — a second copy would be a bug
+# in the plan, and a dangling path would be one in a writer.
+check("every OneLibrary track resolves to a copied file",
+      all(o_lib.audio_path(t.id) and o_lib.audio_path(t.id).is_file() for t in o_lib.tracks))
+check("OneLibrary paths are drive-relative under /Contents/",
+      all(t.id.startswith("/Contents/") for t in o_lib.tracks), [t.id for t in o_lib.tracks][:2])
+manifest = json.loads((multi / exporter.MANIFEST_NAME).read_text())
+check("the manifest lists both libraries",
+      sorted(manifest["libraries"]) == sorted(["collection.nml", str(Path("PIONEER/rekordbox/exportLibrary.db"))]),
+      manifest["libraries"])
+del t_lib, o_lib
+
+print("== unticking a target removes its library on the next export ==")
+exports.update(LIB, eset.id, targets=["traktor"])
+eset = exports.get(LIB, eset.id)
+job3 = run_now(exporter.plan(ad, eset))
+check("the re-export succeeds", job3.state == "done", f"{job3.state}: {job3.error}")
+check("the OneLibrary library is gone", not (multi / "PIONEER").exists(),
+      sorted(str(p.relative_to(multi)) for p in (multi / "PIONEER").rglob("*")) if (multi / "PIONEER").exists() else "")
+check("the Traktor one and the audio remain",
+      (multi / "collection.nml").is_file() and all((multi / r).is_file() for r in mrel))
+
+print("== a manifest from a single-target export is still cleared ==")
+old = Path(tempfile.mkdtemp()) / "OldExport"
+old.mkdir()
+(old / "collection.nml").write_text("stale")
+(old / "House").mkdir()
+(old / "House" / "stale.mp3").write_bytes(b"x")
+(old / exporter.MANIFEST_NAME).write_text(json.dumps(
+    {"library": "collection.nml", "files": ["House/stale.mp3"]}))
+exports.update(LIB, eset.id, destination=str(old))
+job4 = run_now(exporter.plan(ad, exports.get(LIB, eset.id)))
+check("the re-export succeeds", job4.state == "done", f"{job4.state}: {job4.error}")
+check("the old root-level audio was cleared", not (old / "House").exists())
+check("and the new collection replaced the old one",
+      (old / "collection.nml").read_text() != "stale")
+
+print("== a failing LATER target undoes everything, earlier targets included ==")
+failing = Path(tempfile.mkdtemp()) / "Failing"
+exports.update(LIB, eset.id, destination=str(failing), targets=["traktor", "onelibrary"])
+onelib = core_export.for_platform("onelibrary")
+
+
+def _half_written(payload, destination):
+    # Writes files it never gets to REPORT, then fails — the case the rollback's
+    # snapshot exists for.
+    stray = Path(destination) / "PIONEER" / "USBANLZ" / "P000" / "0000" / "ANLZ0000.DAT"
+    stray.parent.mkdir(parents=True, exist_ok=True)
+    stray.write_bytes(b"partial")
+    raise RuntimeError("disk full")
+
+
+eset = exports.get(LIB, eset.id)   # run_now() runs the module-level set
+onelib.write = _half_written
+try:
+    job5 = run_now(exporter.plan(ad, eset))
+finally:
+    del onelib.write
+check("the export fails", job5.state == "failed", job5.state)
+left = sorted(str(p.relative_to(failing)) for p in failing.rglob("*")) if failing.exists() else []
+check("nothing at all is left behind — no audio, no Traktor library, no stray analysis",
+      left == [], left)
+exports.update(LIB, eset.id, destination=str(dest), targets=["traktor"])
+eset = exports.get(LIB, eset.id)
+
+print("== targets are validated and migrated ==")
+check("a set saved with the old single `target` loads as a list",
+      exports._targets({"target": "onelibrary"}) == ["onelibrary"])
+check("an empty list falls back rather than yielding a set with no target",
+      exports._targets({"targets": []}) == ["traktor"])
+dup = exports.create(LIB, name="Dup", targets=["traktor", "traktor"], destination=str(dest / "x"))
+check("duplicate targets collapse", dup.targets == ["traktor"], dup.targets)
+exports.delete(LIB, dup.id)
+bad = exports.create(LIB, name="Bad", targets=["traktor", "serato"], destination=str(dest / "y"))
+check("one unsupported target blocks the whole plan",
+      exporter.plan(ad, bad).blocked == exporter.BLOCKED_NO_TARGET)
+exports.delete(LIB, bad.id)
 
 print("== a missing file is skipped, not fatal ==")
 gone = Path(seed_items[0].destination)

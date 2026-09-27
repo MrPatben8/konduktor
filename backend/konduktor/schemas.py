@@ -196,7 +196,7 @@ class CollectionOptions(BaseModel):
 class ExportSetOut(BaseModel):
     id: str
     name: str
-    target: str          # platform id of the export TARGET
+    targets: list[str]   # platform ids of the export TARGETS, never empty
     destination: str
     playlist_ids: list[str] = []
     track_ids: list[str] = []   # loose tracks only
@@ -206,13 +206,13 @@ class ExportSetOut(BaseModel):
 
 class CreateExportSet(BaseModel):
     name: str
-    target: str = "traktor"
+    targets: list[str] = ["traktor"]
     destination: str
 
 
 class UpdateExportSet(BaseModel):
     name: str | None = None
-    target: str | None = None
+    targets: list[str] | None = None
     destination: str | None = None
 
 
@@ -258,6 +258,9 @@ class ExportPreview(BaseModel):
     blocked: str | None = None
     #: The destination already holds a Konduktor export, which will be replaced.
     replacing: bool = False
+    #: Targets whose library is only found at a drive's root, when the
+    #: destination is not one. A warning — the export can still run.
+    not_drive_root: list[str] = []
 
 
 class FsPlace(BaseModel):

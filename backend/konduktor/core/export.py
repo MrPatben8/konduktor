@@ -105,6 +105,11 @@ class LibraryExporter(Protocol):
     platform: str
     #: What the written library file is called, e.g. "collection.nml".
     library_filename: str
+    #: The library is only found when the destination is a DRIVE'S ROOT — a
+    #: player looks for it there and nowhere else. Several targets can share one
+    #: destination, so this is a warning the UI raises, not a refusal: the other
+    #: targets in the same export are still perfectly valid in any folder.
+    drive_root: bool = False
 
     def capabilities(self) -> Capabilities:
         """What this target can represent — STATIC, with no library to read."""

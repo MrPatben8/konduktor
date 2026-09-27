@@ -83,6 +83,7 @@ OTHER_PLAYLIST = "Other"
 class RekordboxExporter:
     platform = "rekordbox"
     library_filename = "master.db"
+    drive_root = False
 
     def capabilities(self):
         """What a Rekordbox library can hold, with no library to read.

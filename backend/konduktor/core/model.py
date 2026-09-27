@@ -214,6 +214,8 @@ class PlatformOption(BaseModel):
     found: int = 0
     #: The library lives on a plugged-in drive, so `found` changes between calls.
     removable: bool = False
+    #: As an export TARGET: its library is only found at a drive's root.
+    drive_root: bool = False
 
 
 class RemapSample(BaseModel):

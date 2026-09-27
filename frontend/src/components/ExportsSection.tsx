@@ -197,7 +197,7 @@ function ExportRow({
           </span>
         </button>
         <button
-          title="Edit name, target and destination"
+          title="Edit name, platforms and destination"
           onClick={onEdit}
           className="shrink-0 px-1 text-xs text-faint opacity-0 hover:text-text group-hover:opacity-100"
         >

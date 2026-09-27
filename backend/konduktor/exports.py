@@ -1,7 +1,12 @@
 """Export sets: a named, persisted slice of the library, bound to a destination.
 
-An export set is what the user curates before exporting — a name, a target
-platform, a destination folder, and the tracks and playlists to include. It is
+An export set is what the user curates before exporting — a name, one or more
+target platforms, a destination folder, and the tracks and playlists to include.
+
+**Several targets share one destination and one copy of the audio.** Each
+target's library references the same files, and none of their layouts collide
+(`collection.nml`; `PIONEER/…`; `master.db` + `share/…`), so a stick carrying
+both a Traktor collection and a OneLibrary library costs one copy, not two. It is
 **Konduktor's own data**, never written into the user's library: a Traktor
 collection has nowhere to put this, and putting it there would mean a concept
 only Konduktor understands living in a file Traktor rewrites.
@@ -51,8 +56,10 @@ class ExportSet:
 
     id: str
     name: str
-    target: str            # platform id of the export TARGET, e.g. "traktor"
-    destination: str       # OS path of the folder the export is written into
+    #: Platform ids of the export TARGETS, e.g. ["traktor", "onelibrary"]. Never
+    #: empty; ordered as the user ticked them, which is the order they are written.
+    targets: list[str] = field(default_factory=lambda: ["traktor"])
+    destination: str = ""  # OS path of the folder the export is written into
     playlist_ids: list[str] = field(default_factory=list)
     track_ids: list[str] = field(default_factory=list)   # loose tracks only
     created: float = 0.0
@@ -128,7 +135,7 @@ def _load(library_id: str) -> dict[str, ExportSet]:
                 out[set_id] = ExportSet(
                     id=set_id,
                     name=values.get("name") or "Untitled",
-                    target=values.get("target") or "traktor",
+                    targets=_targets(values),
                     destination=values.get("destination") or "",
                     playlist_ids=list(values.get("playlist_ids") or []),
                     track_ids=list(values.get("track_ids") or []),
@@ -138,6 +145,16 @@ def _load(library_id: str) -> dict[str, ExportSet]:
             except (TypeError, ValueError):
                 log.warning("skipping unreadable export set %s", set_id)
     return out
+
+
+def _targets(values: dict) -> list[str]:
+    """The set's targets, reading the single `target` sets were saved with first."""
+    raw = values.get("targets")
+    if isinstance(raw, list):
+        found = [t for t in raw if isinstance(t, str) and t]
+        if found:
+            return found
+    return [values.get("target") or "traktor"]
 
 
 def _save(library_id: str, sets: dict[str, ExportSet]) -> None:
@@ -186,13 +203,13 @@ def _normalise(destination: str) -> str:
 # ---- writing -----------------------------------------------------------------
 
 
-def create(library_id: str, *, name: str, target: str, destination: str) -> ExportSet:
+def create(library_id: str, *, name: str, targets: list[str], destination: str) -> ExportSet:
     sets = _load(library_id)
     now = time.time()
     created = ExportSet(
         id=uuid.uuid4().hex,
         name=name.strip() or "Untitled",
-        target=target,
+        targets=list(dict.fromkeys(targets)),
         destination=destination,
         created=now,
         modified=now,
@@ -208,9 +225,11 @@ def update(library_id: str, set_id: str, **fields) -> ExportSet | None:
     found = sets.get(set_id)
     if found is None:
         return None
-    for key in ("name", "target", "destination"):
+    for key in ("name", "destination"):
         if key in fields and fields[key] is not None:
             setattr(found, key, fields[key])
+    if fields.get("targets"):
+        found.targets = list(dict.fromkeys(fields["targets"]))
     found.modified = time.time()
     _save(library_id, sets)
     return found

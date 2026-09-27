@@ -64,6 +64,7 @@ OTHER_PLAYLIST = "Other"
 class TraktorExporter:
     platform = "traktor"
     library_filename = "collection.nml"
+    drive_root = False
 
     def capabilities(self):
         """What a Traktor library can hold — answered with no library to read.

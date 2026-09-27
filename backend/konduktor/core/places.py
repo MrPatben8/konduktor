@@ -121,6 +121,18 @@ def is_boot_volume(path: Path) -> bool:
         return False
 
 
+def is_drive_root(path: Path) -> bool:
+    """Whether `path` is the root of a mounted drive — `/Volumes/STICK`, `E:\\`.
+
+    What a OneLibrary export needs, since a CDJ looks for `PIONEER/` there and
+    nowhere else. A folder that does not exist yet is not one.
+    """
+    try:
+        return os.path.ismount(Path(path).expanduser())
+    except (OSError, ValueError):
+        return False
+
+
 def volumes(*, include_boot: bool = False) -> list[Path]:
     """Mounted volumes, newest-mounted order not guaranteed. Sorted by name."""
     found = [v for v in mount_points() if include_boot or not is_boot_volume(v)]

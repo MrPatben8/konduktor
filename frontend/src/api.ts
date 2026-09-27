@@ -277,6 +277,8 @@ export interface PlatformOption {
   /** The library lives on plugged-in media, so `found` changes between calls —
    *  and `found === 0` means "nothing plugged in", not "not installed". */
   removable: boolean
+  /** As an export target: its library is only found at a drive's ROOT. */
+  drive_root?: boolean
 }
 
 export interface EditState {
@@ -447,8 +449,9 @@ export interface SourceStatus {
 export interface ExportSet {
   id: string
   name: string
-  /** Platform id of the export TARGET, e.g. "traktor". */
-  target: string
+  /** Platform ids of the export TARGETS, e.g. ["traktor", "onelibrary"]. Never
+   *  empty. They share one destination and ONE copy of the audio. */
+  targets: string[]
   destination: string
   playlist_ids: string[]
   /** LOOSE tracks only — tracks a referenced playlist supplies are not listed. */
@@ -492,6 +495,9 @@ export interface ExportPreview {
   blocked: 'destination_not_empty' | 'nothing_to_export' | 'unsupported_target' | null
   /** The destination already holds a Konduktor export, which will be replaced. */
   replacing: boolean
+  /** Targets whose library is only found at a drive's root, when the destination
+   *  is not one. A warning — the export can still run. */
+  not_drive_root: string[]
 }
 
 export interface FsPlace {
@@ -649,9 +655,9 @@ export const api = {
   // All scoped to the LOADED library on the server, by its stable id, so
   // nothing here has to carry which collection it means.
   exports: () => getJSON<ExportSet[]>('/api/exports'),
-  createExport: (body: { name: string; target: string; destination: string }) =>
+  createExport: (body: { name: string; targets: string[]; destination: string }) =>
     send<ExportSet>('POST', '/api/exports', body),
-  updateExport: (id: string, body: Partial<Pick<ExportSet, 'name' | 'target' | 'destination'>>) =>
+  updateExport: (id: string, body: Partial<Pick<ExportSet, 'name' | 'targets' | 'destination'>>) =>
     send<ExportSet>('PATCH', `/api/exports/${encodeURIComponent(id)}`, body),
   deleteExport: (id: string) =>
     send<{ deleted: boolean }>('DELETE', `/api/exports/${encodeURIComponent(id)}`),

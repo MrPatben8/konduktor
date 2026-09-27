@@ -442,12 +442,11 @@ def create_export(body: CreateExportSet) -> ExportSetOut:
     # Only platforms that can actually be WRITTEN may be targets. Gating here as
     # well as in the UI, because a set persists: one created against a target
     # that later stops being supported would otherwise fail at export time.
-    if body.target not in _export_targets():
-        raise HTTPException(422, f"Konduktor cannot export to {body.target} yet")
+    _check_targets(body.targets)
     created = exports.create(
         _require_library_id(),
         name=body.name,
-        target=body.target,
+        targets=body.targets,
         destination=body.destination,
     )
     return ExportSetOut(**created.as_dict())
@@ -456,13 +455,13 @@ def create_export(body: CreateExportSet) -> ExportSetOut:
 @app.patch("/api/exports/{set_id}", response_model=ExportSetOut)
 def update_export(set_id: str, body: UpdateExportSet) -> ExportSetOut:
     _require_set(set_id)
-    if body.target is not None and body.target not in _export_targets():
-        raise HTTPException(422, f"Konduktor cannot export to {body.target} yet")
+    if body.targets is not None:
+        _check_targets(body.targets)
     updated = exports.update(
         _require_library_id(),
         set_id,
         name=body.name,
-        target=body.target,
+        targets=body.targets,
         destination=body.destination,
     )
     return ExportSetOut(**updated.as_dict())
@@ -600,6 +599,19 @@ def _export_targets() -> set[str]:
     return core_export.targets()
 
 
+def _check_targets(targets: list[str]) -> None:
+    """Refuse a set with no targets, or one naming a platform with no exporter.
+
+    Checked when the set is saved: a target that later stops being supported
+    would otherwise fail at export time.
+    """
+    if not targets:
+        raise HTTPException(400, "An export needs at least one platform to export for")
+    unsupported = [t for t in targets if t not in _export_targets()]
+    if unsupported:
+        raise HTTPException(422, f"Konduktor cannot export to {', '.join(unsupported)} yet")
+
+
 @app.get("/api/export-targets", response_model=list[PlatformOption])
 def export_targets() -> list[PlatformOption]:
     """Every platform, flagged by whether it can be an export TARGET.
@@ -618,6 +630,7 @@ def export_targets() -> list[PlatformOption]:
             installed=d.platform in supported,
             found=0,
             removable=bool(getattr(d, "removable", False)),
+            drive_root=bool(getattr(core_export.for_platform(d.platform), "drive_root", False)),
         )
         for d in registry.drivers()
     ]

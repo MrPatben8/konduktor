@@ -284,7 +284,10 @@ Two independent apps that talk over HTTP:
     path-derived id that `is_durable()` reports honestly. Writing beside the
     library is not a new intrusion — saves already create `backups/` there.
   - `exports.py` — **export sets**: a named, persisted slice of the library bound
-    to a destination. Konduktor's OWN data, never written into the user's library
+    to a destination and **one or more target platforms** (`targets`, never
+    empty; a set saved with the old single `target` loads as a one-item list).
+    The targets share the destination and ONE copy of the audio — their layouts
+    (`collection.nml`; `PIONEER/…`; `master.db` + `share/…`) do not collide. Konduktor's OWN data, never written into the user's library
     (a Traktor collection has nowhere to put it, and it would live in a file
     Traktor rewrites). Three rules shape it: references are **LIVE** (a set
     stores playlist *ids*, resolved at export time, so `resolve()` is computed on
@@ -1004,7 +1007,17 @@ that number and nothing else — everything derives from it:
   tags and the `cue` table's MPEG seek columns.
   **Step 5 done**: `exporter.py` — plan, mirrored copy, manifest, rollback — on
   `jobs.py`, plus `POST /api/exports/{id}/preview` and `/run`, and the
-  `ExportRunDialog`. Three properties it is built around: audio is copied FIRST
+  `ExportRunDialog`. **Multi-target** (2026-09-27): audio is copied once, then
+  each target's `write()` runs in turn over it; ANY failure undoes everything,
+  earlier targets' libraries included — and files a failing writer never got
+  to report, via a snapshot of the destination taken before the first write.
+  The manifest lists `libraries` (plural; the old `library` key is still
+  cleared). Audio lives under **`Contents/`**, so a music folder with a
+  top-level `PIONEER/` or a `master.db` cannot land on a library's path. An
+  exporter's static `drive_root` (OneLibrary: a CDJ looks for `PIONEER/` only
+  at a stick's root) surfaces as `PlatformOption.drive_root` and the preview's
+  `not_drive_root` — a **warning, not a block**, since the other targets are
+  valid in any folder. Three properties it is built around: audio is copied FIRST
   and the library written LAST, so a cancel leaves **no** library file and its
   absence is what marks an export unfinished; rollback registers each file
   BEFORE writing it, so the in-flight copy is cleaned up too; and the **manifest**

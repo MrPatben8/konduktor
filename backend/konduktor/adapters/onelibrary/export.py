@@ -86,6 +86,8 @@ class OneLibraryExporter:
     platform = "onelibrary"
     #: Relative to the drive root, which is what the destination folder is.
     library_filename = str(Path("PIONEER") / DB_SUBPATH)
+    #: A CDJ looks for `PIONEER/` at the root of the stick and nowhere else.
+    drive_root = True
 
     def capabilities(self):
         """What a drive can hold — no device, no path, no library to read.
