@@ -21,6 +21,7 @@ import { AnalyzeGridDialog } from './components/AnalyzeGridDialog'
 import { AutoCueDialog } from './components/AutoCueDialog'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { PathMappingDialog } from './components/PathMappingDialog'
+import { RelocateDialog } from './components/RelocateDialog'
 import { HistoryPanel } from './components/HistoryPanel'
 import { PrepStrip } from './components/PrepStrip'
 import { ImportDialog } from './components/ImportDialog'
@@ -166,6 +167,16 @@ export default function App() {
     staleTime: Infinity,
   })
   const save = capabilities.data?.save
+  // The open-time missing-files check. The backend searches as the library
+  // opens and holds the result until it is answered, then serves nothing — so
+  // "ask once per open" is the backend's fact, and refetching cannot re-ask.
+  const relocation = useQuery({
+    queryKey: ['relocation'],
+    queryFn: api.relocation,
+    enabled: loaded,
+    refetchInterval: (q) => (q.state.data?.scanning ? 1500 : false),
+    refetchOnWindowFocus: false,
+  })
   // From the adapter, not a path split: a Serato library is a directory.
   const libraryName = collection.data?.library?.display_name ?? null
   const writeHintText = save ? writeHint(save) : 'save to write it to disk'
@@ -949,6 +960,24 @@ export default function App() {
           locked={gridConfirm.locked}
           onChoose={(replace) => runGridAnalysis(gridConfirm.ids, replace)}
           onClose={() => setGridConfirm(null)}
+        />
+      )}
+      {!!relocation.data?.volumes.length && (
+        <RelocateDialog
+          volumes={relocation.data.volumes}
+          onAnswered={(applied) => {
+            qc.setQueryData(['relocation'], { scanning: false, volumes: [] })
+            if (!applied) return
+            // Every file-backed answer can change: audio, art, the Files
+            // tree's "already in the collection" marks.
+            qc.invalidateQueries()
+            notify(
+              'success',
+              `Found ${applied.tracks.toLocaleString()} track${applied.tracks === 1 ? '' : 's'} — remapped for this session`,
+            )
+          }}
+          onOpenManual={() => setShowPaths(true)}
+          onError={onError}
         />
       )}
       {showPaths && (

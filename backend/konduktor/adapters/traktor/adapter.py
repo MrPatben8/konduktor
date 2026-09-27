@@ -20,6 +20,7 @@ from ...core.capabilities import Capabilities
 from ...core.model import PlaylistNode, Track, TrackCues
 from ...core.pathmap import PathMapping
 from ...core.query import TrackIndex
+from ...core.relocate import PathGroup
 from . import capabilities as caps
 from . import projection
 from .cue_types import CUE_TYPE_TO_NATIVE
@@ -362,6 +363,12 @@ class TraktorAdapter:
 
     def set_path_mapping(self, mapping: PathMapping) -> None:
         self._store.set_path_mapping(mapping)
+
+    def set_session_mappings(self, mappings: list[PathMapping]) -> None:
+        self._store.set_session_mappings(mappings)
+
+    def unresolved_path_groups(self) -> list[PathGroup]:
+        return self._store.unresolved_path_groups()
 
     def path_prefix_suggestions(self) -> dict:
         return self._store.path_prefix_suggestions()

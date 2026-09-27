@@ -31,6 +31,7 @@ from . import __version__, adapters, history, library_id, prefs  # noqa: F401 â€
 from .core import registry
 from .core.adapter import LibraryAdapter
 from .core.pathmap import PathMapping
+from .relocation import RelocationCheck
 
 
 class AppState:
@@ -47,6 +48,9 @@ class AppState:
         # module docstring for why it is not symmetrical with `adapter`.
         self.source_path: Path | None = None
         self.source: LibraryAdapter | None = None
+        # This open's missing-files check (see `relocation.py`). A new one per
+        # open, which is what makes the dialog ask again on a reopen.
+        self.relocation: RelocationCheck | None = None
 
     @property
     def loaded(self) -> bool:
@@ -114,6 +118,9 @@ class AppState:
         if saved:
             adapter.set_path_mapping(PathMapping.make(saved["from"], saved["to"]))
         self.path, self.adapter = path, adapter
+        # Started after the saved mapping is applied, so a volume that mapping
+        # already fixes is not asked about.
+        self.relocation = RelocationCheck(adapter)
         caps = adapter.capabilities()
         # No sidecar beside a removable library: writing to a user's USB stick to
         # satisfy Konduktor's own bookkeeping is not a trade worth making. Those

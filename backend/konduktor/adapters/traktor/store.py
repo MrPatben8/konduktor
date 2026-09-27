@@ -47,6 +47,7 @@ from ...core.adapter import InvalidCommand, SaveOutcome
 from ...core.edit_journal import EditJournal
 from ...core.pathmap import common_dir_prefix
 from ...core.pathmap import PathMapping
+from ...core.relocate import PathGroup
 from ...schemas import PlaylistNode
 from . import beatgrid
 from .locations import os_path_to_location, resolve_path
@@ -81,6 +82,9 @@ class TraktorStore:
         self.dirty = False
         # Active OS-path prefix remapping (empty = identity). Survives _load().
         self._path_mapping = PathMapping()
+        # Mappings the user confirmed in the open-time missing-files check.
+        # Session-only: never saved, re-derived on every open.
+        self._session_mappings: list[PathMapping] = []
         self._load()
 
     # ---- load ----------------------------------------------------------
@@ -973,23 +977,61 @@ class TraktorStore:
         with self._lock:
             self._path_mapping = mapping
 
+    def set_session_mappings(self, mappings: list[PathMapping]) -> None:
+        """Set the mappings confirmed for this session (applied at resolve time)."""
+        with self._lock:
+            self._session_mappings = [m for m in mappings if not m.empty]
+
     def _resolve(self, loc) -> "Path | None":
-        """Resolve a LOCATION to an OS path, applying the active path mapping.
+        """Resolve a LOCATION to an OS path, applying the active path mappings.
 
         The single FS chokepoint: LOCATION -> `resolve_path` -> prefix remap.
-        Falls back to the un-remapped path when the remapped target doesn't
-        exist, so a misconfigured mapping never makes a present file unreachable.
+        The saved mapping is tried first, then — only for a file still not
+        found — the session's. Falls back to the un-remapped path when no
+        remapped target exists, so a misconfigured mapping never makes a
+        present file unreachable.
         """
 
         if loc is None:
             return None
         base = resolve_path(loc.volume, loc.dir, loc.file)
-        if self._path_mapping.empty:
-            return base
-        remapped = self._path_mapping.apply(base)
-        if remapped == base:
-            return base
-        return remapped if remapped.exists() else base
+        if not self._path_mapping.empty:
+            remapped = self._path_mapping.apply(base)
+            if remapped != base and remapped.exists():
+                return remapped
+        if self._session_mappings and not base.exists():
+            for mapping in self._session_mappings:
+                remapped = mapping.apply(base)
+                if remapped != base and remapped.exists():
+                    return remapped
+        return base
+
+    def unresolved_path_groups(self) -> list[PathGroup]:
+        """Each stored VOLUME in which not one track resolves, with its tracks'
+        stored paths — the input to the open-time missing-files search.
+
+        "Not one" is the threshold: a volume missing a few deleted files is a
+        library with a few deleted files, not a library that needs remapping.
+        The stats happen outside the lock; checking stops at a volume's first
+        present file, and a missing path fails fast, so this is cheap either way.
+        """
+        with self._lock:
+            by_volume: dict[str, list] = {}
+            for e in self._nml.collection.entry:
+                if e.location is not None and e.location.file:
+                    by_volume.setdefault(e.location.volume or "", []).append(e.location)
+        groups = []
+        for volume, locs in by_volume.items():
+            if any(self._resolve(loc).exists() for loc in locs):
+                continue
+            groups.append(
+                PathGroup(
+                    label=volume,
+                    root=str(resolve_path(volume, "/:", "")),
+                    paths=[str(resolve_path(l.volume, l.dir, l.file)) for l in locs],
+                )
+            )
+        return groups
 
     def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
         """Staged replacement if present, else the file's current embedded art."""

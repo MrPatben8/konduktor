@@ -25,6 +25,7 @@ from typing import Protocol, runtime_checkable
 from .capabilities import Capabilities
 from .model import Facets, PlaylistNode, Stats, Track, TrackCues, TrackPage
 from .pathmap import PathMapping
+from .relocate import PathGroup
 
 
 @dataclass
@@ -176,6 +177,12 @@ class LibraryAdapter(Protocol):
     # ---- audio / paths ---------------------------------------------------
     def audio_path(self, track_id: str) -> Path | None: ...
     def set_path_mapping(self, mapping: PathMapping) -> None: ...
+    # The open-time missing-files check (`core/relocate.py`): the stored volumes
+    # in which NO track resolves, and the mappings the user confirmed for them —
+    # session-only, applied beneath the saved mapping. An adapter that does not
+    # take part returns no groups, so its library is never checked.
+    def unresolved_path_groups(self) -> list[PathGroup]: ...
+    def set_session_mappings(self, mappings: list[PathMapping]) -> None: ...
     def path_prefix_suggestions(self) -> dict: ...
     def remap_preview(self, mapping: PathMapping) -> dict: ...
     # {old track id: new track id}; ids may change because a Traktor id IS its path.

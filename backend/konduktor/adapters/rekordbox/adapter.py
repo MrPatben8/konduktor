@@ -200,6 +200,14 @@ class RekordboxAdapter:
     def set_path_mapping(self, mapping: PathMapping) -> None:
         self._store.set_path_mapping(mapping)
 
+    def unresolved_path_groups(self) -> list:
+        """Not checked yet: the open-time missing-files check is Traktor-only
+        for now. Rekordbox's `FolderPath` is absolute too, so it will qualify."""
+        return []
+
+    def set_session_mappings(self, mappings: list[PathMapping]) -> None:
+        return None
+
     def path_prefix_suggestions(self) -> dict:
         paths = self._store.all_audio_paths()
         primary = common_dir_prefix(paths)

@@ -33,6 +33,11 @@ from .core.capabilities import Capabilities
 from .jobs import JOBS
 from .core.pathmap import PathMapping
 from .schemas import (
+    Relocation,
+    RelocationApplied,
+    RelocationApply,
+    RelocationCandidate,
+    RelocationVolume,
     AutoGridBatchRequest,
     AutoGridRequest,
     AutoCueOutcome,
@@ -263,6 +268,57 @@ def remap_paths(body: PathMappingInfo) -> RemapResult:
     # that writes, and skipping it would leave a gap in the version history.
     _outcome, commit = STATE.save()
     return RemapResult(rewritten=len(moved), commit=commit)
+
+
+@app.get("/api/library/relocation", response_model=Relocation)
+def get_relocation() -> Relocation:
+    """The open-time missing-files check: every stored volume in which NO track
+    resolves, and where the search found its tracks. Empty once answered, so the
+    UI can refetch freely without re-asking.
+
+    Waits briefly for the search, then reports `scanning` so a slow drive
+    cannot hold a request open; the UI polls until it is done.
+    """
+    require_adapter()
+    check = STATE.relocation
+    if check is None:
+        return Relocation()
+    if not check.wait(timeout=10):
+        return Relocation(scanning=True)
+    return Relocation(
+        volumes=[
+            RelocationVolume(
+                label=p.label,
+                root=p.root,
+                total=p.total,
+                status=p.status,
+                candidates=[
+                    RelocationCandidate.model_validate(
+                        {"from": c.mapping.from_prefix, "to": c.mapping.to_prefix, "found": c.found}
+                    )
+                    for c in p.candidates
+                ],
+            )
+            for p in check.pending
+        ]
+    )
+
+
+@app.post("/api/library/relocation", response_model=RelocationApplied)
+def answer_relocation(body: RelocationApply) -> RelocationApplied:
+    """Answer the check: apply the chosen mappings for THIS SESSION only (no
+    mappings = "Not now"). Nothing is written to the library or to prefs, and a
+    reopen asks again."""
+    require_adapter()
+    check = STATE.relocation
+    if check is None:
+        raise HTTPException(409, "There is no missing-files check to answer")
+    mappings = [PathMapping.make(m.from_, m.to) for m in body.mappings]
+    try:
+        tracks = check.answer(mappings)
+    except ValueError as ex:
+        raise HTTPException(400, str(ex))
+    return RelocationApplied(mappings=len(mappings), tracks=tracks)
 
 
 @app.get("/api/prefs")

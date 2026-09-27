@@ -47,6 +47,19 @@ Two independent apps that talk over HTTP:
     - `registry.py` — adapter selection by **`can_open()` probe**, not extension
       (Rekordbox is a `.db`, Serato is a directory).
     - `audio_tags.py`, `pathmap.py` — format-agnostic helpers.
+    - `relocate.py` — **auto path remapping's search** (see `relocation.py`).
+      Fixes ONE thing: a stored prefix changed and the layout under it did not
+      (a collection built on Windows with the SSD as `X:`, opened on a Mac where
+      it is `/Volumes/MiniSSD` — the real case, 8,359 of 8,365 found). It
+      SAMPLES ~50 tracks per group against each candidate root (drives, home,
+      Music), dropping leading folders at the shallowest level that hits, and
+      verifies the winner over the WHOLE group — it never walks a drive. At
+      least one folder must survive the drop (a bare filename at a drive root
+      is a coincidence), and a runner-up resolving ≥50% of the winner's count
+      makes the group **ambiguous** — a drive and its backup clone are a
+      question, not a ranking. Which groups to search is the adapter's call
+      (`unresolved_path_groups()`): only volumes in which **NO** track resolves,
+      so a few deleted files never prompt.
     - `structure.py` + `auto_hotcues.py` — **Auto Hotcues** (the deck's ✨ Auto
       button → `AutoCueDialog` → `POST /api/tracks/cue/auto`). The user binds each
       slot to an EVENT (`first_beat`, `intro_end`, `build_n`, `drop_n`,
@@ -283,6 +296,20 @@ Two independent apps that talk over HTTP:
     dropping it, because a gig stick quietly missing four tracks is this
     feature's worst failure. `retarget()` follows ids through a path remap, which
     `/api/library/remap-paths` calls with a before/after snapshot.
+  - `relocation.py` — the **open-time missing-files check**. `AppState.open()`
+    starts a `RelocationCheck` thread (after the saved mapping is applied, so
+    a volume it fixes is not asked about); `GET /api/library/relocation`
+    serves the proposals until `POST` answers them (no mappings = Not now),
+    then serves nothing — "ask once per open" lives here, not in the UI,
+    which would re-ask on every refetch. Answers are **session-only**
+    (`set_session_mappings`, applied in `TraktorStore._resolve` BENEATH the
+    saved mapping and only for a file not found as stored): never written to
+    the library, which would change every Traktor track id, nor to prefs, so
+    a reopen asks again. Only a mapping the search proposed is accepted.
+    **Traktor only for now**; Rekordbox/OneLibrary return no groups.
+    `RelocateDialog` always asks — found volumes ticked, ambiguous ones a
+    radio with nothing preselected, missing ones "Not connected" with a
+    "Map by hand…" link to `PathMappingDialog`; no backdrop-click dismiss.
   - `prefs.py` — persisted user prefs (`userprefs.json` in the per-OS app-data
     dir). Last-opened collection (global AND per-platform), library column
     layout, prep-deck zoom, import destination. Best-effort.
@@ -651,6 +678,13 @@ serialization path.** It enforces:
   multi-tempo grid survives expansion to per-beat and collapse back. Both are read
   back with Konduktor's own adapters, which is the strongest check short of the
   hardware: the reader was written against real rekordbox output.
+- `test_relocate.py` — auto path remapping: `relocate.search` on temp folders
+  (drive-letter change, clone = ambiguous, partial copy loses, bare filename is
+  no match, dropped home folders), then the Traktor path through the routes on
+  a collection re-homed to `X:`/`E:`: a resolving volume is never asked about,
+  nothing applies before the answer and only a proposed mapping does, the
+  collection and prefs are untouched, a reopen asks again, and a saved manual
+  mapping's volume is left out.
 - `test_library_id.py` — the property no other suite covers: **a library that
   moves keeps its identity**. Also that two libraries in one folder stay two, a
   removable library is never written beside, an unwritable location falls back

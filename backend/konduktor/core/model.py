@@ -238,3 +238,43 @@ class PrefixGroup(BaseModel):
 class PrefixSuggestions(BaseModel):
     primary: str  # best guess for the `from` prefix (largest group)
     groups: list[PrefixGroup] = []  # alternatives, ranked by count
+
+
+class RelocationCandidate(BaseModel):
+    """One place a volume's tracks were found, as a mapping the user can pick."""
+
+    model_config = ConfigDict(populate_by_name=True)
+    from_: str = Field(alias="from")
+    to: str
+    found: int  # of the volume's tracks, how many exist under this mapping
+
+
+class RelocationVolume(BaseModel):
+    """A stored volume in which NO track resolves, and where its tracks are now.
+
+    `ambiguous` means more than one candidate resolves most of the volume (a
+    drive and its backup clone): the user chooses, nothing is preselected.
+    """
+
+    label: str  # how the library names the place, e.g. Traktor's "X:"
+    root: str  # the stored OS-path prefix
+    total: int
+    status: Literal["found", "ambiguous", "not_found"]
+    candidates: list[RelocationCandidate] = []
+
+
+class Relocation(BaseModel):
+    """The open-time missing-files check, pending until the user answers it.
+
+    `scanning` while the search is still running; afterwards `volumes` is empty
+    when there is nothing to ask — every volume resolves, the platform does not
+    take part, or the user has already answered for this open.
+    """
+
+    scanning: bool = False
+    volumes: list[RelocationVolume] = []
+
+
+class RelocationApplied(BaseModel):
+    mappings: int
+    tracks: int  # how many tracks the applied mappings resolve

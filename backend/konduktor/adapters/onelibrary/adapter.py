@@ -211,6 +211,13 @@ class OneLibraryAdapter:
         """
         return None
 
+    def unresolved_path_groups(self) -> list:
+        """None, ever: a drive's paths are relative to its own mount point."""
+        return []
+
+    def set_session_mappings(self, mappings: list[PathMapping]) -> None:
+        return None
+
     def path_prefix_suggestions(self) -> dict:
         paths = self._store.all_audio_paths()
         primary = common_dir_prefix(paths)

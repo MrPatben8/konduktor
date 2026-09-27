@@ -544,6 +544,38 @@ export interface RemapPreview {
   samples: RemapSample[]
 }
 
+/** One place a stored volume's tracks were found — a mapping the user can pick. */
+export interface RelocationCandidate {
+  from: string
+  to: string
+  /** Of the volume's tracks, how many exist under this mapping. */
+  found: number
+}
+
+/** A stored volume in which NO track resolves, and where its tracks are now.
+ *  `ambiguous`: more than one candidate resolves most of it (a drive and its
+ *  backup clone) — the user chooses, nothing is preselected. */
+export interface RelocationVolume {
+  /** How the library names the place, e.g. Traktor's "X:". */
+  label: string
+  root: string
+  total: number
+  status: 'found' | 'ambiguous' | 'not_found'
+  candidates: RelocationCandidate[]
+}
+
+/** The open-time missing-files check. `volumes` is empty once answered, so it
+ *  is safe to refetch. */
+export interface Relocation {
+  scanning: boolean
+  volumes: RelocationVolume[]
+}
+
+export interface RelocationApplied {
+  mappings: number
+  tracks: number
+}
+
 export interface RemapResult {
   rewritten: number
   commit: string | null
@@ -666,6 +698,12 @@ export const api = {
   // Write-back: permanently rewrite matching LOCATIONs in the .nml (committed to history).
   remapPaths: (from: string, to: string) =>
     send<RemapResult>('POST', '/api/library/remap-paths', { from, to }),
+
+  // The open-time missing-files check; answering with no mappings is "Not now".
+  // Applied mappings last for this session only.
+  relocation: () => getJSON<Relocation>('/api/library/relocation'),
+  answerRelocation: (mappings: PathMapping[]) =>
+    send<RelocationApplied>('POST', '/api/library/relocation', { mappings }),
 
   capabilities: () => getJSON<Capabilities>('/api/capabilities'),
   platforms: () => getJSON<PlatformOption[]>('/api/platforms'),

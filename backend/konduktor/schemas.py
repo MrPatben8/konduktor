@@ -299,6 +299,16 @@ class PathMappingInfo(BaseModel):
     to: str = ""
 
 
+class RelocationApply(BaseModel):
+    """The user's answer to the open-time missing-files check. Empty = "Not now".
+
+    Each mapping must be one the check proposed: this route applies an answer,
+    it is not a second way to set an arbitrary mapping.
+    """
+
+    mappings: list[PathMappingInfo] = []
+
+
 class RemapResult(BaseModel):
     rewritten: int  # tracks whose LOCATION was rewritten
     commit: str | None = None  # sha of the version-history commit for the rewrite
@@ -318,6 +328,10 @@ from .core.model import (  # noqa: E402,F401
     PlaylistNode,
     PrefixGroup,
     PrefixSuggestions,
+    Relocation,
+    RelocationApplied,
+    RelocationCandidate,
+    RelocationVolume,
     RemapPreview,
     RemapSample,
     Stats,
