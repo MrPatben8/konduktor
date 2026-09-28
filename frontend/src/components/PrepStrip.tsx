@@ -786,9 +786,19 @@ export function PrepStrip({
     if (!eng || !eng.ready) return
     getCtx()
     // A loop hotcue jumps to its start AND engages a loop of its length — the
-    // new loop FIRST, so the seek is not wrapped back into the old one.
+    // new loop FIRST, so the seek is not wrapped back into the old one. The loop
+    // controls follow it: a beat-sized loop takes over the shared size (so −/+
+    // resize THIS loop), and one of no preset size shows in MAN, where its
+    // toggle is.
     if (cue.type === 'loop' && cue.length > 0) {
-      engagLoop(cue.start, cue.start + cue.length, beatsForLoop(cue.start, cue.length))
+      const beats = beatsForLoop(cue.start, cue.length)
+      engagLoop(cue.start, cue.start + cue.length, beats)
+      if (beats != null) {
+        setBeatSize(beats)
+        setLoopMode('beat')
+      } else {
+        setLoopMode('manual')
+      }
     } else {
       leaveLoopFor(cue.start)
     }
