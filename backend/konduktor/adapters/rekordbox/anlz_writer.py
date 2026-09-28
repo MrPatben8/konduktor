@@ -52,6 +52,8 @@ from pathlib import Path
 from construct import Container, ListContainer
 from pyrekordbox.anlz import structs
 
+from ...core.waveform import even_slices
+
 log = logging.getLogger(__name__)
 
 NO_LOOP = 0xFFFFFFFF
@@ -237,7 +239,7 @@ def _pwv4(bands) -> bytes:
 
     full = np.sqrt((bands ** 2).sum(axis=1))
     x = np.column_stack([bands, full])                       # low, mid, high, full
-    cols = [idx for idx in np.array_split(np.arange(len(x)), _OVERVIEW_COLUMNS)]
+    cols = [np.arange(len(x))[s] for s in even_slices(len(x), _OVERVIEW_COLUMNS)]
     mean = np.array([x[i].mean(axis=0) if len(i) else np.zeros(4) for i in cols])
     instant = np.array([x[i[len(i) // 2]] if len(i) else np.zeros(4) for i in cols])
 
@@ -285,8 +287,8 @@ def waveform_tags(bands) -> tuple[list[bytes], list[bytes]]:
                     for r, g, b, h in zip(*rgb, height))
 
     pwv7 = np.stack([_norm(bands[:, i], top, g, 127) for i, (top, g) in enumerate(_PWV7)], axis=1)
-    cols = np.array([bands[idx].mean(axis=0) if len(idx) else np.zeros(3)
-                     for idx in np.array_split(np.arange(n), _OVERVIEW_COLUMNS)])
+    cols = np.array([bands[s].mean(axis=0) if n else np.zeros(3)
+                     for s in even_slices(n, _OVERVIEW_COLUMNS)])
     pwv6 = np.stack([_norm(cols[:, i], top, g, 127) for i, (top, g) in enumerate(_PWV6)], axis=1)
     gains = [max(_PWVC_FLOOR, int(round(c / (float(np.percentile(bands[:, i], 99.5)) or 1.0))))
              for i, c in enumerate(_PWVC_C)]

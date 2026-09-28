@@ -1037,6 +1037,12 @@ that number and nothing else — everything derives from it:
   generated from one decode (`core/waveform.py`: 150 frames/s, bands split at
   200 Hz / 2.5 kHz) with constants fitted to rekordbox's own files for 12 local
   tracks and checked on 5 held-out ones (per-band correlation 0.77-0.96).
+  **Every column split goes through `waveform.even_slices`, never
+  `np.array_split`**: the latter gives the first `n % k` chunks an extra frame,
+  so overview column k held LATER audio than its position — up to ~1.8 s by
+  column 420 of 1200, back to 0 at the end. Rekordbox drew such an overview a
+  bar ahead of the playhead mid-track (`test_export_pioneer.py` pins a burst
+  landing in its own column).
   **rekordbox 7's SONG LIST draws `PWV6` — and only when `content.contentLink`
   is set.** Both measured by bisecting a rekordbox-written stick: removing a
   track's `PWV6` emptied its row (removing `PWV4` changed nothing), and blanking

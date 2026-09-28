@@ -590,5 +590,28 @@ check("and reads the memory cue back, at its place",
       len(memory_back) == 1 and abs(memory_back[0].start - 4.0) < 0.002, memory_back)
 rb_back.close()
 
+print("\n== overview columns sit where their audio is (no drift) ==")
+# np.array_split gives the FIRST n % k chunks an extra frame, so every early
+# overview column held later audio than its position: ~1 bar early mid-track in
+# rekordbox, right again near the end. A burst at a known time, with a frame
+# count whose remainder is large (24,420 % 1200 = 420), must land in its column.
+from konduktor.core.waveform import even_slices  # noqa: E402
+
+n_frames = 24420
+check("even_slices covers every frame once, in order",
+      [x.start for x in even_slices(n_frames, 1200)][1:] == [x.stop for x in even_slices(n_frames, 1200)][:-1]
+      and even_slices(n_frames, 1200)[-1].stop == n_frames)
+for when in (0.35, 0.5, 0.9):
+    burst = np.full((n_frames, 3), 1.0)
+    at = int(when * n_frames)
+    burst[at:at + 40] = 100.0
+    ext_t, two_t = W.waveform_tags(burst)
+    tags_t = {x[:4]: x for x in ext_t + two_t}
+    col6 = int(np.argmax(np.frombuffer(tags_t[b"PWV6"][20:], np.uint8).reshape(-1, 3)[:, 0]))
+    col4 = int(np.argmax(np.frombuffer(tags_t[b"PWV4"][24:], np.uint8).reshape(-1, 6)[:, 3]))
+    want = at * 1200 / n_frames
+    check(f"a burst {int(when * 100)}% in lands in its overview column (PWV6 {col6}, PWV4 {col4}, want ~{want:.0f})",
+          abs(col6 - want) <= 2 and abs(col4 - want) <= 2)
+
 print("\n" + ("❌ FAILED" if failed else "✅ PASSED"))
 raise SystemExit(1 if failed else 0)

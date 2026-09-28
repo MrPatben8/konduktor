@@ -106,6 +106,20 @@ def _decode_pyav(path: Path) -> np.ndarray:
     return np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
 
 
+def even_slices(n: int, k: int) -> list[slice]:
+    """`k` slices of `range(n)`, each starting where its share of the whole
+    begins — so column `i` holds exactly the audio at `i/k` of the track.
+
+    NOT `np.array_split`: that gives the FIRST `n % k` chunks one extra element,
+    which pushes every early column's content later than its position — up to
+    ~1.8 s by column 420 of a 1200-column overview (24,420 frames), shrinking
+    back to 0 at the end. Rekordbox drew such an overview a bar ahead of the
+    playhead mid-track, and closer to right near the end.
+    """
+    edges = np.round(np.linspace(0, n, k + 1)).astype(int)
+    return [slice(int(a), int(max(b, a + 1)) if n else 0) for a, b in zip(edges[:-1], edges[1:])]
+
+
 def _decode(path: Path) -> np.ndarray | None:
     try:
         return _decode_pyav(path)
@@ -124,12 +138,12 @@ def _decode(path: Path) -> np.ndarray | None:
 def _columns(y: np.ndarray, n: int) -> Columns:
     import librosa
 
-    rms = np.array([float(np.sqrt(np.mean(c * c))) for c in np.array_split(y, n)])
+    rms = np.array([float(np.sqrt(np.mean(y[s] * y[s]))) for s in even_slices(len(y), n)])
     spec = np.abs(librosa.stft(y, n_fft=N_FFT, hop_length=N_FFT)) ** 2
     freqs = librosa.fft_frequencies(sr=SR, n_fft=N_FFT)
     share = spec[freqs > _BRIGHT_HZ].sum(0) / (spec.sum(0) + 1e-12)
     brightness = np.array([float(c.mean()) if len(c) else 0.0
-                           for c in np.array_split(share, n)])
+                           for c in (share[s] for s in even_slices(len(share), n))])
     return Columns(rms=rms, brightness=brightness, duration=len(y) / SR)
 
 
