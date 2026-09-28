@@ -114,6 +114,8 @@ class RekordboxExporter:
     #: A COMPUTER library (master.db), which Rekordbox never reads from a stick —
     #: named so, beside "Rekordbox Export" (the stick's Device Library).
     display_name = "Rekordbox Library"
+    #: Rekordbox opens a master.db only from its own library folder.
+    computer_only = True
     library_filename = "master.db"
     drive_root = False
 

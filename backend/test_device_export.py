@@ -223,6 +223,10 @@ from konduktor.main import app  # noqa: E402
 names = [o["name"] for o in TestClient(app).get("/api/export-targets").json()]
 check("OneLibrary, Traktor, Rekordbox Export, Rekordbox Library",
       names[:4] == ["OneLibrary", "Traktor", "Rekordbox Export", "Rekordbox Library"], names)
+flags = {o["name"]: o for o in TestClient(app).get("/api/export-targets").json()}
+check("Rekordbox Library says it is computer-only (the dialog warns beside a stick format)",
+      flags["Rekordbox Library"]["computer_only"] and not flags["Rekordbox Export"]["computer_only"]
+      and flags["Rekordbox Export"]["drive_root"])
 
 print("\n" + ("❌ FAILED" if failed else "✅ PASSED"))
 raise SystemExit(1 if failed else 0)

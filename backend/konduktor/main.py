@@ -633,6 +633,7 @@ def export_targets() -> list[PlatformOption]:
             found=0,
             removable=bool(getattr(d, "removable", False)),
             drive_root=bool(getattr(exporter, "drive_root", False)),
+            computer_only=bool(getattr(exporter, "computer_only", False)),
         ))
     # Targets with no reader of their own (the stick's legacy Device Library):
     # listed too, or registering one would not make it selectable.
@@ -650,6 +651,7 @@ def export_targets() -> list[PlatformOption]:
             found=0,
             removable=bool(getattr(exporter, "drive_root", False)),
             drive_root=bool(getattr(exporter, "drive_root", False)),
+            computer_only=bool(getattr(exporter, "computer_only", False)),
         ))
     # Each exporter states its own place; a platform with no exporter (not yet a
     # target, shown disabled) goes last. Stable, so equal places keep their order.

@@ -216,6 +216,9 @@ class PlatformOption(BaseModel):
     removable: bool = False
     #: As an export TARGET: its library is only found at a drive's root.
     drive_root: bool = False
+    #: As an export TARGET: its library is only ever read on a computer, never
+    #: from a drive — so it does nothing beside a stick format.
+    computer_only: bool = False
 
 
 class RemapSample(BaseModel):

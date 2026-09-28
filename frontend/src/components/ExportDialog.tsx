@@ -57,6 +57,11 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
   const needsRoot = (targets.data ?? []).filter(
     (p) => p.drive_root && chosen.includes(p.platform),
   )
+  // A computer-only library ticked beside a stick format: harmless, but it does
+  // nothing on the stick, which is easy to mistake for a broken export.
+  const computerOnly = (targets.data ?? []).filter(
+    (p) => p.computer_only && chosen.includes(p.platform),
+  )
 
   const toggle = (platform: string, on: boolean) =>
     setChosen((prev) =>
@@ -138,6 +143,13 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
                   </label>
                 ))}
               </div>
+              {computerOnly.length > 0 && needsRoot.length > 0 && (
+                <div className="mt-2 rounded well px-3 py-2 text-xs text-gold">
+                  {computerOnly.map((p) => p.name).join(' and ')} is only read on a computer, never
+                  from a USB drive, so it adds nothing to {needsRoot.map((p) => p.name).join(' and ')}.
+                  It replaces a collection on this computer and only works on this machine.
+                </div>
+              )}
             </div>
 
             <div>

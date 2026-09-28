@@ -279,6 +279,8 @@ export interface PlatformOption {
   removable: boolean
   /** As an export target: its library is only found at a drive's ROOT. */
   drive_root?: boolean
+  /** As an export target: only ever read on a computer, never from a drive. */
+  computer_only?: boolean
 }
 
 export interface EditState {
