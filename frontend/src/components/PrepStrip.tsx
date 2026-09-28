@@ -50,6 +50,8 @@ interface Props {
   /** Bumped when something outside the deck (batch grid analysis) rewrote the
    *  loaded track's cues/grid, so the deck re-reads them. */
   cuesRefresh?: number
+  /** Reports whether the deck is playing, so the library can light its row. */
+  onPlayingChange?: (playing: boolean) => void
 }
 
 /** m:ss.t — the deck's readouts show tenths, as a CDJ does. */
@@ -92,9 +94,11 @@ export function PrepStrip({
   onNotify,
   origin = 'collection',
   cuesRefresh = 0,
+  onPlayingChange,
 }: Props) {
   const qc = useQueryClient()
   const [playing, setPlaying] = useState(false)
+  useEffect(() => onPlayingChange?.(playing), [playing, onPlayingChange])
   const [previewing, setPreviewing] = useState(false) // momentary hold-to-play active
   // CUE is held down (mouse OR the C key) — drives the button's pressed look,
   // which the pointer's :active alone cannot, since the key never touches it.

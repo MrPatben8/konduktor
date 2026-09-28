@@ -79,31 +79,39 @@ interface Props {
   onPlay?: (track: Track) => void
   onEditField?: (track: Track, field: keyof Track, value: string | number) => void
   activeTrackId?: string | null
+  /** Whether the deck is playing `activeTrackId` (vs. loaded but paused). */
+  activePlaying?: boolean
 }
 
-/** The per-row play button.
- *  Fades in on row hover; stays lit for the active deck track. */
+/** The per-row play button, in three states: a small triangle always, an
+ *  outlined circle on row hover, and a filled circle while its track plays in
+ *  the deck (the loaded track, paused, keeps an accent triangle). */
 function PlayButton({
   track,
   isActive,
+  isPlaying,
   onPlay,
 }: {
   track: Track
   isActive: boolean
+  isPlaying: boolean
   onPlay: (track: Track) => void
 }) {
+  const look = isPlaying
+    ? 'border-accent bg-accent text-ink-950'
+    : `border-transparent group-hover:border-ink-600 hover:!border-accent hover:text-accent ${
+        isActive ? 'text-accent' : 'text-faint group-hover:text-text'
+      }`
   return (
     <button
       onClick={(e) => {
         e.stopPropagation()
         onPlay(track)
       }}
-      className={`flex h-6 w-6 items-center justify-center rounded-full transition-colors hover:bg-accent hover:text-ink-950 ${
-        isActive ? 'text-accent opacity-100' : 'text-faint opacity-0 group-hover:opacity-100'
-      }`}
+      className={`flex h-6 w-6 items-center justify-center rounded-full border-[1.5px] transition-colors ${look}`}
       title="Play in deck"
     >
-      <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden className="ml-px">
         <path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.29-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z" />
       </svg>
     </button>
@@ -275,6 +283,7 @@ export function TrackTable({
   onPlay,
   onEditField,
   activeTrackId,
+  activePlaying = false,
 }: Props) {
   // A local copy so a reorder shows instantly; re-syncs when the data changes.
   const [data, setData] = useState<Track[]>(tracks)
@@ -599,7 +608,12 @@ export function TrackTable({
                 </span>
                 {hasPlay && (
                   <span className="flex w-9 shrink-0 items-center justify-center">
-                    {onPlay && <PlayButton track={row.original} isActive={isActive} onPlay={onPlay} />}
+                    {onPlay && <PlayButton
+                        track={row.original}
+                        isActive={isActive}
+                        isPlaying={isActive && activePlaying}
+                        onPlay={onPlay}
+                      />}
                   </span>
                 )}
                 <RowCells row={row} />

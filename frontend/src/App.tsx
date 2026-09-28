@@ -66,6 +66,7 @@ export default function App() {
   const [showPaths, setShowPaths] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [prepTrack, setPrepTrack] = useState<Track | null>(null)
+  const [deckPlaying, setDeckPlaying] = useState(false)
   // Which library the DECK's track came from — not the view's. Browsing to a
   // playlist while a device or folder track is loaded must not switch the deck
   // to endpoints that do not know that track.
@@ -1019,6 +1020,7 @@ export default function App() {
           onNotify={notify}
           origin={prepOrigin}
           cuesRefresh={cuesRefresh}
+          onPlayingChange={setDeckPlaying}
         />
       </CapabilitiesContext.Provider>
 
@@ -1177,6 +1179,7 @@ export default function App() {
                 onPlay={playTrack}
                 onEditField={canEdit ? editField : undefined}
                 activeTrackId={prepTrack?.id ?? null}
+                activePlaying={deckPlaying}
                 columnVisibility={columnVisibility}
                 columnOrder={columnOrder}
                 columnSizing={columnSizing}
@@ -1215,6 +1218,7 @@ export default function App() {
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
                 activeTrackId={prepTrack?.id ?? null}
+                activePlaying={deckPlaying}
                 columnVisibility={columnVisibility}
                 columnOrder={columnOrder}
                 columnSizing={columnSizing}
@@ -1248,6 +1252,7 @@ export default function App() {
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
                 activeTrackId={prepTrack?.id ?? null}
+                activePlaying={deckPlaying}
                 columnVisibility={columnVisibility}
                 columnOrder={columnOrder}
                 columnSizing={columnSizing}
@@ -1272,6 +1277,7 @@ export default function App() {
                 onPlay={playTrack}
                 onEditField={canEdit ? editField : undefined}
                 activeTrackId={prepTrack?.id ?? null}
+                activePlaying={deckPlaying}
                 columnVisibility={columnVisibility}
                 columnOrder={columnOrder}
                 columnSizing={columnSizing}
@@ -1309,6 +1315,7 @@ export default function App() {
               onPlay={playTrack}
               onEditField={canEdit ? editField : undefined}
               activeTrackId={prepTrack?.id ?? null}
+                activePlaying={deckPlaying}
               columnVisibility={columnVisibility}
               columnOrder={columnOrder}
               columnSizing={columnSizing}
