@@ -31,6 +31,12 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
+#: BUMP THIS whenever `analyse()`'s output changes (a constant below, the
+#: decoder, the maths). Exports cache these measurements on the stick
+#: (`analysis_cache`), keyed by this number — so an unbumped change keeps
+#: serving the old measurement to every re-export.
+ANALYSIS_VERSION = 1
+
 #: Plenty for a waveform, and half the decode cost of 44.1 kHz. The high band
 #: runs to 11 kHz, which is where most of its visible energy is anyway.
 SR = 22050

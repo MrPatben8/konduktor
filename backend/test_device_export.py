@@ -201,7 +201,7 @@ both_payload = ExportPayload(name="GIG", tracks=moved, playlists=payload.playlis
 ol_written = core_export.for_platform("onelibrary").write(both_payload, both)
 stamp = {p: p.stat().st_mtime_ns for p in ol_written.extra if p.suffix in (".DAT", ".EXT", ".2EX")}
 calls = []
-both_payload.checkpoint = calls.append
+both_payload.checkpoint = lambda m, **_progress: calls.append(m)
 dev_written = dev.write(both_payload, both)
 dat_files = sorted(both.rglob("*.DAT"))
 check("still one .DAT per track", len(dat_files) == 3, len(dat_files))

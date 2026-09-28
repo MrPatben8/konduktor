@@ -57,7 +57,6 @@ from pathlib import Path
 from sqlalchemy import text
 
 from ...core.export import ExportPayload, ExportTrack, WrittenLibrary
-from ...core import waveform
 from ...core.cue_colors import effective_color
 from . import anlz_writer as W
 from . import artwork, palette
@@ -177,7 +176,7 @@ class RekordboxExporter:
             total = len(payload.tracks)
             for n, item in enumerate(payload.tracks, start=1):
                 # Each track is decoded for its waveform: the slow part.
-                payload.checkpoint(f"Analysing {item.track.title or item.destination.name} ({n}/{total})")
+                payload.checkpoint(f"Analysing {item.track.title or item.destination.name} ({n}/{total})", step=n, of=total)
                 content = self._add_track(db, item)
                 rows[item.source_id] = content
                 ids[item.source_id] = str(content.ID)
@@ -366,7 +365,7 @@ class RekordboxExporter:
         # `.EXT`/`.2EX` carry the drawn waveforms. Cue lists are present but
         # EMPTY — master.db keeps cues in djmdCue.
         off = timebase.offset(item.destination)
-        measured = waveform.analyse(item.destination, lead=off)
+        measured = item.waveform(lead=off)
         path = str(item.destination)
         tags = [W.path_tag(path), W.vbr_tag(W.mp3_samples(item.destination))]
         markers = item.cues.grid_markers if item.cues else []

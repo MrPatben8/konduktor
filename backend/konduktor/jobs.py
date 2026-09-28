@@ -49,6 +49,9 @@ class Job:
     # the UI is expected to show an indeterminate bar until it is positive.
     total: int = 0
     done: int = 0
+    #: What `done`/`total` count — "bytes" while copying, "tracks" while a
+    #: library is written — so the UI can word them. Empty = unspecified.
+    unit: str = ""
     message: str = ""
     result: Any = None
     error: str | None = None
@@ -67,6 +70,7 @@ class Job:
             "state": self.state,
             "total": self.total,
             "done": self.done,
+            "unit": self.unit,
             "message": self.message,
             "result": self.result,
             "error": self.error,
@@ -87,7 +91,9 @@ class JobHandle:
         self._job = job
 
     def progress(self, done: int | None = None, total: int | None = None,
-                 message: str | None = None) -> None:
+                 message: str | None = None, unit: str | None = None) -> None:
+        if unit is not None:
+            self._job.unit = unit
         if done is not None:
             self._job.done = done
         if total is not None:

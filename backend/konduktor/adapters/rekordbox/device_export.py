@@ -101,7 +101,7 @@ class RekordboxDeviceExporter:
         art_n = 0
         total = len(payload.tracks)
         for n, item in enumerate(payload.tracks, start=1):
-            payload.checkpoint(f"Writing the device library: {item.track.title or item.destination.name} ({n}/{total})")
+            payload.checkpoint(f"Writing the device library: {item.track.title or item.destination.name} ({n}/{total})", step=n, of=total)
             track = item.track
             by_source[item.source_id] = n
             rel = _drive_relative(item.destination, root)

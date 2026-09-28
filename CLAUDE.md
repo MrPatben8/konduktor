@@ -671,7 +671,11 @@ serialization path.** It enforces:
   `run()` refuses a blocked plan even when called directly; a re-export replaces
   its own files and leaves the user's alone; a cancel leaves no library file and
   **no audio at all**, including the file being written; a missing source file is
-  skipped rather than fatal.
+  skipped rather than fatal. And the incremental re-export: an unchanged
+  re-export copies and decodes NOTHING (same inodes), an edited source and a
+  copy tampered with on the stick are each re-copied alone, a moved shared root
+  renames kept copies instead of copying, a cancelled re-export keeps them and
+  the folder stays ours, and the analysis cache round-trips exactly.
 - `test_export_pioneer.py` — the two Pioneer targets against the same contract.
   Harder than Traktor's in a way that test cannot cover: each writes a database
   PLUS per-track analysis files, so "the library" is no longer one path, and the
@@ -1142,6 +1146,26 @@ that number and nothing else — everything derives from it:
   would put the user's home directory on the stick, and relative paths make
   filename collisions impossible. A destination Konduktor did not write is
   **refused, not confirmed**: there is no "do it anyway".
+  **Incremental re-export** (2026-09-28): the manifest's `audio` map records,
+  per copy, the SOURCE's path/size/mtime and the COPY's size/mtime as read
+  back (FAT32 rounds mtimes, so they are never assumed equal). A copy is kept
+  when all four match — **no checksums**: hashing the copy means reading it
+  back over USB, about the cost of copying it. Copies are matched by SOURCE
+  path, since adding a track from another folder moves `common_dir_prefix`
+  and every destination path with it; a kept copy that moved is RENAMED
+  (two-phase via `.konduktor-moving/`, since one's new path can be another's
+  old one). Order: old libraries and unkept files go, kept copies move, a
+  manifest listing every path the run may leave is written (crash-safe), new
+  copies land as `*.konduktor-partial` and are renamed in, libraries last. A
+  failed run with kept files REWRITES the manifest around them rather than
+  deleting it — else the folder would be refused as not ours. Pioneer
+  waveform decoding is cached on the drive too (`core/analysis_cache.py`,
+  `.konduktor-cache/`, keyed by the same source facts + the lead +
+  `waveform.ANALYSIS_VERSION` — **bump that when `analyse()` changes**);
+  exporters reach it through `ExportTrack.waveform()`, never
+  `waveform.analyse()` directly. The Rekordbox Library target's ANLZ paths are
+  a fresh UUID per export, which is why the MEASUREMENT is cached rather than
+  old ANLZ files reused by path.
   **Step 4 done**: `core/export.py` (the `LibraryExporter` protocol, its own
   registry, and the strictly-generic `ExportPayload` — so a Rekordbox collection
   exports to Traktor with no exporter knowing Rekordbox exists) and

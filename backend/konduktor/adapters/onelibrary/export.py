@@ -41,7 +41,6 @@ import logging
 from datetime import date
 from pathlib import Path
 
-from ...core import waveform
 from ...core.export import ExportPayload, ExportTrack, WrittenLibrary
 from ...core.cue_colors import effective_color
 from ..rekordbox import anlz_writer as W
@@ -165,7 +164,7 @@ class OneLibraryExporter:
         for n, item in enumerate(payload.tracks, start=1):
             # Each track is DECODED for its waveform, so this loop is the slow
             # part of the write — report it, and let a cancel land between tracks.
-            payload.checkpoint(f"Analysing {item.track.title or item.destination.name} ({n}/{total})")
+            payload.checkpoint(f"Analysing {item.track.title or item.destination.name} ({n}/{total})", step=n, of=total)
             by_source[item.source_id] = n
             written += self._write_track(con, n, item, root, lookups)
 
@@ -301,7 +300,7 @@ class OneLibraryExporter:
         # shifted as they are packed, and the waveform frames are measured with
         # the same lead so they line up with the beats.
         off = timebase.offset(item.destination)
-        measured = waveform.analyse(item.destination, lead=off)
+        measured = item.waveform(lead=off)
         # The DECODED length where there is one: `Track.length` is whole seconds
         # rounded down, and a grid expanded to it loses the track's last beat.
         beats = self._beats(item, measured.duration if measured else None)

@@ -29,10 +29,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Callable, Protocol, runtime_checkable
 
 from .capabilities import Capabilities
 from .model import Track, TrackCues
+
+if TYPE_CHECKING:
+    from .analysis_cache import AnalysisCache
 
 
 @dataclass
@@ -50,6 +53,20 @@ class ExportTrack:
     #: copied file, because a library's art is not always embedded in the audio
     #: (rekordbox keeps its own copy under `share/`).
     art: tuple[bytes, str] | None = None
+    #: The source file's identity (`analysis_cache.fingerprint`), and the cache
+    #: on the destination drive — both set by the runner, so a re-export does
+    #: not decode an unchanged track again. Either may be None.
+    fingerprint: str | None = None
+    analysis_cache: "AnalysisCache | None" = field(default=None, repr=False)
+
+    def waveform(self, *, lead: float = 0.0):
+        """`waveform.analyse()` of the copied audio — the call every exporter that
+        measures audio makes, so all of them share the cache."""
+        from . import waveform
+
+        if self.analysis_cache is not None and self.fingerprint:
+            return self.analysis_cache.analyse(self.destination, self.fingerprint, lead=lead)
+        return waveform.analyse(self.destination, lead=lead)
 
     @property
     def source_id(self) -> str:
@@ -80,10 +97,12 @@ class ExportPayload:
     #: The export's name, used for the folder its playlists are nested under.
     name: str = "Export"
     #: Called by a writer before each slow step (e.g. decoding a track for its
-    #: waveform) with a message for the status bar. RAISES when the user has
+    #: waveform) with a message for the status bar, and — for a per-track loop —
+    #: `step` of `of`, which drives the progress bar. RAISES when the user has
     #: cancelled — so a writer that analyses audio stays cancellable. The runner
     #: sets it; a writer may call it freely and never needs to check for None.
-    checkpoint: Callable[[str], None] = field(default=lambda message: None, repr=False)
+    checkpoint: Callable[..., None] = field(
+        default=lambda message, step=None, of=None: None, repr=False)
 
 
 @dataclass

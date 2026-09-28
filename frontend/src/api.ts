@@ -399,6 +399,9 @@ export interface JobStatus {
   /** 0 until the job knows its size — show an indeterminate bar until positive. */
   total: number
   done: number
+  /** What done/total count: 'bytes' while copying, 'tracks' while a library
+   *  is written; '' when unspecified. */
+  unit: string
   message: string
   result: Record<string, unknown> | null
   error: string | null
@@ -487,6 +490,9 @@ export interface ExportContents {
 export interface ExportPreview {
   tracks: number
   exportable: number
+  /** Tracks whose copy from the last export is still current, so are kept
+   *  rather than copied. `total_bytes` counts only what WILL be copied. */
+  unchanged: number
   missing: string[]
   playlists: string[]
   total_bytes: number

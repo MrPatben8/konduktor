@@ -309,7 +309,7 @@ seen: list[str] = []
 wf_written = core_export.for_platform("onelibrary").write(
     ExportPayload(name="WF", tracks=[ExportTrack(track=dead_t, destination=dead, cues=grid),
                                      ExportTrack(track=live_t, destination=live, cues=grid)],
-                  checkpoint=seen.append),
+                  checkpoint=lambda m, **_progress: seen.append(m)),
     wf_root,
 )
 dats = [p for p in wf_written.extra if p.suffix == ".DAT"]
@@ -371,7 +371,7 @@ class _Stop(Exception):
     pass
 
 
-def _cancel_on_second(message: str, calls=[]):  # noqa: B006 — deliberate counter
+def _cancel_on_second(message: str, calls=[], **_progress):  # noqa: B006 — deliberate counter
     calls.append(message)
     if len(calls) == 2:
         raise _Stop()
