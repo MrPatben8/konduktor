@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnSizingState, SortingState, VisibilityState } from '@tanstack/react-table'
 import { CapabilitiesContext, slotLabeller } from './lib/capabilities'
 import { writeHint } from './lib/platformCopy'
+import { invalidateTrackLists } from './lib/trackQueries'
 import { api, type CueBatchResult, type GridBatchResult, type AutoCueSlot, type PlaylistNode, type Track, type TrackOrigin } from './api'
 import {
   COLUMN_MENU,
@@ -196,9 +197,7 @@ export default function App() {
       api
         .editTrack(track.id, { [field]: value })
         .then(() => {
-          qc.invalidateQueries({ queryKey: ['tracks'] })
-          qc.invalidateQueries({ queryKey: ['playlist'] })
-          qc.invalidateQueries({ queryKey: ['state'] })
+          invalidateTrackLists(qc)
           qc.invalidateQueries({ queryKey: ['facets'] })
           notify('success', `Updated ${String(field)} — ${writeHintText}`)
         })
@@ -518,12 +517,7 @@ export default function App() {
       return
     }
     if (!job.result) return
-    qc.invalidateQueries({ queryKey: ['state'] })
-    qc.invalidateQueries({ queryKey: ['tracks'] })
-    qc.invalidateQueries({ queryKey: ['playlist'] })
-    qc.invalidateQueries({ queryKey: ['export-tracks'] })
-    qc.invalidateQueries({ queryKey: ['export-playlist-tracks'] })
-    qc.invalidateQueries({ queryKey: ['export-loose'] })
+    invalidateTrackLists(qc)
     qc.invalidateQueries({ queryKey: ['facets'] })
     const cancelled = job.state === 'cancelled'
     const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
@@ -655,13 +649,8 @@ export default function App() {
   // Refetch whatever a track list or the deck could be showing. Throws on
   // failure (after reporting), so the confirm dialog stays open for a retry.
   const afterBulk = (ids: string[], cuesChanged: boolean) => {
-    qc.invalidateQueries({ queryKey: ['state'] })
-    qc.invalidateQueries({ queryKey: ['tracks'] })
-    qc.invalidateQueries({ queryKey: ['playlist'] })
+    invalidateTrackLists(qc)
     qc.invalidateQueries({ queryKey: ['playlists'] })
-    qc.invalidateQueries({ queryKey: ['export-tracks'] })
-    qc.invalidateQueries({ queryKey: ['export-playlist-tracks'] })
-    qc.invalidateQueries({ queryKey: ['export-loose'] })
     qc.invalidateQueries({ queryKey: ['export-contents'] })
     qc.invalidateQueries({ queryKey: ['facets'] })
     if (cuesChanged && prepTrack && ids.includes(prepTrack.id)) setCuesRefresh((n) => n + 1)

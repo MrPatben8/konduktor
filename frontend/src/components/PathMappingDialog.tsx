@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type RemapPreview } from '../api'
 import type { ToastMsg } from './Toast'
 import { Icon } from '../lib/icons'
+import { invalidateTrackLists } from '../lib/trackQueries'
 
 interface Props {
   onClose: () => void
@@ -65,7 +66,7 @@ export function PathMappingDialog({ onClose, onNotify, onError }: Props) {
       await api.putPathMapping({ from: from.trim(), to: to.trim() })
       // Re-resolve everything that depends on the file path.
       qc.invalidateQueries({ queryKey: ['pathMapping'] })
-      qc.invalidateQueries({ queryKey: ['tracks'] })
+      invalidateTrackLists(qc)
       const cleared = !from.trim() || !to.trim()
       onNotify('success', cleared ? 'Path mapping cleared.' : 'Path mapping saved.')
       onClose()
@@ -81,8 +82,8 @@ export function PathMappingDialog({ onClose, onNotify, onError }: Props) {
     try {
       const res = await api.remapPaths(from.trim(), to.trim())
       // Locations changed, so track ids changed — refetch library + state.
-      qc.invalidateQueries({ queryKey: ['tracks'] })
-      qc.invalidateQueries({ queryKey: ['state'] })
+      invalidateTrackLists(qc)
+      qc.invalidateQueries({ queryKey: ['export-contents'] })
       if (res.rewritten === 0) {
         onNotify('warning', 'No tracks matched — nothing was rewritten.')
       } else {

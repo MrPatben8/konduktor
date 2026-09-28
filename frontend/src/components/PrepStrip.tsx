@@ -22,6 +22,7 @@ import { setAmbientFromArt } from '../lib/ambient'
 import { Icon } from '../lib/icons'
 import { ScratchEngine } from '../lib/scratchEngine'
 import { PlaybackEngine } from '../lib/playbackEngine'
+import { invalidateTrackLists } from '../lib/trackQueries'
 import { AutoCueDialog, eventLabel } from './AutoCueDialog'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { BpmReadout, GridEditStrip, TempoControls, TempoFold } from './GridControls'
@@ -729,9 +730,7 @@ export function PrepStrip({
 
   const applyCueEdit = (fresh: TrackCues) => {
     setCueData(fresh)
-    qc.invalidateQueries({ queryKey: ['state'] })
-    qc.invalidateQueries({ queryKey: ['tracks'] })
-    qc.invalidateQueries({ queryKey: ['playlist'] })
+    invalidateTrackLists(qc)
   }
 
   // Map a loop length (seconds) back to a preset beat count for the size
