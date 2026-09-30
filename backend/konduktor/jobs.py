@@ -58,6 +58,9 @@ class Job:
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     _cancel: threading.Event = field(default_factory=threading.Event, repr=False)
+    #: Set once the thread has finished — cancelled, failed or done — so a caller
+    #: that cancels can WAIT for the work to actually stop touching things.
+    _done: threading.Event = field(default_factory=threading.Event, repr=False)
 
     @property
     def finished(self) -> bool:
@@ -118,14 +121,26 @@ class JobCancelled(Exception):
     """
 
 
+class JobBusy(Exception):
+    """`submit(..., exclusive_with=...)` found one of those kinds running."""
+
+
 class JobRegistry:
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
 
-    def submit(self, kind: str, fn: Callable[[JobHandle], Any]) -> Job:
+    def submit(self, kind: str, fn: Callable[[JobHandle], Any], *,
+               exclusive_with: tuple[str, ...] = ()) -> Job:
+        """Start `fn` on its own thread. With `exclusive_with`, refuse (JobBusy)
+        if a job of any of those kinds is still running — checked and registered
+        under ONE lock, so two requests arriving together cannot both start."""
         job = Job(id=uuid.uuid4().hex, kind=kind)
         with self._lock:
+            if exclusive_with and any(
+                not j.finished and j.kind in exclusive_with for j in self._jobs.values()
+            ):
+                raise JobBusy(kind)
             self._jobs[job.id] = job
             self._prune()
 
@@ -142,6 +157,7 @@ class JobRegistry:
                 job.error = str(ex) or ex.__class__.__name__
             finally:
                 job.finished_at = time.time()
+                job._done.set()
 
         threading.Thread(target=run, name=f"job-{kind}-{job.id[:8]}", daemon=True).start()
         return job
@@ -161,6 +177,12 @@ class JobRegistry:
             return False
         job._cancel.set()
         return True
+
+    def wait(self, job_id: str, timeout: float | None = None) -> bool:
+        """Block until the job has finished; False on timeout. An unknown id
+        counts as finished (pruned jobs are long done)."""
+        job = self.get(job_id)
+        return True if job is None else job._done.wait(timeout)
 
     def active(self, kind: str | None = None) -> list[Job]:
         with self._lock:

@@ -163,6 +163,15 @@ class TraktorAdapter:
             self._rebuild()
         return n
 
+    # ---- stem conversion --------------------------------------------------
+    def apply_stem_swaps(self, swaps: list, *, add_to_playlist: str | None = None):
+        with _translate():
+            result = self._store.apply_stem_swaps(swaps, add_to_playlist=add_to_playlist)
+        # One rebuild for the whole batch: ids changed (repoint) or appeared
+        # (add), and `TrackIndex` has no per-id remove.
+        self._rebuild()
+        return result
+
     # ---- adding tracks ----------------------------------------------------
     def add_tracks(self, items: list) -> list[str]:
         """Add tracks that came from somewhere else, with their prep.

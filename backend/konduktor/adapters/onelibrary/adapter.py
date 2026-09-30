@@ -257,6 +257,9 @@ class OneLibraryAdapter:
     def remove_tracks(self, track_ids: list[str]) -> int:
         self._refuse("Removing tracks")
 
+    def apply_stem_swaps(self, swaps, *, add_to_playlist=None):
+        self._refuse("Converting tracks to stems")
+
     def set_track_metadata(self, track_id: str, fields: dict) -> Track | None:
         self._refuse("Editing track metadata")
 

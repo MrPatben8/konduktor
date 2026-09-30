@@ -18,6 +18,8 @@ Playlists are identified by their stable UUID; folders by a synthetic path id
 """
 from __future__ import annotations
 
+import copy
+import math
 import threading
 import uuid as uuidlib
 from dataclasses import dataclass
@@ -38,16 +40,18 @@ from traktor_nml_utils.models.collection import (
     Nodetype,
     Playlisttype,
     Primarykeytype,
+    Stemstype,
     Subnodestype,
     Tempotype,
 )
 from xsdata.formats.dataclass.serializers import XmlSerializer
 
-from ...core.adapter import InvalidCommand, SaveOutcome
+from ...core.adapter import InvalidCommand, SaveOutcome, StemSwapResult
 from ...core.edit_journal import EditJournal
 from ...core.pathmap import common_dir_prefix
 from ...core.pathmap import PathMapping
 from ...core.relocate import PathGroup
+from ...core.stem_file import NML_STEMS_JSON
 from ...schemas import PlaylistNode
 from . import beatgrid, timebase
 from .locations import os_path_to_location, resolve_path
@@ -1235,6 +1239,180 @@ class TraktorStore:
             self._note("remap", str(len(key_remap)))
             self.dirty = True
             return key_remap
+
+    # ---- stem conversion ---------------------------------------------------
+    #: Whether a converted entry keeps Traktor's analysis fingerprint. It is a
+    #: fingerprint of the OLD file; cleared, Traktor re-analyses the new one on
+    #: load (the import precedent: prep survives). Settled by the milestone-2
+    #: check in Traktor 4.5.
+    _KEEP_AUDIO_ID_ON_STEM = False
+
+    def apply_stem_swaps(self, swaps: list, *, add_to_playlist: str | None = None) -> StemSwapResult:
+        """Point entries at converted stem files ("repoint"), or add entries for
+        them ("add"), ALL AT ONCE — every swap validated before any is applied,
+        so a clash leaves the collection untouched.
+
+        What a stem entry is, measured on the real collection: the ordinary
+        ENTRY plus a `<STEMS>` element (after CUE_V2), and playlist PRIMARYKEYs of
+        `TYPE="STEM"`. INFO's bitrate / playtime / playtime_float / filesize (KB)
+        describe the new file.
+
+        **Positions move with the time base.** An MP3 with a header sits
+        `timebase.offset_ms` later on Traktor's clock than the decoded audio; the
+        stem file (an MP4 whose edit list Traktor honours) sits at 0. So every
+        START shifts by (new offset - old offset), with the old offset read from
+        `original_audio` — where the original's bytes are NOW (its parked name in
+        Replace mode) — under the original's own suffix. Read from the old path
+        instead, the file would be gone, the offset 0, and every cue ~51 ms late.
+        A shifted grid anchor that would fall before 0 moves forward by whole
+        beats (its companion with it), which leaves the grid itself unchanged; a
+        hotcue that would is clamped to 0 and reported.
+        """
+        with self._lock:
+            # ---- validate everything first ----
+            seen_ids: set[str] = set()
+            planned: list[tuple[object, Entrytype, str, tuple[str, str, str]]] = []
+            new_keys: set[str] = set()
+            for swap in swaps:
+                entry = self._entry_by_key.get(swap.track_id)
+                if entry is None or entry.location is None:
+                    raise PlaylistError(f"Track not found: {swap.track_id}")
+                if swap.track_id in seen_ids:
+                    raise PlaylistError(f"Track listed twice: {swap.track_id}")
+                if swap.mode not in ("repoint", "add"):
+                    raise PlaylistError(f"Unknown stem swap mode: {swap.mode}")
+                seen_ids.add(swap.track_id)
+                loc = os_path_to_location(Path(swap.stem_path))
+                new_key = "".join(x or "" for x in loc)
+                if new_key in self._entry_by_key or new_key in new_keys:
+                    raise PlaylistError(
+                        f"The collection already has an entry for {swap.stem_path}"
+                    )
+                new_keys.add(new_key)
+                planned.append((swap, entry, new_key, loc))
+            playlist = None
+            if add_to_playlist is not None:
+                playlist = self._find_playlist_node(add_to_playlist)
+                if playlist is None or playlist.playlist is None:
+                    raise PlaylistError(f"Playlist not found: {add_to_playlist}")
+
+            # ---- apply ----
+            result = StemSwapResult()
+            renames: dict[str, str] = {}
+            for swap, entry, new_key, loc in planned:
+                old_key = swap.track_id
+                old_suffix = Path(entry.location.file or "").suffix
+                shift = timebase.offset_ms(swap.stem_path) - timebase.offset_ms(
+                    swap.original_audio, suffix=old_suffix)
+                target = entry if swap.mode == "repoint" else copy.deepcopy(entry)
+                clamped = self._retime(target, shift)
+                self._point_at_stem(target, loc, swap)
+                if swap.mode == "repoint":
+                    renames[old_key] = new_key
+                    if self._entry_by_key.get(old_key) is entry:
+                        del self._entry_by_key[old_key]
+                    self._entry_by_key[new_key] = entry
+                    if old_key in self._track_art:
+                        self._track_art[new_key] = self._track_art.pop(old_key)
+                else:
+                    self._nml.collection.entry.append(target)
+                    self._entry_by_key[new_key] = target
+                    # Unsaved tag edits and staged art must reach the NEW file
+                    # too on Save; the original keeps its own.
+                    for field in self._journal.fields_for(old_key):
+                        self._journal.record("track", "set", new_key, field)
+                    if old_key in self._track_art:
+                        self._track_art[new_key] = self._track_art[old_key]
+                result.renamed[old_key] = new_key
+                if clamped:
+                    result.clamped[new_key] = clamped
+                self._journal.record("stem", swap.mode, new_key, old_key)
+            if any(s.mode == "add" for s, *_ in planned):
+                self._nml.collection.entries = len(self._nml.collection.entry)
+            # Playlists follow a repointed track — and it is a STEM now.
+            if renames:
+                for node in self._iter_nodes(self._root()):
+                    pl = node.playlist
+                    if pl is None or not pl.entry:
+                        continue
+                    for pe in pl.entry:
+                        pk = pe.primarykey
+                        if pk and pk.key in renames:
+                            pk.key = renames[pk.key]
+                            pk.type = "STEM"
+                self._journal.retarget_many(renames)
+            if playlist is not None:
+                added = [new for (s, _e, new, _l) in planned if s.mode == "add"]
+                pl = playlist.playlist
+                pl.entry = list(pl.entry or []) + [
+                    Entrytype(primarykey=Primarykeytype(type="STEM", key=k)) for k in added
+                ]
+                pl.entries = len(pl.entry)
+                self._note("playlist-entries", playlist.name)
+            self.dirty = True
+            return result
+
+    def _point_at_stem(self, entry: Entrytype, loc: tuple[str, str, str], swap) -> None:
+        """LOCATION, `<STEMS>` and the file-describing INFO fields, for the stem file."""
+        volume, dir_, file = loc
+        old_volume = entry.location.volume if entry.location else None
+        volumeid = entry.location.volumeid if entry.location else None
+        if volume != old_volume:
+            # VOLUMEID names a volume, so it cannot follow the file to another one;
+            # borrow it from any entry already on that volume, else leave it for
+            # Traktor to fill in (as `add_entry` does).
+            volumeid = next(
+                (e.location.volumeid for e in self._nml.collection.entry
+                 if e.location and e.location.volume == volume and e.location.volumeid),
+                None,
+            )
+        entry.location = Locationtype(volume=volume, dir=dir_, file=file, volumeid=volumeid)
+        entry.stems = Stemstype(stems=NML_STEMS_JSON)
+        if entry.info is None:
+            entry.info = Infotype()
+        entry.info.bitrate = int(swap.bit_rate)
+        entry.info.playtime = int(round(swap.duration))
+        entry.info.playtime_float = float(swap.duration)
+        entry.info.filesize = int(round(swap.size / 1024))
+        if not self._KEEP_AUDIO_ID_ON_STEM:
+            entry.audio_id = None
+
+    def _retime(self, entry: Entrytype, shift_ms: float) -> list[int]:
+        """Shift every cue and grid marker by `shift_ms`; returns the hotcue
+        slots clamped at 0. Companions move WITH their marker, as the same float,
+        so the pairing survives exactly."""
+        if not shift_ms or not entry.cue_v2:
+            return []
+        markers = beatgrid.grid_markers(entry)
+        comps = beatgrid.companions(entry)
+        comp_ids = {id(c) for c in comps.values()}
+        clamped: list[int] = []
+        for c in entry.cue_v2:
+            if c.grid is not None or id(c) in comp_ids:
+                continue
+            start = (c.start or 0.0) + shift_ms
+            if start < 0:
+                if c.hotcue is not None and c.hotcue >= 0:
+                    clamped.append(c.hotcue)
+                start = 0.0
+            c.start = start
+        for i, m in enumerate(markers):
+            start = (m.start or 0.0) + shift_ms
+            if start < 0:
+                bpm = m.grid.bpm if m.grid and m.grid.bpm else 0.0
+                if bpm > 0:
+                    beat = 60000.0 / bpm
+                    start += math.ceil(-start / beat) * beat
+                    nxt = markers[i + 1].start + shift_ms if i + 1 < len(markers) else None
+                    if nxt is not None and start >= nxt:
+                        start = 0.0  # a pathological grid: keep the order, lose the phase
+                else:
+                    start = 0.0
+            m.start = start
+            if i in comps:
+                comps[i].start = m.start
+        self._sort_cues(entry)
+        return clamped
 
     def _entry_field_value(self, entry: Entrytype, field: str):
         """Read a single editable field's current value from the model, in the

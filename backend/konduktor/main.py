@@ -6,6 +6,7 @@ in the environment auto-loads that file on startup (used by dev and tests).
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -30,7 +31,7 @@ from .core.adapter import (
     Unsupported,
 )
 from .core.capabilities import Capabilities
-from .jobs import JOBS
+from .jobs import JOBS, Job, JobBusy
 from .core.pathmap import PathMapping
 from .schemas import (
     Relocation,
@@ -97,6 +98,8 @@ from .schemas import (
     TrackPage,
 )
 
+log = logging.getLogger(__name__)
+
 app = FastAPI(title="Konduktor API", version=__version__)
 
 app.add_middleware(
@@ -160,10 +163,16 @@ def open_collection(body: OpenCollection) -> CollectionStatus:
     # This checks only that the path is there at all; `can_open()` decides.
     if not path.exists():
         raise HTTPException(400, f"Not found: {path}")
-    # A running analysis writes into the library being replaced; stop it.
-    for kind in BATCH_JOBS:
-        for job in JOBS.active(kind):
-            JOBS.cancel(job.id)
+    # A running analysis writes into the library being replaced; stop it, and
+    # WAIT for it to stop — a job still finishing its current track would
+    # otherwise keep writing (or, for file work, keep moving files) after the
+    # switch. Batches check for a cancel between tracks, so this is short.
+    stopping = [job for kind in BATCH_JOBS for job in JOBS.active(kind)]
+    for job in stopping:
+        JOBS.cancel(job.id)
+    for job in stopping:
+        if not JOBS.wait(job.id, timeout=60):
+            log.warning("batch %s (%s) still running after cancel; opening anyway", job.id, job.kind)
     try:
         STATE.open(path)
     except AdapterError as ex:
@@ -1032,7 +1041,16 @@ BATCH_JOBS = (GRID_JOB, CUE_JOB)
 
 
 def _require_no_batch() -> None:
+    """An early, friendly refusal. Not race-free on its own — the batch routes
+    START through `_submit_batch`, which re-checks under the registry's lock."""
     if any(JOBS.active(k) for k in BATCH_JOBS):
+        raise HTTPException(409, "A batch analysis is already running")
+
+
+def _submit_batch(kind: str, run) -> "Job":
+    try:
+        return JOBS.submit(kind, run, exclusive_with=BATCH_JOBS)
+    except JobBusy:
         raise HTTPException(409, "A batch analysis is already running")
 
 
@@ -1091,7 +1109,7 @@ def auto_grid_batch(body: AutoGridBatchRequest) -> JobStatus:
             handle.progress(done=i + 1)
         return result
 
-    job = JOBS.submit(GRID_JOB, run)
+    job = _submit_batch(GRID_JOB, run)
     return JobStatus(**job.as_dict())
 
 
@@ -1142,7 +1160,7 @@ def auto_hotcues_batch(body: AutoHotcuesBatchRequest) -> JobStatus:
             handle.progress(done=i + 1)
         return result
 
-    job = JOBS.submit(CUE_JOB, run)
+    job = _submit_batch(CUE_JOB, run)
     return JobStatus(**job.as_dict())
 
 

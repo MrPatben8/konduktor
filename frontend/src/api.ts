@@ -247,6 +247,8 @@ export interface Capabilities {
     media_kinds: MediaKind[]
     /** Tracks can be removed from the library (audio files are never touched). */
     removable: boolean
+    /** Tracks can be converted to native-instruments STEM files. */
+    stem_convertible: boolean
     /** Lower-case suffixes this library can hold — what a browsed folder lists. */
     audio_formats: string[]
     artwork: boolean
