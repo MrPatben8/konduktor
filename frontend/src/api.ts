@@ -1008,6 +1008,27 @@ export function trackAudioUrl(origin: TrackOrigin, trackId: string): string {
   return api.audioUrl(trackId)
 }
 
+/** One stem a stem file carries, in stream order (stem k = stream k+1). */
+export interface StemInfo {
+  name: string
+  /** "#RRGGBB", as the file names it. */
+  color: string
+}
+
+/** The stems the track's FILE carries — empty for anything that is not a
+ *  playable stem file, whatever the library says about it. */
+export async function trackStemsFor(origin: TrackOrigin, trackId: string): Promise<StemInfo[]> {
+  const base = origin === 'device' ? '/api/source/tracks/stems' : origin === 'folder' ? '/api/folder/tracks/stems' : '/api/tracks/stems'
+  const res = await getJSON<{ stems: StemInfo[] }>(`${base}?track_id=${encodeURIComponent(trackId)}`)
+  return res.stems
+}
+
+/** Stem `k` (0-based) of a stem file, served as a file of its own: a browser
+ *  decodes only an MP4's first audio stream, which is the mix. */
+export function trackStemUrl(origin: TrackOrigin, trackId: string, k: number): string {
+  return `${trackAudioUrl(origin, trackId)}&stem=${k}`
+}
+
 export function trackCuesFor(origin: TrackOrigin, trackId: string): Promise<TrackCues> {
   if (origin === 'device') return api.sourceTrackCues(trackId)
   if (origin === 'folder') return api.folderTrackCues(trackId)

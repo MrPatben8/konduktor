@@ -381,6 +381,17 @@ Two independent apps that talk over HTTP:
     relocation, import, folder add, history restore and reload answer 409
     (`_require_no_pending_stems`): each would save or drop the swap.
     `/api/state` reports `pending_stems`, `stem_job`, `stem_recovery`.
+    **`stream_cache.py` — stem PLAYBACK.** A browser decodes only an MP4's
+    FIRST audio stream (the mix), so each stem is served as a file of its own:
+    the three audio routes (collection / `source` / `folder`) take
+    `?stem=0..3`, and `/api/…/tracks/stems` report `[{name, color}]` read from
+    the FILE (`stem_file.stem_layout`: the box, and enough streams — never the
+    library's `<STEMS>`, which plain MP3s carry). `stem_file.extract_stream`
+    COPIES packets into an `ipod` MP4 — measured bit-identical to decoding the
+    stream in place, edit list and priming (1024 / 2112) intact, on commercial
+    stems too, so stems stay sample-locked to the mix and the cues. Cached in
+    app-data keyed by path + size + mtime, LRU under 2 GB, written partial →
+    rename; ~0.1 s per stem uncached.
   - `app_state.py` — the one loaded library, and the **version-history commit**.
     **`discard()`** (`POST /api/discard`, SaveBar's "Discard changes…", the
     quit prompt's Discard) drops every unsaved edit through the adapter's own
@@ -645,6 +656,24 @@ Two independent apps that talk over HTTP:
     browser via `@tauri-apps/plugin-shell` `open` — falls back to `window.open`
     outside Tauri; "Skip this version" persists `skippedUpdateVersion` to
     userprefs via `/api/prefs`; all failures are silent).
+  - **Stem playback** (decided 2026-09-30): a stem FILE always loads its four
+    stems (`trackStemsFor` / `trackStemUrl` in `api.ts`) and the deck plays
+    their SUM, as Traktor's stem deck does — the mix stream is never decoded,
+    which also saves a full-length buffer. `PlaybackEngine.load` takes several
+    buffers: one source + gain each, all started at ONE scheduled context
+    time (so they stay sample-locked through seeks and loops), mute/solo as
+    ramped gains, never a restart. `ScratchEngine.loadStems` keeps ONE summed
+    copy of the audible stems (not four), re-summed in slices on a mute change.
+    `analyzeStems` returns the overview's three-band columns (of the sum) plus
+    one amplitude lane per stem, each normalised to its own 99.5th percentile
+    but never below 5% of the loudest (a silent stem stays silent).
+    `MainWaveform` draws the lanes in the file's own colours with a mute
+    button at each lane's left edge (click = mute, Alt/Option-click = solo);
+    Q W E R mute stems 1-4, Shift+ solos. **Solo is not a mode**: it SETS the
+    mutes (every other stem muted), so each stem stays freely mutable after
+    it; soloing the one stem still playing unmutes all. Mutes reset per track. Memory is
+    the cost: ~140 MB per stem for 6 minutes, i.e. the same four buffers as
+    the file holds streams, and no more.
   - **Prep strip** (DJ deck across the top of the window): `PrepStrip` owns it,
     in three rows. **Header**: cover, title/artist · album · genre, a Read-only
     badge, the readout well (ELAPSED / REMAIN to tenths, KEY, and `BpmReadout` —
@@ -809,6 +838,12 @@ serialization path.** It enforces:
   one bad track fails alone; destination+add mirrors into a new playlist;
   crash recovery restores (or finishes a committed save) and a re-run REUSES
   the kept stem files without calling the engine.
+- `test_stem_playback.py` — stem playback's backend half on a generated stem
+  file (fake stems = distinct scalings of the mix): the layout is read from
+  the FILE (an MP3 whose entry carries `<STEMS>` has none); each served stem
+  is its own MP4, bit-identical to that stream in place and the RIGHT stem;
+  out-of-range / non-stem requests 404; the cache reuses, follows an edited
+  file, evicts LRU but never what it just wrote; the folder origin serves too.
 - `test_traktor_adapter.py` — the **generic layer**: one parse per open, the
   projection refreshing after every command family, cue-type translation,
   capabilities, and `set_analysed_grid` vs `replace_grid`. `test_save_fidelity`

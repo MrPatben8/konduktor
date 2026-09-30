@@ -347,8 +347,62 @@ def is_stem_file(path: Path | str) -> bool:
         return False
 
 
+def stem_layout(path: Path | str) -> list[dict] | None:
+    """The stems a file carries, for PLAYBACK: `[{"name", "color"}]` in stream
+    order (stream k+1 is stem k), or None when the file is not a playable stem
+    file — no `stem` box, a box that does not parse, or fewer audio streams than
+    it names. Read from the FILE, never from the library's `<STEMS>`: 105 plain
+    MP3 entries in the real collection carry that element."""
+    import json
+
+    import av
+
+    path = Path(path)
+    try:
+        raw = read_stem_box(path)
+        if raw is None:
+            return None
+        stems = json.loads(raw).get("stems") or []
+        with av.open(str(path), metadata_errors="ignore") as c:
+            streams = len(c.streams.audio)
+    except (OSError, ValueError, av.FFmpegError):
+        return None
+    if not stems or streams < 1 + len(stems):
+        return None
+    return [{"name": str(s.get("name") or f"Stem {i + 1}"), "color": str(s.get("color") or "#FFFFFF")}
+            for i, s in enumerate(stems)]
+
+
+def extract_stream(path: Path | str, stream: int, fp) -> None:
+    """Copy audio stream `stream` (0 = the mix, 1-4 the stems) into its own MP4,
+    written to the file object `fp` — packets COPIED, never re-encoded.
+
+    A browser decodes only an MP4's first audio stream, so this is how the deck
+    gets at the stems. Measured bit-identical to decoding the stream in place,
+    with the edit list (and so the priming: 1024 for FFmpeg's encoder, 2112 for
+    Apple's) carried across — on Konduktor's files and commercial ones alike, so
+    every stem stays sample-locked to the mix and to the cue timeline.
+    """
+    import av
+
+    with av.open(str(path), metadata_errors="ignore") as inp:
+        if not 0 <= stream < len(inp.streams.audio):
+            raise StemFileError(f"The file has no audio stream {stream}")
+        ist = inp.streams.audio[stream]
+        out = av.open(fp, "w", format="ipod")
+        try:
+            ost = out.add_stream_from_template(ist)
+            for pkt in inp.demux(ist):
+                if pkt.dts is None:
+                    continue  # the demuxer's end-of-stream flush packet
+                pkt.stream = ost
+                out.mux(pkt)
+        finally:
+            out.close()
+
+
 __all__ = [
     "DEMUCS_ORDER", "NML_STEMS_JSON", "SR", "STEM_BOX_JSON", "STEM_NAMES", "Source",
     "StemFileError", "Written", "add_stem_box", "build", "choose_bitrate", "decode",
-    "default_encoder", "is_stem_file", "read_stem_box", "stem_target_name", "verify",
+    "default_encoder", "extract_stream", "is_stem_file", "read_stem_box", "stem_layout", "stem_target_name", "verify",
 ]

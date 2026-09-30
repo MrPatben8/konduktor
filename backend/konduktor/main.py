@@ -1080,14 +1080,47 @@ _AUDIO_MIME = {
 }
 
 
+def _stem_audio(path: Path, stem: int) -> FileResponse:
+    """One stem of a stem file as a file of its own (see stems/stream_cache.py):
+    a browser only ever decodes an MP4's first stream, which is the mix."""
+    from .core import stem_file
+    from .stems import stream_cache
+
+    layout = stem_file.stem_layout(path)
+    if layout is None or not 0 <= stem < len(layout):
+        raise HTTPException(404, "That file has no such stem")
+    try:
+        return FileResponse(stream_cache.stem_file_for(path, stem), media_type="audio/mp4")
+    except (stem_file.StemFileError, OSError) as ex:
+        raise HTTPException(500, f"Could not read the stem: {ex}")
+
+
+def _stem_layout_of(path: Path | None) -> dict:
+    from .core import stem_file
+
+    if path is None or not path.exists():
+        raise HTTPException(404, "Audio file not found")
+    return {"stems": stem_file.stem_layout(path) or []}
+
+
+@app.get("/api/tracks/stems")
+def track_stems(track_id: str) -> dict:
+    """The stems a track's FILE carries for playback — `[{name, color}]`, empty
+    for anything that is not a stem file (whatever the library says)."""
+    return _stem_layout_of(require_adapter().audio_path(track_id))
+
+
 @app.get("/api/tracks/audio")
-def track_audio(track_id: str) -> FileResponse:
-    """Stream a track's audio file for playback (supports HTTP Range/seeking)."""
+def track_audio(track_id: str, stem: int | None = None) -> FileResponse:
+    """Stream a track's audio file for playback (supports HTTP Range/seeking);
+    with `stem`, that stem of a stem file (0-based) instead."""
     path = require_adapter().audio_path(track_id)
     if path is None:
         raise HTTPException(404, "Track not found")
     if not path.exists():
         raise HTTPException(404, f"Audio file not found: {path}")
+    if stem is not None:
+        return _stem_audio(path, stem)
     # .stem.m4a and other MP4s serve as audio/mp4; browsers play the first track.
     mime = _AUDIO_MIME.get(path.suffix.lower(), "application/octet-stream")
     # Cacheable so the waveform's decode-fetch and the <audio> element can share
@@ -1705,7 +1738,7 @@ def source_track_cues(track_id: str) -> TrackCues:
 
 
 @app.get("/api/source/tracks/audio")
-def source_track_audio(track_id: str) -> FileResponse:
+def source_track_audio(track_id: str, stem: int | None = None) -> FileResponse:
     """Stream a track's audio straight off the source drive.
 
     So the deck can audition a track BEFORE importing it, which is most of the
@@ -1717,8 +1750,15 @@ def source_track_audio(track_id: str) -> FileResponse:
         raise HTTPException(404, "Track not found")
     if not path.exists():
         raise HTTPException(404, f"Audio file not found: {path}")
+    if stem is not None:
+        return _stem_audio(path, stem)
     mime = _AUDIO_MIME.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(path, media_type=mime)
+
+
+@app.get("/api/source/tracks/stems")
+def source_track_stems(track_id: str) -> dict:
+    return _stem_layout_of(require_source().audio_path(track_id))
 
 
 # ---- drives and folders -----------------------------------------------
@@ -1820,12 +1860,19 @@ def folder_track_cues(track_id: str) -> TrackCues:
 
 
 @app.get("/api/folder/tracks/audio")
-def folder_track_audio(track_id: str) -> FileResponse:
+def folder_track_audio(track_id: str, stem: int | None = None) -> FileResponse:
     path = _folder_track(track_id).audio_path(track_id)
     if path is None or not path.is_file():
         raise HTTPException(404, "Audio file not found")
+    if stem is not None:
+        return _stem_audio(path, stem)
     mime = _AUDIO_MIME.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(path, media_type=mime)
+
+
+@app.get("/api/folder/tracks/stems")
+def folder_track_stems(track_id: str) -> dict:
+    return _stem_layout_of(_folder_track(track_id).audio_path(track_id))
 
 
 def _folder_add_plan(body: FolderAddRequest):

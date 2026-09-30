@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { CuePoint } from '../api'
 import type { BeatGrid } from '../lib/beatgrid'
 import { drawBeatgrid, drawCuePoint, drawCues, drawLoop, drawLoopIn, drawPlayhead } from '../lib/cues'
-import { paintWave, type WaveColumn } from '../lib/waveform'
+import { paintLane, paintWave, type WaveColumn } from '../lib/waveform'
 
 interface Props {
   cols: WaveColumn[]
@@ -28,7 +28,25 @@ interface Props {
   onScratchStart: () => void
   onScratchMove: (t: number) => void
   onScratchEnd: (t: number) => void
+  /** A stem track: one lane per stem instead of the three-band mix view. */
+  lanes?: StemLane[] | null
+  /** Click = mute toggle; Alt/Option-click = solo (mute all the others). */
+  onStemToggle?: (index: number, solo: boolean) => void
 }
+
+export interface StemLane {
+  data: Float32Array
+  name: string
+  color: string
+  /** Not muted. */
+  audible: boolean
+  /** The only stem playing (drawn with a ring). */
+  solo: boolean
+  /** Its keyboard shortcut, for the tooltip ("Q"). */
+  shortcut: string
+}
+
+const ALT = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? 'Option' : 'Alt'
 
 const DRAG_THRESHOLD = 3 // px before a press becomes a scratch (vs a click-seek)
 
@@ -60,6 +78,8 @@ export function MainWaveform({
   onScratchStart,
   onScratchMove,
   onScratchEnd,
+  lanes = null,
+  onStemToggle,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -90,10 +110,19 @@ export function MainWaveform({
       const endSec = currentTime + half
       // 2 px bars with a 1 px gap: the texture that makes the scrolling view
       // read as discrete energy rather than a smear.
-      paintWave(ctx, cols, w, h, startSec / duration, endSec / duration, {
-        bar: Math.max(1, Math.round(2 * dpr)),
-        gap: Math.max(1, Math.round(dpr)),
-      })
+      const bars = { bar: Math.max(1, Math.round(2 * dpr)), gap: Math.max(1, Math.round(dpr)) }
+      if (lanes && lanes.length) {
+        // Stem lanes, Traktor-style: each stem its own strip in its own colour.
+        const laneH = h / lanes.length
+        lanes.forEach((lane, k) => {
+          paintLane(ctx, lane.data, lane.color, w, k * laneH, laneH, startSec / duration, endSec / duration, bars,
+            !lane.audible)
+        })
+        ctx.fillStyle = 'rgba(255,255,255,0.06)'
+        for (let k = 1; k < lanes.length; k++) ctx.fillRect(0, Math.round(k * laneH), w, Math.max(1, Math.round(dpr)))
+      } else {
+        paintWave(ctx, cols, w, h, startSec / duration, endSec / duration, bars)
+      }
 
       const timeToX = (t: number) => ((t - startSec) / secPerView) * w
       // Loop band (under the grid/cues), then beatgrid, then cue markers.
@@ -207,6 +236,32 @@ export function MainWaveform({
       className="relative h-full w-full cursor-ew-resize select-none touch-none"
     >
       <canvas ref={canvasRef} className="block h-full w-full" />
+
+      {/* One mute button per stem lane, at its left edge. stopPropagation on
+          down, like the zoom buttons, so a click never starts a scratch. */}
+      {lanes && lanes.length > 0 && (
+        <div className="absolute inset-y-0 left-1.5 flex flex-col">
+          {lanes.map((lane, k) => (
+            <div key={k} className="flex flex-1 items-center">
+              <button
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => onStemToggle?.(k, e.altKey)}
+                title={`${lane.name} — click to mute, ${ALT}-click to mute all the others (${lane.shortcut})`}
+                aria-pressed={lane.audible}
+                className={`flex h-5 min-w-5 items-center justify-center rounded-md px-1 font-mono text-[10px] font-semibold backdrop-blur-md transition-opacity ${
+                  lane.audible ? '' : 'opacity-40'
+                } ${lane.solo ? 'ring-1 ring-white/80' : ''}`}
+                style={{
+                  color: lane.audible ? '#0b0b0f' : lane.color,
+                  background: lane.audible ? lane.color : 'rgba(255,255,255,0.06)',
+                }}
+              >
+                {lane.name.slice(0, 1).toUpperCase()}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Zoom controls (Traktor-style +/-). stopPropagation on down so tapping a
           button doesn't begin a scratch drag. */}

@@ -8,16 +8,19 @@ import {
   type GridMarker,
   type Track,
   type TrackCues,
+  type StemInfo,
   type TrackOrigin,
   trackAudioUrl,
   trackCuesFor,
+  trackStemsFor,
+  trackStemUrl,
 } from '../api'
 import { buildBeatGrid, GRID_EPS } from '../lib/beatgrid'
 import { slotLabeller, useCaps } from '../lib/capabilities'
 import { CUE_TYPE_LABELS, cueTypeColor } from '../lib/cues'
 import { keyColor } from '../lib/format'
 import { readOnlyShort, readOnlyNotice } from '../lib/platformCopy'
-import { analyzeWaveform, type WaveColumn } from '../lib/waveform'
+import { analyzeStems, analyzeWaveform, type WaveColumn } from '../lib/waveform'
 import { setAmbientFromArt } from '../lib/ambient'
 import { Icon } from '../lib/icons'
 import { ScratchEngine } from '../lib/scratchEngine'
@@ -28,8 +31,11 @@ import { ContextMenu, type MenuItem } from './ContextMenu'
 import { BpmReadout, GridEditStrip, TempoControls, TempoFold } from './GridControls'
 import { HotcueBar } from './HotcueBar'
 import { LoopControls, LOOP_SIZES, type LoopMode } from './LoopControls'
-import { MainWaveform, MIN_SEC, MAX_SEC, DEFAULT_SEC } from './MainWaveform'
+import { MainWaveform, MIN_SEC, MAX_SEC, DEFAULT_SEC, type StemLane } from './MainWaveform'
 import { OverviewWaveform } from './OverviewWaveform'
+
+/** Keys that mute stems 1-4 (Shift = solo), by `KeyboardEvent.code`. */
+const STEM_KEYS = ['KeyQ', 'KeyW', 'KeyE', 'KeyR']
 
 interface Props {
   /** The track currently loaded into the prep deck, if any. */
@@ -107,6 +113,13 @@ export function PrepStrip({
   const [duration, setDuration] = useState(0)
   const [ready, setReady] = useState(false)
   const [cols, setCols] = useState<WaveColumn[] | null>(null)
+  // A stem track: its stems (from the FILE), their lanes, and which are muted
+  // — reset per track, as Traktor's stem deck does. There is no separate solo
+  // state: solo is a shortcut that SETS the mutes, so every stem stays freely
+  // mutable afterwards.
+  const [stems, setStems] = useState<StemInfo[] | null>(null)
+  const [stemLanes, setStemLanes] = useState<Float32Array[] | null>(null)
+  const [stemMuted, setStemMuted] = useState<boolean[]>([])
   const [waveStatus, setWaveStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [cueData, setCueData] = useState<TrackCues | null>(null)
   // The beatgrid, rebuilt whenever the cue data is replaced (every edit returns
@@ -254,6 +267,7 @@ export function PrepStrip({
     previewRef.current = null
     setPreviewing(false)
     setCueHeld(false)
+    setStemMuted([])
   }, [trackId])
 
   // Recolour the whole app from this track's cover art. A device's art is not
@@ -274,23 +288,40 @@ export function PrepStrip({
     }
     let cancelled = false
     setCols(null)
+    setStems(null)
+    setStemLanes(null)
     setWaveStatus('loading')
-    analyzeWaveform(trackAudioUrl(origin, trackId))
+    // A stem FILE loads its four stems and plays their sum (decided: always,
+    // for every stem track); anything else loads as one buffer, as before.
+    const load = trackStemsFor(origin, trackId)
+      .catch(() => [] as StemInfo[])
+      .then(async (found) => {
+        if (found.length) {
+          const res = await analyzeStems(found.map((_, k) => trackStemUrl(origin, trackId, k)))
+          return { cols: res.cols, buffers: res.buffers, lanes: res.lanes, stems: found }
+        }
+        const res = await analyzeWaveform(trackAudioUrl(origin, trackId))
+        return { cols: res.cols, buffers: [res.buffer], lanes: null, stems: null }
+      })
+    load
       .then((res) => {
         if (cancelled) return
         setCols(res.cols)
+        setStems(res.stems)
+        setStemLanes(res.lanes)
         setWaveStatus('ready')
         const ctx = getCtx()
         const sc = new ScratchEngine()
-        sc.load(res.buffer)
+        if (res.stems) sc.loadStems(res.buffers, res.buffers.map(() => 1))
+        else sc.load(res.buffers[0])
         sc.attach(getScratchCtx()) // own context; warm up so the first scratch isn't silent
         scratchRef.current = sc
         if (!playbackRef.current) {
           playbackRef.current = new PlaybackEngine()
           playbackRef.current.setOnEnded(() => setPlaying(false))
         }
-        playbackRef.current.load(ctx, res.buffer)
-        setDuration(res.buffer.duration)
+        playbackRef.current.load(ctx, res.stems ? res.buffers : res.buffers[0])
+        setDuration(res.buffers[0].duration)
         setReady(true)
         loadedIdRef.current = trackId
         // A play was requested (library row button) → start now that it's ready.
@@ -1046,6 +1077,43 @@ export function PrepStrip({
   // (Shift+↑/↓ is the track table's extend-selection).
   // Digits are read from e.code (layout-/Shift-independent) and a ref holds the
   // latest handlers so the listener attaches once and never goes stale.
+  // ---- stems: mute / solo ------------------------------------------------------
+  // What each stem plays at: a muted stem is 0. Both engines follow it (the
+  // scratch engine re-sums).
+  const stemLevels = useMemo(() => (stems ?? []).map((_, k) => (stemMuted[k] ? 0 : 1)), [stems, stemMuted])
+  const stemLevelKey = stemLevels.join(',')
+  useEffect(() => {
+    if (!stems) return
+    playbackRef.current?.setGains(stemLevels)
+    scratchRef.current?.setLevels(stemLevels)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stemLevelKey])
+  // Solo = "mute every stem but this one". Soloing a stem that is already the
+  // only one playing brings them all back (so solo twice undoes it).
+  const toggleStem = (k: number, solo: boolean) => {
+    if (!stems || k >= stems.length) return
+    setStemMuted((m) => {
+      if (!solo) return stems.map((_, i) => (i === k ? !m[i] : !!m[i]))
+      const alone = stems.every((_, i) => (i === k ? !m[i] : !!m[i]))
+      return stems.map((_, i) => (alone ? false : i !== k))
+    })
+  }
+  // The ring on a lane button: that stem is the only one playing.
+  const soloed = stemLevels.filter((l) => l > 0).length === 1 && stemLevels.length > 1
+    ? stemLevels.findIndex((l) => l > 0)
+    : null
+  const lanes: StemLane[] | null =
+    stems && stemLanes
+      ? stems.map((st, k) => ({
+          data: stemLanes[k],
+          name: st.name,
+          color: st.color,
+          audible: stemLevels[k] > 0,
+          solo: soloed === k,
+          shortcut: STEM_KEYS[k] ? STEM_KEYS[k].slice(3) : '',
+        }))
+      : null
+
   const shortcutsRef = useRef({
     toggle,
     onSlotPress,
@@ -1058,6 +1126,7 @@ export function PrepStrip({
     prevMarker,
     nextMarker,
     slotCount,
+    toggleStem,
   })
   shortcutsRef.current = {
     toggle,
@@ -1071,6 +1140,7 @@ export function PrepStrip({
     prevMarker,
     nextMarker,
     slotCount,
+    toggleStem,
   }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1095,6 +1165,14 @@ export function PrepStrip({
       if (e.code === 'KeyC') {
         e.preventDefault()
         shortcutsRef.current.onCuePress()
+        return
+      }
+      // Q W E R: mute a stem; Shift+ solos it (a stem track only — elsewhere
+      // there is nothing to toggle, and the keys stay free).
+      const stemKey = STEM_KEYS.indexOf(e.code)
+      if (stemKey >= 0) {
+        e.preventDefault()
+        shortcutsRef.current.toggleStem(stemKey, e.shiftKey)
         return
       }
       if (e.code === 'ArrowLeft') {
@@ -1337,6 +1415,8 @@ export function PrepStrip({
                 onScratchStart={onScratchStart}
                 onScratchMove={onScratchMove}
                 onScratchEnd={onScratchEnd}
+                lanes={lanes}
+                onStemToggle={toggleStem}
               />
             ) : (
               <div className="flex h-full items-center justify-center text-xs text-faint">

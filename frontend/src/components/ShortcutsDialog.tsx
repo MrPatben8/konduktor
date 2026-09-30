@@ -10,6 +10,7 @@ interface Props {
 // says "Cmd/Ctrl" everywhere is harder to scan than one that names your key.
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.userAgent)
 const MOD = IS_MAC ? '⌘' : 'Ctrl'
+const ALT_KEY = IS_MAC ? '⌥' : 'Alt'
 
 type Row = { keys: string[][]; action: string }
 type Section = { title: string; rows: Row[] }
@@ -36,6 +37,9 @@ function sections(slots: number): Section[] {
         { keys: [['Shift', '←'], ['Shift', '→']], action: 'Previous / next grid marker' },
         { keys: [[pads]], action: 'Hotcue — set if empty, else jump (hold to preview)' },
         { keys: [['Shift', pads]], action: 'Delete hotcue' },
+        { keys: [['Q'], ['W'], ['E'], ['R']], action: 'Stem track: mute / unmute stem 1–4' },
+        { keys: [['Shift', 'Q–R']], action: 'Stem track: solo — mute every other stem (again to unmute all)' },
+        { keys: [[ALT_KEY, 'Click', 'stem']], action: 'Solo a stem from its lane button' },
         { keys: [['Drag waveform']], action: 'Scratch' },
         { keys: [[MOD, 'Scroll']], action: 'Zoom the waveform' },
         { keys: [['Right-click', 'pad']], action: 'Hotcue type, rename, delete' },
