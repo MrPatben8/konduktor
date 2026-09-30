@@ -210,5 +210,70 @@ else:
     if not seen:
         print("  (skipped: no hand-placed pad-8 cues in kit 4)")
 
+print("== 4. rekordbox's clock is per file too (Pioneer timebase) ==")
+from konduktor.adapters.rekordbox import beatgrid as pioneer_grid  # noqa: E402
+from konduktor.adapters.rekordbox import timebase as pioneer  # noqa: E402
+from konduktor.core import mp4_edit  # noqa: E402
+from konduktor.core.model import GridMarker  # noqa: E402
+
+(tmp / "xing-moved.mp3").rename(XING)  # section 2 moved it away
+AAC = tmp / "ffmpeg.m4a"
+encode(AAC, "aac", "ipod", bit_rate=256_000)
+check("an FFmpeg AAC's edit list primes 1024 samples", mp4_edit.priming_seconds(AAC) == 1024 / 44100,
+      str(mp4_edit.priming_seconds(AAC)))
+check("MP3 with a header: the trimmed 1105 samples", abs(pioneer.offset(XING) - 1105 / 44100) < 1e-12)
+check("MP3 at 48 kHz: 1105 SAMPLES", abs(pioneer.offset(MP3_48K) - 1105 / 48000) < 1e-12)
+check("MP3 without a header: 0 (nothing is trimmed)", pioneer.offset(NOXING) == 0.0)
+check("AAC: the edit list's priming (rekordbox ignores it)", pioneer.offset(AAC) == 1024 / 44100)
+if "aac_at" in av.codecs_available:
+    APPLE = tmp / "apple.m4a"
+    encode(APPLE, "aac_at", "ipod", bit_rate=256_000)
+    check("Apple AAC: 2112 samples of priming", pioneer.offset(APPLE) == 2112 / 44100, str(pioneer.offset(APPLE)))
+check("WAV: 0", pioneer.offset(WAV) == 0.0)
+check("an unreadable MP3 keeps the old 1105-sample default",
+      abs(pioneer.offset(tmp / "offline.mp3") - 1105 / 44100) < 1e-12)
+check("no path: 0", pioneer.offset(None) == 0.0)
+check("a position before the decoded audio clamps to rekordbox's 0 on write",
+      pioneer.to_pioneer(-0.030, 1105 / 44100) == 0.0)
+
+# A Traktor grid anchored inside the header frame reads NEGATIVE; expanding it
+# for a Pioneer export must drop the beats before 0 — and number the rest as
+# if nothing had been dropped, or every bar would start on the wrong beat.
+nums, _bpms, times = pioneer_grid.beats_from_markers([GridMarker(start=-0.030, bpm=120.0)], 3.0)
+check("no beat before 0 is written", min(times) >= 0.0, str(times[:3]))
+check("the first kept beat is beat 2 of the bar, 0.47 s in",
+      nums[0] == 2 and abs(times[0] - 0.47) < 1e-9, f"{nums[:4]} {times[:2]}")
+
+print("== 5. rekordbox's own hand-placed cues land on the kick (kit 4) ==")
+MASTER = Path.home() / "Library/Pioneer/rekordbox/master.db"
+if not (KIT.is_dir() and MASTER.is_file()):
+    print("  (skipped: kit 4 or the local rekordbox library is not on this machine)")
+else:
+    from pyrekordbox.masterdb import MasterDatabase  # noqa: E402
+
+    seen = 0
+    db = MasterDatabase(MASTER)
+    try:
+        for c in db.get_cue():
+            name = c.Content.FileNameL if c.Content else ""
+            if not name.startswith("K4-") or c.Kind != 9 or not (KIT / name).is_file():
+                continue  # pad H: the ones placed by hand
+            with av.open(str(KIT / name), metadata_errors="ignore") as con:
+                st = con.streams.audio[0]
+                sr = st.rate
+                y = np.concatenate([f.to_ndarray()[0] for f in con.decode(st)]).astype(np.float64)
+            a = int(8.9 * sr)
+            onset = (a + int(np.argmax(np.abs(y[a:a + int(0.2 * sr)]) > 0.05))) / sr
+            decoded = pioneer.from_pioneer(c.InMsec / 1000, pioneer.offset(KIT / name))
+            err = (decoded - onset) * 1000
+            seen += 1
+            # rekordbox stores whole milliseconds, apparently truncated.
+            check(f"{name}: a cue placed in rekordbox reads back on the kick (±1.5 ms)", abs(err) < 1.5,
+                  f"{err:+.2f} ms")
+    finally:
+        db.close()
+    if not seen:
+        print("  (skipped: no hand-placed pad-H cues in kit 4)")
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

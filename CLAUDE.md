@@ -102,11 +102,11 @@ Two independent apps that talk over HTTP:
       1–8 kHz attack band, and which attack is the beat from whether a kick's
       low end follows it — each band alone lost a real track to an off-beat hat
       or a syncopated bassline. Positions are in the **decoded audio's** time
-      base (libsndfile = CoreAudio to the sample on MP3). **Rekordbox's grids sit
-      a constant ~25 ms later on lossy files** and at 0 on WAV — a platform
-      time-base difference, deliberately NOT corrected here. Traktor's differs
-      by a per-file rule instead (an MP3 with a header runs 2257 samples late),
-      corrected at the adapter boundary — see `adapters/traktor/timebase.py`.
+      base (libsndfile = CoreAudio to the sample on MP3). **Rekordbox's and
+      Traktor's clocks both differ from it, per FILE** (an MP3's header, an
+      M4A's edit list), and are deliberately NOT corrected here but at each
+      adapter boundary — `adapters/rekordbox/timebase.py`,
+      `adapters/traktor/timebase.py`.
       `backend/bench_grid_detect.py` scores it against any library's
       single-marker grids and reports that constant separately from detection
       error (29 Rekordbox references: old 1/29 BPMs, new 27/29).
@@ -609,7 +609,10 @@ serialization path.** It enforces:
   write path adding it and the projection removing it, a grid anchored inside
   the header frame reading negative and round-tripping byte for byte, and —
   when kit 4 is on the machine — Traktor's own hand-placed cues reading back
-  onto the kick.
+  onto the kick. Then the same for rekordbox's clock: the per-file offsets
+  (MP3 header, header-less, 48 kHz, FFmpeg and Apple AAC priming, the
+  unreadable fallback), negative beats dropped with bar numbering kept, and
+  rekordbox's own hand-placed kit-4 cues read back from `master.db`.
 - `test_traktor_adapter.py` — the **generic layer**: one parse per open, the
   projection refreshing after every command family, cue-type translation,
   capabilities, and `set_analysed_grid` vs `replace_grid`. `test_save_fidelity`
@@ -1066,9 +1069,20 @@ that number and nothing else — everything derives from it:
   first marker on the first DOWNBEAT — the generic first marker is bar 1 — and
   `beats_from_markers` writes the lead-in beats back, numbered as they were;
   before this every bar of such a track landed two beats early, on import to
-  Traktor as well as on export. **Rekordbox's clock runs 1105 samples (~25 ms)
-  behind the decoded audio on MP3/AAC** — the codec delay it does not trim;
-  measured +25.0 ms on 16 MP3s, +24.5 on 4 M4As, 0 on WAV. The generic model is
+  Traktor as well as on export. **Rekordbox's clock runs behind the decoded
+  audio by the start padding it does not trim, which depends on the FILE**:
+  an MP3 with a Xing/Info header 1105 samples (~25 ms; rekordbox skips the
+  header frame, unlike Traktor), a header-less MP3 0, an M4A its edit list's
+  priming (1024 from FFmpeg, 2112 from Apple — rekordbox ignores the edit
+  list), lossless 0. Measured with blinded cues in rekordbox 7 (kit 4,
+  2026-09-30); it replaced a fixed 1105 that was 25 ms wrong on header-less
+  MP3s and 22 ms on Apple AAC. The file is read (`core/mp3_gapless.py`,
+  `core/mp4_edit.py`); one that cannot be read falls back to 1105. A position
+  before the decoded audio (a Traktor grid anchored in the header frame)
+  clamps to 0 on write, and `beats_from_markers` drops beats before 0 while
+  keeping the rest's bar numbering. The OneLibrary fixture's demo MP3s are
+  12-byte stubs, so the fixture tests exercise only the fallback —
+  `test_timebase.py` covers the per-file rule. The generic model is
   the decoded time base, so `adapters/rekordbox/timebase.py` is applied at EVERY
   Pioneer boundary: both exporters add it, the OneLibrary reader and the
   Rekordbox adapter subtract it on read and add it on write (`set_cue`,

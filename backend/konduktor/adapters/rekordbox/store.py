@@ -324,11 +324,11 @@ class RekordboxStore:
 
     def time_offset(self, track_id: str) -> float:
         """Seconds rekordbox's clock runs behind the decoded audio for this
-        track (~25 ms on MP3/AAC, 0 lossless). Added on every position written,
-        subtracted on every position read — see `timebase`. Decided by the
-        stored FolderPath's format, so it holds even when the file is offline."""
-        folder = getattr(self.content(track_id), "FolderPath", None)
-        return timebase.offset(str(folder) if folder else None)
+        track — per FILE (an MP3's header, an M4A's edit list; 0 lossless).
+        Added on every position written, subtracted on every position read —
+        see `timebase`. Read from the file as it resolves here (path mapping
+        applied); a file that is offline falls back to its format's default."""
+        return timebase.offset(self.audio_path(track_id))
 
     def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
         """The art embedded in the audio file, else Rekordbox's own copy.

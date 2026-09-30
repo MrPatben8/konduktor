@@ -99,9 +99,15 @@ def beats_from_markers(
         n = 1
         # Guard against a zero/negative span producing an endless loop.
         while t < end - 1e-9 and step > 0:
-            beat_nums.append(n)
-            bpms.append(m.bpm)
-            times.append(t)
+            # A beat before the audio starts is skipped but still COUNTED, so the
+            # next one keeps its place in the bar. The generic model can hold one
+            # (a Traktor grid anchored inside an MP3's header frame reads
+            # negative); rekordbox stores no negative times, and clamping it to 0
+            # would invent a beat there.
+            if t >= 0.0:
+                beat_nums.append(n)
+                bpms.append(m.bpm)
+                times.append(t)
             n = n % 4 + 1
             t += step
     return beat_nums, bpms, times
