@@ -452,6 +452,10 @@ class JobStatus(BaseModel):
     state: str  # running | done | failed | cancelled
     total: int
     done: int
+    # What done/total count ("bytes" / "tracks"; "" when unspecified). Declared
+    # here or the response model silently drops the one field the status bar
+    # needs to tell a byte count from a track count.
+    unit: str = ""
     message: str
     result: dict | None = None
     error: str | None = None

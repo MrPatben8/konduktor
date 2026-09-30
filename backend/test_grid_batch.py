@@ -198,6 +198,11 @@ with tempfile.TemporaryDirectory() as d:
         check("nothing was written to disk (edits stay in memory until Save)",
               work.read_bytes() == REAL.read_bytes())
 
+        # The status bar tells a byte count from a track count by `unit`; the
+        # response model once dropped it on every job route.
+        jid = main.JOBS.submit("unit-probe", lambda h: h.progress(done=1, total=2, unit="bytes")).id
+        check("a job's unit reaches the client", wait(c, jid).get("unit") == "bytes")
+
 print()
 print("FAILED" if failed else "RESULT: ALL PASSED")
 raise SystemExit(1 if failed else 0)
