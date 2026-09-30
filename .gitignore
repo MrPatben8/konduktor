@@ -47,3 +47,7 @@ backend/userprefs.json
 # build_sidecar.sh are source and ARE tracked.
 backend/build/
 backend/dist/
+
+# ---- Stem engine (PyInstaller onedir build) ----
+engine/build/
+engine/dist/

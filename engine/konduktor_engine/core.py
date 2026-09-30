@@ -64,13 +64,19 @@ def separate(model, pcm: np.ndarray, device: str, *, seed: int = 0,
     Seeded per call: `shifts=1` applies a RANDOM time shift, so without a seed
     the same track separates slightly differently each time (measured: Vox 9.2
     vs 9.6 dB SDR between runs) and a re-conversion would not be reproducible.
+    The shift is drawn from Python's `random` module (`demucs.apply`:
+    `random.randint`), NOT torch's generator — seeding torch alone left every
+    run different — so both are seeded.
     """
+    import random
+
     import torch
     from demucs.apply import apply_model
 
     if pcm.ndim != 2 or pcm.shape[0] != 2:
         raise ValueError("Expected a stereo mix shaped (2, n)")
     n = pcm.shape[1]
+    random.seed(seed)
     torch.manual_seed(seed)
 
     def callback(d: dict) -> None:

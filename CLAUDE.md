@@ -406,15 +406,37 @@ Two independent apps that talk over HTTP:
     offering a Rekordbox `master.db` to someone who just chose Traktor is an
     offer that cannot be taken.
 - **`engine/`** — the **stem engine**, a separate program (`konduktor_engine`,
-  Python 3.12, torch + demucs 4.1 pinned in `engine/requirements.txt`) that
-  imports nothing from `konduktor`. `core.py` loads htdemucs_ft from a LOCAL
-  weights folder (never online — the weights' licence rules out shipping them,
-  so the app downloads them) and separates, seeded (shifts=1 is random).
-  Audio crosses as raw planar float32 files; protocol messages are JSON lines
-  on a private copy of stdout, with `sys.stdout` pointed at stderr so torch's
-  prints cannot corrupt one. For now a one-shot `separate` CLI; the persistent
-  `serve` mode and the frozen per-OS build come next. `backend/dev_stems.py`
-  (dev only) converts files with the real writer through an unfrozen engine.
+  Python 3.12, torch 2.14 + demucs 4.1 pinned in `engine/requirements.txt`)
+  that imports nothing from `konduktor`, built and released on its OWN channel.
+  - `core.py` loads htdemucs_ft from a LOCAL weights folder — never online: the
+    weights' licence rules out shipping them, so the app downloads them, pinned
+    by revision + SHA-256 in `engine/weights.json` (`fetch_weights.py` for
+    CI/dev). Seeded — and demucs draws its random shift from PYTHON's `random`,
+    not torch's, so both are seeded or no two runs match.
+  - `serve.py`: one process per batch, the model loaded once; JSON requests on
+    stdin, JSON-line replies on a private copy of stdout (`sys.stdout` points
+    at stderr, since torch prints), one lock for writes from two threads.
+    A reader THREAD ends the process the moment stdin closes — the backend dies
+    without killing children, and torch keeps the main thread busy. `cancel`
+    raises from the progress callback and keeps the model loaded; CUDA OOM
+    falls back to CPU for that track; the process lowers its own priority.
+    `info` reports the CUDA card, capability and the build's arch list, which
+    is how the app decides whether to offer the CUDA engine.
+  - Frozen as a PyInstaller **onedir** (`konduktor-engine.spec`; onefile would
+    re-extract ~500 MB per launch), `torch/include` and the HF client dropped:
+    macOS arm64 = 164 MB download / 550 MB unpacked, runs after a tar round
+    trip (ad-hoc signature intact). `test_engine.py` pins the protocol
+    (reproducible seed, cancel, stdin-EOF exit) and, with `--frozen`, that the
+    frozen build separates BIT-FOR-BIT like the unfrozen code (CPU).
+  - `package.py` → tar.gz (zip loses exec bits on macOS), split under GitHub's
+    2 GiB asset cap, per-part SHA-256; symlinks are archived as links and not
+    double-counted. `.github/workflows/engine.yml` builds macos-arm64,
+    windows-x64-cpu and windows-x64-cuda (torch cu130: Turing–Blackwell,
+    driver r580+; older cards get the CPU engine), runs the golden test on CPU
+    (runners have no GPU), checks Windows path length, and on an `engine-v*`
+    tag publishes `prerelease` / NOT latest with an `engine-manifest.json`.
+  - `backend/dev_stems.py` (dev only) converts files with the real writer
+    through an unfrozen engine, and can swap them into a collection.
 - **`frontend/`** — React + TypeScript + Vite. A dark, virtualized track
   explorer. Entry: [frontend/src/App.tsx](frontend/src/App.tsx).
   - `api.ts` — typed client + all API types. **Generic, not Traktor-shaped**:

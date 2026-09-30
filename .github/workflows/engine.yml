@@ -1,0 +1,142 @@
+# The stem engine: a frozen torch + Demucs program, built per target and
+# published on its OWN release channel (`engine-v<version>`), separate from the
+# app's `v<version>-b<N>` releases. The app downloads the one it needs on first
+# use (see backend/konduktor/stems/engine_manager.py).
+#
+#   * A tag `engine-v1.2.3` builds, tests and publishes — the tag must match
+#     `konduktor_engine.VERSION`.
+#   * A manual run builds and tests only (artifacts, no release).
+#
+# Releases are `prerelease: true` and `make_latest: false`: GitHub's "latest"
+# is what an app would take for itself, and the app's update check reads the
+# release list (UpdateDialog.tsx) — an engine release must never look like one.
+#
+# The weights are NOT in the engine (their licence is ambiguous): CI fetches the
+# pinned files from Hugging Face only to run the golden test.
+name: Engine
+
+on:
+  push:
+    tags: ["engine-v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: engine-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-arm64
+            os: macos-latest
+            torch_index: ""
+          - target: windows-x64-cpu
+            os: windows-latest
+            torch_index: ""  # PyPI's Windows torch is the CPU build
+          - target: windows-x64-cuda
+            os: windows-latest
+            # CUDA 13: Turing (RTX 20) through Blackwell (RTX 50); needs an
+            # NVIDIA driver from r580. Older cards get the CPU engine — the
+            # manager checks `engine info`'s arch list before offering this.
+            torch_index: "https://download.pytorch.org/whl/cu130"
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.target }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the tag matches the engine version
+        if: startsWith(github.ref, 'refs/tags/engine-v')
+        run: |
+          want="$(python -c 'import konduktor_engine as e; print(e.VERSION)')"
+          [ "${GITHUB_REF_NAME#engine-v}" = "$want" ] || { echo "tag ${GITHUB_REF_NAME} != engine $want"; exit 1; }
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip uv
+          uv venv .venv --python 3.12
+          PY=.venv/bin/python; [ -f .venv/Scripts/python.exe ] && PY=.venv/Scripts/python.exe
+          echo "PY=$PY" >> "$GITHUB_ENV"
+          if [ -n "${{ matrix.torch_index }}" ]; then
+            uv pip install --python "$PY" "torch==2.14.0" --index-url "${{ matrix.torch_index }}"
+          fi
+          uv pip install --python "$PY" -r requirements.txt "pyinstaller==6.21.0"
+
+      - name: Weights (for the golden test only)
+        uses: actions/cache@v4
+        with:
+          path: engine/weights
+          key: htdemucs-ft-d74ac89c3a1e874fc78f152555cf4d8533f06cd4
+      - run: $PY fetch_weights.py weights
+
+      - name: Freeze
+        run: $PY -m PyInstaller --noconfirm --clean konduktor-engine.spec
+
+      - name: Golden test (frozen vs unfrozen, CPU)
+        run: |
+          EXE=dist/konduktor-engine/konduktor-engine; [ -f "$EXE.exe" ] && EXE="$EXE.exe"
+          $PY test_engine.py --weights weights --frozen "$EXE"
+
+      - name: Package
+        run: $PY package.py ${{ matrix.target }} dist out
+
+      - name: Paths fit Windows' limit once installed
+        run: |
+          # Installed under e.g. %LOCALAPPDATA%\Konduktor\engine\<ver>\<target>\
+          # (~70 characters on a typical user name): the tree must stay short.
+          $PY -c "import json,sys; n=json.load(open('out/${{ matrix.target }}.json'))['longest_path']; print('longest', n); sys.exit(n > 180)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-${{ matrix.target }}
+          path: engine/out/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/engine-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Manifest
+        run: |
+          python - <<'PY'
+          import json, glob, os
+          targets = {}
+          for f in glob.glob("artifacts/*.json"):
+              info = json.load(open(f))
+              targets[info["target"]] = info
+          version = os.environ["GITHUB_REF_NAME"].removeprefix("engine-v")
+          weights = json.load(open("engine/weights.json"))
+          json.dump({"version": version, "targets": targets, "weights": weights},
+                    open("artifacts/engine-manifest.json", "w"), indent=1)
+          PY
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Konduktor stem engine ${{ github.ref_name }}
+          prerelease: true
+          make_latest: false
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/*.tar.gz*
+            artifacts/engine-manifest.json
+          body: |
+            The stem engine Konduktor downloads for **Convert to Stems** — not an app release.
+            Konduktor fetches the right file for your computer itself; there is nothing to install by hand.
