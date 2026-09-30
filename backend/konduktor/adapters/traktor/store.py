@@ -1241,11 +1241,14 @@ class TraktorStore:
             return key_remap
 
     # ---- stem conversion ---------------------------------------------------
-    #: Whether a converted entry keeps Traktor's analysis fingerprint. It is a
-    #: fingerprint of the OLD file; cleared, Traktor re-analyses the new one on
-    #: load (the import precedent: prep survives). Settled by the milestone-2
-    #: check in Traktor 4.5.
-    _KEEP_AUDIO_ID_ON_STEM = False
+    #: Whether a converted entry keeps Traktor's analysis fingerprint (AUDIO_ID).
+    #: KEPT, as measured in Traktor 4.5 (kit 5, 2026-09-30): with it kept, Traktor
+    #: loads the stem entry as it is — cues, grid and fingerprint untouched. With
+    #: it cleared, Traktor re-analyses on load: it keeps grid POSITIONS (even a
+    #: hand-nudged, unlocked one) but re-measures the grid's BPM (125.000023 ->
+    #: 125.00042), i.e. it rewrites prep the user set. The stem file's mix is the
+    #: same audio as the original, so the old fingerprint still describes it.
+    _KEEP_AUDIO_ID_ON_STEM = True
 
     def apply_stem_swaps(self, swaps: list, *, add_to_playlist: str | None = None) -> StemSwapResult:
         """Point entries at converted stem files ("repoint"), or add entries for

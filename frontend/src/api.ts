@@ -758,6 +758,8 @@ export const api = {
   patchPrefs: (patch: Record<string, unknown>) =>
     send<Record<string, unknown>>('PATCH', '/api/prefs', patch),
   save: () => send<SaveResult>('POST', '/api/save'),
+  /** Drop every unsaved edit; the library re-reads itself from disk. */
+  discard: () => send<EditState>('POST', '/api/discard'),
 
   // ---- version history ----
   history: () => getJSON<HistoryEntry[]>('/api/history'),

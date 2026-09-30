@@ -5,6 +5,7 @@ import { CapabilitiesContext, slotLabeller } from './lib/capabilities'
 import { writeHint } from './lib/platformCopy'
 import { invalidateTrackLists } from './lib/trackQueries'
 import { api, type CueBatchResult, type GridBatchResult, type AutoCueSlot, type PlaylistNode, type Track, type TrackOrigin } from './api'
+import { confirmDiscardUnsaved } from './lib/unsaved'
 import {
   COLUMN_MENU,
   DEFAULT_COLUMN_ORDER,
@@ -1034,6 +1035,7 @@ export default function App() {
           onSwitchLibrary={() => setForcePicker(true)}
           onDone={(msg) => notify('success', msg)}
           onOpenPathMapping={() => setShowPaths(true)}
+          onDiscarded={() => afterBulk(prepTrack ? [prepTrack.id] : [], true)}
         />
 
         <CapabilitiesContext.Provider value={viewCaps}>
@@ -1353,7 +1355,11 @@ export default function App() {
         }
         loading={loading}
         collectionName={capabilities.data ? libraryName : null}
-        onChangeCollection={() => setForcePicker(true)}
+        onChangeCollection={() => {
+          // The same question the sidebar header asks: this button used to
+          // switch library without it, silently dropping unsaved edits.
+          void confirmDiscardUnsaved().then((ok) => ok && setForcePicker(true))
+        }}
       />
     </div>
     </CapabilitiesContext.Provider>

@@ -163,16 +163,7 @@ def open_collection(body: OpenCollection) -> CollectionStatus:
     # This checks only that the path is there at all; `can_open()` decides.
     if not path.exists():
         raise HTTPException(400, f"Not found: {path}")
-    # A running analysis writes into the library being replaced; stop it, and
-    # WAIT for it to stop — a job still finishing its current track would
-    # otherwise keep writing (or, for file work, keep moving files) after the
-    # switch. Batches check for a cancel between tracks, so this is short.
-    stopping = [job for kind in BATCH_JOBS for job in JOBS.active(kind)]
-    for job in stopping:
-        JOBS.cancel(job.id)
-    for job in stopping:
-        if not JOBS.wait(job.id, timeout=60):
-            log.warning("batch %s (%s) still running after cancel; opening anyway", job.id, job.kind)
+    _stop_batches()
     try:
         STATE.open(path)
     except AdapterError as ex:
@@ -740,6 +731,22 @@ def state() -> EditState:
     return EditState(dirty=require_adapter().dirty, library=_library_info())
 
 
+@app.post("/api/discard", response_model=EditState)
+def discard_changes() -> EditState:
+    """Drop every unsaved edit — the library re-reads itself from disk.
+
+    A running batch is stopped first (and waited for): it writes into the
+    library being discarded, so it would otherwise keep adding edits to the
+    freshly reloaded one.
+    """
+    adapter = require_adapter()
+    if not adapter.capabilities().writable:
+        raise HTTPException(409, "This library cannot be edited, so there is nothing to discard")
+    _stop_batches()
+    STATE.discard()
+    return state()
+
+
 @app.post("/api/reload")
 def reload_collection() -> dict:
     if not STATE.loaded:
@@ -1038,6 +1045,22 @@ class _AnalysisError(Exception):
 GRID_JOB = "grid-analysis"
 CUE_JOB = "auto-hotcues"
 BATCH_JOBS = (GRID_JOB, CUE_JOB)
+
+
+def _stop_batches() -> None:
+    """Cancel every running batch analysis and WAIT for it to stop.
+
+    Used wherever the library is about to be replaced or reloaded: a job still
+    finishing its current track would otherwise keep writing into it (or, for
+    file work, keep moving files) afterwards. Batches check for a cancel
+    between tracks, so this is short.
+    """
+    stopping = [job for kind in BATCH_JOBS for job in JOBS.active(kind)]
+    for job in stopping:
+        JOBS.cancel(job.id)
+    for job in stopping:
+        if not JOBS.wait(job.id, timeout=60):
+            log.warning("batch %s (%s) still running after cancel; continuing", job.id, job.kind)
 
 
 def _require_no_batch() -> None:

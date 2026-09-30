@@ -170,8 +170,9 @@ Two independent apps that talk over HTTP:
       (plus its pending tag fields and staged art, so Save still writes them to
       the new file). Either sets `<STEMS>` (the literal from `core/stem_file`),
       INFO bitrate/playtime/playtime_float/filesize(KB), VOLUMEID only where it
-      still names the volume, and clears AUDIO_ID (`_KEEP_AUDIO_ID_ON_STEM`,
-      pending the Traktor check). **Every START shifts by the time-base
+      still names the volume, and KEEPS AUDIO_ID (`_KEEP_AUDIO_ID_ON_STEM`:
+      measured in Traktor 4.5 — cleared, Traktor re-analyses on load and
+      re-measures a hand-set grid's BPM; kept, it touches nothing). **Every START shifts by the time-base
       difference**, the old offset read from `StemSwap.original_audio` — the
       original's bytes where they are NOW (parked, under a non-audio name, so
       `timebase.offset_ms(..., suffix=)` takes the original's suffix). Read
@@ -336,6 +337,16 @@ Two independent apps that talk over HTTP:
     know the track. `trackAudioUrl`/`trackCuesFor` in `api.ts` are the one place
     that choice is made.
   - `app_state.py` — the one loaded library, and the **version-history commit**.
+    **`discard()`** (`POST /api/discard`, SaveBar's "Discard changes…", the
+    quit prompt's Discard) drops every unsaved edit through the adapter's own
+    `reload`, NOT `open` — reopening would re-run the missing-files check and
+    forget this session's relocation answers. The route stops (and WAITS for)
+    running batches first, as library open does (`_stop_batches`), or a batch
+    would keep writing into the reloaded library. Rekordbox's reload is a real
+    discard (`RekordboxStore.discard`): session rolled back and closed with its
+    engine, buffered ANLZ grids and journal cleared — before, it opened a second
+    connection and stayed "dirty". A reentrant `mutation` lock serialises
+    open / save / discard (and, next, a stem batch's swap step).
     History is app-level: the adapter returns the bytes it wrote plus a summary,
     and `AppState.save()` versions them. Every write path must go through it.
   - `library_id.py` — a **stable identity for a library that survives it being
@@ -492,7 +503,13 @@ Two independent apps that talk over HTTP:
     same menu and the row's hover buttons, which share one set of actions.
     A Traktor folder's id is its PATH of names, so the `PATCH`/`DELETE`
     playlist routes take a `:path` param, a folder name may not contain `/`,
-    and renaming onto a sibling folder's name is refused), `SaveBar` (+ the settings gear beside it, whose menu opens `ShortcutsDialog` — the shortcut list is written out BY HAND, so a new or changed shortcut in `PrepStrip` / `TrackTable` must be added there too), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
+    and renaming onto a sibling folder's name is refused), `QuitGuard` (mounted in `main.tsx`: the desktop shell PREVENTS window close /
+    Cmd+Q and emits `konduktor://quit-requested`; this acks it (`quit_ack` — the
+    shell quits anyway after ~2 s without one, so a hung page cannot trap the
+    user), quits (`quit_now`) when nothing is unsaved, else asks Save · Discard
+    · Cancel; the sidecar is killed only at `RunEvent::Exit`, after the answer;
+    browser dev gets `beforeunload`), `SaveBar` (+ "Discard changes…" when
+    dirty, and the settings gear beside it, whose menu opens `ShortcutsDialog` — the shortcut list is written out BY HAND, so a new or changed shortcut in `PrepStrip` / `TrackTable` must be added there too), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
     `TrackTable` (**the one track list** — All Tracks, playlists, exports and
     devices. TanStack Table + **virtualized** grid; per-row play button,
     configurable columns, header sorting, inline double-click editing, and
@@ -812,6 +829,12 @@ serialization path.** It enforces:
   removable library is never written beside, an unwritable location falls back
   rather than failing, and `paths.write_json` is atomic (curated user work, so
   `prefs.py`'s best-effort "any I/O error degrades to no prefs" is NOT adequate).
+- `test_discard.py` — discarding unsaved edits through the route: the edit is
+  gone, the file and version history untouched, relocation answers and the
+  saved path mapping survive, the adapter object is the same (a reload, not a
+  reopen), and a running batch has stopped by the time discard returns; on
+  Rekordbox (temp copy, skipped when absent) the library is clean afterwards and
+  a later save writes nothing that was thrown away; read-only libraries 409.
 - `test_layering.py` — `core/` imports nothing platform-specific, and no adapter
   imports another platform's library (checked on real imports via AST, so merely
   naming a platform in a comment is fine). Rekordbox and OneLibrary deliberately
