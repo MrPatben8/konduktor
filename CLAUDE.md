@@ -583,7 +583,14 @@ serialization path.** It enforces:
   real flexible grids in the collection project correctly (K); and
   **removing a track from the collection** drops its `<ENTRY>` and its
   PRIMARYKEYs from exactly the playlists that held it — the only ADDED lines are
-  the `ENTRIES=` recounts, every other playlist byte-identical (L).
+  the `ENTRIES=` recounts, every other playlist byte-identical (L); and a
+  **path remap** rewrites locations + playlist keys localized (H1/H2), re-keys
+  the entry index so earlier tag edits still reach the file (H3), and is
+  **refused with nothing changed** when it would give two ENTRYs one primary key
+  — onto a staying track's path, or two differently-keyed entries for one file
+  — which the preview reports first, while a chain (A onto B's old path, B
+  onward) and a pre-existing duplicate are allowed, each track's staged art
+  and edits following the TRACK (H4).
   The guard that catches serialization regressions like the lxml reformatting bug.
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched.

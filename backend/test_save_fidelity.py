@@ -565,6 +565,114 @@ with tempfile.TemporaryDirectory() as d:
           str(tag_meta))
     check("H3: …and the staged cover art", ("cover", b"\xff\xd8H3") in written)
 
+# H4: a remap that would give two ENTRYs one primary key is refused with nothing
+# changed; the preview says so first. A chain (one track onto another's OLD
+# path while that one moves on) is not a clash, and each track's staged art and
+# edits must follow IT, not the path.
+from konduktor.core.adapter import InvalidCommand  # noqa: E402
+from konduktor.adapters.traktor.adapter import TraktorAdapter  # noqa: E402
+
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    store = TraktorStore(work)
+    entries = [e for e in store._nml.collection.entry if e.location and e.location.file]
+    e1, e2, e3 = entries[0], entries[1], entries[2]
+
+    def put(e, path):
+        e.location.volume, e.location.dir, e.location.file = os_path_to_location(Path(path))
+
+    def rekey(st):
+        st._entry_by_key = {st._key_of(e): e for e in st._nml.collection.entry if e.location}
+
+    # (a) onto a path a STAYING track already has — the realistic case: a folder
+    # copied to a new drive and both copies in the collection.
+    put(e1, "/Volumes/H4OLD/Music/same.mp3")
+    put(e2, "/Volumes/H4NEW/Music/same.mp3")
+    rekey(store)
+    before = store._render()
+    mapping = PathMapping.make("/Volumes/H4OLD/Music", "/Volumes/H4NEW/Music")
+    preview = store.remap_preview(mapping)
+    check("H4: the preview reports the clash before anything is done",
+          preview["collisions"] == 1 and len(preview["collision_samples"]) == 1
+          and preview["collision_samples"][0].endswith("H4NEW/Music/same.mp3"), str(preview))
+    try:
+        store.remap_locations(mapping)
+        check("H4: a remap onto a staying track's path is refused", False, "it ran")
+    except PlaylistError as exc:
+        check("H4: a remap onto a staying track's path is refused", "nothing was changed" in str(exc), str(exc))
+    check("H4: …and nothing changed", store._render() == before and not store.dirty)
+
+    # (b) two DIFFERENTLY-keyed entries for one file — the boot disk spelt
+    # "Macintosh HD" and blank, both resolving to /Users/… — that the mapping
+    # sends to the same place.
+    put(e1, "/Users/h4/one.mp3")
+    e3.location.volume, e3.location.dir, e3.location.file = "", e1.location.dir, e1.location.file
+    put(e2, "/Volumes/H4OTHER/two.mp3")
+    rekey(store)
+    check("H4: (setup) two keys, one file",
+          store._key_of(e1) != store._key_of(e3)
+          and resolve_path(e1.location.volume, e1.location.dir, e1.location.file)
+          == resolve_path(e3.location.volume, e3.location.dir, e3.location.file))
+    mapping = PathMapping.make("/Users/h4", "/Volumes/H4DEST")
+    check("H4: two entries with different keys landing on one path clash",
+          store.remap_preview(mapping)["collisions"] == 1, str(store.remap_preview(mapping)))
+    before = store._render()
+    try:
+        store.remap_locations(mapping)
+        check("H4: …and that remap is refused", False, "it ran")
+    except PlaylistError:
+        check("H4: …and that remap is refused, unchanged", store._render() == before)
+    put(e3, "/Volumes/H4OTHER/unrelated.mp3")
+
+    # (c) a duplicate the collection ALREADY had moves as it was — refusing it
+    # would make a library with one duplicate impossible to move at all.
+    put(e1, "/Volumes/H4OLD/Music/same.mp3")
+    put(e2, "/Volumes/H4OLD/Music/same.mp3")  # e1 and e2 now share a key
+    rekey(store)
+    mapping = PathMapping.make("/Volumes/H4OLD/Music", "/Volumes/H4MOVED/Music")
+    check("H4: an existing duplicate is not a new clash", store.remap_preview(mapping)["collisions"] == 0)
+    moved = store.remap_locations(mapping)
+    check("H4: …and the pair moves together", len(moved) == 1 and store._key_of(e1) == store._key_of(e2))
+
+    # (d) a chain from a nested prefix: x/f -> x/sub/f while x/sub/f -> x/sub/sub/f.
+    put(e1, "/Volumes/H4C/x/f.mp3")
+    put(e2, "/Volumes/H4C/x/sub/f.mp3")
+    rekey(store)
+    k1, k2 = store._key_of(e1), store._key_of(e2)
+    store.set_track_metadata(k1, {"genre": "chain one"})
+    store.set_track_metadata(k2, {"genre": "chain two"})
+    store.set_track_art(k1, b"art-one", "image/jpeg")
+    store.set_track_art(k2, b"art-two", "image/jpeg")
+    mapping = PathMapping.make("/Volumes/H4C/x", "/Volumes/H4C/x/sub")
+    check("H4: a chain is not a clash", store.remap_preview(mapping)["collisions"] == 0)
+    moved = store.remap_locations(mapping)
+    n1, n2 = store._key_of(e1), store._key_of(e2)
+    check("H4: the first track takes the second's old path", n1 == k2 and moved[k1] == n1, f"{moved}")
+    check("H4: the index finds each track at its new id",
+          store._entry_by_key.get(n1) is e1 and store._entry_by_key.get(n2) is e2)
+    check("H4: each track's staged art follows the TRACK",
+          store._track_art.get(n1, (b"",))[0] == b"art-one" and store._track_art.get(n2, (b"",))[0] == b"art-two",
+          str({k: v[0] for k, v in store._track_art.items()}))
+    check("H4: …and so do its edits",
+          store._journal.fields_for(n1) == {"genre"} and store._journal.fields_for(n2) == {"genre"}
+          and store._entry_field_value(store._entry_by_key[n1], "genre") == "chain one")
+    j1 = [c for c in store._journal.changes if c.target == n1 and c.scope == "track"]
+    check("H4: …exactly one edit each, not both on one track", len(j1) == 1, str(j1))
+
+    # Through the adapter the refusal is the generic InvalidCommand (-> HTTP 400).
+    shutil.copy2(REAL, work)
+    ad = TraktorAdapter(work)
+    a1, a2 = [e for e in ad.store._nml.collection.entry if e.location and e.location.file][:2]
+    put(a1, "/Volumes/H4OLD/Music/same.mp3")
+    put(a2, "/Volumes/H4NEW/Music/same.mp3")
+    rekey(ad.store)
+    try:
+        ad.remap_locations(PathMapping.make("/Volumes/H4OLD/Music", "/Volumes/H4NEW/Music"))
+        check("H4: the adapter refuses with InvalidCommand", False, "it ran")
+    except InvalidCommand:
+        check("H4: the adapter refuses with InvalidCommand", True)
+
 
 # ---- Invariant I: flexible (multi-marker) beatgrids round-trip ---------
 print("== I. flexible beatgrid: add/move/delete markers, localized + reversible ==")

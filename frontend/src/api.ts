@@ -556,6 +556,10 @@ export interface RemapPreview {
   matched: number
   existing: number
   samples: RemapSample[]
+  /** Target paths more than one track would land on. Non-zero = the rewrite
+   *  would be refused (two entries sharing a path corrupt the library). */
+  collisions: number
+  collision_samples: string[]
 }
 
 /** One place a stored volume's tracks were found — a mapping the user can pick. */
