@@ -412,6 +412,10 @@ class RekordboxAdapter:
         # which of those Rekordbox expects to be deleted together is unmeasured.
         self._refuse("Removing tracks")
 
+    def apply_stem_swaps(self, swaps, *, add_to_playlist=None):
+        # Rekordbox does not play native-instruments stem files as stems.
+        self._refuse("Converting tracks to stems")
+
     def set_cover_art(self, track_id: str, data: bytes, mime: str) -> None:
         self._refuse("Editing cover art")
 

@@ -193,7 +193,25 @@ with tempfile.TemporaryDirectory() as d:
         other = Path(d) / "other.nml"
         shutil.copy2(REAL, other)
         c.post("/api/library/open", json={"path": str(other)})
+        check("opening another library has STOPPED the run by the time it returns",
+              main.JOBS.get(jid).finished and main.JOBS.get(jid).state == "cancelled",
+              main.JOBS.get(jid).state)
         check("opening another library cancels the run", wait(c, jid)["state"] == "cancelled")
+
+        # Exclusive submit is checked and registered under one lock: a second
+        # batch cannot start while one runs, however the requests interleave.
+        from konduktor.jobs import JobBusy
+        import threading as _th
+        gate = _th.Event()
+        first = main.JOBS.submit(main.GRID_JOB, lambda h: gate.wait(5), exclusive_with=main.BATCH_JOBS)
+        try:
+            main.JOBS.submit(main.CUE_JOB, lambda h: None, exclusive_with=main.BATCH_JOBS)
+            check("a second batch kind is refused while one runs", False, "it started")
+        except JobBusy:
+            check("a second batch kind is refused while one runs", True)
+        check("wait() times out on a running job", main.JOBS.wait(first.id, timeout=0.05) is False)
+        gate.set()
+        check("…and returns once it has finished", main.JOBS.wait(first.id, timeout=5) is True)
 
         check("nothing was written to disk (edits stay in memory until Save)",
               work.read_bytes() == REAL.read_bytes())

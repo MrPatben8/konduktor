@@ -38,14 +38,18 @@ from pathlib import Path
 from ...core import mp3_gapless
 
 
-def offset_samples(path: Path | str | None) -> tuple[int, int]:
+def offset_samples(path: Path | str | None, suffix: str | None = None) -> tuple[int, int]:
     """(samples Traktor runs behind the decoded audio, sample rate).
 
     (0, 0) for anything that is not an MP3 with a header frame — including a
     file that cannot be read: with no header to go by, 0 is the answer that
     cannot move a cue, since a position read at 0 is written back at 0.
+
+    `suffix` overrides the format the name implies — for a file whose bytes are
+    a track's but whose name is not, like a converted track's original parked
+    as `.<name>.konduktor-parked` until Save.
     """
-    if not path or Path(path).suffix.lower() != ".mp3":
+    if not path or (suffix or Path(path).suffix).lower() != ".mp3":
         return 0, 0
     start = mp3_gapless.read(path)
     if start is None or not start.header_frame:
@@ -53,9 +57,9 @@ def offset_samples(path: Path | str | None) -> tuple[int, int]:
     return start.samples_per_frame + start.trimmed, start.sample_rate
 
 
-def offset_ms(path: Path | str | None) -> float:
+def offset_ms(path: Path | str | None, suffix: str | None = None) -> float:
     """Milliseconds to ADD to a decoded-audio time to get Traktor's."""
-    samples, rate = offset_samples(path)
+    samples, rate = offset_samples(path, suffix)
     return samples * 1000.0 / rate if samples else 0.0
 
 

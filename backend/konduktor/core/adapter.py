@@ -75,6 +75,44 @@ class NewTrack:
     cues: TrackCues | None = None
 
 
+@dataclass(frozen=True)
+class StemSwap:
+    """Put a converted stem file into the library in place of — or beside — a track.
+
+    The conversion itself (separation, encoding, file moves) is not the
+    adapter's business; this is only the library side, and it arrives once the
+    file is finished and verified.
+
+      * `mode` "repoint": the track's entry now names the stem file and keeps
+        its playlists, prep and history — its id changes with its location.
+        "add": a NEW entry for the stem file, copying the track's prep and
+        metadata; the original entry stays.
+      * `original_audio` is where the original's audio bytes are RIGHT NOW. In
+        Replace mode that is its parked name, not its old one — a platform whose
+        clock depends on the file (an MP3's header) must read it there, and
+        must not look at the old path, which no longer holds it.
+      * `bit_rate` (bps per stream), `duration` (seconds) and `size` (bytes)
+        describe the stem file, for the library's own fields.
+    """
+
+    track_id: str
+    stem_path: Path
+    mode: str  # "repoint" | "add"
+    original_audio: Path | None
+    bit_rate: int
+    duration: float
+    size: int
+
+
+@dataclass
+class StemSwapResult:
+    #: Old track id -> the id of the entry that now names the stem file.
+    renamed: dict[str, str] = field(default_factory=dict)
+    #: New id -> hotcue slots whose position fell before the stem file's start
+    #: and were moved to 0 (a platform time-base shift can push one there).
+    clamped: dict[str, list[int]] = field(default_factory=dict)
+
+
 class AdapterError(Exception):
     """Base for every failure an adapter reports to the HTTP layer."""
 
@@ -142,6 +180,13 @@ class LibraryAdapter(Protocol):
     # Never touches audio files. Returns how many were removed; gated on
     # `capabilities().tracks.removable`.
     def remove_tracks(self, track_ids: list[str]) -> int: ...
+
+    # Swap converted stem files into the library (see `StemSwap`), all at once:
+    # every swap is validated before any is applied, so a clash leaves the
+    # library untouched. Gated on `capabilities().tracks.stem_convertible`.
+    # `add_to_playlist` receives the entries "add" mode creates, in order.
+    def apply_stem_swaps(self, swaps: list["StemSwap"], *,
+                         add_to_playlist: str | None = None) -> "StemSwapResult": ...
 
     # ---- commands: track metadata / art ---------------------------------
     def set_track_metadata(self, track_id: str, fields: dict) -> Track | None: ...

@@ -134,6 +134,9 @@ class EditJournal:
         n_removed = len(self.removed_tracks())
         if n_removed:
             parts.append(f"removed {tracks(n_removed)} from the collection")
+        n_stems = len({c.target for c in self.changes if c.scope == "stem" and c.target})
+        if n_stems:
+            parts.append(f"converted {tracks(n_stems)} to stems")
 
         # --- track metadata + cover art (already counted per-track) ---
         n_meta = len(self.edited_tracks() | (extra_tracks or set()))

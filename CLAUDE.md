@@ -110,6 +110,26 @@ Two independent apps that talk over HTTP:
       `backend/bench_grid_detect.py` scores it against any library's
       single-marker grids and reports that constant separately from detection
       error (29 Rekordbox references: old 1/29 BPMs, new 27/29).
+    - `stem_file.py` + `tag_copy.py` — **writing a native-instruments STEM
+      file** (Convert to Stems). An `ipod` MP4 with five AAC stereo 44.1 kHz
+      streams (mix, drums, bass, synths, vox), streams 1-4 `disposition` 0,
+      muxed IN LOCKSTEP, plus a `moov/udta/stem` JSON box appended in place
+      (moov is last, so only two sizes change). The separation is a CALLBACK —
+      the backend never imports torch; the engine (below) supplies it, the
+      tests a fake. Measured traps: FFmpeg's resampler upmixes mono at -3 dB,
+      so mono is duplicated by hand; resampling does not move time; both
+      encoders (`aac_at` on macOS, `aac` elsewhere) are timing-exact but decode
+      up to ~2 frames LONGER, so length checks allow 0..2048 samples and the
+      duration reported is the source's; AAC pre-echo fools threshold onsets,
+      so alignment is checked by cross-correlation. **Two JSON literals**: the
+      box exactly as the commercial files hold it and `<STEMS>` exactly as
+      Traktor writes it — they differ in key order AND float digits (Traktor's
+      16 digits do not round-trip the same double; both are the same float32),
+      so neither is derived from the other. `tag_copy` carries every canonical
+      tag (ID3 / Vorbis / MP4 -> MP4, incl. `tmpo` and freeform `initialkey`,
+      the atoms the user's commercial stems use) and the cover, opening the
+      target as `MP4` explicitly because the batch writes `*.konduktor-partial`
+      files that `audio_tags.write_cover` would refuse by suffix.
     - `places.py` — where a person keeps things on THIS computer: the user's own
       folders (via `platformdirs` — hardcoding is wrong on every OS differently:
       `~/Videos` is `Movies` on macOS, Linux's are user-configurable localised
@@ -142,6 +162,24 @@ Two independent apps that talk over HTTP:
   - `adapters/traktor/` — everything that knows NML exists.
     - `store.py` (`TraktorStore`) — the retained native model: owns the parsed
       dataclass NML, applies every edit, renders + saves. See "Write path".
+      **`apply_stem_swaps`** is Convert to Stems' library side (generic
+      `StemSwap` / `StemSwapResult` in `core/adapter.py`, gated on
+      `tracks.stem_convertible`; Rekordbox/OneLibrary refuse): all swaps are
+      validated before any applies. "repoint" moves the entry to the stem file
+      (id changes; playlists follow as `TYPE="STEM"`); "add" deep-copies it
+      (plus its pending tag fields and staged art, so Save still writes them to
+      the new file). Either sets `<STEMS>` (the literal from `core/stem_file`),
+      INFO bitrate/playtime/playtime_float/filesize(KB), VOLUMEID only where it
+      still names the volume, and clears AUDIO_ID (`_KEEP_AUDIO_ID_ON_STEM`,
+      pending the Traktor check). **Every START shifts by the time-base
+      difference**, the old offset read from `StemSwap.original_audio` — the
+      original's bytes where they are NOW (parked, under a non-audio name, so
+      `timebase.offset_ms(..., suffix=)` takes the original's suffix). Read
+      from the old path it would be 0 and every cue ~51 ms late
+      (`test_stem_swap.py` pins that failure). An anchor pushed below 0 moves
+      forward by whole beats with its companion; a hotcue there clamps to 0 and
+      is reported. The journal records scope `stem` (not `track/add`, which
+      would exclude the entry from the tag sync).
     - `adapter.py` (`TraktorAdapter`) — owns the store **and** the `TrackIndex`
       built from it, so projection and native model cannot drift. Translates the
       generic cue vocabulary to Traktor's integers (the only place that mapping
@@ -356,6 +394,16 @@ Two independent apps that talk over HTTP:
     OneLibrary library is a drive. `prefs` keeps last-opened **per platform**:
     offering a Rekordbox `master.db` to someone who just chose Traktor is an
     offer that cannot be taken.
+- **`engine/`** — the **stem engine**, a separate program (`konduktor_engine`,
+  Python 3.12, torch + demucs 4.1 pinned in `engine/requirements.txt`) that
+  imports nothing from `konduktor`. `core.py` loads htdemucs_ft from a LOCAL
+  weights folder (never online — the weights' licence rules out shipping them,
+  so the app downloads them) and separates, seeded (shifts=1 is random).
+  Audio crosses as raw planar float32 files; protocol messages are JSON lines
+  on a private copy of stdout, with `sys.stdout` pointed at stderr so torch's
+  prints cannot corrupt one. For now a one-shot `separate` CLI; the persistent
+  `serve` mode and the frozen per-OS build come next. `backend/dev_stems.py`
+  (dev only) converts files with the real writer through an unfrozen engine.
 - **`frontend/`** — React + TypeScript + Vite. A dark, virtualized track
   explorer. Entry: [frontend/src/App.tsx](frontend/src/App.tsx).
   - `api.ts` — typed client + all API types. **Generic, not Traktor-shaped**:
@@ -468,7 +516,9 @@ Two independent apps that talk over HTTP:
     (right-click → multi-field metadata + album-art edit), `StatusBar`,
     `RatingStars` (read-only, or click-to-set when given `onChange`), `Toast`,
     `UpdateDialog` (`UpdateCheck`, mounted in `main.tsx` beside `App` so it shows
-    even on the picker screen: on startup fetches the latest GitHub release and,
+    even on the picker screen: on startup lists recent GitHub releases and takes the
+    newest non-draft, non-prerelease `v…` tag — NOT `/releases/latest`, since the
+    stem engine publishes `engine-v*` releases in the same repo — and,
     if its tag's **semver part** is newer than `__APP_VERSION__` — build-number
     `-b<N>` bumps don't count — shows an update dialog with the release's
     "What's Changed" bullets; Download opens the release page in the system
@@ -604,6 +654,21 @@ serialization path.** It enforces:
   (MP3 header, header-less, 48 kHz, FFmpeg and Apple AAC priming, the
   unreadable fallback), negative beats dropped with bar numbering kept, and
   rekordbox's own hand-placed kit-4 cues read back from `master.db`.
+- `test_stem_file.py` — the stem writer on generated sources with a FAKE
+  engine: both JSON literals byte-exact against the user's commercial files and
+  collection (skipped when absent) and float32-equal; mono not 3 dB quieter;
+  48 kHz resampling does not move time; MP3 and FLAC through both encoders give
+  five streams with only the mix enabled, no shift (cross-correlation), the
+  bitrate rule (256 floor, lossless 320), every tag + cover; `verify` refuses a
+  shifted, truncated or box-less file; a raising checkpoint cancels.
+- `test_stem_swap.py` — `apply_stem_swaps` on a temp copy of the real
+  collection with a generated MP3 (with header) and a real stem file: prep
+  reads back at the same decoded second while its START moves by the 2257-
+  sample offset read from the PARKED file (and the 51 ms error reading the old
+  path would cause); outside the ENTRY only its PRIMARYKEYs change (TYPE STEM);
+  save round-trip; anchor-before-0 moves a whole beat with its companion, a
+  hotcue clamps and is reported; "add" appends, keeps the original, joins a
+  playlist, carries pending tag fields; clashes refused with nothing changed.
 - `test_traktor_adapter.py` — the **generic layer**: one parse per open, the
   projection refreshing after every command family, cue-type translation,
   capabilities, and `set_analysed_grid` vs `replace_grid`. `test_save_fidelity`

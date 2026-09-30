@@ -20,14 +20,26 @@ interface GithubRelease {
   tag_name: string
   html_url: string
   body: string | null
+  draft?: boolean
+  prerelease?: boolean
 }
 
+/**
+ * The newest APP release. Not `/releases/latest`: that is whichever release
+ * GitHub flags "latest", and the same repo also publishes the stem engine on
+ * its own `engine-v*` channel — one flagged latest by mistake would make this
+ * check go quiet (its tag does not parse as an app version) with no error. So
+ * list recent releases (newest first) and take the first app tag.
+ */
 async function fetchLatestRelease(): Promise<GithubRelease> {
-  const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+  const res = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=30`, {
     headers: { Accept: 'application/vnd.github+json' },
   })
   if (!res.ok) throw new Error(`GitHub responded ${res.status}`)
-  return res.json()
+  const releases: GithubRelease[] = await res.json()
+  const app = releases.find((r) => !r.draft && !r.prerelease && /^v\d/.test(r.tag_name))
+  if (!app) throw new Error('No app release found')
+  return app
 }
 
 /** The semver triple at the start of a version/tag string ("v0.1.2-b7" → [0,1,2]). */
