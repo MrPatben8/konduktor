@@ -51,6 +51,7 @@ from ...core.relocate import PathGroup
 from ...schemas import PlaylistNode
 from . import beatgrid
 from .locations import os_path_to_location, resolve_path
+from .projection import iso_date, traktor_date
 
 # Traktor's POPM frame owner: an ID3 rating is per-owner, so writing under
 # this email is what makes the stars show up in Traktor itself.
@@ -385,6 +386,10 @@ class TraktorStore:
                     if entry.album is None:
                         entry.album = Albumtype()
                     entry.album.title = v or None
+                elif k == "release_date":
+                    # Edited as ISO (that is what the projection shows); stored
+                    # as Traktor's "YYYY/M/D".
+                    entry.info.release_date = traktor_date(v)
                 elif k in self._INFO_FIELDS:
                     setattr(entry.info, k, v or None)
                 elif k == "comment2":
@@ -440,8 +445,9 @@ class TraktorStore:
                 key=getattr(track, "key", None) or None,
                 bitrate=getattr(track, "bitrate", None) or None,
                 playcount=getattr(track, "playcount", None) or None,
-                release_date=getattr(track, "release_date", None) or None,
-                import_date=getattr(track, "import_date", None) or None,
+                # The generic model carries ISO dates; Traktor writes "YYYY/M/D".
+                release_date=traktor_date(getattr(track, "release_date", None)),
+                import_date=traktor_date(getattr(track, "import_date", None)),
                 # Traktor's RANKING is stars x 51; an unrated track has no
                 # attribute at all rather than a zero.
                 ranking=(max(0, min(5, int(getattr(track, "rating", 0) or 0))) * 51) or None,
@@ -1137,6 +1143,15 @@ class TraktorStore:
                     continue  # no-op (e.g. from == to); leave byte-identical
                 loc.volume, loc.dir, loc.file = volume, dir_, file
                 key_remap[old_key] = new_key
+                # Re-key the index too. Everything that finds an ENTRY by track
+                # id goes through it — later edits, and the file-tag sync on
+                # save, which would otherwise silently skip every edit made to
+                # this track before the remap.
+                if self._entry_by_key.get(old_key) is e:
+                    del self._entry_by_key[old_key]
+                self._entry_by_key[new_key] = e
+                if old_key in self._track_art:
+                    self._track_art[new_key] = self._track_art.pop(old_key)
             if not key_remap:
                 return {}
             # Rewrite playlist entry primary keys that referenced moved tracks.
@@ -1170,6 +1185,9 @@ class TraktorStore:
             return round(r / 51) if r else 0
         if field == "comment2":
             return entry.info.rating if entry.info else None
+        if field == "release_date":
+            # A file tag wants ISO, not the NML's "YYYY/M/D".
+            return iso_date(entry.info.release_date) if entry.info else None
         return getattr(entry.info, field, None) if entry.info else None
 
     def count_playlists(self) -> int:

@@ -17,6 +17,9 @@ from .cue_types import NATIVE_TO_CUE_TYPE
 _OPEN_KEY = re.compile(r"^(\d{1,2})\s*([md])$", re.I)
 _CAMELOT = re.compile(r"^(\d{1,2})\s*([ab])$", re.I)
 _DATE = re.compile(r"^(\d{4})/(\d{1,2})/(\d{1,2})$")
+# "YYYY", "YYYY-MM" or "YYYY-MM-DD", optionally followed by a time (a
+# timestamp's date part is the date).
+_ISO_DATE = re.compile(r"^(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?(?:[T ].*)?$")
 
 
 def parse_key(key: str | None) -> tuple[int | None, str | None]:
@@ -48,6 +51,28 @@ def iso_date(value: str | None) -> str | None:
         return value
     y, mo, d = m.groups()
     return f"{y}-{int(mo):02d}-{int(d):02d}"
+
+
+def traktor_date(value: str | None) -> str | None:
+    """The inverse of `iso_date`: an ISO-8601 date as Traktor writes it.
+
+    Traktor's form is unpadded "YYYY/M/D" — every one of the 16,000-odd dates
+    in the real collection. A year alone becomes "YYYY/1/1", as Traktor itself
+    records a year-only release date (2,094 of 2,122 there). Anything that is
+    neither ISO nor already Traktor's form passes through unchanged, as
+    `iso_date` does in the other direction: losing a date is worse than
+    carrying one Traktor may not parse.
+    """
+    if not value:
+        return None
+    s = value.strip()
+    if m := _DATE.match(s):
+        y, mo, d = m.groups()
+        return f"{y}/{int(mo)}/{int(d)}"
+    if m := _ISO_DATE.match(s):
+        y, mo, d = m.groups()
+        return f"{y}/{int(mo or 1)}/{int(d or 1)}"
+    return value
 
 
 def primary_key(location) -> str:
