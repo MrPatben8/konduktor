@@ -80,7 +80,9 @@ class RekordboxAdapter:
         self._store.close()
 
     def reload(self) -> None:
-        self._store._load()
+        """Re-read the library from disk, DISCARDING unsaved edits (see
+        `RekordboxStore.discard` for why a plain re-open is not enough)."""
+        self._store.discard()
         self._cloud_synced = self._store.cloud_synced
         self._rebuild()
 

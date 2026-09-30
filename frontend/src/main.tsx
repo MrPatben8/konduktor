@@ -8,6 +8,7 @@ import App from './App.tsx'
 import { UpdateCheck } from './components/UpdateDialog.tsx'
 import { AmbientBackdrop } from './components/AmbientBackdrop.tsx'
 import { ConfirmHost } from './lib/confirm.tsx'
+import { QuitGuard } from './components/QuitGuard.tsx'
 import { preventHistoryNavigation } from './lib/noNavigation.ts'
 
 preventHistoryNavigation()
@@ -31,6 +32,8 @@ createRoot(document.getElementById('root')!).render(
       <UpdateCheck />
       {/* askConfirm()'s dialogs — the app's replacement for window.confirm. */}
       <ConfirmHost />
+      {/* Save · Discard · Cancel when quitting with unsaved changes. */}
+      <QuitGuard />
     </QueryClientProvider>
   </StrictMode>,
 )

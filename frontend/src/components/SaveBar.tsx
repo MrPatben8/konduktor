@@ -4,16 +4,19 @@ import { api } from '../api'
 import { useCaps } from '../lib/capabilities'
 import { overwriteWarning, readOnlyNotice, saveLabel } from '../lib/platformCopy'
 import { Icon } from '../lib/icons'
+import { askConfirm } from '../lib/confirm'
 
 interface Props {
   onError: (msg: string) => void
   /** Rendered to the right of the save button (the settings gear). */
   trailing?: ReactNode
+  /** After a discard, so the owner can refresh what it holds outside queries. */
+  onDiscarded?: () => void
 }
 
 // Bottom-of-sidebar save control. Shows unsaved-changes state and writes to the
 // NML; every save is recorded in the collection's version history.
-export function SaveBar({ onError, trailing }: Props) {
+export function SaveBar({ onError, trailing, onDiscarded }: Props) {
   const qc = useQueryClient()
   const [justSaved, setJustSaved] = useState<string | null>(null)
   const { data: state } = useQuery({ queryKey: ['state'], queryFn: api.state })
@@ -30,6 +33,25 @@ export function SaveBar({ onError, trailing }: Props) {
     },
     onError: (e: Error) => onError(e.message),
   })
+
+  // The way back that did not exist: every edit since the last save goes, and
+  // the library re-reads itself from disk. Everything cached is refetched.
+  const discard = useMutation({
+    mutationFn: api.discard,
+    onSuccess: () => {
+      qc.invalidateQueries()
+      onDiscarded?.()
+    },
+    onError: (e: Error) => onError(e.message),
+  })
+  const confirmDiscard = async () => {
+    const ok = await askConfirm({
+      title: 'Discard unsaved changes?',
+      body: 'Every change since the last save is thrown away and the library is re-read from disk. This cannot be undone.',
+      confirmLabel: 'Discard changes',
+    })
+    if (ok) discard.mutate()
+  }
 
   const caps = useCaps()
   const warning = overwriteWarning(caps.save)
@@ -79,6 +101,17 @@ export function SaveBar({ onError, trailing }: Props) {
       </button>
       {trailing}
       </div>
+      {dirty && !save.isPending && (
+        <div className="mt-1.5 text-center">
+          <button
+            onClick={() => void confirmDiscard()}
+            disabled={discard.isPending}
+            className="text-[11px] text-faint hover:text-pink disabled:opacity-50"
+          >
+            {discard.isPending ? 'Discarding…' : 'Discard changes…'}
+          </button>
+        </div>
+      )}
       {justSaved && (
         <div className="mt-2 text-center text-[11px] text-mint">{justSaved}</div>
       )}

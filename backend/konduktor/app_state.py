@@ -25,6 +25,7 @@ human summary, and this module versions them.
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 from . import __version__, adapters, history, library_id, prefs  # noqa: F401 — registers adapters
@@ -51,6 +52,11 @@ class AppState:
         # This open's missing-files check (see `relocation.py`). A new one per
         # open, which is what makes the dialog ask again on a reopen.
         self.relocation: RelocationCheck | None = None
+        # Serialises the operations that REPLACE or COMMIT the whole library —
+        # open, save, discard (and a stem batch's swap step). A save landing in
+        # the middle of another would commit a half-applied state; reentrant so
+        # one of them may call another.
+        self.mutation = threading.RLock()
 
     @property
     def loaded(self) -> bool:
@@ -95,6 +101,10 @@ class AppState:
                 pass
 
     def open(self, path: Path) -> None:
+        with self.mutation:
+            self._open(path)
+
+    def _open(self, path: Path) -> None:
         # The registry picks the adapter by probing the file, not by extension —
         # a Rekordbox library is a .db and a Serato one is a directory. Raises on
         # an unrecognised or unparseable file; only commit once it has parsed.
@@ -146,6 +156,10 @@ class AppState:
         cannot restore from.
         """
         assert self.adapter is not None and self.path is not None
+        with self.mutation:
+            return self._save()
+
+    def _save(self):
         outcome = self.adapter.save()
         # Not every platform is versioned. A library that is more than one file
         # has no single blob that IS the library, and it says so through its
@@ -157,6 +171,17 @@ class AppState:
                 self.path, outcome.snapshot, outcome.summary, __version__
             )
         return outcome, commit
+
+    def discard(self) -> None:
+        """Drop every unsaved edit: the library re-reads itself from disk.
+
+        Through the adapter's own `reload`, NOT `open` — reopening would start a
+        new missing-files check and forget this session's relocation answers,
+        which are not edits and survive a reload (the store keeps them).
+        """
+        assert self.adapter is not None
+        with self.mutation:
+            self.adapter.reload()
 
 
 STATE = AppState()

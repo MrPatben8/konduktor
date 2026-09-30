@@ -125,6 +125,7 @@ with tempfile.TemporaryDirectory() as d:
     ad = TraktorAdapter(work)
     before_cues = ad.track_cues(tid)
     before = ad.snapshot()
+    audio_id = ad.store.model_entry(tid).audio_id
     written = build_stem(mp3)
     parked = park(mp3)
     stem = written.path
@@ -140,6 +141,8 @@ with tempfile.TemporaryDirectory() as d:
           == (written.bit_rate, round(written.duration), round(written.size / 1024)),
           f"{entry.info.bitrate} {entry.info.playtime} {entry.info.filesize}")
     check("the projection calls it a stem track", ad.track(new).media_kind == "stem")
+    check("Traktor's fingerprint is KEPT (cleared, Traktor re-measures the grid's BPM on load)",
+          entry.audio_id == audio_id and bool(audio_id))
     after_cues = ad.track_cues(new)
     check("every cue reads back at the same DECODED second",
           [(c.slot, round(c.start, 9)) for c in after_cues.cues] == [(c.slot, round(c.start, 9)) for c in before_cues.cues],

@@ -101,6 +101,24 @@ class RekordboxStore:
         self._content_cache: list | None = None
         self._by_id: dict[str, object] | None = None
 
+    def discard(self) -> None:
+        """Drop every unsaved edit and re-open the library as it is on disk.
+
+        Three things hold edits here, and all three must go: the SQLAlchemy
+        session (rolled back, then closed with its engine — `_load()` alone
+        would open a SECOND connection and leak the first), the buffered grid
+        writes (which the next save would otherwise still write to ANLZ files),
+        and the journal (else the library keeps reporting unsaved changes).
+        """
+        try:
+            self._db.session.rollback()
+        except Exception:  # noqa: BLE001 — discarding must not fail halfway
+            pass
+        self.close()
+        self._journal = EditJournal()
+        self._pending_grids.clear()
+        self._load()
+
     def close(self) -> None:
         """Release the session AND the pooled connection.
 

@@ -3,11 +3,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type PlaylistKind, type PlaylistNode } from '../api'
 import { useCaps } from '../lib/capabilities'
 import { SaveBar } from './SaveBar'
+import { confirmDiscardUnsaved } from '../lib/unsaved'
 import { SettingsMenu } from './SettingsMenu'
 import { DevicesSection } from './DevicesSection'
 import { ExportsSection } from './ExportsSection'
 import { ConfirmDialog, type ConfirmRequest } from './ConfirmDialog'
-import { askConfirm } from '../lib/confirm'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { Icon, type IconName } from '../lib/icons'
 import { PlatformIcon } from '../lib/platformIcons'
@@ -49,6 +49,8 @@ interface Props {
   onSwitchLibrary: () => void
   onDone: (msg: string) => void
   onOpenPathMapping: () => void
+  /** After unsaved edits were discarded (SaveBar). */
+  onDiscarded?: () => void
 }
 
 // Kind picks the icon; every behavioural question is answered by the node's own
@@ -319,27 +321,18 @@ export function Sidebar({
   onSwitchLibrary,
   onDone,
   onOpenPathMapping,
+  onDiscarded,
 }: Props) {
   const qc = useQueryClient()
-  // Both share a cache entry with App and SaveBar, so the header never
-  // disagrees with what is loaded or with whether it has been saved.
+  // Shares a cache entry with App, so the header never disagrees with what is
+  // loaded.
   const library = useQuery({ queryKey: ['collection'], queryFn: api.collection }).data?.library
-  const dirty = useQuery({ queryKey: ['state'], queryFn: api.state }).data?.dirty ?? false
 
   // Switching library throws away every unsaved edit — the adapter holds them in
   // its native model, and opening another library replaces it. Worth a confirm:
   // until now there was no way to switch at all, so this hazard is new.
   const switchLibrary = async () => {
-    if (
-      dirty &&
-      !(await askConfirm({
-        title: 'Discard unsaved changes?',
-        body: 'You have unsaved changes. Opening a different library will discard them.',
-        confirmLabel: 'Discard and switch',
-      }))
-    )
-      return
-    onSwitchLibrary()
+    if (await confirmDiscardUnsaved()) onSwitchLibrary()
   }
   // There is no per-node flag for "you may create a NEW playlist" — the node
   // flags describe existing nodes — so this is the library-level gate.
@@ -609,7 +602,11 @@ export function Sidebar({
         Collection Version History
       </button>
 
-      <SaveBar onError={onError} trailing={<SettingsMenu up onOpenPathMapping={onOpenPathMapping} />} />
+      <SaveBar
+        onError={onError}
+        onDiscarded={onDiscarded}
+        trailing={<SettingsMenu up onOpenPathMapping={onOpenPathMapping} />}
+      />
     </aside>
   )
 }
