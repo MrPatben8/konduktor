@@ -48,6 +48,12 @@ datas += [
     ("fixtures/rekordbox/device/export.pdb", "fixtures/rekordbox/device"),
     ("fixtures/rekordbox/device/exportExt.pdb", "fixtures/rekordbox/device"),
 ]
+# Which stem engine this build needs, and the pinned weights (read at import by
+# konduktor/stems/engine_manager.py).
+datas += [
+    ("konduktor/stems/engine.json", "konduktor/stems"),
+    ("konduktor/stems/weights.json", "konduktor/stems"),
+]
 
 a = Analysis(
     ["sidecar.py"],

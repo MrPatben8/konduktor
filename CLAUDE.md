@@ -336,6 +336,22 @@ Two independent apps that talk over HTTP:
     the view's, so browsing elsewhere cannot point it at endpoints that do not
     know the track. `trackAudioUrl`/`trackCuesFor` in `api.ts` are the one place
     that choice is made.
+  - `stems/` — Convert to Stems around the file itself. `engine_manager.py`:
+    the engine version THIS build needs (`engine.json`) and the pinned weights
+    (`weights.json`, a copy of `engine/weights.json` a test keeps equal).
+    Installs under app-data (Windows: a SHORT `%LOCALAPPDATA%\Konduktor\engine`
+    for the 260-char limit); an install counts only after every part's hash,
+    the archive's, AND the unpacked engine starting and naming the expected
+    version (`probe`) — `installed.json` is written last. One engine at a time;
+    CUDA offered only for driver r580+ and capability 7.5+ (`nvidia-smi`).
+    Side-loading (offline) verifies against the release manifest, cached once
+    seen. `download.py`: resumable (`Range`, restarts if ignored), SHA-verified,
+    certifi TLS (a frozen macOS Python has no CA store). `engine_process.py`:
+    one `serve` per batch — progress, cancel-by-message, crash reported with
+    the engine's stderr tail, raw work files deleted as read, a Windows Job
+    Object and `keep_awake` (caffeinate / SetThreadExecutionState). Routes:
+    `GET /api/stems/engine`, `POST .../install` (a `stem-engine-install` job in
+    bytes, engine + weights), `POST .../sideload`, `DELETE`.
   - `app_state.py` — the one loaded library, and the **version-history commit**.
     **`discard()`** (`POST /api/discard`, SaveBar's "Discard changes…", the
     quit prompt's Discard) drops every unsaved edit through the adapter's own
@@ -724,6 +740,14 @@ serialization path.** It enforces:
   save round-trip; anchor-before-0 moves a whole beat with its companion, a
   hotcue clamps and is reported; "add" appends, keeps the original, joins a
   playlist, carries pending tag fields; clashes refused with nothing changed.
+- `test_engine_manager.py` — the engine manager and process against a LOCAL
+  Range-aware server and a FAKE engine script (no network, no torch): resume,
+  restart when Range is ignored, checksum refusal, cancel keeps the `.part`;
+  install from split parts with byte progress and a probe; a wrong-version
+  engine or corrupt part leaves nothing installed; side-load and weights
+  verified; the CUDA offer's driver/capability floors; the process relays
+  progress, cancels without dying, reports a crash with its reason, keeps the
+  Mac awake; the routes (install job in bytes, 409 while one runs, remove).
 - `test_traktor_adapter.py` — the **generic layer**: one parse per open, the
   projection refreshing after every command family, cue-type translation,
   capabilities, and `set_analysed_grid` vs `replace_grid`. `test_save_fidelity`

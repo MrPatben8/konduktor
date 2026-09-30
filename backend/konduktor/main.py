@@ -96,6 +96,8 @@ from .schemas import (
     Track,
     TrackCues,
     TrackPage,
+    StemEngineInstall,
+    StemSideLoad,
 )
 
 log = logging.getLogger(__name__)
@@ -729,6 +731,100 @@ def capabilities() -> Capabilities:
 @app.get("/api/state", response_model=EditState)
 def state() -> EditState:
     return EditState(dirty=require_adapter().dirty, library=_library_info())
+
+
+# ---- stem engine (download / side-load / remove) --------------------------
+# The engine and its weights live outside the app (see stems/engine_manager.py).
+ENGINE_JOB = "stem-engine-install"
+STEM_JOB = "stem-conversion"
+
+
+@app.get("/api/stems/engine")
+def stem_engine_status() -> dict:
+    """What is installed, what this computer can run, and what a download costs."""
+    from .stems import engine_manager as em
+
+    mgr = em.default_manager()
+    running = JOBS.active(ENGINE_JOB)
+    return {**mgr.status(), "device": prefs.load_prefs().get("stemDevice", "auto"),
+            "install_job": running[0].id if running else None}
+
+
+@app.post("/api/stems/engine/install", response_model=JobStatus)
+def install_stem_engine(body: StemEngineInstall) -> JobStatus:
+    """Download the engine (and the weights) as a job, in bytes."""
+    from .jobs import JobCancelled
+    from .stems import download
+    from .stems import engine_manager as em
+
+    mgr = em.default_manager()
+    if mgr.base_target is None:
+        raise HTTPException(422, "There is no stem engine for this computer")
+    target = body.target or mgr.base_target
+    if target not in mgr.status(network=False)["offered_targets"]:
+        raise HTTPException(400, f"The {target} engine is not offered on this computer")
+
+    def run(handle):
+        info = mgr.target_info(target)
+        if info is None:
+            raise em.EngineError("Could not reach the engine download — check the internet connection")
+        installed = mgr.installed()
+        need_engine = not (installed and installed["target"] == target)
+        need_weights = body.weights and not mgr.weights_installed()
+        total = (info["size"] if need_engine else 0) + (mgr.weights_size() if need_weights else 0)
+        handle.progress(done=0, total=total, unit="bytes", message="Downloading the stem engine…")
+        done = [0]
+
+        def on_bytes(n: int) -> None:
+            done[0] += n
+            handle.progress(done=done[0])
+
+        try:
+            if need_engine:
+                mgr.install_engine(target, on_bytes=on_bytes, cancelled=lambda: handle.cancelled)
+            if need_weights:
+                handle.progress(message="Downloading the separation model…")
+                mgr.install_weights(on_bytes=on_bytes, cancelled=lambda: handle.cancelled)
+        except download.DownloadCancelled:
+            raise JobCancelled()
+        return {"target": target, "ready": mgr.ready()}
+
+    try:
+        job = JOBS.submit(ENGINE_JOB, run, exclusive_with=(ENGINE_JOB, STEM_JOB))
+    except JobBusy:
+        raise HTTPException(409, "The stem engine is already downloading, or a conversion is running")
+    return JobStatus(**job.as_dict())
+
+
+@app.post("/api/stems/engine/sideload")
+def side_load_stem_engine(body: StemSideLoad) -> dict:
+    """Install the engine or the weights from files the user already has."""
+    from .stems import engine_manager as em
+
+    if JOBS.active(ENGINE_JOB) or JOBS.active(STEM_JOB):
+        raise HTTPException(409, "Wait for the running download or conversion to finish")
+    mgr = em.default_manager()
+    path = Path(body.path).expanduser()
+    if not path.exists():
+        raise HTTPException(400, f"Not found: {path}")
+    try:
+        if body.kind == "engine":
+            mgr.side_load_engine(path)
+        else:
+            mgr.side_load_weights(path)
+    except em.EngineError as ex:
+        raise HTTPException(400, str(ex))
+    return stem_engine_status()
+
+
+@app.delete("/api/stems/engine")
+def remove_stem_engine() -> dict:
+    from .stems import engine_manager as em
+
+    if JOBS.active(ENGINE_JOB) or JOBS.active(STEM_JOB):
+        raise HTTPException(409, "Wait for the running download or conversion to finish")
+    em.default_manager().remove()
+    return stem_engine_status()
 
 
 @app.post("/api/discard", response_model=EditState)

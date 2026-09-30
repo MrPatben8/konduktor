@@ -31,3 +31,6 @@ traktor-nml-utils @ git+https://github.com/MrPatben8/traktor-nml-utils.git
 # deprecated alias and is removed in 0.6.0, so the Rekordbox adapter keeps
 # running as-is — but that rename is the thing to fix before taking 0.6.
 pyrekordbox @ git+https://github.com/dylanljones/pyrekordbox.git
+# The stem engine and its weights are downloaded over HTTPS by the sidecar; a
+# frozen Python on macOS has no system CA bundle of its own.
+certifi>=2024.7

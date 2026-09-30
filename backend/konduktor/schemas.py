@@ -152,6 +152,18 @@ class SetCueColor(BaseModel):
     color: str | None = None  # a capabilities.cues.palette entry; None = uncoloured
 
 
+class StemEngineInstall(BaseModel):
+    # None = this computer's default engine; "windows-x64-cuda" to take the GPU one.
+    target: str | None = None
+    # Also fetch the model weights (the engine is useless without them).
+    weights: bool = True
+
+
+class StemSideLoad(BaseModel):
+    path: str
+    kind: Literal["engine", "weights"]
+
+
 class EditState(BaseModel):
     dirty: bool  # unsaved in-memory changes exist
     library: LibraryInfo
