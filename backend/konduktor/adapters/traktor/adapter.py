@@ -50,7 +50,7 @@ class TraktorAdapter:
         if entry is None:
             return TrackCues()
         self._index.replace(projection.to_track(entry))
-        return projection.to_track_cues(entry)
+        return projection.to_track_cues(entry, self._store.time_offset_ms(entry))
 
     # ---- read ------------------------------------------------------------
     @property
@@ -75,7 +75,9 @@ class TraktorAdapter:
 
     def track_cues(self, track_id: str) -> TrackCues | None:
         entry = self._store.model_entry(track_id)
-        return projection.to_track_cues(entry) if entry is not None else None
+        if entry is None:
+            return None
+        return projection.to_track_cues(entry, self._store.time_offset_ms(entry))
 
     # ---- transitional shims --------------------------------------------
     # main.py still drives the store directly and calls replace_track after each

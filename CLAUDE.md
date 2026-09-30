@@ -104,8 +104,10 @@ Two independent apps that talk over HTTP:
       or a syncopated bassline. Positions are in the **decoded audio's** time
       base (libsndfile = CoreAudio to the sample on MP3). **Rekordbox's grids sit
       a constant ~25 ms later on lossy files** and at 0 on WAV — a platform
-      time-base difference, deliberately NOT corrected here; Traktor's is
-      unmeasured. `backend/bench_grid_detect.py` scores it against any library's
+      time-base difference, deliberately NOT corrected here. Traktor's differs
+      by a per-file rule instead (an MP3 with a header runs 2257 samples late),
+      corrected at the adapter boundary — see `adapters/traktor/timebase.py`.
+      `backend/bench_grid_detect.py` scores it against any library's
       single-marker grids and reports that constant separately from detection
       error (29 Rekordbox references: old 1/29 BPMs, new 27/29).
     - `places.py` — where a person keeps things on THIS computer: the user's own
@@ -149,6 +151,21 @@ Two independent apps that talk over HTTP:
     - `driver.py`/`discovery.py` — `can_open`, default-location detection, restore.
     - `beatgrid.py`, `locations.py`, `capabilities.py` — Traktor's grid/companion
       rules, LOCATION ↔ OS path conversion, and its capability set.
+    - `timebase.py` — **Traktor's clock vs the decoded audio.** Traktor decodes
+      MP3 naively (ignores the LAME gapless fields, decodes the Xing/Info
+      header frame as audio), so on an MP3 WITH a header every stored position
+      sits `samples_per_frame + encoder_delay + 529` samples (2257 = ~51 ms at
+      44.1 kHz, 47 ms at 48 kHz) later than the decoded audio; header-less
+      MP3s and every other format are 0. Measured in Traktor 4.5 with blinded
+      cues in both directions (kit 4, in the stem-conversion discussion log).
+      The store ADDS it at its four seconds→START writes (`time_offset_ms`),
+      `projection.to_track_cues` SUBTRACTS it, and a read is **never clamped
+      at 0**: Traktor anchors grids inside the header frame, and clamping would
+      move them on the next write-back (`buildBeatGrid` keeps negative starts
+      for the same reason). A file that cannot be read gets 0 and is not
+      cached. The header itself is read by `core/mp3_gapless.py`, which skips
+      the ID3v2 tag first — a check that did not once misread every real MP3
+      as header-less.
   - `adapters/rekordbox/` — **track metadata, playlists and hot cues writable;
     the beatgrid still read-only** (milestones 2 and 3a). Also home to
     `anlz_writer.py`, which BUILDS analysis files from nothing — Pioneer's format,
@@ -586,6 +603,13 @@ serialization path.** It enforces:
   The guard that catches serialization regressions like the lxml reformatting bug.
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched.
+- `test_timebase.py` — Traktor's MP3 time base: `mp3_gapless` on generated
+  MP3s (header found after a 1 MB ID3 tag; header-less has none), the offset
+  in samples (2257 at 44.1 and 48 kHz, 0 header-less / WAV / missing), every
+  write path adding it and the projection removing it, a grid anchored inside
+  the header frame reading negative and round-tripping byte for byte, and —
+  when kit 4 is on the machine — Traktor's own hand-placed cues reading back
+  onto the kick.
 - `test_traktor_adapter.py` — the **generic layer**: one parse per open, the
   projection refreshing after every command family, cue-type translation,
   capabilities, and `set_analysed_grid` vs `replace_grid`. `test_save_fidelity`

@@ -277,7 +277,8 @@ export class BeatGrid {
  *
  * Tolerant by design: accepts `undefined` (so a frontend running against an
  * older backend degrades to "no grid" rather than throwing), unsorted input,
- * duplicate positions, negative starts, and non-finite or out-of-range BPMs.
+ * duplicate positions and non-finite or out-of-range BPMs. Negative starts are
+ * kept as they are (see below).
  */
 export function buildBeatGrid(markers?: readonly GridMarker[] | null): BeatGrid | null {
   if (!markers || markers.length === 0) return null
@@ -286,7 +287,11 @@ export function buildBeatGrid(markers?: readonly GridMarker[] | null): BeatGrid 
     if (!m || !Number.isFinite(m.bpm) || !Number.isFinite(m.start)) continue
     if (m.bpm <= 0) continue
     clean.push({
-      start: Math.max(0, m.start),
+      // NOT clamped at 0. A marker before the decoded audio's start is a real
+      // phase — Traktor anchors MP3 grids inside the header frame, ~51 ms
+      // before the audio Konduktor decodes — and clamping it would move every
+      // beat of the grid late by that much.
+      start: m.start,
       bpm: Math.min(MAX_BPM, Math.max(MIN_BPM, m.bpm)),
     })
   }

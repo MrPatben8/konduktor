@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 
 from ...core.model import CuePoint, GridMarker, HotcueChip, Track, TrackCues
-from . import beatgrid
+from . import beatgrid, timebase
 from .cue_types import NATIVE_TO_CUE_TYPE
 
 # Traktor displays keys in Open Key ("10m" / "8d") or Camelot ("8A" / "8B"),
@@ -157,8 +157,12 @@ def to_track(e) -> Track:
     )
 
 
-def to_track_cues(entry) -> TrackCues:
+def to_track_cues(entry, offset_ms: float = 0.0) -> TrackCues:
     """Project an ENTRY's beatgrid + cues.
+
+    `offset_ms` is how far the entry's positions sit behind the decoded audio
+    (`TraktorStore.time_offset_ms`, see `timebase`); positions come out in the
+    decoded time base, unclamped.
 
     The beatgrid is the FULL ordered marker list — a constant grid is a list of
     length one. Grid markers themselves are not cues; their companion cues are,
@@ -171,7 +175,7 @@ def to_track_cues(entry) -> TrackCues:
     marker_of = {id(c): i for i, c in comps.items()}
     grid_markers = [
         GridMarker(
-            start=(m.start or 0.0) / 1000.0,  # Traktor stores START in ms
+            start=timebase.from_traktor_ms(m.start or 0.0, offset_ms),  # START is ms
             bpm=m.grid.bpm if m.grid and m.grid.bpm else 0.0,
             name=m.name,
             companion=comps[i].hotcue if i in comps else None,
@@ -192,7 +196,7 @@ def to_track_cues(entry) -> TrackCues:
                 type=NATIVE_TO_CUE_TYPE.get(c.type, "cue"),
                 # Every Traktor cue lives in the hotcue bank.
                 role="hotcue",
-                start=(c.start or 0.0) / 1000.0,
+                start=timebase.from_traktor_ms(c.start or 0.0, offset_ms),
                 length=(c.len or 0.0) / 1000.0,
                 slot=slot,
                 color=c.color,
