@@ -5,7 +5,9 @@ import { Icon } from '../lib/icons'
 
 /** One row of a menu: an action, a submenu (`label ▸`), or a section heading. */
 export type MenuItem =
-  | { label: string; onClick: () => void; danger?: boolean; hint?: string; icon?: ReactNode; disabled?: boolean }
+  // `title` explains a disabled item (shown on hover). Such an item is NOT a
+  // disabled <button>, because browsers show no tooltip on one.
+  | { label: string; onClick: () => void; danger?: boolean; hint?: string; icon?: ReactNode; disabled?: boolean; title?: string }
   | { label: string; submenu: MenuItem[] }
   // Toggles in place and leaves the menu open, so several can be flipped in one go.
   | { label: string; checked: boolean; onToggle: () => void }
@@ -189,9 +191,12 @@ function MenuPanel({
           return (
             <button
               key={i}
-              disabled={item.disabled}
+              disabled={item.disabled && !item.title}
+              aria-disabled={item.disabled || undefined}
+              title={item.title}
               onMouseEnter={() => setOpen(null)}
               onClick={() => {
+                if (item.disabled) return
                 item.onClick()
                 onClose()
               }}

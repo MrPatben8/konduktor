@@ -434,6 +434,73 @@ export interface CueBatchResult {
   failed: { title: string; reason: string }[]
 }
 
+/** Convert to Stems: where the files go and what the collection does. */
+export interface StemConvertOptions {
+  /** `replace`: the stem file supersedes the original where it lives (the
+   *  original is parked, and Save deletes it). `destination`: a chosen folder;
+   *  the originals are never touched. */
+  mode: 'replace' | 'destination'
+  destination?: string | null
+  /** `repoint`: the entry names the stem file. `add`: a new entry beside it
+   *  (destination mode only). */
+  collection: 'repoint' | 'add'
+  playlist_id?: string | null
+  new_playlist?: string | null
+}
+
+export interface StemSkip {
+  track_id: string
+  title: string
+  reason: string
+}
+
+/** What a conversion would do (`POST /api/tracks/stems/preview`). */
+export interface StemPlan {
+  convert: { track_id: string; title: string; target: string; reuse: boolean }[]
+  skipped: StemSkip[]
+  space: { volume: string; folder: string; bytes: number; free: number | null }[]
+  /** Set when the batch cannot run at all (not enough space). */
+  blocked: string | null
+  /** Audio still to separate, in seconds (reused leftovers excluded). */
+  seconds: number
+  /** What the new stem files will take on disk. */
+  bytes: number
+  /** The originals' size — what Save deletes in Replace mode. */
+  original_bytes: number
+}
+
+/** A stem conversion job's `result`. */
+export interface StemBatchResult {
+  converted: { track_id: string; new_id: string; title: string }[]
+  /** Old id → new id, for entries repointed at their stem file. */
+  renamed: Record<string, string>
+  /** Original id → the NEW entry added beside it. */
+  added: Record<string, string>
+  skipped: StemSkip[]
+  failed: StemSkip[]
+  cancelled: boolean
+  playlist_missing?: boolean
+}
+
+export type StemTarget = 'macos-arm64' | 'windows-x64-cpu' | 'windows-x64-cuda'
+
+/** `GET /api/stems/engine`: the engine and weights on this computer. */
+export interface StemEngineStatus {
+  supported: boolean
+  required_version: string
+  installed: { version: string; target: StemTarget; size: number | null } | null
+  offered_targets: StemTarget[]
+  download_sizes: Partial<Record<StemTarget, number | null>>
+  manifest_available: boolean
+  nvidia: { name: string; driver: string; capability: number } | null
+  weights: { installed: boolean; size: number; revision: string }
+  root: string
+  /** `auto` | `cpu` | `gpu`, from prefs (`stemDevice`). */
+  device: string
+  /** A running download's job id. */
+  install_job: string | null
+}
+
 export interface SourceCandidate {
   path: string
   /** What a person recognises, e.g. "OneLibrary — Hardy". */
@@ -826,6 +893,18 @@ export const api = {
   /** Remove tracks from the library and every playlist. Audio files stay. */
   removeTracks: (trackIds: string[]) =>
     send<{ removed: number }>('POST', '/api/tracks/remove', { track_ids: trackIds }),
+  stemPreview: (trackIds: string[], opts: StemConvertOptions) =>
+    send<StemPlan>('POST', '/api/tracks/stems/preview', { track_ids: trackIds, ...opts }),
+  /** Starts a `stem-conversion` job; its `result` is a `StemBatchResult`. */
+  stemConvert: (trackIds: string[], opts: StemConvertOptions) =>
+    send<JobStatus>('POST', '/api/tracks/stems/convert', { track_ids: trackIds, ...opts }),
+  stemEngine: () => getJSON<StemEngineStatus>('/api/stems/engine'),
+  /** Starts a `stem-engine-install` job, counting bytes (engine + weights). */
+  stemEngineInstall: (target?: StemTarget | null) =>
+    send<JobStatus>('POST', '/api/stems/engine/install', { target: target ?? null, weights: true }),
+  stemSideload: (path: string, kind: 'engine' | 'weights') =>
+    send<StemEngineStatus>('POST', '/api/stems/engine/sideload', { path, kind }),
+  stemEngineRemove: () => send<StemEngineStatus>('DELETE', '/api/stems/engine'),
   autoGridBatch: (trackIds: string[], replaceExisting: boolean) =>
     send<JobStatus>('POST', '/api/tracks/grid/auto-batch', {
       track_ids: trackIds,

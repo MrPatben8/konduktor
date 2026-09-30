@@ -77,7 +77,13 @@ class Plan:
     def as_dict(self) -> dict:
         return {"convert": [{"track_id": p.track_id, "title": p.title, "target": str(p.target),
                              "reuse": p.reuse is not None} for p in self.items],
-                "skipped": self.skipped, "space": self.space, "blocked": self.blocked}
+                "skipped": self.skipped, "space": self.space, "blocked": self.blocked,
+                # For the dialog's estimate: audio still to SEPARATE (reused
+                # leftovers cost nothing), and what the new files will take.
+                "seconds": sum(p.seconds for p in self.items if p.reuse is None),
+                "bytes": sum(e["bytes"] for e in self.space),
+                # What Save would delete in Replace mode — the dialog says so.
+                "original_bytes": sum(p.source.stat().st_size for p in self.items if p.source.exists())}
 
 
 def _title(track) -> str:

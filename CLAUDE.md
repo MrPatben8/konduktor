@@ -596,6 +596,28 @@ Two independent apps that talk over HTTP:
     flushSync-driven measurement — which is why playlists were once a separate,
     non-virtualized `PlaylistTable`. Fixed 44 px rows make the drop index just
     pointer-y / ROW_HEIGHT. dnd-kit still reorders the header's columns.)
+    `ConvertStemsDialog` (**Convert to Stems**, one dialog — decided: Where =
+    Replace the originals (its option STATES that Save deletes them, since
+    the choice is remembered and may be preselected) or Save to a folder; In
+    the collection = point at the stem file / add as new tracks + playlist
+    (folder mode only); a live preview from `POST /api/tracks/stems/preview`
+    — N to convert, skipped ▸ with reasons, a time estimate from measured
+    real-time factors, space; the engine download INLINE, offering the GPU
+    engine when `nvidia` is set, which keeps running if the dialog closes
+    (App shows it in the status bar). Every option persists as `stemConvert`),
+    `StemReportDialog` (the Details behind a finished run's toast — every
+    skipped/failed track with its reason), `StemsSettings` (Settings → Stems:
+    engine status / download / install from a folder / remove, compute device
+    `stemDevice`, the remembered defaults, originals awaiting Save). App
+    follows a finished run's `{old: new}` ids with the deck and the selection,
+    picks a running conversion back up from `/api/state.stem_job` after a
+    reload, and reports `stem_recovery` once. The menu item is shown DISABLED
+    with a reason (`MenuItem.title` — rendered `aria-disabled`, not
+    `disabled`, since browsers show no tooltip on a disabled button) where the
+    platform cannot play stem files as stems. SaveBar adds "Saving deletes N
+    original files" while conversions are pending (decided: the consequence is
+    shown where Save is pressed). `Toast` takes an optional `action`;
+    `StatusJob.unit: 'bytes'` shows a download in MB.
     `AutoCueDialog` (the Auto Hotcues slot template: event + beat offset per
     slot, a per-slot Replace tick for occupied slots — never remembered, since
     overwriting is a decision about THIS track — and the template itself

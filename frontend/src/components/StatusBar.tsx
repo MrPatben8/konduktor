@@ -9,6 +9,8 @@ export interface StatusJob {
   detail?: string
   cancelling?: boolean
   onCancel: () => void
+  /** `bytes`: done/total are byte counts (a download), shown in MB. */
+  unit?: 'bytes'
 }
 
 interface Props {
@@ -60,7 +62,10 @@ export function StatusBar({
         <div className="ml-auto flex min-w-0 items-center gap-2">
           <span className="shrink-0 tabular-nums text-text">
             {job.cancelling ? 'Cancelling…' : job.label}
-            {job.total > 0 && ` ${Math.min(job.done + 1, job.total)}/${job.total}`}
+            {job.total > 0 &&
+              (job.unit === 'bytes'
+                ? ` ${Math.round(job.done / 1e6)}/${Math.round(job.total / 1e6)} MB`
+                : ` ${Math.min(job.done + 1, job.total)}/${job.total}`)}
           </span>
           <span className="well h-1.5 w-32 shrink-0 overflow-hidden rounded-full">
             <span

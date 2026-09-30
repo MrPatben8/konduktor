@@ -56,6 +56,7 @@ export function SaveBar({ onError, trailing, onDiscarded }: Props) {
   const caps = useCaps()
   const warning = overwriteWarning(caps.save)
   const dirty = state?.dirty ?? false
+  const pending = state?.pending_stems
   const readOnly = readOnlyNotice(caps)
 
   // A read-only library has no save to offer, and saying so plainly is the whole
@@ -78,6 +79,18 @@ export function SaveBar({ onError, trailing, onDiscarded }: Props) {
         <div className="mb-2 flex gap-1.5 rounded-xl bg-gold/10 px-2.5 py-1.5 text-[11px] leading-snug text-gold">
           <Icon name="warning" size={13} className="mt-px shrink-0" />
           <span>{warning}</span>
+        </div>
+      )}
+      {/* Decided: the consequence is shown where Save is pressed, not only in
+          the Stems panel — Save deletes what a Replace conversion parked. */}
+      {pending && pending.parked > 0 && (
+        <div className="mb-2 flex gap-1.5 rounded-xl bg-gold/10 px-2.5 py-1.5 text-[11px] leading-snug text-gold">
+          <Icon name="warning" size={13} className="mt-px shrink-0" />
+          <span>
+            Saving deletes {pending.parked} original file{pending.parked === 1 ? '' : 's'} (
+            {pending.bytes >= 1e9 ? `${(pending.bytes / 1e9).toFixed(1)} GB` : `${Math.round(pending.bytes / 1e6)} MB`}
+            ) replaced by stem files. Discard to keep them.
+          </span>
         </div>
       )}
       <div className="flex items-stretch gap-2">

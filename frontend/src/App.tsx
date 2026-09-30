@@ -4,7 +4,7 @@ import type { ColumnSizingState, SortingState, VisibilityState } from '@tanstack
 import { CapabilitiesContext, slotLabeller } from './lib/capabilities'
 import { writeHint } from './lib/platformCopy'
 import { invalidateTrackLists } from './lib/trackQueries'
-import { api, type CueBatchResult, type GridBatchResult, type AutoCueSlot, type PlaylistNode, type Track, type TrackOrigin } from './api'
+import { api, type CueBatchResult, type GridBatchResult, type AutoCueSlot, type PlaylistNode, type StemBatchResult, type Track, type TrackOrigin } from './api'
 import { confirmDiscardUnsaved } from './lib/unsaved'
 import {
   COLUMN_MENU,
@@ -28,6 +28,8 @@ import { HistoryPanel } from './components/HistoryPanel'
 import { PrepStrip } from './components/PrepStrip'
 import { ImportDialog } from './components/ImportDialog'
 import { AddFilesDialog, type AddTarget } from './components/AddFilesDialog'
+import { ConvertStemsDialog } from './components/ConvertStemsDialog'
+import { StemReportDialog } from './components/StemReportDialog'
 import { Icon } from './lib/icons'
 
 function applyFilters(tracks: Track[], f: Filters): Track[] {
@@ -86,7 +88,12 @@ export default function App() {
     { ids: string[]; existing: number; locked: number } | null
   >(null)
   const [cueBatch, setCueBatch] = useState<{ ids: string[]; withoutGrid: number } | null>(null)
-  const [batchJob, setBatchJob] = useState<{ id: string; kind: 'grid' | 'cues' } | null>(null)
+  const [batchJob, setBatchJob] = useState<{ id: string; kind: 'grid' | 'cues' | 'stems' } | null>(null)
+  // Convert to Stems: the dialog's selection, a finished run's Details, and a
+  // running engine download (which outlives the dialog — decided).
+  const [stemDialog, setStemDialog] = useState<string[] | null>(null)
+  const [stemReport, setStemReport] = useState<StemBatchResult | null>(null)
+  const [engineJob, setEngineJob] = useState<string | null>(null)
   const [batchCancelling, setBatchCancelling] = useState(false)
   const [cuesRefresh, setCuesRefresh] = useState(0) // bump → deck re-reads its cues
   // Every Remove ▸ action (and the playlist Delete key) confirms first.
@@ -184,8 +191,8 @@ export default function App() {
   const libraryName = collection.data?.library?.display_name ?? null
   const writeHintText = save ? writeHint(save) : 'save to write it to disk'
 
-  const notify = useCallback((kind: ToastMsg['kind'], text: string) => {
-    setToast({ id: Date.now(), kind, text })
+  const notify = useCallback((kind: ToastMsg['kind'], text: string, action?: ToastMsg['action']) => {
+    setToast({ id: Date.now(), kind, text, action })
   }, [])
   const onError = useCallback((msg: string) => notify('error', msg), [notify])
 
@@ -513,6 +520,10 @@ export default function App() {
     const kind = batchJob.kind
     setBatchJob(null)
     setBatchCancelling(false)
+    if (kind === 'stems') {
+      finishStemBatch(job.state, job.result as unknown as StemBatchResult | null, job.error)
+      return
+    }
     if (job.state === 'failed') {
       const what = kind === 'grid' ? 'Grid analysis' : 'Auto Hotcues'
       onError(`${what} failed: ${job.error ?? 'unknown error'}`)
@@ -567,6 +578,78 @@ export default function App() {
     qc.invalidateQueries() // refetch everything for the newly-opened collection
   }
 
+  // ---- Convert to Stems ------------------------------------------------------
+  const canStems = canEdit && !viewForeign && !!capabilities.data?.tracks.stem_convertible
+  const finishStemBatch = (state: string, r: StemBatchResult | null, error: string | null) => {
+    qc.invalidateQueries({ queryKey: ['state'] })
+    if (state === 'failed' || !r) {
+      onError(`Converting to stems failed: ${error ?? 'unknown error'}`)
+      return
+    }
+    if (r.cancelled) {
+      notify('warning', 'Conversion cancelled — nothing was changed')
+      return
+    }
+    invalidateTrackLists(qc)
+    qc.invalidateQueries({ queryKey: ['playlists'] })
+    qc.invalidateQueries({ queryKey: ['export-contents'] })
+    qc.invalidateQueries({ queryKey: ['facets'] })
+    // A repointed track's id IS its location, so it changed: follow it with the
+    // deck and the selection instead of leaving them on an id that is gone.
+    const renamed = r.renamed
+    if (prepTrack && renamed[prepTrack.id]) {
+      setPrepTrack({ ...prepTrack, id: renamed[prepTrack.id], media_kind: 'stem' })
+      setCuesRefresh((n) => n + 1)
+    }
+    setSelected((sel) => new Set([...sel].map((id) => renamed[id] ?? id)))
+    const n = r.converted.length
+    const parts = [
+      `${n} converted to stems`,
+      r.skipped.length ? `${r.skipped.length} skipped` : '',
+      r.failed.length ? `${r.failed.length} failed` : '',
+    ].filter(Boolean)
+    const text = parts.join(' · ') + (n ? ' — Save to keep them' : '')
+    const details = r.skipped.length || r.failed.length ? { label: 'Details', onClick: () => setStemReport(r) } : undefined
+    notify(n ? 'success' : 'error', text, details)
+  }
+  // A conversion keeps running if the page reloads; find it again.
+  const editState = useQuery({ queryKey: ['state'], queryFn: api.state, enabled: loaded, retry: false })
+  useEffect(() => {
+    const id = editState.data?.stem_job
+    if (id && !batchJob) setBatchJob({ id, kind: 'stems' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editState.data?.stem_job])
+  // Tell the user once what crash recovery did about an interrupted conversion.
+  const recovery = editState.data?.stem_recovery
+  const recoveryShown = useRef<unknown>(null)
+  useEffect(() => {
+    if (!recovery || recoveryShown.current === recovery) return
+    recoveryShown.current = recovery
+    const bits = [
+      recovery.restored ? `${recovery.restored} original${recovery.restored === 1 ? '' : 's'} put back` : '',
+      recovery.committed ? `${recovery.committed} saved conversion${recovery.committed === 1 ? '' : 's'} finished` : '',
+      recovery.kept ? `${recovery.kept} converted file${recovery.kept === 1 ? '' : 's'} kept for next time` : '',
+    ].filter(Boolean)
+    if (bits.length) notify('warning', `An interrupted stem conversion was tidied up: ${bits.join(' · ')}`)
+  }, [recovery, notify])
+  const engineJobStatus = useQuery({
+    queryKey: ['job', engineJob],
+    queryFn: () => api.job(engineJob!),
+    enabled: !!engineJob,
+    refetchInterval: (q) => (q.state.data && q.state.data.state !== 'running' ? false : 500),
+  })
+  useEffect(() => {
+    const job = engineJobStatus.data
+    if (!job || job.state === 'running' || job.id !== engineJob) return
+    setEngineJob(null)
+    qc.invalidateQueries({ queryKey: ['stem-engine'] })
+    if (job.state === 'done') notify('success', 'The stem engine is installed')
+    else if (job.state === 'failed') onError(job.error || 'The stem engine download failed')
+  }, [engineJobStatus.data, engineJob, qc, notify, onError])
+
+  // Hooks must all run BEFORE the early returns below (picker / loading),
+  // or the first render with a library has more hooks than the last one and
+  // React throws — the whole window goes blank.
   if (collection.isLoading || (loaded && !capabilities.data)) {
     return (
       <div className="flex h-screen w-screen items-center justify-center text-muted">
@@ -640,6 +723,7 @@ export default function App() {
     setBatchJob({ id: job.id, kind: 'cues' })
   }
   const canAutoCue = canEdit && !viewForeign && (capabilities.data?.cues.hotcue_slots ?? 0) > 0
+
 
   // ---- Remove ▸ -----------------------------------------------------------
   const nTracks = (n: number) => `${n} track${n === 1 ? '' : 's'}`
@@ -885,6 +969,25 @@ export default function App() {
                   },
                 ]
               : []),
+            // Shown disabled WITH a reason where the platform cannot play stem
+            // files as stems, rather than hidden: a missing item reads as a bug.
+            ...(canEdit && !viewForeign
+              ? [
+                  canStems
+                    ? {
+                        label: 'Convert to Stems…',
+                        hint: batchJob ? 'busy' : menu.ids.length > 1 ? String(menu.ids.length) : undefined,
+                        disabled: !!batchJob,
+                        onClick: () => setStemDialog(menu.ids),
+                      }
+                    : {
+                        label: 'Convert to Stems…',
+                        disabled: true,
+                        title: 'This library\'s DJ app does not play native-instruments stem files as stems',
+                        onClick: () => {},
+                      },
+                ]
+              : []),
             // A device's track ids belong to the stick, not the collection, so
             // there is nothing they could be added to. A folder's files CAN be
             // added — through the add dialog, which puts them in the
@@ -925,6 +1028,19 @@ export default function App() {
           onClose={() => setHeaderMenu(null)}
         />
       )}
+      {stemDialog && (
+        <ConvertStemsDialog
+          trackIds={stemDialog}
+          onClose={() => setStemDialog(null)}
+          onStarted={(job) => {
+            setBatchCancelling(false)
+            setBatchJob({ id: job.id, kind: 'stems' })
+          }}
+          onDownloading={(job) => setEngineJob(job.id)}
+          onError={onError}
+        />
+      )}
+      {stemReport && <StemReportDialog result={stemReport} onClose={() => setStemReport(null)} />}
       {editing && (
         <EditTagsDialog
           track={editing}
@@ -1341,7 +1457,7 @@ export default function App() {
         job={
           batchJob
             ? {
-                label: batchJob.kind === 'grid' ? 'Analyzing grids' : 'Placing hotcues',
+                label: batchJob.kind === 'grid' ? 'Analyzing grids' : batchJob.kind === 'stems' ? 'Converting to stems' : 'Placing hotcues',
                 done: batchJobStatus.data?.done ?? 0,
                 total: batchJobStatus.data?.total ?? 0,
                 detail: batchJobStatus.data?.message,
@@ -1351,7 +1467,18 @@ export default function App() {
                   api.cancelJob(batchJob.id).catch((e) => onError((e as Error).message))
                 },
               }
-            : null
+            : engineJob
+              ? {
+                  label: 'Downloading the stem engine',
+                  unit: 'bytes',
+                  done: engineJobStatus.data?.done ?? 0,
+                  total: engineJobStatus.data?.total ?? 0,
+                  detail: engineJobStatus.data?.message,
+                  onCancel: () => {
+                    api.cancelJob(engineJob).catch((e) => onError((e as Error).message))
+                  },
+                }
+              : null
         }
         loading={loading}
         collectionName={capabilities.data ? libraryName : null}
