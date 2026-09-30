@@ -10,11 +10,17 @@ time base) against rekordbox's own grids for the local library gave a median of
 +25.0 ms on 16 MP3s, +24.5 ms on 4 M4As and 0.0 ms on 7 WAVs. 1105 samples is the
 classic MP3 codec delay (576 encoder + 529 decoder).
 
-The generic model is in the DECODED time base — it is what Konduktor's deck plays,
-what Traktor's positions line up with, and what the grid detector measures. So a
+The generic model is in the DECODED time base — it is what Konduktor's deck plays
+and what the grid detector measures. (Traktor's clock differs from it too, by a
+different rule: `adapters/traktor/timebase.py`.) So a
 Pioneer adapter ADDS the offset on every write and SUBTRACTS it on every read.
 Get it wrong and nothing fails: every cue and beat is simply 25 ms early in
 rekordbox (as the first OneLibrary exports were), or late in Konduktor.
+
+Suspected, not yet measured: on an MP3 WITHOUT a Xing/Info header the decoder
+trims nothing either, so the offset there should be 0, not 1105 — the three
+header-less MP3s imported from a stick are exactly the ones whose grids read
+~25 ms off (`core/mp3_gapless.py` can tell them apart).
 """
 from __future__ import annotations
 

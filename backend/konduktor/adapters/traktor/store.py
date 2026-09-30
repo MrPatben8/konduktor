@@ -49,7 +49,7 @@ from ...core.pathmap import common_dir_prefix
 from ...core.pathmap import PathMapping
 from ...core.relocate import PathGroup
 from ...schemas import PlaylistNode
-from . import beatgrid
+from . import beatgrid, timebase
 from .locations import os_path_to_location, resolve_path
 from .projection import iso_date, traktor_date
 
@@ -603,7 +603,9 @@ class TraktorStore:
             raise PlaylistError(f"Unsupported cue type: {cue_type}")
         with self._lock:
             entry = self._entry_or_raise(track_id)
-            start_ms = max(0.0, start_sec * 1000.0)  # Traktor stores START/LEN in ms
+            # Traktor stores START/LEN in ms, on its own clock (see `timebase`).
+            # A length is a duration, so the offset does not apply to it.
+            start_ms = timebase.to_traktor_ms(start_sec, self.time_offset_ms(entry))
             len_ms = max(0.0, length_sec * 1000.0)
             existing = next(
                 (c for c in (entry.cue_v2 or []) if c.hotcue == slot), None
@@ -758,7 +760,7 @@ class TraktorStore:
             raise PlaylistError(f"BPM must be positive: {bpm}")
         with self._lock:
             entry = self._entry_or_raise(track_id)
-            start_ms = max(0.0, start_sec * 1000.0)
+            start_ms = timebase.to_traktor_ms(start_sec, self.time_offset_ms(entry))
             markers = beatgrid.grid_markers(entry)
             for m in markers:
                 if abs((m.start or 0.0) - start_ms) < self._MARKER_MIN_GAP_MS:
@@ -818,7 +820,7 @@ class TraktorStore:
         with self._lock:
             entry = self._entry_or_raise(track_id)
             markers, marker = self._markers_or_raise(entry, index)
-            start_ms = max(0.0, start_sec * 1000.0)
+            start_ms = timebase.to_traktor_ms(start_sec, self.time_offset_ms(entry))
             if index > 0:
                 lo = (markers[index - 1].start or 0.0) + self._MARKER_MIN_GAP_MS
                 start_ms = max(start_ms, lo)
@@ -882,6 +884,7 @@ class TraktorStore:
                 raise PlaylistError(f"BPM must be positive: {bpm}")
         with self._lock:
             entry = self._entry_or_raise(track_id)
+            off_ms = self.time_offset_ms(entry)
             self._drop_grid(entry)
             if entry.cue_v2 is None:
                 entry.cue_v2 = []
@@ -893,7 +896,7 @@ class TraktorStore:
                         name="AutoGrid" if i == 0 else "n.n.",
                         displ_order=0,
                         type=4,
-                        start=max(0.0, start_sec * 1000.0),
+                        start=timebase.to_traktor_ms(start_sec, off_ms),
                         len=0.0,
                         repeats=-1,
                         hotcue=-1,
@@ -1051,6 +1054,12 @@ class TraktorStore:
                 return None
             path = self._resolve(entry.location)
             return file_tags.read_cover(path) if path else None
+
+    def time_offset_ms(self, entry: Entrytype) -> float:
+        """How far this entry's positions sit behind the decoded audio, in ms
+        (see `timebase`). Every seconds <-> START conversion goes through it:
+        the four writes here and `projection.to_track_cues` on the way out."""
+        return timebase.offset_ms(self._resolve(entry.location) if entry.location else None)
 
     def audio_path(self, track_id: str) -> "Path | None":
         """Resolve a track's audio file to an OS path (for playback streaming)."""
