@@ -233,6 +233,10 @@ class RemapPreview(BaseModel):
     matched: int  # how many match the `from` prefix
     existing: int  # of matched, how many exist at the `to` target
     samples: list[RemapSample] = []
+    # Target paths more than one track would land on. Non-zero means the remap
+    # would be refused: two entries sharing a path corrupt the library.
+    collisions: int = 0
+    collision_samples: list[str] = []
 
 
 class PrefixGroup(BaseModel):

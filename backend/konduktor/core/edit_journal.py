@@ -95,11 +95,18 @@ class EditJournal:
         """Follow a track whose id changed (a path remap rewrites LOCATIONs, and
         the id is derived from the location). Without this, edits made earlier in
         the session would silently stop syncing to the file."""
-        if old_id == new_id:
+        self.retarget_many({old_id: new_id})
+
+    def retarget_many(self, renames: dict[str, str]) -> None:
+        """`retarget` for a whole remap AT ONCE. One at a time would be wrong
+        for a chain — A moving to B's old path while B moves on to C would
+        carry A's edits to C along with B's."""
+        renames = {o: n for o, n in renames.items() if o != n}
+        if not renames:
             return
         for i, c in enumerate(self.changes):
-            if c.target == old_id and c.scope in ("track", "cue", "grid", "lock"):
-                self.changes[i] = Change(c.scope, c.op, new_id, c.detail, c.before, c.after)
+            if c.target in renames and c.scope in ("track", "cue", "grid", "lock"):
+                self.changes[i] = Change(c.scope, c.op, renames[c.target], c.detail, c.before, c.after)
 
     # ---- the version-history message --------------------------------------
     def summary(self, extra_tracks: set[str] | None = None) -> str:

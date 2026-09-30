@@ -1097,10 +1097,51 @@ class TraktorStore:
             ranked = [g for g in ranked if g["prefix"]]
             return {"primary": ranked[0]["prefix"] if ranked else "", "groups": ranked[:5]}
 
+    def _plan_remap(self, mapping: PathMapping):
+        """Where a mapping would move each matching entry, and what that clashes
+        with — computed before anything changes. Caller holds the lock.
+
+        Returns ``(moves, clashes)``: ``moves`` is ``[(entry, old_key, new_key,
+        (volume, dir, file))]`` for every entry whose key would change, and
+        ``clashes`` maps each clashing NEW key to the old keys landing on it.
+
+        A key is a Traktor primary key, so two ENTRYs sharing one is a corrupt
+        collection (`add_entry` refuses the same thing). A new key clashes when
+        tracks with DIFFERENT old keys land on it, or when it is the key of an
+        entry that stays where it is. A chain or swap — A onto B's old path
+        while B moves on — is fine, and so is a duplicate the collection already
+        had: two entries sharing one key move together, no worse than before.
+        """
+        moves = []
+        for e in self._nml.collection.entry:
+            loc = e.location
+            if not loc:
+                continue
+            base = resolve_path(loc.volume, loc.dir, loc.file)
+            if not mapping.matches(base):
+                continue
+            volume, dir_, file = os_path_to_location(mapping.apply(base))
+            old_key = f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}"
+            new_key = f"{volume or ''}{dir_ or ''}{file or ''}"
+            if old_key != new_key:  # a no-op (e.g. from == to) stays byte-identical
+                moves.append((e, old_key, new_key, (volume, dir_, file)))
+        moving = {id(e) for e, *_ in moves}
+        staying = {self._key_of(e) for e in self._nml.collection.entry
+                   if e.location and id(e) not in moving}
+        landing: dict[str, set[str]] = {}
+        for _e, old_key, new_key, _loc in moves:
+            landing.setdefault(new_key, set()).add(old_key)
+        clashes = {
+            new_key: sorted(olds) for new_key, olds in landing.items()
+            if len(olds) > 1 or new_key in staying
+        }
+        return moves, clashes
+
     def remap_preview(self, mapping: PathMapping) -> dict:
         """How a mapping would affect the collection, without changing anything:
-        total tracks, how many match ``from``, and how many exist at ``to``
-        (plus a few samples). Powers the mapping editor's validation line."""
+        total tracks, how many match ``from``, how many exist at ``to``, and how
+        many would CLASH with another track's path (which `remap_locations`
+        refuses) — plus a few samples. Powers the mapping editor's validation."""
 
         with self._lock:
             total = matched = existing = 0
@@ -1119,7 +1160,17 @@ class TraktorStore:
                         existing += 1
                     if len(samples) < 5:
                         samples.append({"from": str(base), "to": str(target), "exists": ok})
-            return {"total": total, "matched": matched, "existing": existing, "samples": samples}
+            _moves, clashes = self._plan_remap(mapping)
+            return {
+                "total": total, "matched": matched, "existing": existing, "samples": samples,
+                "collisions": len(clashes),
+                "collision_samples": [self._display_key(k) for k in sorted(clashes)[:5]],
+            }
+
+    @staticmethod
+    def _display_key(key: str) -> str:
+        """A primary key as a readable path ("Volume/:dir/:file" -> "Volume/dir/file")."""
+        return key.replace("/:", "/")
 
     def remap_locations(self, mapping: PathMapping) -> dict[str, str]:
         """Permanently rewrite matching track LOCATIONs to the mapping's ``to``
@@ -1131,38 +1182,44 @@ class TraktorStore:
         untouched. Returns ``{old track id: new track id}`` for every track
         rewritten — callers holding ids (export sets) follow them with it, and
         must not rebuild it from paths; the caller saves.
+
+        **Refused, with nothing changed, if any track would land on another
+        track's path** (see `_plan_remap`): the collection would then hold two
+        ENTRYs sharing a primary key. Every re-key below is applied AT ONCE, not
+        track by track, so a chain (A onto B's old path, B onward) cannot carry
+        A's staged art or edits along to B's destination.
         """
 
         if mapping.empty:
             return {}
         with self._lock:
-            key_remap: dict[str, str] = {}
-            for e in self._nml.collection.entry:
-                loc = e.location
-                if not loc:
-                    continue
-                base = resolve_path(loc.volume, loc.dir, loc.file)
-                if not mapping.matches(base):
-                    continue
-                target = mapping.apply(base)
-                volume, dir_, file = os_path_to_location(target)
-                old_key = f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}"
-                new_key = f"{volume or ''}{dir_ or ''}{file or ''}"
-                if old_key == new_key:
-                    continue  # no-op (e.g. from == to); leave byte-identical
-                loc.volume, loc.dir, loc.file = volume, dir_, file
-                key_remap[old_key] = new_key
-                # Re-key the index too. Everything that finds an ENTRY by track
-                # id goes through it — later edits, and the file-tag sync on
-                # save, which would otherwise silently skip every edit made to
-                # this track before the remap.
+            moves, clashes = self._plan_remap(mapping)
+            if clashes:
+                paths = [self._display_key(k) for k in sorted(clashes)]
+                shown = ", ".join(paths[:3]) + (f" and {len(paths) - 3} more" if len(paths) > 3 else "")
+                raise PlaylistError(
+                    f"Remapping would give {len(paths)} path{'s' if len(paths) != 1 else ''} to more "
+                    f"than one track ({shown}). Two entries sharing a path corrupt the collection, "
+                    "so nothing was changed."
+                )
+            if not moves:
+                return {}
+            key_remap = {old_key: new_key for _e, old_key, new_key, _loc in moves}
+            for e, _old, _new, (volume, dir_, file) in moves:
+                e.location.volume, e.location.dir, e.location.file = volume, dir_, file
+            # Re-key the index too. Everything that finds an ENTRY by track id
+            # goes through it — later edits, and the file-tag sync on save,
+            # which would otherwise silently skip every edit made to this track
+            # before the remap. Drop every old key first, then add every new
+            # one, so a chain cannot delete an entry another has just claimed.
+            for e, old_key, _new, _loc in moves:
                 if self._entry_by_key.get(old_key) is e:
                     del self._entry_by_key[old_key]
+            for e, _old, new_key, _loc in moves:
                 self._entry_by_key[new_key] = e
-                if old_key in self._track_art:
-                    self._track_art[new_key] = self._track_art.pop(old_key)
-            if not key_remap:
-                return {}
+            art = {old: self._track_art.pop(old) for old in key_remap if old in self._track_art}
+            for old, staged in art.items():
+                self._track_art[key_remap[old]] = staged
             # Rewrite playlist entry primary keys that referenced moved tracks.
             for node in self._iter_nodes(self._root()):
                 pl = node.playlist
@@ -1174,8 +1231,7 @@ class TraktorStore:
                         pk.key = key_remap[pk.key]
             # Track ids derive from the LOCATION, so a remap renames them. Carry
             # this session's journal entries across or their file-tag sync is lost.
-            for old_key, new_key in key_remap.items():
-                self._journal.retarget(old_key, new_key)
+            self._journal.retarget_many(key_remap)
             self._note("remap", str(len(key_remap)))
             self.dirty = True
             return key_remap

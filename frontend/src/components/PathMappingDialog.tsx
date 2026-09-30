@@ -102,7 +102,10 @@ export function PathMappingDialog({ onClose, onNotify, onError }: Props) {
     }
   }
 
-  const canCommit = !!from.trim() && !!to.trim()
+  // The backend refuses a rewrite that would give two tracks one path; say so
+  // here rather than only after the click.
+  const collides = (preview?.collisions ?? 0) > 0
+  const canCommit = !!from.trim() && !!to.trim() && !collides
 
   return createPortal(
     <div
@@ -190,6 +193,19 @@ export function PathMappingDialog({ onClose, onNotify, onError }: Props) {
                   {preview.matched} of {preview.total} tracks match; {preview.existing} of{' '}
                   {preview.matched} exist at the target.
                 </span>
+              )}
+              {collides && (
+                <div className="mt-1.5 text-pink">
+                  {preview.collisions} target path{preview.collisions === 1 ? '' : 's'} would
+                  belong to more than one track, so the paths can’t be rewritten:
+                  <ul className="mt-1 list-disc pl-4 text-muted">
+                    {preview.collision_samples.map((p) => (
+                      <li key={p} className="truncate" title={p}>
+                        {p}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
             </div>
           )}
