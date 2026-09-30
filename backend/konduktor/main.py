@@ -98,6 +98,7 @@ from .schemas import (
     TrackPage,
     StemEngineInstall,
     StemSideLoad,
+    StemConvert,
 )
 
 log = logging.getLogger(__name__)
@@ -217,6 +218,7 @@ def put_path_mapping(body: PathMappingInfo) -> PathMappingInfo:
     """Set (or, with blank prefixes, clear) the current collection's remapping.
     Persists to userprefs AND updates the live store so playback/analysis
     re-resolve immediately — no reopen needed. Never touches the .nml."""
+    _require_no_pending_stems("Changing the path mapping")
     a = require_adapter()
     mapping = PathMapping.make(body.from_, body.to)
     prefs.set_path_mapping(
@@ -252,6 +254,7 @@ def remap_paths(body: PathMappingInfo) -> RemapResult:
     playlist references that join to them) to the `to` prefix, then save (a
     version-history commit is written). Destructive and OS-specific — the UI
     warns accordingly."""
+    _require_no_pending_stems("Rewriting paths")
     mapping = PathMapping.make(body.from_, body.to)
     if mapping.empty:
         raise HTTPException(400, "Both a `from` and `to` prefix are required")
@@ -312,6 +315,7 @@ def answer_relocation(body: RelocationApply) -> RelocationApplied:
     """Answer the check: apply the chosen mappings for THIS SESSION only (no
     mappings = "Not now"). Nothing is written to the library or to prefs, and a
     reopen asks again."""
+    _require_no_pending_stems("Relocating files")
     require_adapter()
     check = STATE.relocation
     if check is None:
@@ -730,7 +734,12 @@ def capabilities() -> Capabilities:
 
 @app.get("/api/state", response_model=EditState)
 def state() -> EditState:
-    return EditState(dirty=require_adapter().dirty, library=_library_info())
+    stem_job = JOBS.active(STEM_JOB)
+    pending = STATE.pending.summary() if STATE.pending is not None else None
+    return EditState(dirty=require_adapter().dirty, library=_library_info(),
+                     pending_stems=pending if pending and pending["tracks"] else None,
+                     stem_job=stem_job[0].id if stem_job else None,
+                     stem_recovery=STATE.recovery)
 
 
 # ---- stem engine (download / side-load / remove) --------------------------
@@ -796,6 +805,75 @@ def install_stem_engine(body: StemEngineInstall) -> JobStatus:
     return JobStatus(**job.as_dict())
 
 
+def _require_no_pending_stems(what: str) -> None:
+    """Refuse an operation that would SAVE or DROP a stem conversion's swap as a
+    side effect — import and remap save pending edits, reload and restore drop
+    them — while converted tracks await Save/Discard or a conversion runs."""
+    if JOBS.active(STEM_JOB):
+        raise HTTPException(409, f"{what} is not possible while tracks are being converted to stems")
+    if STATE.pending is not None and STATE.pending.blocking():
+        raise HTTPException(409, f"{what} is not possible until the converted tracks are saved or discarded")
+
+
+def _stem_options(body):
+    from .stems import convert
+
+    return convert.Options(
+        mode=body.mode, destination=Path(body.destination).expanduser() if body.destination else None,
+        collection=body.collection, playlist_id=body.playlist_id, new_playlist=body.new_playlist,
+        device=prefs.load_prefs().get("stemDevice", "auto"),
+    )
+
+
+def _stem_plan(body):
+    from .stems import convert
+
+    adapter = require_adapter()
+    caps = adapter.capabilities()
+    if not (caps.writable and caps.tracks.stem_convertible):
+        raise HTTPException(422, "This library cannot hold stem files")
+    try:
+        return adapter, convert.plan(adapter, body.track_ids, _stem_options(body), STATE.pending)
+    except convert.ConvertError as ex:
+        raise HTTPException(400, str(ex))
+
+
+@app.post("/api/tracks/stems/preview")
+def preview_stem_conversion(body: StemConvert) -> dict:
+    """What a conversion would do — converted, skipped (and why), disk space."""
+    _adapter, planned = _stem_plan(body)
+    return planned.as_dict()
+
+
+@app.post("/api/tracks/stems/convert", response_model=JobStatus)
+def convert_to_stems(body: StemConvert) -> JobStatus:
+    """Convert tracks to stem files as a job; the swap lands at its end."""
+    from .stems import convert
+    from .stems import engine_manager as em
+
+    _require_no_batch()
+    if JOBS.active("import"):
+        raise HTTPException(409, "Wait for the import to finish")
+    adapter, planned = _stem_plan(body)
+    if planned.blocked:
+        raise HTTPException(409, planned.blocked)
+    if not planned.items:
+        raise HTTPException(400, "None of these tracks can be converted")
+    if any(p.reuse is None for p in planned.items) and not em.default_manager().ready():
+        raise HTTPException(409, "The stem engine is not installed")
+    opts = _stem_options(body)
+
+    def run(handle):
+        return convert.run(handle, adapter, planned, opts, STATE.pending, mutation=STATE.mutation,
+                           still_current=lambda: STATE.adapter is adapter)
+
+    try:
+        job = JOBS.submit(STEM_JOB, run, exclusive_with=BATCH_JOBS + (ENGINE_JOB, "import"))
+    except JobBusy:
+        raise HTTPException(409, "Another batch, download or import is running")
+    return JobStatus(**job.as_dict())
+
+
 @app.post("/api/stems/engine/sideload")
 def side_load_stem_engine(body: StemSideLoad) -> dict:
     """Install the engine or the weights from files the user already has."""
@@ -845,6 +923,7 @@ def discard_changes() -> EditState:
 
 @app.post("/api/reload")
 def reload_collection() -> dict:
+    _require_no_pending_stems("Reloading")
     if not STATE.loaded:
         raise HTTPException(409, "No collection loaded")
     STATE.open(STATE.path)  # re-parse current file from disk
@@ -1140,7 +1219,7 @@ class _AnalysisError(Exception):
 # beats that no longer exist.
 GRID_JOB = "grid-analysis"
 CUE_JOB = "auto-hotcues"
-BATCH_JOBS = (GRID_JOB, CUE_JOB)
+BATCH_JOBS = (GRID_JOB, CUE_JOB, STEM_JOB)
 
 
 def _stop_batches() -> None:
@@ -1457,6 +1536,7 @@ def restore_version(commit_id: str) -> CollectionStatus:
     """Restore the collection to a past version. Writes that version back as a
     NEW forward save (a fresh commit on top of history — never a rewind), then
     reloads. The user should close Traktor first (it overwrites on exit)."""
+    _require_no_pending_stems("Restoring a version")
     require_adapter()
     data = history.read_version(STATE.path, commit_id)
     if data is None:
@@ -1789,6 +1869,7 @@ def folder_add_preview(body: FolderAddRequest) -> dict:
 @app.post("/api/folder/add", response_model=JobStatus)
 def folder_add(body: FolderAddRequest) -> JobStatus:
     """Add browsed files to the collection. A job, like import: copying can be long."""
+    _require_no_pending_stems("Adding files")
     source, dest, destination, plan = _folder_add_plan(body)
     if not plan.importable and not plan.existing:
         raise HTTPException(400, "Nothing to add (none of those files exist)")
@@ -1853,6 +1934,7 @@ def import_preview(body: ImportRequest) -> dict:
 @app.post("/api/import", response_model=JobStatus)
 def start_import(body: ImportRequest) -> JobStatus:
     """Start an import. Returns immediately; poll the job for progress."""
+    _require_no_pending_stems("Importing")
     source, dest, destination, plan = _import_plan(body)
     if not plan.importable:
         raise HTTPException(400, "Nothing to import (no tracks, or none of their files exist)")

@@ -288,6 +288,12 @@ export interface PlatformOption {
 export interface EditState {
   dirty: boolean
   library: LibraryInfo
+  /** Converted-to-stem tracks awaiting Save or Discard (parked originals). */
+  pending_stems: { tracks: number; parked: number; bytes: number } | null
+  /** A running stem conversion's job id, so a reloaded page can find it. */
+  stem_job: string | null
+  /** What this open's crash recovery did about an interrupted conversion. */
+  stem_recovery: { committed: number; restored: number; kept: number } | null
 }
 
 export interface CollectionStatus {

@@ -164,9 +164,29 @@ class StemSideLoad(BaseModel):
     kind: Literal["engine", "weights"]
 
 
+class StemConvert(BaseModel):
+    track_ids: list[str]
+    # "replace": the stem file supersedes the original where it lives (the
+    # original is parked until Save deletes it); "destination": a chosen folder,
+    # originals never touched.
+    mode: Literal["replace", "destination"]
+    destination: str | None = None
+    # "repoint": the entry now names the stem file; "add": a new entry beside it
+    # (destination mode only).
+    collection: Literal["repoint", "add"] = "repoint"
+    playlist_id: str | None = None  # add mode: into this existing playlist…
+    new_playlist: str | None = None  # …or a new one with this name
+
+
 class EditState(BaseModel):
     dirty: bool  # unsaved in-memory changes exist
     library: LibraryInfo
+    # Converted tracks awaiting Save/Discard: {tracks, parked, bytes}.
+    pending_stems: dict | None = None
+    # A running stem conversion's job id, so a reloaded page finds it again.
+    stem_job: str | None = None
+    # What this open's crash recovery did about an interrupted conversion.
+    stem_recovery: dict | None = None
 
 
 # ---- collection selection ----

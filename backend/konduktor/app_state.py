@@ -57,6 +57,10 @@ class AppState:
         # the middle of another would commit a half-applied state; reentrant so
         # one of them may call another.
         self.mutation = threading.RLock()
+        # Converted-to-stem tracks awaiting Save or Discard (see stems/pending.py),
+        # and what the last open's crash recovery did about any left over.
+        self.pending = None
+        self.recovery: dict | None = None
 
     @property
     def loaded(self) -> bool:
@@ -117,6 +121,10 @@ class AppState:
         # library gets corrupted. Only close once the new one has parsed, so a
         # failed open leaves the current library intact.
         previous = self.adapter
+        # Leaving a library discards its unsaved edits (the UI has confirmed), so
+        # a stem conversion's parked originals go back under their own names.
+        if self.pending is not None and self.pending.items:
+            self.pending.restore()
         if previous is not None and hasattr(previous, "close"):
             try:
                 previous.close()
@@ -128,9 +136,6 @@ class AppState:
         if saved:
             adapter.set_path_mapping(PathMapping.make(saved["from"], saved["to"]))
         self.path, self.adapter = path, adapter
-        # Started after the saved mapping is applied, so a volume that mapping
-        # already fixes is not asked about.
-        self.relocation = RelocationCheck(adapter)
         caps = adapter.capabilities()
         # No sidecar beside a removable library: writing to a user's USB stick to
         # satisfy Konduktor's own bookkeeping is not a trade worth making. Those
@@ -144,6 +149,18 @@ class AppState:
             label=Path(str(path)).name,
             sidecar=not getattr(driver, "removable", False),
         )
+        # A crash may have left converted tracks mid-lifecycle: settle them from
+        # what the SAVED library says, BEFORE the missing-files check — a parked
+        # original is exactly what that check would report as missing.
+        from .stems.pending import Pending
+
+        self.pending = Pending(self.library_id)
+        self.recovery = None
+        if self.pending.items:
+            self.recovery = self.pending.recover(lambda item: adapter.track(item["new_id"]) is not None)
+        # Started after the saved mapping is applied, so a volume that mapping
+        # already fixes is not asked about.
+        self.relocation = RelocationCheck(adapter)
         # Version history: record an "as I found it" baseline (deduped, so
         # re-opening an unchanged library is a no-op). Best-effort.
         history.ensure_baseline(path)
@@ -170,6 +187,15 @@ class AppState:
             commit = history.commit(
                 self.path, outcome.snapshot, outcome.summary, __version__
             )
+        # The swap is now on disk: what it replaced can go. After the library
+        # write, so a failed save deletes nothing; here rather than in the save
+        # route, because import and path remap save too.
+        if self.pending is not None and self.pending.swapped():
+            renames = self.pending.commit()
+            if renames and self.library_id:
+                from . import exports
+
+                exports.retarget(self.library_id, renames)
         return outcome, commit
 
     def discard(self) -> None:
@@ -181,6 +207,8 @@ class AppState:
         """
         assert self.adapter is not None
         with self.mutation:
+            if self.pending is not None and self.pending.items:
+                self.pending.restore()
             self.adapter.reload()
 
 

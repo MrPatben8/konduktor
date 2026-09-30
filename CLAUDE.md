@@ -352,6 +352,35 @@ Two independent apps that talk over HTTP:
     Object and `keep_awake` (caffeinate / SetThreadExecutionState). Routes:
     `GET /api/stems/engine`, `POST .../install` (a `stem-engine-install` job in
     bytes, engine + weights), `POST .../sideload`, `DELETE`.
+    **`convert.py` — the batch** (`POST /api/tracks/stems/preview` and
+    `/convert`, a `stem-conversion` job in `BATCH_JOBS`, exclusive with the
+    engine install and import). The collection is UNTOUCHED while tracks
+    convert (hours, on a big batch): each becomes a verified
+    `<target>.konduktor-partial`, so edits made meanwhile carry over and Cancel
+    only deletes new files. One short END STEP under `STATE.mutation` then
+    publishes each (a rename that refuses to overwrite: link+unlink on POSIX),
+    parks each original in Replace mode (`.<name>.<ext>.konduktor-parked`,
+    same folder, hidden on Windows, retried while Windows holds it open) and
+    swaps every entry at once. Skips (reported, not failed): already a stem file
+    BY CONTENT, missing file, target exists (never overwritten), two sources
+    onto one (case-folded) target, a target the collection names; disk space is
+    preflighted per volume (both copies coexist until Save) and for the work
+    folder. Replace implies repoint; destination mode mirrors the tree (full
+    path, volume first, when the tracks share no folder) and may repoint or add
+    (+ existing / new playlist). **`pending.py` — the ledger** of conversions
+    awaiting Save (per library id, atomic): `AppState._save` COMMITS (deletes
+    parked originals, retargets export sets — inside `_save`, so import and
+    remap saves count too), `discard()` and opening another library RESTORE,
+    and `_open` RECOVERS a crash before the missing-files check (parked
+    originals would look missing): each item decided by whether the SAVED
+    library names the stem file. Every step works from what is on disk, never
+    the recorded state alone; only a stem file the batch PUBLISHED is ever
+    deleted; an uncommitted verified stem file is kept under its partial name
+    and REUSED by the next batch converting the same (unchanged) source.
+    While conversions are pending or running, remap-paths, path mapping,
+    relocation, import, folder add, history restore and reload answer 409
+    (`_require_no_pending_stems`): each would save or drop the swap.
+    `/api/state` reports `pending_stems`, `stem_job`, `stem_recovery`.
   - `app_state.py` — the one loaded library, and the **version-history commit**.
     **`discard()`** (`POST /api/discard`, SaveBar's "Discard changes…", the
     quit prompt's Discard) drops every unsaved edit through the adapter's own
@@ -748,6 +777,16 @@ serialization path.** It enforces:
   verified; the CUDA offer's driver/capability floors; the process relays
   progress, cancels without dying, reports a crash with its reason, keeps the
   Mac awake; the routes (install job in bytes, 409 while one runs, remove).
+- `test_stems_batch.py` — the Convert to Stems batch through the routes with
+  the FAKE engine (`stem_test_support.py`, shared with
+  `test_engine_manager.py`), on temp collections pointed at generated MP3s:
+  skips with reasons (an existing target is never overwritten); Replace parks,
+  swaps at the end, leaves the saved file untouched, keeps prep in decoded time
+  and 409s the blocked routes; Save deletes parked originals and retargets an
+  export set; Discard and switching library restore; Cancel leaves no file;
+  one bad track fails alone; destination+add mirrors into a new playlist;
+  crash recovery restores (or finishes a committed save) and a re-run REUSES
+  the kept stem files without calling the engine.
 - `test_traktor_adapter.py` — the **generic layer**: one parse per open, the
   projection refreshing after every command family, cue-type translation,
   capabilities, and `set_analysed_grid` vs `replace_grid`. `test_save_fidelity`

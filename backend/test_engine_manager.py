@@ -45,41 +45,7 @@ def check(label, cond, detail=""):
         failed = True
 
 
-FAKE_ENGINE = r'''#!{python}
-import json, os, queue, sys, threading, time
-import numpy as np
-if sys.argv[1] == "info":
-    print(json.dumps({{"event": "info", "version": "{version}", "devices": ["cpu"]}}))
-    sys.exit(0)
-print(json.dumps({{"event": "ready", "device": "cpu"}}), flush=True)
-cancel, Q = set(), queue.Queue()
-def reader():
-    for line in sys.stdin:
-        m = json.loads(line)
-        (cancel.add(m["id"]) if m.get("cmd") == "cancel" else Q.put(m))
-    os._exit(0)
-threading.Thread(target=reader, daemon=True).start()
-while True:
-    m = Q.get()
-    rid = m["id"]
-    x = np.fromfile(m["input"], dtype=np.float32).reshape(2, -1)
-    if os.environ.get("FAKE_CRASH"):
-        print("boom: out of cheese", file=sys.stderr, flush=True); os._exit(3)
-    if os.environ.get("FAKE_ERROR"):
-        print(json.dumps({{"id": rid, "event": "error", "message": "bad input"}}), flush=True); continue
-    stopped = False
-    for i in range(10):
-        time.sleep(float(os.environ.get("FAKE_DELAY", "0.005")))
-        if rid in cancel:
-            print(json.dumps({{"id": rid, "event": "cancelled"}}), flush=True); stopped = True; break
-        print(json.dumps({{"id": rid, "event": "progress", "fraction": (i + 1) / 10}}), flush=True)
-    if stopped:
-        continue
-    os.makedirs(m["output_dir"], exist_ok=True)
-    for k, g in zip(("drums", "bass", "other", "vocals"), (0.5, 0.25, -0.2, 0.1)):
-        (x * g).astype(np.float32).tofile(os.path.join(m["output_dir"], k + ".f32"))
-    print(json.dumps({{"id": rid, "event": "done", "device": "cpu"}}), flush=True)
-'''
+from stem_test_support import FAKE_ENGINE  # noqa: E402 — the one fake engine, shared
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
