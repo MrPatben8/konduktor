@@ -45,6 +45,7 @@ from ...core.adapter import (
     Unsupported,
 )
 from ...core.edit_journal import EditJournal
+from ...core.grid_edit import ReplaceGridCommands
 from ...core.pathmap import PathMapping
 from . import timebase
 from .cue_types import beat_loop_size, kind_for, role_and_slot
@@ -110,7 +111,7 @@ def _iso_stamp(value) -> str:
     return str(value)
 
 
-class RekordboxStore:
+class RekordboxStore(ReplaceGridCommands):
     """One open Rekordbox library."""
 
     def __init__(self, path: Path):
@@ -1284,53 +1285,6 @@ class RekordboxStore:
         row = self.content(track_id)
         row.BPM = int(round(ordered[0].bpm * 100)) if ordered else 0
         self._journal.record("grid", "replace" if ordered else "delete", track_id)
-
-    def delete_grid(self, track_id: str) -> None:
-        self.replace_grid(track_id, [])
-
-    def add_grid_marker(self, track_id: str, start_sec: float, bpm: float | None = None) -> None:
-        from ...core.model import GridMarker
-
-        markers = self.current_markers(track_id)
-        if bpm is None:
-            # Inherit the tempo governing this point, like Traktor's add does.
-            governing = [m for m in markers if m.start <= start_sec]
-            bpm = governing[-1].bpm if governing else (markers[0].bpm if markers else None)
-        if not bpm:
-            raise InvalidCommand("The first marker on an ungridded track needs a tempo")
-        if any(abs(m.start - start_sec) < 0.001 for m in markers):
-            raise InvalidCommand("There is already a marker here")
-        markers.append(GridMarker(start=float(start_sec), bpm=float(bpm)))
-        self.replace_grid(track_id, markers)
-
-    def _marker_at(self, track_id: str, index: int) -> tuple[list, int]:
-        markers = self.current_markers(track_id)
-        if not 0 <= index < len(markers):
-            raise NotFound(f"No grid marker {index}")
-        return markers, index
-
-    def move_grid_marker(self, track_id: str, index: int, start_sec: float) -> None:
-        markers, i = self._marker_at(track_id, index)
-        # Clamp between neighbours so the list cannot reorder under the caller.
-        low = markers[i - 1].start + 0.001 if i > 0 else 0.0
-        high = markers[i + 1].start - 0.001 if i + 1 < len(markers) else None
-        target = max(low, float(start_sec))
-        if high is not None:
-            target = min(target, high)
-        markers[i] = markers[i].model_copy(update={"start": target})
-        self.replace_grid(track_id, markers)
-
-    def set_grid_marker_bpm(self, track_id: str, index: int, bpm: float) -> None:
-        markers, i = self._marker_at(track_id, index)
-        if bpm <= 0:
-            raise InvalidCommand(f"A tempo must be positive, got {bpm}")
-        markers[i] = markers[i].model_copy(update={"bpm": float(bpm)})
-        self.replace_grid(track_id, markers)
-
-    def delete_grid_marker(self, track_id: str, index: int) -> None:
-        markers, i = self._marker_at(track_id, index)
-        del markers[i]
-        self.replace_grid(track_id, markers)
 
     def _flush_grids(self) -> None:
         """Write buffered grids into their ANLZ files. Called by save().

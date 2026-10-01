@@ -47,6 +47,10 @@ Two independent apps that talk over HTTP:
     - `registry.py` — adapter selection by **`can_open()` probe**, not extension
       (Rekordbox is a `.db`, Serato is a directory).
     - `audio_tags.py`, `pathmap.py` — format-agnostic helpers.
+    - `grid_edit.py` (`ReplaceGridCommands`) — the marker-level grid commands
+      (add / move-with-clamp / retempo / delete) for a store whose one primitive
+      is `replace_grid`: Rekordbox's and OneLibrary's, whose grids are per-beat
+      lists. Traktor keeps its own, companion-aware versions.
     - `relocate.py` — **auto path remapping's search** (see `relocation.py`).
       Fixes ONE thing: a stored prefix changed and the layout under it did not
       (a collection built on Windows with the SSD as `X:`, opened on a Mac where
@@ -255,8 +259,9 @@ Two independent apps that talk over HTTP:
       **Memory cues stay preserved-but-uneditable** (Rekordbox is the only
       platform with them — the two-platform promotion rule).
       **Hot cue colour is writable** (`set_cue_color`, `PATCH
-      /api/tracks/cue/color`) from `palette.SWATCHES` — the 15 MEASURED swatches
-      of rekordbox's 16 (the teal-green is left out, not guessed); a pick must
+      /api/tracks/cue/color`) from `palette.SWATCHES` — all 16 of rekordbox's
+      swatches, MEASURED (the teal-green, 0x13 #00FF30, came last: rekordbox
+      wrote it as its default for a hot cue added on a stick); a pick must
       be an exact swatch (`swatch_code`), unlike the exporter's nearest-hue
       `code_for`. Not a breach of the promotion rule: Rekordbox, OneLibrary and
       Serato all colour cues — Traktor is the odd one out, by type only, so it
@@ -299,8 +304,9 @@ Two independent apps that talk over HTTP:
     when browsed from the sidebar's Devices** (`read_only=True`, cause `browsing`).
     The cross-vendor USB export format (AlphaTheta + Algoriddim + Native
     Instruments), read by CDJ-class hardware. Editing is landing in steps toward
-    parity with the Rekordbox adapter — track metadata and playlists done; cues,
-    grid, adding/removing tracks and the `export.pdb` rebuild next — decided in
+    parity with the Rekordbox adapter — track metadata, playlists, hot cues and
+    the beatgrid done; adding/removing tracks and the `export.pdb` rebuild next —
+    decided in
     [the editing discussion](.claude/discussions/discuss-onelibrary-editing-2026-10-01.md),
     which also holds what rekordbox 7 was MEASURED writing when it edits a stick
     (no update counter moves, the `cue` table stays empty, a new playlist goes on
@@ -312,6 +318,21 @@ Two independent apps that talk over HTTP:
     are read by Konduktor's own `rekordbox/anlz_file.py`, NOT pyrekordbox: rekordbox
     writes COMPACT cue entries when it edits (48 / 44 bytes, export: 88), and
     pyrekordbox's parser raised on the 44-byte one and lost the whole `.EXT`.
+    **Cue and grid edits rewrite only the cue LISTS they touch, and inside them
+    only the entries they touch** (`anlz_file.raw_entries` keeps the rest as
+    rekordbox wrote them), held as edited in-memory copies of the `.DAT`/`.EXT`
+    that every read serves, written at Save BEFORE the database (temp + rename,
+    fingerprinted, backed up). Each rule reproduces rekordbox's own measured edit
+    byte for byte: a recolour changes only the `PCP2` colour bytes (palette code
+    + RGB — rekordbox draws the CODE, so `cues.color` is `palette`, like
+    master.db); a new pad is APPENDED to its lists; a grid edit rewrites `PQTZ`,
+    BLANKS `.EXT`'s `PQT2` (`anlz_writer.blank_pqt2`), clears every loop's beat
+    length to 0/0, leaves `.2EX` alone, and sets `bpmx100` from the first marker.
+    A pad keeps its colour and (unless given one) its name through a move or
+    retype. An `.EXT` without `PCO2` gets both lists seeded from its `PCOB`s on
+    the first edit — readers prefer `PCO2`, so a one-pad list would hide the rest.
+    A track with no analysis files refuses cue/grid edits. Memory cues stay
+    preserved-but-uneditable.
     Full research, incl. the schema, is in
     [.claude/handoffs/onelibrary-adapter.md](.claude/handoffs/onelibrary-adapter.md);
     the four things that make it unlike the Rekordbox adapter:
@@ -1297,10 +1318,10 @@ that number and nothing else — everything derives from it:
   with Rekordbox (2026-10-01, [decisions](.claude/discussions/discuss-onelibrary-editing-2026-10-01.md)).
   A OneLibrary USB drive opens, projects, browses and searches: tracks,
   playlists, hot cues, memory cues, loops and flexible beatgrids. Done: track
-  metadata (+ file tags) and playlists, Save via a working copy. Next: cues and
-  grid in the ANLZ files (rekordbox blanks `PQT2` on a grid edit — measured),
-  the `export.pdb` rebuild on save, adding/removing tracks, "Open for editing…"
-  on a Devices row. All format research — including the schema, which has no
+  metadata (+ file tags), playlists, hot cues and the beatgrid (in the ANLZ
+  files, each rule matching rekordbox's measured edit), Save via a working copy.
+  Next: the `export.pdb` rebuild on save, adding/removing tracks, "Open for
+  editing…" on a Devices row. All format research — including the schema, which has no
   public spec — is in [.claude/handoffs/onelibrary-adapter.md](.claude/handoffs/onelibrary-adapter.md).
 - 🟡 **Export/conversion** — **in progress.** Both the design AND the user flow
   are settled; see
@@ -1433,8 +1454,8 @@ that number and nothing else — everything derives from it:
   rekordbox draw its own defaults (green/orange). **rekordbox draws a hot cue
   from its palette CODE** (`PCP2` byte 44, before the RGB; `djmdCue.ColorTableIndex`
   in master.db), not the RGB — `adapters/rekordbox/palette.py` holds the 16-swatch
-  table MEASURED from a rekordbox 7 export (one swatch, ~0x12 teal-green, still
-  unmeasured). Type colours map by intent (cue -> light blue 0x05, loop -> green
+  table MEASURED from a rekordbox 7 export (the teal-green, 0x13 #00FF30, measured
+  later from a rekordbox-edited stick). Type colours map by intent (cue -> light blue 0x05, loop -> green
   0x16), anything else to the nearest hue; the palette has NO white, so a grid
   companion is code 0 + RGB white (what rekordbox draws for it: unverified). The
   **Artwork** (`adapters/rekordbox/artwork.py`, Pillow), measured on a rekordbox 7

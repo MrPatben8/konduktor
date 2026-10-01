@@ -317,7 +317,12 @@ memory = [c for c in cues.cues if c.role == "memory"]
 check("the memory cue is preserved", len(memory) == 1)
 check("it has no slot", memory[0].slot is None)
 check("it is the same loop, at the same place", abs(memory[0].start - (40.0 - OFF)) < 0.001)
-check("no cue on a read-only drive is editable", all(not c.editable for c in cues.cues))
+check("on an editable drive every hot cue is editable, no memory cue is",
+      all(c.editable == (c.role == "hotcue") for c in cues.cues))
+_browse = OneLibraryAdapter(DRIVE, read_only=True)
+check("on a browsing drive no cue is editable",
+      all(not c.editable for c in _browse.track_cues(one.id).cues))
+_browse.close()
 
 print("== playlists ==")
 tree = adapter.playlist_tree()
@@ -345,11 +350,12 @@ check("the version is the drive's dbVersion", caps.version == "1000", str(caps.v
 # The per-feature flags still describe the FORMAT. Blanking them to false would
 # claim OneLibrary has no hot cues, which is not what read-only means.
 check("the format is still reported as having hot cues", caps.cues.hotcue_slots == 8)
-check("cue colour is free RGB here, unlike master.db's palette", caps.cues.color == "free")
+check("cue colour is rekordbox's palette (rekordbox draws the PCP2 code)",
+      caps.cues.color == "palette" and len(caps.cues.palette) == 16)
 check("loops are a cue type, not a separate bank", caps.cues.loops == "cue_type")
 check("memory cues are acknowledged", caps.cues.memory_cues is True)
 check("the grid is flexible even though we do not write it", caps.grid.flexible is True)
-check("cues and the grid are not editable YET", not caps.cues.editable and not caps.grid.editable)
+check("hot cues and the grid are editable", caps.cues.editable and caps.grid.editable)
 check("the editable fields are the Rekordbox adapter's set",
       caps.tracks.editable_fields == sorted(["title", "artist", "album", "genre", "label",
                                              "remixer", "comment", "rating", "release_date"]),
@@ -419,7 +425,10 @@ browse.close()
 
 # Editable: what has not landed yet still refuses (each with its flag False).
 LANDED = {"set_track_metadata", "create_playlist", "rename_playlist", "delete_playlist",
-          "set_playlist_entries", "save"}
+          "set_playlist_entries", "save",
+          "set_cue", "set_cue_type", "set_cue_color", "delete_cue", "place_cues",
+          "add_grid_marker", "move_grid_marker", "set_grid_marker_bpm", "delete_grid_marker",
+          "replace_grid", "set_analysed_grid", "delete_grid"}
 pending = [(n, fn) for n, fn in COMMANDS if n not in LANDED]
 refused = [name for name, fn in pending if not _raises(fn, Unsupported)]
 check(f"the {len(pending)} commands not written yet raise Unsupported", not refused, "; ".join(refused))

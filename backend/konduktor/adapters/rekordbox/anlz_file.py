@@ -74,6 +74,31 @@ class AnlzFile:
         struct.pack_into(">I", head, 8, len(head) + len(body))
         return bytes(head) + body
 
+    def copy(self) -> "AnlzFile":
+        return AnlzFile(self.header, [Tag(t.type, t.data) for t in self.tags])
+
+    def find(self, kind: str, list_kind: int | None = None) -> int | None:
+        """Index of the first `kind` tag (of that cue-list kind, if given)."""
+        for i, t in enumerate(self.tags):
+            if t.type == kind and (list_kind is None or t.list_kind == list_kind):
+                return i
+        return None
+
+    def put(self, kind: str, data: bytes, *, list_kind: int | None = None,
+            after: tuple[str, ...] = ()) -> None:
+        """Replace the `kind` tag IN PLACE, keeping every other tag where it is.
+
+        A file without one gets it inserted after the last tag named in
+        `after` (rekordbox's order), else at the end.
+        """
+        tag = Tag(kind, data)
+        i = self.find(kind, list_kind)
+        if i is not None:
+            self.tags[i] = tag
+            return
+        at = max((j for j, t in enumerate(self.tags) if t.type in after), default=len(self.tags) - 1)
+        self.tags.insert(at + 1, tag)
+
 
 class AnlzError(ValueError):
     pass
@@ -133,6 +158,52 @@ class CueEntry:
     color_green: int | None = None
     color_blue: int | None = None
     len_entry: int = 0
+
+
+def raw_entries(tag: Tag) -> list[bytes]:
+    """A `PCOB`/`PCO2` tag's entries as their own bytes, each at its own length —
+    so an entry Konduktor does not change goes back exactly as rekordbox wrote it."""
+    if tag.type == "PCOB":
+        count, first, magic = struct.unpack_from(">H", tag.data, 18)[0], 24, b"PCPT"
+    elif tag.type == "PCO2":
+        count, first, magic = struct.unpack_from(">H", tag.data, 16)[0], 20, b"PCP2"
+    else:
+        return []
+    return [tag.data[off:off + n] for off, n in _walk(tag.data, first, magic, count)]
+
+
+def decode_entry(entry: bytes) -> CueEntry:
+    """One raw `PCPT` or `PCP2` entry, decoded."""
+    if entry[:4] == b"PCPT":
+        return _pcob(struct.pack(">4sIIIHHi", b"PCOB", 24, 24 + len(entry), 0, 0, 1, -1) + entry)[0]
+    return _pco2(struct.pack(">4sIIIHH", b"PCO2", 20, 20 + len(entry), 0, 1, 0) + entry)[0]
+
+
+def entry_hot_cue(entry: bytes) -> int:
+    """A PCPT/PCP2 entry's `hot_cue`: its pad, 1-based; 0 for a memory cue."""
+    return struct.unpack_from(">I", entry, 12)[0]
+
+
+def entry_with_colour(entry: bytes, code: int, rgb: tuple[int, int, int]) -> bytes | None:
+    """A `PCP2` entry with ONLY its colour bytes changed — what rekordbox itself
+    does to recolour a cue (measured: those 4 bytes and nothing else). None if
+    the entry is too short to carry a colour (rekordbox's 44-byte form)."""
+    if len(entry) < 44:
+        return None
+    len_comment = struct.unpack_from(">I", entry, 40)[0]
+    at = 44 + len_comment
+    if at + 4 > len(entry):
+        return None
+    return entry[:at] + bytes([code & 0xFF, *rgb]) + entry[at + 4:]
+
+
+def entry_without_loop_beats(entry: bytes) -> bytes:
+    """A `PCP2` entry with its loop length in beats cleared to 0/0 — what
+    rekordbox does to every loop when the grid changes (measured: 32/1 -> 0/0),
+    rather than recomputing it."""
+    if len(entry) < 40 or entry[36:40] == b"\0\0\0\0":
+        return entry
+    return entry[:36] + bytes(4) + entry[40:]
 
 
 def _walk(data: bytes, first: int, magic: bytes, count: int):
@@ -215,5 +286,6 @@ _DECODERS = {"PCOB": _pcob, "PCO2": _pco2, "PQTZ": _pqtz}
 
 __all__ = [
     "AnlzError", "AnlzFile", "Beat", "CueEntry", "LIST_HOT", "LIST_MEMORY",
-    "NO_LOOP", "Tag", "parse", "parse_file",
+    "NO_LOOP", "Tag", "decode_entry", "entry_hot_cue", "entry_with_colour", "entry_without_loop_beats",
+    "parse", "parse_file", "raw_entries",
 ]

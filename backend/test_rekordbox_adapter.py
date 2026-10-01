@@ -93,8 +93,8 @@ check("and decodes back", beats_in_loop(262145) == 4 and beats_in_loop(None) is 
 print("== hot cue colour palette ==")
 # rekordbox has 16; the teal-green between 0x0E and 0x16 was never measured, and
 # is left out rather than offered with a guessed RGB.
-check("15 pickable swatches, without the observed-only red",
-      len(palette.SWATCHES) == 15 and 0x2B not in palette.SWATCHES)
+check("16 pickable swatches, without the observed-only red",
+      len(palette.SWATCHES) == 16 and 0x2B not in palette.SWATCHES)
 check("a code projects as its measured RGB", palette.hex_for(0x16) == "#1AFF00")
 check("uncoloured (None, or a loop's 0) projects as no colour",
       palette.hex_for(None) is None and palette.hex_for(0) is None)

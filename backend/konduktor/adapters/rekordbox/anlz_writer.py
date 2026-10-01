@@ -313,30 +313,38 @@ def flat_preview_tags() -> list[bytes]:
     return preview_tags([0.0] * 400, [0.0] * 400)
 
 
-def _pcp2_entry(*, hot_cue: int, kind: int, time_ms: int, loop_ms: int | None,
-                rgb: tuple[int, int, int] | None, beats: int | None, code: int = 0) -> bytes:
+def pcp2_entry(*, hot_cue: int, kind: int, time_ms: int, loop_ms: int | None,
+               rgb: tuple[int, int, int] | None, beats: int | None, code: int = 0,
+               comment: str | None = None) -> bytes:
     """One `PCP2` entry, byte-for-byte as rekordbox 7 writes it.
 
     Two constants in here are rekordbox's, not the documented struct's: the
     `1000` after the kind (the struct calls it padding) and the `1` after the
     colour id. Both appear in every entry of a real export; zeros there were a
     guess, and pyrekordbox's parser would never notice one.
+
+    A `comment` (the cue's name) is UTF-16BE with a terminating NUL, and
+    `len_comment` counts the terminator — crate-digger's layout, which both
+    Konduktor's reader and pyrekordbox's agree with. No reference cue carries
+    one, so that detail is documented rather than measured. The entry stays the
+    exported 88 bytes unless the name needs more.
     """
-    comment = b""
+    comment_bytes = (comment.encode("utf-16-be") + b"\0\0") if comment else b""
     red, green, blue = rgb or (0, 0, 0)
+    length = max(PCP2_ENTRY_LEN, 48 + len(comment_bytes))
     return struct.pack(
         ">4sIIIBxHIIBB6xHHI",
-        b"PCP2", 16, PCP2_ENTRY_LEN, hot_cue, kind, 1000,
+        b"PCP2", 16, length, hot_cue, kind, 1000,
         int(time_ms), NO_LOOP if loop_ms is None else int(loop_ms),
-        0, 1, beats or 0, 1 if beats else 0, len(comment),
+        0, 1, beats or 0, 1 if beats else 0, len(comment_bytes),
     # The colour is the palette CODE, then RGB: rekordbox draws from the code
     # (`palette`); a code of 0 draws its default colour whatever the RGB says.
-    ) + comment + struct.pack(">4B", code & 0xFF, red, green, blue) + bytes(
-        PCP2_ENTRY_LEN - 48 - len(comment)
+    ) + comment_bytes + struct.pack(">4B", code & 0xFF, red, green, blue) + bytes(
+        length - 48 - len(comment_bytes)
     )
 
 
-def _pcpt_entry(*, hot_cue: int, kind: int, time_ms: int, loop_ms: int | None) -> bytes:
+def pcpt_entry(*, hot_cue: int, kind: int, time_ms: int, loop_ms: int | None) -> bytes:
     """One `PCPT` entry, byte-for-byte as rekordbox 7 writes it.
 
     `len_header` is **28**, not 12: a reader that trusts it finds the body 16
@@ -353,28 +361,54 @@ def _pcpt_entry(*, hot_cue: int, kind: int, time_ms: int, loop_ms: int | None) -
     ) + bytes(16)
 
 
-def _pcob(cue_type: int, chosen: list[dict]) -> bytes:
-    blob = b"".join(
-        _pcpt_entry(hot_cue=c["hot_cue"], kind=c["kind"], time_ms=c["time_ms"],
-                    loop_ms=c["loop_ms"])
-        for c in chosen
-    )
+def pcob_tag(cue_type: int, entries: list[bytes]) -> bytes:
+    """A `PCOB` around already-built `PCPT` entries (rekordbox's own, untouched,
+    or new ones from `pcpt_entry`)."""
     # cue_type is Int32ub (an Enum over it), NOT Int16 — getting this wrong
     # shifts every following field and the reader sees garbage. The last field
     # is -1 on a hot-cue list and (count - 1) on a memory list, as rekordbox
-    # writes it.
-    last = -1 if cue_type == 1 else len(chosen) - 1
-    return _wrap("PCOB", struct.pack(">IHHi", cue_type, 0, len(chosen), last) + blob)
+    # writes it (an export, and rekordbox's own edits, alike).
+    last = -1 if cue_type == 1 else len(entries) - 1
+    return _wrap("PCOB", struct.pack(">IHHi", cue_type, 0, len(entries), last) + b"".join(entries))
+
+
+def pco2_tag(cue_type: int, entries: list[bytes]) -> bytes:
+    """A `PCO2` around already-built `PCP2` entries."""
+    return _wrap("PCO2", struct.pack(">IHH", cue_type, len(entries), 0) + b"".join(entries))
+
+
+def _pcob(cue_type: int, chosen: list[dict]) -> bytes:
+    return pcob_tag(cue_type, [
+        pcpt_entry(hot_cue=c["hot_cue"], kind=c["kind"], time_ms=c["time_ms"],
+                   loop_ms=c["loop_ms"])
+        for c in chosen
+    ])
 
 
 def _pco2(cue_type: int, chosen: list[dict]) -> bytes:
-    blob = b"".join(
-        _pcp2_entry(hot_cue=c["hot_cue"], kind=c["kind"], time_ms=c["time_ms"],
-                    loop_ms=c["loop_ms"], rgb=c.get("rgb"), beats=c.get("beats"),
-                    code=c.get("code", 0))
+    return pco2_tag(cue_type, [
+        pcp2_entry(hot_cue=c["hot_cue"], kind=c["kind"], time_ms=c["time_ms"],
+                   loop_ms=c["loop_ms"], rgb=c.get("rgb"), beats=c.get("beats"),
+                   code=c.get("code", 0), comment=c.get("comment"))
         for c in chosen
-    )
-    return _wrap("PCO2", struct.pack(">IHH", cue_type, len(chosen), 0) + blob)
+    ])
+
+
+#: `PQT2` as rekordbox 7 leaves it after a grid edit: header kept, every count
+#: and the beat list gone (56 bytes, the `len_header`). MEASURED on Goober
+#: (2026-10-01): rekordbox does not recompute this "extended" grid when the grid
+#: changes, it blanks it, and a CDJ then works from `PQTZ`.
+_PQT2_HEADER = 56
+
+
+def blank_pqt2(tag: bytes) -> bytes:
+    """The blanked form of an existing `PQT2` tag, exactly as rekordbox writes it.
+
+    Bytes 12-24 (rekordbox's constants, `00000000 01000002 00000000` on every
+    file seen) are KEPT; the counts and first/last-beat fields after them are
+    zeroed, and the beat entries dropped.
+    """
+    return tag[:8] + struct.pack(">I", _PQT2_HEADER) + tag[12:24] + bytes(_PQT2_HEADER - 24)
 
 
 def cue_tags(cues: list[dict], *, extended: bool) -> list[bytes]:

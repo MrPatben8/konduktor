@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 
 from ...core.model import CuePoint
+from ..rekordbox import palette
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +68,14 @@ def _color(entry) -> str | None:
     real black in principle, but rekordbox uses it as "unset" and shows such a
     cue in the default colour, so it is reported as no colour rather than as
     black. Memory cues in the reference export are exactly this case.
+
+    rekordbox DRAWS a cue from its palette CODE (`rekordbox.palette`), so a known
+    code is reported as that swatch; a cue with code 0 and an RGB (older
+    exports, the reference fixture) is reported by its RGB.
     """
+    swatch = palette.hex_for(getattr(entry, "color_code", None))
+    if swatch is not None:
+        return swatch
     try:
         # None on an entry too short to carry a colour: every PCPT, and the
         # compact 44-byte PCP2 rekordbox writes for a memory cue it added.
@@ -79,7 +87,7 @@ def _color(entry) -> str | None:
     return f"#{r:02X}{g:02X}{b:02X}"
 
 
-def _to_cue(entry, *, with_color: bool) -> CuePoint | None:
+def _to_cue(entry, *, with_color: bool, editable: bool = False) -> CuePoint | None:
     """One ANLZ cue entry as a generic `CuePoint`, or None if unreadable."""
     try:
         hot_cue = int(entry.hot_cue)
@@ -112,11 +120,11 @@ def _to_cue(entry, *, with_color: bool) -> CuePoint | None:
         length=length,
         slot=slot,
         color=_color(entry) if with_color else None,
-        # A OneLibrary drive is read-only in Konduktor, so no cue accepts a
-        # command. `capabilities.writable` is what the UI actually gates on;
-        # this keeps the per-cue answer consistent with it.
-        editable=False,
-        readonly_reason="platform_managed",
+        # Hot cues are editable on a drive opened for editing (the caller says
+        # so). MEMORY cues never are — preserved-but-uneditable, as in the
+        # Rekordbox adapter (the two-platform rule).
+        editable=editable and role == "hotcue",
+        readonly_reason=None if editable and role == "hotcue" else "platform_managed",
         grid_marker=None,
     )
 
@@ -136,7 +144,7 @@ def _entries(anlz, tag_type: str) -> list:
     return out
 
 
-def cues_from_anlz(dat, ext) -> list[CuePoint]:
+def cues_from_anlz(dat, ext, *, editable: bool = False) -> list[CuePoint]:
     """The track's complete cue list, from its parsed `.DAT` and `.EXT`
     (`rekordbox.anlz_file.AnlzFile`s).
 
@@ -153,14 +161,14 @@ def cues_from_anlz(dat, ext) -> list[CuePoint]:
     for f in files:
         pco2.extend(_entries(f, "PCO2"))
     if pco2:
-        cues = [c for e in pco2 if (c := _to_cue(e, with_color=True)) is not None]
+        cues = [c for e in pco2 if (c := _to_cue(e, with_color=True, editable=editable)) is not None]
     else:
         # Fallback: merge PCOB across BOTH files. The .DAT holds pads 1-3 and the
         # .EXT the rest, so either alone is an incomplete bank.
         pcob: list = []
         for f in files:
             pcob.extend(_entries(f, "PCOB"))
-        cues = [c for e in pcob if (c := _to_cue(e, with_color=False)) is not None]
+        cues = [c for e in pcob if (c := _to_cue(e, with_color=False, editable=editable)) is not None]
 
     return _dedupe(cues)
 

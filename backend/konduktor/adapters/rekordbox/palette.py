@@ -9,8 +9,9 @@ The table was MEASURED, not recalled: 16 hot cues coloured through rekordbox 7's
 own palette, one colour per pad, exported to a stick, and read back. Rekordbox
 writes the palette's exact RGB beside each code.
 
-  * One palette colour went unmeasured — the teal-green between 0x0E and 0x16
-    (probably code 0x12); a cue that should be it maps to its nearest neighbour.
+  * The teal-green between 0x0E and 0x16 was missed by that measurement, and
+    found later: it is **0x13 = #00FF30**, which rekordbox 7 wrote itself as the
+    DEFAULT colour of a hot cue added on a stick (Goober, 2026-10-01).
   * 0x2B (#FF0017) was observed on a real export though it is not one of the 16
     swatches; it is kept so such a colour survives a round trip exactly.
   * **The palette has no white or grey.** A colourless (white/grey) cue — above
@@ -32,6 +33,7 @@ PALETTE: dict[int, tuple[int, int, int]] = {
     0x05: (0x00, 0x70, 0xFF),  # light blue
     0x09: (0x00, 0xE0, 0xFF),  # cyan
     0x0E: (0x00, 0xFF, 0xA3),  # teal
+    0x13: (0x00, 0xFF, 0x30),  # teal-green (rekordbox's default for a new hot cue)
     0x16: (0x1A, 0xFF, 0x00),  # green
     0x1A: (0x80, 0xFF, 0x00),  # lime
     0x1E: (0xE6, 0xFF, 0x00),  # yellow-lime
@@ -94,18 +96,17 @@ def code_for(color: str | None) -> tuple[int, tuple[int, int, int]]:
 
 
 #: The swatches a user can pick, in rekordbox's own order — what
-#: `capabilities.cues.palette` offers. 15 of rekordbox's 16: the unmeasured
-#: teal-green is left out rather than offered with a guessed RGB, and 0x2B is
-#: not a swatch at all (see the module note).
+#: `capabilities.cues.palette` offers: all 16. 0x2B is not a swatch at all (see
+#: the module note).
 SWATCHES: list[int] = [code for code in PALETTE if code != 0x2B]
 
 
 def hex_for(code: int | None) -> str | None:
     """`#RRGGBB` for a stored palette code; None for uncoloured or unknown.
 
-    An unknown code (the unmeasured teal-green) projects as no colour rather
-    than a guessed one; it is still kept on the row, since editing a cue's
-    position, type or name never rewrites its colour.
+    An unknown code projects as no colour rather than a guessed one; it is
+    still kept on the row, since editing a cue's position, type or name never
+    rewrites its colour.
     """
     rgb = PALETTE.get(code) if code else None
     return None if rgb is None else f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"

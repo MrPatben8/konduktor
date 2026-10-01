@@ -50,10 +50,13 @@ from pathlib import Path
 
 from ...core.adapter import FileTagResult, InvalidCommand, LibraryNotSupported, NotFound, SaveOutcome
 from ...core.edit_journal import EditJournal
+from ...core.grid_edit import ReplaceGridCommands
 from ...core.model import CuePoint
 from ... import paths
 from . import beatgrid, cues as cue_reader
-from ..rekordbox import anlz_file, timebase
+from ..rekordbox import anlz_file, palette, timebase
+from ..rekordbox import anlz_writer as W
+from ..rekordbox import beatgrid as rb_beatgrid
 from .layout import DriveLayout
 
 log = logging.getLogger(__name__)
@@ -94,6 +97,11 @@ def _fingerprint(db: Path) -> tuple:
     return tuple(out)
 
 
+def _fingerprint_file(path: Path) -> tuple:
+    st = path.stat()
+    return (st.st_size, st.st_mtime_ns)
+
+
 def _work_root() -> Path:
     root = paths.app_data_dir() / "onelibrary" / "work"
     root.mkdir(parents=True, exist_ok=True)
@@ -107,7 +115,7 @@ def _backup_root(layout: DriveLayout) -> Path:
     return paths.app_data_dir() / "onelibrary" / "backups" / name
 
 
-class OneLibraryStore:
+class OneLibraryStore(ReplaceGridCommands):
     # Metadata a OneLibrary drive can hold, matched to the Rekordbox adapter's
     # set. `producer` and `mix` have no column; `composer`/`lyricist` are
     # different fields and are not mapped onto them approximately.
@@ -142,6 +150,10 @@ class OneLibraryStore:
         # an order of magnitude apart: a grid read must not drag in the .EXT.
         self._dat_cache: dict[str, object | None] = {}
         self._ext_cache: dict[str, object | None] = {}
+        # Analysis files with unsaved edits: path -> (edited file, how the
+        # original looked on disk when first edited). The SAME objects sit in
+        # the caches above, so every read sees the edit; Save writes them.
+        self._pending_anlz: dict[Path, tuple[anlz_file.AnlzFile, tuple]] = {}
         self._content_cache: list | None = None
         self._by_id: dict[str, object] | None = None
         self._load()
@@ -171,6 +183,7 @@ class OneLibraryStore:
             raise LibraryNotSupported(f"Could not open OneLibrary database: {ex}") from ex
         self._db, self._work = db, work
         self._journal.clear()
+        self._pending_anlz.clear()
         self._dat_cache.clear()
         self._ext_cache.clear()
         self._content_cache = None
@@ -349,9 +362,11 @@ class OneLibraryStore:
         only mean anything once merged across two files, and handing that to the
         projection would put ANLZ knowledge on both sides of the boundary.
         """
+        dat = self._anlz(track_id, extended=False)
+        ext = self._anlz(track_id, extended=True)
+        # A hot cue accepts commands only where there are files to write it to.
         cues = cue_reader.cues_from_anlz(
-            self._anlz(track_id, extended=False),
-            self._anlz(track_id, extended=True),
+            dat, ext, editable=not self.read_only and dat is not None and ext is not None,
         )
         # Positions are stored on rekordbox's clock; the generic model is the
         # decoded audio's. A loop keeps its length.
@@ -600,6 +615,267 @@ class OneLibraryStore:
         self._journal.record("playlist", "entries", playlist.name, after=len(track_ids))
         return len(track_ids)
 
+    # ---- writes: cues and the beatgrid (the ANLZ files) ------------------------
+    #
+    # Both live in the track's analysis files, not the database (the `cue`
+    # table stays empty — measured, rekordbox's own edits included). An edit
+    # replaces only the cue LISTS it touches, and inside them only the entries
+    # it touches: every other entry keeps rekordbox's bytes, compact forms
+    # included, as does every other tag of the file. Each step below was checked
+    # against what rekordbox 7 wrote when it made the same edit on Goober.
+    #
+    # Where a hot cue lives (dense, 1-based pads; 0 = memory):
+    #   .DAT  PCOB hot   pads 1-3          .EXT  PCOB hot   pads 4+
+    #   .DAT  PCOB mem   memory cues       .EXT  PCOB mem   (empty)
+    #                                      .EXT  PCO2 hot   EVERY pad, + colour/name
+    #                                      .EXT  PCO2 mem   every memory cue
+    _DAT_ORDER = ("PPTH", "PVBR", "PQTZ", "PWAV", "PWV2", "PCOB")
+    _EXT_ORDER = ("PPTH", "PWV3", "PCOB", "PCO2")
+    HOTCUE_SLOTS = 8
+
+    def _anlz_paths(self, track_id: str) -> tuple[Path, Path]:
+        dat = self.layout.resolve(getattr(self.content(track_id), "analysisDataFilePath", None))
+        if dat is None or not dat.is_file() or not self.layout.extended_anlz(dat).is_file():
+            raise InvalidCommand(
+                "This track has no analysis files on the drive, so it has nowhere to "
+                "store cues or a beatgrid. Analyse it in rekordbox first."
+            )
+        return dat, self.layout.extended_anlz(dat)
+
+    def _editing(self, track_id: str) -> tuple[anlz_file.AnlzFile, anlz_file.AnlzFile]:
+        """The track's `.DAT` and `.EXT` as EDITABLE copies, registered for Save.
+
+        A file is fingerprinted the first time it is edited, so Save can refuse
+        to overwrite a change another app made meanwhile.
+        """
+        out = []
+        for path, cache in zip(self._anlz_paths(track_id), (self._dat_cache, self._ext_cache)):
+            pending = self._pending_anlz.get(path)
+            if pending is None:
+                try:
+                    parsed = anlz_file.parse_file(path)
+                except (OSError, anlz_file.AnlzError) as ex:
+                    raise InvalidCommand(f"Cannot read the analysis file {path.name}: {ex}") from ex
+                pending = (parsed, _fingerprint_file(path))
+                self._pending_anlz[path] = pending
+            cache[str(track_id)] = pending[0]
+            out.append(pending[0])
+        return out[0], out[1]
+
+    def _offset(self, track_id: str) -> float:
+        return timebase.offset(self.audio_path(track_id))
+
+    def _hot_entry(self, ext: anlz_file.AnlzFile, hot: int) -> bytes | None:
+        """The pad's `PCO2` entry — the complete one, with colour and name."""
+        i = ext.find("PCO2", anlz_file.LIST_HOT)
+        if i is None:
+            return None
+        return next((e for e in anlz_file.raw_entries(ext.tags[i])
+                     if anlz_file.entry_hot_cue(e) == hot), None)
+
+    @staticmethod
+    def _decoded(entry: bytes) -> anlz_file.CueEntry:
+        return anlz_file.decode_entry(entry)
+
+    def _ensure_pco2(self, dat: anlz_file.AnlzFile, ext: anlz_file.AnlzFile) -> None:
+        """Give an `.EXT` without `PCO2` both lists, seeded from its `PCOB`s.
+
+        Readers (Konduktor's, and players) prefer `PCO2` the moment it has any
+        entry, so writing one holding only the edited pad would hide every other
+        pad and memory cue still listed only in `PCOB`. A drive old enough to
+        lack it gets the complete lists on the first edit.
+        """
+        if ext.find("PCO2") is not None:
+            return
+        for kind in (anlz_file.LIST_HOT, anlz_file.LIST_MEMORY):
+            seeded = []
+            for f in (dat, ext):
+                i = f.find("PCOB", kind)
+                for e in (anlz_file.raw_entries(f.tags[i]) if i is not None else []):
+                    c = anlz_file.decode_entry(e)
+                    seeded.append(W.pcp2_entry(
+                        hot_cue=c.hot_cue, kind=c.type, time_ms=c.time,
+                        loop_ms=None if c.loop_time == anlz_file.NO_LOOP else c.loop_time,
+                        rgb=None, beats=None))
+            ext.put("PCO2", W.pco2_tag(kind, seeded), list_kind=kind, after=self._EXT_ORDER)
+
+    def _replace_hot(self, track_id: str, hot: int, pcpt: bytes | None, pcp2: bytes | None) -> None:
+        """Take pad `hot` out of every hot list and, if given, put the new entries in.
+
+        A new entry is APPENDED, as rekordbox does (it appended the hot cue it
+        added after pads 7 and 6); order within a list carries no meaning.
+        """
+        dat, ext = self._editing(track_id)
+        self._ensure_pco2(dat, ext)
+        for f, order, home in ((dat, self._DAT_ORDER, hot <= 3), (ext, self._EXT_ORDER, hot > 3)):
+            i = f.find("PCOB", anlz_file.LIST_HOT)
+            kept = ([e for e in anlz_file.raw_entries(f.tags[i]) if anlz_file.entry_hot_cue(e) != hot]
+                    if i is not None else [])
+            if pcpt is not None and home:
+                kept.append(pcpt)
+            if i is not None or kept:
+                f.put("PCOB", W.pcob_tag(anlz_file.LIST_HOT, kept),
+                      list_kind=anlz_file.LIST_HOT, after=order)
+        i = ext.find("PCO2", anlz_file.LIST_HOT)
+        kept = ([e for e in anlz_file.raw_entries(ext.tags[i]) if anlz_file.entry_hot_cue(e) != hot]
+                if i is not None else [])
+        if pcp2 is not None:
+            kept.append(pcp2)
+        ext.put("PCO2", W.pco2_tag(anlz_file.LIST_HOT, kept),
+                list_kind=anlz_file.LIST_HOT, after=self._EXT_ORDER)
+
+    def _slot(self, slot: int) -> int:
+        slot = int(slot)
+        if not 0 <= slot < self.HOTCUE_SLOTS:
+            raise InvalidCommand(f"Hot cue slot must be 0-{self.HOTCUE_SLOTS - 1}, got {slot}")
+        return slot + 1  # ANLZ pads are dense and 1-based
+
+    def set_cue(self, track_id: str, *, slot: int, start_sec: float, cue_type: str,
+                length_sec: float = 0.0, name: str | None = None) -> None:
+        """Create or replace the hot cue on a pad. A loop is a cue with a length.
+
+        The pad KEEPS its colour (it belongs to the pad, as in the Rekordbox
+        adapter), and its name unless one is given — a hand move passes none.
+        A new cue is uncoloured, like one the Rekordbox adapter writes.
+        """
+        from .export import _loop_beats
+
+        hot = self._slot(slot)
+        if start_sec < 0:
+            raise InvalidCommand("A cue cannot be before the start of the track")
+        dat, ext = self._editing(track_id)
+        old = self._hot_entry(ext, hot)
+        prior = self._decoded(old) if old is not None else None
+        code = (prior.color_code or 0) if prior else 0
+        rgb = ((prior.color_red, prior.color_green, prior.color_blue)
+               if prior and prior.color_red is not None else (0, 0, 0))
+        if name is None and prior is not None:
+            name = prior.comment or None
+        is_loop = cue_type == "loop" and length_sec > 0
+        off = self._offset(track_id)
+        time_ms = int(round(timebase.to_pioneer(start_sec, off) * 1000))
+        loop_ms = int(round(timebase.to_pioneer(start_sec + length_sec, off) * 1000)) if is_loop else None
+        grid = self.anlz_grid(track_id)
+        beats = (_loop_beats(start_sec, length_sec, list(zip(grid[2], grid[1], grid[0])))
+                 if is_loop and grid else None)
+        kind = 2 if is_loop else 1
+        self._replace_hot(
+            track_id, hot,
+            W.pcpt_entry(hot_cue=hot, kind=kind, time_ms=time_ms, loop_ms=loop_ms),
+            W.pcp2_entry(hot_cue=hot, kind=kind, time_ms=time_ms, loop_ms=loop_ms,
+                         rgb=rgb, beats=beats, code=code, comment=name or None),
+        )
+        self._journal.record("cue", "add" if old is None else "modify", track_id, f"slot:{slot}")
+
+    def _existing(self, track_id: str, slot: int) -> tuple[int, anlz_file.CueEntry]:
+        hot = self._slot(slot)
+        _dat, ext = self._editing(track_id)
+        entry = self._hot_entry(ext, hot)
+        if entry is None:
+            raise NotFound(f"No cue in slot {slot}")
+        return hot, self._decoded(entry)
+
+    def set_cue_type(self, track_id: str, slot: int, cue_type: str) -> None:
+        _hot, cue = self._existing(track_id, slot)
+        off = self._offset(track_id)
+        start = timebase.from_pioneer(cue.time / 1000.0, off)
+        length = 0.0
+        if cue_type == "loop":
+            if cue.loop_time != anlz_file.NO_LOOP and cue.loop_time > cue.time:
+                length = (cue.loop_time - cue.time) / 1000.0
+            else:
+                raise InvalidCommand("Turning a cue into a loop needs a length — set the loop first")
+        self.set_cue(track_id, slot=slot, start_sec=start, cue_type=cue_type, length_sec=length)
+
+    def set_cue_color(self, track_id: str, slot: int, color_code: int | None) -> None:
+        """Recolour a pad: ONLY its `PCP2` colour bytes change (as rekordbox does).
+
+        `PCP2` stores the palette code and its RGB; rekordbox draws from the code.
+        None is uncoloured (code 0, black), as an uncoloured rekordbox cue is.
+        """
+        hot, cue = self._existing(track_id, slot)
+        code = int(color_code or 0)
+        rgb = palette.PALETTE.get(code, (0, 0, 0)) if code else (0, 0, 0)
+        _dat, ext = self._editing(track_id)
+        i = ext.find("PCO2", anlz_file.LIST_HOT)
+        entries = []
+        for e in anlz_file.raw_entries(ext.tags[i]):
+            if anlz_file.entry_hot_cue(e) == hot:
+                # rekordbox's compact 44-byte form has no colour bytes to change.
+                e = anlz_file.entry_with_colour(e, code, rgb) or W.pcp2_entry(
+                    hot_cue=hot, kind=cue.type, time_ms=cue.time,
+                    loop_ms=None if cue.loop_time == anlz_file.NO_LOOP else cue.loop_time,
+                    rgb=rgb, beats=cue.loop_numerator or None, code=code,
+                    comment=cue.comment or None)
+            entries.append(e)
+        ext.tags[i] = anlz_file.Tag("PCO2", W.pco2_tag(anlz_file.LIST_HOT, entries))
+        self._journal.record("cue", "modify", track_id, f"slot:{slot}")
+
+    def delete_cue(self, track_id: str, slot: int) -> None:
+        hot, _cue = self._existing(track_id, slot)
+        self._replace_hot(track_id, hot, None, None)
+        self._journal.record("cue", "delete", track_id, f"slot:{slot}")
+
+    def hot_slots(self, track_id: str) -> set[int]:
+        """Occupied 0-based slots (pending edits included)."""
+        return {c.slot for c in self.cues(track_id) if c.role == "hotcue" and c.slot is not None}
+
+    def place_cues(self, track_id: str, cues: list, *, overwrite: bool = False) -> None:
+        """Batch placement (Auto Hotcues). Fills empty slots unless overwriting."""
+        taken = self.hot_slots(track_id)
+        for cue in cues:
+            slot = int(getattr(cue, "slot"))
+            if not overwrite and slot in taken:
+                continue
+            self.set_cue(track_id, slot=slot, start_sec=float(getattr(cue, "start", 0.0)),
+                         cue_type=getattr(cue, "type", "cue"),
+                         length_sec=float(getattr(cue, "length", 0.0) or 0.0),
+                         name=getattr(cue, "name", None))
+
+    # The grid: `PQTZ` in the .DAT, every beat. rekordbox's measured grid edit,
+    # reproduced: PQTZ rewritten, `.EXT`'s extended grid PQT2 BLANKED (not
+    # recomputed), every loop's beat length cleared to 0/0, `.2EX` untouched,
+    # and `content.bpmx100` following the first marker.
+    def current_markers(self, track_id: str) -> list:
+        grid = self.anlz_grid(track_id)
+        return beatgrid.markers_from_beats(*grid) if grid is not None else []
+
+    def _duration(self, track_id: str) -> float:
+        length = getattr(self.content(track_id), "length", None)
+        if length:
+            # Whole seconds rounded down; one more keeps the track's last beat.
+            return float(length) + 1.0
+        grid = self.anlz_grid(track_id)
+        return float(grid[0][-1]) + 1.0 if grid and grid[0] else 0.0
+
+    def replace_grid(self, track_id: str, markers: list) -> None:
+        """Set the grid to exactly these markers — the one primitive; every
+        marker-level command (`ReplaceGridCommands`) is a read-modify-replace."""
+        for m in markers:
+            if m.bpm <= 0:
+                raise InvalidCommand(f"A beatgrid marker needs a positive tempo, got {m.bpm}")
+            if m.start < 0:
+                raise InvalidCommand("A beatgrid marker cannot be before the track starts")
+        ordered = sorted(markers, key=lambda m: m.start)
+        dat, ext = self._editing(track_id)
+        off = self._offset(track_id)
+        nums, bpms, times = rb_beatgrid.beats_from_markers(ordered, self._duration(track_id))
+        dat.put("PQTZ", W.beatgrid_tag([(n, b, timebase.to_pioneer(t, off))
+                                        for n, b, t in zip(nums, bpms, times)]),
+                after=("PPTH", "PVBR"))
+        i = ext.find("PQT2")
+        if i is not None:
+            ext.tags[i] = anlz_file.Tag("PQT2", W.blank_pqt2(ext.tags[i].data))
+        for kind in (anlz_file.LIST_HOT, anlz_file.LIST_MEMORY):
+            i = ext.find("PCO2", kind)
+            if i is not None:
+                entries = [anlz_file.entry_without_loop_beats(e)
+                           for e in anlz_file.raw_entries(ext.tags[i])]
+                ext.tags[i] = anlz_file.Tag("PCO2", W.pco2_tag(kind, entries))
+        self.content(track_id).bpmx100 = int(round(ordered[0].bpm * 100)) if ordered else 0
+        self._require_db().flush()
+        self._journal.record("grid", "replace" if ordered else "delete", track_id)
+
     # ---- save ----------------------------------------------------------------
     @property
     def dirty(self) -> bool:
@@ -614,17 +890,22 @@ class OneLibraryStore:
         In this order, each step a precondition for the next:
 
           1. the drive is still there, and NOTHING else has written its database
-             since it was opened — otherwise this would silently undo it;
-          2. the working copy is committed and closed, which folds its WAL in, so
+             (or an analysis file this save rewrites) since Konduktor read it —
+             otherwise this would silently undo that;
+          2. the drive's current database and those analysis files are backed
+             up to app-data;
+          3. each edited analysis file is written beside itself and renamed over
+             it — BEFORE the database, as the Rekordbox store writes files before
+             committing, so a failure here leaves the database untouched;
+          4. the working copy is committed and closed, which folds its WAL in, so
              the copy is one self-contained file;
-          3. the drive's current database is backed up to app-data;
-          4. the copy is written beside the drive's database under a temporary
+          5. the copy is written beside the drive's database under a temporary
              name, the stale `-wal`/`-shm` are deleted (SQLite would REPLAY an
              old WAL into the new file), and the copy is renamed over it — a
              stick pulled mid-save keeps one whole library or the other;
-          5. edited text fields go into the audio files' own tags (best-effort,
+          6. edited text fields go into the audio files' own tags (best-effort,
              reported per file, never failing the save);
-          6. the working copy is re-taken from what is now on the drive.
+          7. the working copy is re-taken from what is now on the drive.
 
         `snapshot` is None: a drive is a database plus analysis files plus the
         audio, so there is no single blob to version (`capabilities.save.history`).
@@ -635,7 +916,11 @@ class OneLibraryStore:
                 f"{self.layout.root.name} is not connected. Plug it back in and "
                 "save again — your changes are still here."
             )
-        if _fingerprint(self.path) != self._opened_as:
+        changed_anlz = []
+        for path, (edited, seen) in self._pending_anlz.items():
+            if not path.is_file() or _fingerprint_file(path) != seen:
+                changed_anlz.append(path)
+        if _fingerprint(self.path) != self._opened_as or changed_anlz:
             raise InvalidCommand(
                 f"Another app has changed {self.layout.root.name} since Konduktor "
                 "opened it, and saving would undo that. Discard your changes and "
@@ -644,6 +929,19 @@ class OneLibraryStore:
         summary = self._journal.summary()
         # Read BEFORE the session closes: the rows are useless after it.
         tag_jobs = self._tag_jobs()
+        # Only files whose bytes really changed: an edit that was undone, or a
+        # command that failed after reading, leaves nothing to write.
+        anlz_writes = [(path, data) for path, (edited, _seen) in self._pending_anlz.items()
+                       if (data := edited.to_bytes()) != path.read_bytes()]
+
+        self._backup([path for path, _ in anlz_writes])
+        for path, data in anlz_writes:
+            partial = path.with_name(f".{path.name}.konduktor-partial")
+            partial.write_bytes(data)
+            os.replace(partial, path)
+            # Ours now: a retry after a later failure must not mistake this
+            # write for another app's.
+            self._pending_anlz[path] = (self._pending_anlz[path][0], _fingerprint_file(path))
 
         db.session.commit()
         work, working = self._work, self._work / self.path.name
@@ -656,7 +954,6 @@ class OneLibraryStore:
             except Exception:  # noqa: BLE001
                 log.debug("OneLibrary close step failed", exc_info=True)
         try:
-            self._backup()
             partial = self.path.with_name(f".{self.path.name}.konduktor-partial")
             shutil.copyfile(working, partial)
             with open(partial, "rb+") as f:
@@ -682,8 +979,9 @@ class OneLibraryStore:
         self._content_cache = None
         self._by_id = None
 
-    def _backup(self) -> Path:
-        """Copy the drive's database (and a live WAL) to app-data before replacing it."""
+    def _backup(self, anlz: list[Path] = ()) -> Path:
+        """Copy the drive's database (and a live WAL), and the analysis files about
+        to be rewritten, to app-data — laid out as they are on the drive."""
         root = _backup_root(self.layout)
         dest = root / time.strftime("%Y%m%d-%H%M%S")
         n = 1
@@ -694,6 +992,10 @@ class OneLibraryStore:
         for p in (self.path, self.path.with_name(self.path.name + "-wal")):
             if p.is_file():
                 shutil.copy2(p, dest / p.name)
+        for p in anlz:
+            target = dest / p.relative_to(self.layout.root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p, target)
         for old in sorted(d for d in root.iterdir() if d.is_dir())[:-_BACKUPS_KEPT]:
             shutil.rmtree(old, ignore_errors=True)
         return dest

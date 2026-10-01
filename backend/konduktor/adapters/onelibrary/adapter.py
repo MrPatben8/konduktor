@@ -12,20 +12,22 @@ reports `writable=False` with cause `browsing`, and every command is refused.
 
 What a write must look like was MEASURED by diffing a stick before and after
 rekordbox 7 edited it, rather than guessed: the update counters a drive carries
-do NOT move, and the `cue` table stays empty. Landing in steps — track metadata
-and playlists first; cues, grid, adding and removing tracks after — and every
-command not written yet is refused, with its capability flag False so the UI
-never offers it.
+do NOT move, and the `cue` table stays empty. Landing in steps — track metadata,
+playlists, hot cues and the beatgrid so far; adding and removing tracks next —
+and every command not written yet is refused, with its capability flag False so
+the UI never offers it.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from ...core.adapter import Unsupported
+from ...core.adapter import InvalidCommand, Unsupported
 from ...core.capabilities import Capabilities
-from ...core.model import HotcueChip, PlaylistNode, Track, TrackCues
+from ...core.model import GridMarker, HotcueChip, PlaylistNode, Track, TrackCues
 from ...core.pathmap import PathMapping, common_dir_prefix
 from ...core.query import TrackIndex
+from ..rekordbox import palette
+from ..rekordbox.cue_types import WRITABLE_CUE_TYPES
 from . import capabilities as caps
 from . import projection
 from .store import OneLibraryStore
@@ -317,41 +319,107 @@ class OneLibraryAdapter:
         self._require_writable("Editing playlists")
         return self._store.set_playlist_entries(node_id, track_ids)
 
-    def set_cue(self, track_id: str, **kw) -> TrackCues:
-        self._refuse("Editing cues")
+    def _refresh_cues(self, track_id: str) -> TrackCues:
+        """Re-project a track AND return its fresh cues — every cue/grid command
+        ends here, so a route can never serve a stale projection."""
+        self._refresh(track_id)
+        return self.track_cues(track_id) or TrackCues()
+
+    def _check_cue_type(self, cue_type: str) -> None:
+        if cue_type not in WRITABLE_CUE_TYPES:
+            raise Unsupported(f"OneLibrary has no cue type {cue_type!r}")
+
+    def set_cue(
+        self,
+        track_id: str,
+        *,
+        slot: int,
+        start_sec: float,
+        cue_type: str,
+        length_sec: float = 0.0,
+        role: str = "hotcue",
+        name: str | None = None,
+    ) -> TrackCues:
+        self._require_writable("Editing cues")
+        if role != "hotcue":
+            # Preserved-but-uneditable, exactly as in the Rekordbox adapter.
+            raise Unsupported(
+                "Memory cues are shown but cannot be edited — only hot cues are writable"
+            )
+        self._check_cue_type(cue_type)
+        self._store.set_cue(track_id, slot=slot, start_sec=start_sec, cue_type=cue_type,
+                            length_sec=length_sec, name=name)
+        return self._refresh_cues(track_id)
 
     def set_cue_type(self, track_id: str, slot: int, cue_type: str) -> TrackCues:
-        self._refuse("Editing cues")
+        self._require_writable("Editing cues")
+        self._check_cue_type(cue_type)
+        self._store.set_cue_type(track_id, slot, cue_type)
+        return self._refresh_cues(track_id)
 
     def set_cue_color(self, track_id: str, slot: int, color: str | None) -> TrackCues:
-        self._refuse("Editing cues")
+        self._require_writable("Editing cues")
+        code = None
+        if color is not None:
+            code = palette.swatch_code(color)
+            if code is None:
+                raise InvalidCommand(f"{color!r} is not one of rekordbox's hot cue colours")
+        self._store.set_cue_color(track_id, slot, code)
+        return self._refresh_cues(track_id)
 
     def delete_cue(self, track_id: str, slot: int) -> TrackCues:
-        self._refuse("Deleting cues")
+        self._require_writable("Deleting cues")
+        self._store.delete_cue(track_id, slot)
+        return self._refresh_cues(track_id)
 
     def place_cues(self, track_id: str, cues: list, *, overwrite: bool = False) -> TrackCues:
-        self._refuse("Placing cues")
+        self._require_writable("Placing cues")
+        for cue in cues:
+            self._check_cue_type(getattr(cue, "type", "cue"))
+        self._store.place_cues(track_id, cues, overwrite=overwrite)
+        return self._refresh_cues(track_id)
+
+    # ---- commands: beatgrid -----------------------------------------------
+    @staticmethod
+    def _markers_from(markers: list) -> list:
+        """Accept either GridMarkers or the (start, bpm) tuples routes send."""
+        return [m if isinstance(m, GridMarker) else GridMarker(start=float(m[0]), bpm=float(m[1]))
+                for m in markers]
 
     def add_grid_marker(self, track_id: str, start_sec: float, bpm: float | None = None) -> TrackCues:
-        self._refuse("Editing the beatgrid")
+        self._require_writable("Editing the beatgrid")
+        self._store.add_grid_marker(track_id, start_sec, bpm)
+        return self._refresh_cues(track_id)
 
     def move_grid_marker(self, track_id: str, index: int, start_sec: float) -> TrackCues:
-        self._refuse("Editing the beatgrid")
+        self._require_writable("Editing the beatgrid")
+        self._store.move_grid_marker(track_id, index, start_sec)
+        return self._refresh_cues(track_id)
 
     def set_grid_marker_bpm(self, track_id: str, index: int, bpm: float) -> TrackCues:
-        self._refuse("Editing the beatgrid")
+        self._require_writable("Editing the beatgrid")
+        self._store.set_grid_marker_bpm(track_id, index, bpm)
+        return self._refresh_cues(track_id)
 
     def delete_grid_marker(self, track_id: str, index: int) -> TrackCues:
-        self._refuse("Editing the beatgrid")
+        self._require_writable("Editing the beatgrid")
+        self._store.delete_grid_marker(track_id, index)
+        return self._refresh_cues(track_id)
 
     def replace_grid(self, track_id: str, markers: list) -> TrackCues:
-        self._refuse("Editing the beatgrid")
+        self._require_writable("Editing the beatgrid")
+        self._store.replace_grid(track_id, self._markers_from(markers))
+        return self._refresh_cues(track_id)
 
     def set_analysed_grid(self, track_id: str, markers: list) -> TrackCues:
-        self._refuse("Editing the beatgrid")
+        """An analysis result, as rekordbox's analyser would write it: nothing is
+        paired with a marker (the companion cue is Traktor's), so a replace."""
+        return self.replace_grid(track_id, markers)
 
     def delete_grid(self, track_id: str) -> TrackCues:
-        self._refuse("Deleting the beatgrid")
+        self._require_writable("Deleting the beatgrid")
+        self._store.delete_grid(track_id)
+        return self._refresh_cues(track_id)
 
     def set_grid_lock(self, track_id: str, locked: bool) -> TrackCues:
         raise Unsupported("OneLibrary has no beatgrid lock")

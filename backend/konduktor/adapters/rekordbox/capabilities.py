@@ -69,8 +69,8 @@ def capabilities_for(
             max_memory_cues=None,  # unlimited
             # Both cue types write; Rekordbox has no fade/load types.
             types=WRITABLE_CUE_TYPES,
-            # A hot cue's colour is one of rekordbox's swatches (the 15 that
-            # were measured, see `palette`), offered in rekordbox's own order.
+            # A hot cue's colour is one of rekordbox's 16 swatches (all
+            # measured, see `palette`), offered in rekordbox's own order.
             color="palette",
             palette=[palette.hex_for(code) for code in palette.SWATCHES],
             named=True,  # djmdCue.Comment
