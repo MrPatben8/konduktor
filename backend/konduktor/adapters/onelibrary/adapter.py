@@ -28,6 +28,7 @@ from ...core.pathmap import PathMapping, common_dir_prefix
 from ...core.query import TrackIndex
 from ..rekordbox import palette
 from ..rekordbox.cue_types import WRITABLE_CUE_TYPES
+from ...exporter import MANIFEST_NAME
 from . import capabilities as caps
 from . import projection
 from .store import OneLibraryStore
@@ -62,7 +63,9 @@ class OneLibraryAdapter:
         self._index.rebuild(tracks)
 
     def _drive_path(self, row) -> str | None:
-        resolved = self._store.layout.resolve(getattr(row, "path", None))
+        # Through the store: an added track plays from its incoming copy until
+        # Save puts it in place.
+        resolved = self._store.resolve_audio(getattr(row, "path", None))
         return str(resolved) if resolved is not None else None
 
     def close(self) -> None:
@@ -93,6 +96,8 @@ class OneLibraryAdapter:
             version=self._store.db_version,
             read_only=self.read_only,
             editable_fields=sorted(OneLibraryStore.EDITABLE_FIELDS),
+            # A drive an export set wrote carries the export's manifest at its root.
+            managed_by_export=(self._store.layout.root / MANIFEST_NAME).is_file(),
         )
 
     # ---- read ------------------------------------------------------------
@@ -257,7 +262,11 @@ class OneLibraryAdapter:
 
     def save(self):
         self._require_writable("Saving")
-        return self._store.save()
+        outcome = self._store.save()
+        # Save MOVES files (an added track's audio leaves its incoming copy), so
+        # the projection is rebuilt from what is now on the drive.
+        self._rebuild()
+        return outcome
 
     def snapshot(self) -> bytes:
         raise Unsupported("OneLibrary drives are not versioned by Konduktor")
@@ -278,11 +287,101 @@ class OneLibraryAdapter:
         if self.read_only:
             self._refuse(what)
 
+    # ---- audio placement (`tracks.places_audio`) ----------------------------
+    def audio_home(self) -> Path:
+        return self._store.audio_home()
+
+    def place_audio(self, source: Path, track) -> Path | None:
+        self._require_writable("Adding tracks")
+        return self._store.place_audio(source, track)
+
     def add_tracks(self, items: list, *, checkpoint=None) -> list[str]:
-        self._refuse("Adding tracks")
+        """Add tracks, each arriving ready to prep — as the Rekordbox adapter does.
+
+        A drive keeps the beatgrid, cues and waveforms in per-track analysis
+        files, and rekordbox shows neither grid nor cues without them, so every
+        file is decoded ONCE here and its `.DAT`/`.EXT`/`.2EX` built by the
+        OneLibrary exporter's own writer — the files rekordbox 7 was verified
+        to read. A file with no grid of its own gets Konduktor's.
+
+        Two phases, as in Rekordbox: FIRST the slow, cancellable part (decoding,
+        grid detection, building the analysis and artwork bytes) before the
+        library is touched; THEN the rows, with hot cues replayed through the
+        ordinary `set_cue` so they keep its conventions. Memory cues — and a hot
+        cue with no free pad — cross as memory cues, written with the files.
+        `audio_path` is where `place_audio` said to copy it (or the file itself,
+        already on the stick); Save moves copies into place.
+        """
+        from ...core import audio_tags, grid_detect, waveform
+        from ...core.export import ExportTrack
+        from ..rekordbox import artwork, timebase
+        from .export import OneLibraryExporter
+
+        self._require_writable("Adding tracks")
+        exporter = OneLibraryExporter()
+        prepared = []
+        total = len(items)
+        for n, item in enumerate(items, start=1):
+            audio = Path(item.audio_path)
+            if checkpoint is not None:
+                checkpoint(f"Analysing {item.track.title or audio.name} ({n}/{total})", step=n, of=total)
+            if not audio.is_file():
+                raise InvalidCommand(f"No audio file at {audio}")
+            try:
+                rel = self._store.drive_relative(self._store.final_of(audio))
+            except ValueError:
+                raise InvalidCommand(f"{audio} is not on this drive") from None
+            samples = waveform.decode(audio)
+            measured = waveform.analyse_samples(samples, lead=timebase.offset(audio))
+            markers = list(item.cues.grid_markers) if item.cues else []
+            if not markers and samples is not None:
+                try:
+                    found = grid_detect.detect_grid(str(audio), y=samples, sr=waveform.SR)
+                    markers = [GridMarker(start=found.anchor, bpm=found.bpm)]
+                except ValueError:
+                    pass  # no pulse to fit (a one-shot, silence): no grid
+            hot, memory, taken = [], [], set()
+            for cue in sorted((item.cues.cues if item.cues else []), key=lambda c: c.start):
+                if (cue.role == "hotcue" and cue.slot is not None
+                        and 0 <= cue.slot < caps.HOTCUE_SLOTS and cue.slot not in taken):
+                    hot.append(cue)
+                    taken.add(cue.slot)
+                else:
+                    memory.append(cue.model_copy(update={"role": "memory", "slot": None}))
+            export_track = ExportTrack(track=item.track, destination=audio,
+                                       cues=TrackCues(grid_markers=markers, cues=memory))
+            # Decoded once above; the writer must not decode it again.
+            export_track.waveform = lambda *, lead=0.0, m=measured: m
+            art = item.art or audio_tags.read_cover(audio)
+            jpegs = artwork.pioneer_jpegs(art[0]) if art else None
+            length = item.track.length or (int(measured.duration) if measured else None)
+            prepared.append((item, audio, rel, exporter.anlz_files(export_track, rel), jpegs,
+                             markers, hot, length))
+
+        added: list[str] = []
+        for item, audio, rel, anlz, jpegs, markers, hot, length in prepared:
+            track_id = self._store.add_track(
+                audio, item.track, rel=rel, anlz_rel=self._store._anlz_rel(rel), anlz=anlz,
+                jpegs=jpegs, bpm=markers[0].bpm if markers else item.track.bpm, length=length)
+            for cue in hot:
+                self._store.set_cue(track_id, slot=cue.slot, start_sec=cue.start,
+                                    cue_type="loop" if cue.length else "cue",
+                                    length_sec=cue.length or 0.0, name=cue.name)
+                code, _rgb = palette.code_for(cue.color)
+                if cue.color and code:
+                    self._store.set_cue_color(track_id, cue.slot, code)
+            added.append(track_id)
+        self._rebuild()
+        return added
 
     def remove_tracks(self, track_ids: list[str]) -> int:
-        self._refuse("Removing tracks")
+        """Remove tracks — and, on a stick, their audio and analysis files at Save
+        (decision 3: a stick's audio belongs to its library)."""
+        self._require_writable("Removing tracks")
+        n = self._store.remove_tracks(track_ids)
+        if n:
+            self._rebuild()
+        return n
 
     def apply_stem_swaps(self, swaps, *, add_to_playlist=None):
         self._refuse("Converting tracks to stems")

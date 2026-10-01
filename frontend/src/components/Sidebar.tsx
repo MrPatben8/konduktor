@@ -47,6 +47,8 @@ interface Props {
   onOpenHistory: () => void
   onImport: () => void
   onSwitchLibrary: () => void
+  /** Open a drive's library as THE library (Devices' "Open for editing…"). */
+  onOpenLibrary: (path: string) => void
   onDone: (msg: string) => void
   onOpenPathMapping: () => void
   /** After unsaved edits were discarded (SaveBar). */
@@ -319,6 +321,7 @@ export function Sidebar({
   onOpenHistory,
   onImport,
   onSwitchLibrary,
+  onOpenLibrary,
   onDone,
   onOpenPathMapping,
   onDiscarded,
@@ -591,6 +594,7 @@ export function Sidebar({
           onSelect={onSelect}
           onError={onError}
           onImport={onImport}
+          onOpenLibrary={onOpenLibrary}
         />
       </div>
 

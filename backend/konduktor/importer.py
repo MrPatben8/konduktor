@@ -290,9 +290,15 @@ def run(
     destination and nothing to roll back. `into_playlist` appends every planned
     track — the new ones and those the destination already held — to one of the
     destination's playlists before the save, so both land in one commit.
+
+    A destination that PLACES ITS OWN AUDIO (`tracks.places_audio`: a OneLibrary
+    stick) overrides both: `dest.place_audio` names each copy's target, or says
+    the file can be used where it is, and `reference`/`plan.destination` are
+    ignored.
     """
     destination = plan.destination
-    if not reference:
+    places = places_audio(dest)
+    if not reference and not places:
         assert destination is not None
         destination.mkdir(parents=True, exist_ok=True)
 
@@ -318,11 +324,18 @@ def run(
         for planned in importable:
             handle.raise_if_cancelled()
             assert planned.source_path is not None
-            if reference:
+            if places:
+                target = dest.place_audio(planned.source_path, source.track(planned.track_id))
+                if target is None:
+                    copied.append((planned, planned.source_path))
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+            elif reference:
                 copied.append((planned, planned.source_path))
                 continue
+            else:
+                target = _unique_target(destination, planned.source_path.name, taken)
             handle.progress(message=f"Copying {planned.title}")
-            target = _unique_target(destination, planned.source_path.name, taken)
             created.append(target)  # registered BEFORE the write, so a cancel
             copy_file(planned.source_path, target, handle, bump)  # mid-file is cleaned
             copied.append((planned, target))
@@ -397,6 +410,26 @@ def run(
             except OSError:
                 log.debug("could not clean up %s", target, exc_info=True)
         raise
+
+
+def places_audio(dest) -> bool:
+    """Whether the destination decides where added audio goes (a stick)."""
+    try:
+        return bool(dest.capabilities().tracks.places_audio) and hasattr(dest, "place_audio")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def placed_bytes(dest, plan: ImportPlan) -> int:
+    """What an import into a self-placing library will COPY: a file already under
+    its `audio_home()` is used in place and costs nothing."""
+    home = dest.audio_home()
+    total = 0
+    for planned in plan.importable:
+        path = planned.source_path
+        if path is not None and not path.resolve().is_relative_to(home.resolve()):
+            total += planned.size
+    return total
 
 
 def _save(dest):

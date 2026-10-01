@@ -1,8 +1,8 @@
 """What a OneLibrary drive can persist.
 
 Opened as THE library, a drive is writable, and the per-feature flags say which
-edits have landed: track metadata, playlists, hot cues and the grid so far;
-adding and removing tracks are still False, so the UI never offers an edit the adapter
+edits have landed: track metadata, playlists, hot cues, the grid, and adding
+and removing tracks, so the UI never offers an edit the adapter
 would refuse. Opened `read_only` — the sidebar's Devices, browsing beside the
 loaded library — `writable` is False with cause `browsing`, which the UI words
 as "open it for editing", not as a missing feature.
@@ -50,6 +50,7 @@ def capabilities_for(
     *,
     read_only: bool = False,
     editable_fields: list[str] | None = None,
+    managed_by_export: bool = False,
 ) -> Capabilities:
     return Capabilities(
         platform="onelibrary",
@@ -78,6 +79,12 @@ def capabilities_for(
             # The Rekordbox adapter's set: `producer`/`mix` have no column.
             editable_fields=sorted(editable_fields or []),
             media_kinds=["audio", "stem"],
+            # A stick's audio belongs to its library: added files are copied onto
+            # it (laid out as rekordbox does) and a removed track's file goes
+            # with it, at Save — so the library, not the user, places the audio.
+            addable=not read_only,
+            removable=not read_only,
+            places_audio=True,
             # `artwork` gates EDITING, which Rekordbox does not do yet either
             # (parity). Reading works: `store.cover_art` follows
             # `content.image_id` -> `image.path`.
@@ -100,6 +107,7 @@ def capabilities_for(
             # not risked: the store fingerprints the database at open and
             # refuses to save over a change it did not make.
             overwrite_risk="none",
+            managed_by_export=managed_by_export,
             # A drive is a database plus N analysis files plus the audio itself,
             # so there is no single blob that IS the library — the same reason
             # Rekordbox libraries are not versioned.

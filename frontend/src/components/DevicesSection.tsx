@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Drive, type PlaylistNode } from '../api'
 import type { Source } from './Sidebar'
 import { Icon } from '../lib/icons'
+import { ContextMenu, type MenuItem } from './ContextMenu'
 
 /**
  * Every drive, in the sidebar: plugged-in ones under Devices, and the computer's
@@ -17,6 +18,11 @@ import { Icon } from '../lib/icons'
  *
  * The list genuinely changes while the app is open, so unlike everything else in
  * the sidebar this POLLS. Folder levels are fetched only when expanded.
+ *
+ * A device here is BROWSED, read-only, beside the loaded library. Editing one
+ * means opening it as THE library ("Open for editing…": the drive row's
+ * right-click menu, and a button while a device that can be edited is being
+ * browsed) — one library, one dirty state, one SaveBar (decided 2026-10-01).
  */
 
 const POLL_MS = 4000
@@ -26,9 +32,11 @@ interface Props {
   onSelect: (s: Source) => void
   onError: (msg: string) => void
   onImport: () => void
+  /** Open a drive's library as THE library, to edit it. */
+  onOpenLibrary: (path: string) => void
 }
 
-export function DevicesSection({ source, onSelect, onError, onImport }: Props) {
+export function DevicesSection({ source, onSelect, onError, onImport, onOpenLibrary }: Props) {
   const qc = useQueryClient()
   // Which rows are expanded, by a key per row kind. Not persisted: a tree
   // reopening deep inside a drive that is no longer plugged in helps nobody.
@@ -101,6 +109,16 @@ export function DevicesSection({ source, onSelect, onError, onImport }: Props) {
   }, [folderGone])
 
   const viewingDevice = source.kind === 'device' || source.kind === 'device-playlist'
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
+  // Whether the browsed device could be edited if opened as the library: a
+  // FACT from its capabilities (`browsing`), never the platform's name.
+  const deviceCaps = useQuery({
+    queryKey: ['source-capabilities'],
+    queryFn: api.sourceCapabilities,
+    enabled: !!openPath,
+    staleTime: Infinity,
+  })
+  const editable = deviceCaps.data?.readonly_cause === 'browsing'
 
   const driveRow = (d: Drive, depth: number) => {
     const key = `drive:${d.path}`
@@ -125,6 +143,16 @@ export function DevicesSection({ source, onSelect, onError, onImport }: Props) {
           expanded={expandedHere}
           onToggle={() => setRow(key, !expandedHere)}
           onClick={onClick}
+          onContextMenu={
+            d.library
+              ? (e) => {
+                  e.preventDefault()
+                  const path = d.library!.path
+                  setMenu({ x: e.clientX, y: e.clientY,
+                            items: [{ label: 'Open for editing…', onClick: () => onOpenLibrary(path) }] })
+                }
+              : undefined
+          }
           selected={isOpen && source.kind === 'device'}
           trailing={
             isOpen && open.data?.tracks != null ? (
@@ -211,6 +239,16 @@ export function DevicesSection({ source, onSelect, onError, onImport }: Props) {
             Import to collection…
           </button>
         )}
+        {viewingDevice && openPath && editable && (
+          <button
+            onClick={() => onOpenLibrary(openPath)}
+            title="Open this drive as the library, so its tracks, playlists and cues can be edited"
+            className="mb-1 w-full rounded-full btn-glass px-2 py-1.5 text-sm text-muted hover:text-text"
+          >
+            Open for editing…
+          </button>
+        )}
+        {menu && <ContextMenu {...menu} onClose={() => setMenu(null)} />}
       </div>
     </div>
   )
@@ -235,6 +273,7 @@ function TreeRow({
   expanded,
   onToggle,
   onClick,
+  onContextMenu,
   selected = false,
   trailing,
 }: {
@@ -245,11 +284,13 @@ function TreeRow({
   expanded: boolean
   onToggle: () => void
   onClick: () => void
+  onContextMenu?: (e: React.MouseEvent) => void
   selected?: boolean
   trailing?: ReactNode
 }) {
   return (
     <div
+      onContextMenu={onContextMenu}
       style={{ paddingLeft: indent(depth) }}
       className={`flex w-full items-center gap-1 rounded-md py-1 pr-2 text-sm transition-colors ${
         selected ? 'is-selected text-text' : 'text-muted hover:bg-ink-800 hover:text-text'

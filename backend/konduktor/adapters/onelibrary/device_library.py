@@ -17,24 +17,24 @@ playlist_id)`, artwork id = `image_id` — all checked on Goober. So the OneLibr
 database IS the answer for every row the pdb shares with it.
 
 **An edit, not a regeneration.** The stick's own `export.pdb` is edited in place
-(`pdb.PdbEditor`): only the tracks, the four lookup tables and the playlist tree
-and entries are candidates, a table is rewritten only if one of its rows changed,
+(`pdb.PdbEditor`): only the tracks, the lookup tables (artist, album, genre,
+label, key), artwork and the playlist tree and entries are candidates, a table is rewritten only if one of its rows changed,
 and an unchanged row keeps rekordbox's bytes. A changed TRACK row is the old row
 with the edited fields overwritten, so everything the pdb holds that OneLibrary
 does not — the phrase-analysis strings, the `masterDbId` halves, play counts,
-dates — survives. History, colours, menus, artwork, keys and `exportExt.pdb` are
-never touched.
+dates — survives. History, colours, menus and `exportExt.pdb` are never touched.
 """
 from __future__ import annotations
 
+import re
 import struct
 from pathlib import Path
 
 from ..rekordbox import pdb
 
 #: Tables this rebuild owns. Everything else in the file is left as it is.
-_OWNED = (pdb.TRACKS, pdb.ARTISTS, pdb.ALBUMS, pdb.GENRES, pdb.LABELS,
-          pdb.PLAYLIST_TREE, pdb.PLAYLIST_ENTRIES)
+_OWNED = (pdb.TRACKS, pdb.ARTISTS, pdb.ALBUMS, pdb.GENRES, pdb.LABELS, pdb.KEYS,
+          pdb.ARTWORK, pdb.PLAYLIST_TREE, pdb.PLAYLIST_ENTRIES)
 
 
 def _lookup_name(table: int, row: bytes) -> str:
@@ -46,7 +46,15 @@ def _lookup_name(table: int, row: bytes) -> str:
     if table == pdb.ALBUMS:
         sub, _shift, _u, _artist, _rid, _u3, _b, ofs = struct.unpack_from("<HHIIIIBB", row, 0)
         return pdb.read_dsql(row, ofs)
+    if table == pdb.KEYS:
+        return pdb.read_dsql(row, 8)
     return pdb.read_dsql(row, 4)
+
+
+def _pdb_art_path(path: str | None) -> str:
+    """OneLibrary's `image.path` names the `b<n>` file; export.pdb's artwork row
+    the byte-identical `a<n>` beside it (as on Goober, and as rekordbox writes)."""
+    return re.sub(r"/b(\d+)(\.jpg)$", r"/a\1\2", path or "")
 
 
 def _tree_value(row: bytes) -> tuple:
@@ -94,6 +102,7 @@ def rebuild(existing: bytes, session) -> bytes | None:
         (pdb.ALBUMS, "SELECT album_id, name FROM album", pdb.album_row),
         (pdb.GENRES, "SELECT genre_id, name FROM genre", pdb.id_string_row),
         (pdb.LABELS, "SELECT label_id, name FROM label", pdb.id_string_row),
+        (pdb.KEYS, "SELECT key_id, name FROM key", pdb.key_row),
     ):
         want = {int(i): (name or "", (lambda i=i, n=name, b=build: b(int(i), n or "")))
                 for i, name in session.execute(text(sql))}
@@ -101,6 +110,13 @@ def rebuild(existing: bytes, session) -> bytes | None:
                         lambda row, value, t=table: _lookup_name(t, row) == value)
         if merged is not None:
             tables[table] = merged
+
+    want = {int(i): (_pdb_art_path(path), (lambda i=i, p=path: pdb.id_string_row(int(i), _pdb_art_path(p))))
+            for i, path in session.execute(text("SELECT image_id, path FROM image"))}
+    merged = _merge(pdb.table_rows(existing, pdb.ARTWORK), want, pdb.ARTWORK,
+                    lambda row, value: pdb.read_dsql(row, 4) == value)
+    if merged is not None:
+        tables[pdb.ARTWORK] = merged
 
     # ---- tracks -----------------------------------------------------------------
     old_tracks = {pdb.row_id(pdb.TRACKS, r): r for r in pdb.table_rows(existing, pdb.TRACKS)}

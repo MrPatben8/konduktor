@@ -222,6 +222,8 @@ export interface SaveCapabilities {
   library_label: string
   overwrite_risk: 'none' | 'on_exit' | 'while_running'
   history: boolean
+  /** Written by a Konduktor export set, whose next run replaces it. */
+  managed_by_export: boolean
 }
 
 /** Why a library cannot be edited. A fact — lib/platformCopy.ts words it. */
@@ -249,6 +251,8 @@ export interface Capabilities {
     removable: boolean
     /** Tracks can be added to the library (import, add browsed files). */
     addable: boolean
+    /** The library decides where added audio goes — no copy/in-place question. */
+    places_audio: boolean
     /** Tracks can be converted to native-instruments STEM files. */
     stem_convertible: boolean
     /** Lower-case suffixes this library can hold — what a browsed folder lists. */
@@ -361,6 +365,11 @@ export interface ImportPreview {
   destination: string | null
   free_bytes: number | null
   enough_space: boolean | null
+  /** Set when the library places its own audio (`tracks.places_audio`): how
+   *  many files will be copied onto it, and how many are already there. */
+  places_audio?: boolean
+  copied?: number
+  in_place?: number
 }
 
 // ---- drives and folders ----

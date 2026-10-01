@@ -265,21 +265,21 @@ class OneLibraryExporter:
         n = counter["next"]
         folder = root / "PIONEER" / "Artwork" / "00001"
         folder.mkdir(parents=True, exist_ok=True)
-        small, medium = jpegs
         files = []
-        for letter in ("a", "b"):
-            for suffix, data in (("", small), ("_m", medium)):
-                path = folder / f"{letter}{n}{suffix}.jpg"
-                path.write_bytes(data)
-                files.append(path)
+        for rel, data in art_files(n, jpegs):
+            path = root / rel.lstrip("/")
+            path.write_bytes(data)
+            files.append(path)
         con.execute("INSERT INTO image (image_id, path) VALUES (?, ?)",
                     (n, f"/PIONEER/Artwork/00001/b{n}.jpg"))
         return n, files
 
     # ---- the analysis files --------------------------------------------------
 
-    def _write_anlz(self, item: ExportTrack, rel: str, dat: Path) -> list[Path]:
-        """The `.DAT`, `.EXT` and `.2EX`, as rekordbox 7 writes them.
+    def anlz_files(self, item: ExportTrack, rel: str) -> list[tuple[str, bytes]]:
+        """The `.DAT`, `.EXT` and `.2EX` as `(suffix, bytes)`, as rekordbox 7 writes
+        them — built, not written, so a library adding a track to a stick can hold
+        them until Save (`OneLibraryStore.add_track`).
 
         All three, and every cue list, even for a track with no cues: rekordbox
         never produces a track without them, and `PCO2` — the complete list,
@@ -318,9 +318,18 @@ class OneLibraryExporter:
         tags += previews
         tags += W.cue_tags(cues, extended=False)
         ext = [W.path_tag(rel), *ext_waves[:1], *W.cue_tags(cues, extended=True), *ext_waves[1:]]
-        written = [W.write_anlz(dat, tags), W.write_anlz(dat.with_suffix(".EXT"), ext)]
+        files = [(".DAT", W.anlz_bytes(tags)), (".EXT", W.anlz_bytes(ext))]
         if two_ex:
-            written.append(W.write_anlz(dat.with_suffix(".2EX"), [W.path_tag(rel), *two_ex]))
+            files.append((".2EX", W.anlz_bytes([W.path_tag(rel), *two_ex])))
+        return files
+
+    def _write_anlz(self, item: ExportTrack, rel: str, dat: Path) -> list[Path]:
+        written = []
+        for suffix, data in self.anlz_files(item, rel):
+            path = dat.with_suffix(suffix)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            written.append(path)
         return written
 
     @staticmethod
@@ -422,6 +431,15 @@ class OneLibraryExporter:
 #: `.stem.m4a` (a Traktor STEM) is an M4A to a Pioneer player.
 _FILE_TYPES = {".mp3": 1, ".m4a": 4, ".mp4": 4, ".aac": 4, ".flac": 5, ".wav": 11,
                ".aif": 12, ".aiff": 12}
+
+
+def art_files(n: int, jpegs: tuple[bytes, bytes]) -> list[tuple[str, bytes]]:
+    """Image `n`'s four files as `(drive-relative path, bytes)`: `a<n>`/`b<n>`
+    and their `_m`, byte-identical pairs, in `Artwork/00001/` (see `_write_art`).
+    `image.path` names the `b` file; `export.pdb`'s artwork table the `a` one."""
+    small, medium = jpegs
+    return [(f"/PIONEER/Artwork/00001/{letter}{n}{suffix}.jpg", data)
+            for letter in ("a", "b") for suffix, data in (("", small), ("_m", medium))]
 
 
 def _file_type(path: Path) -> int:

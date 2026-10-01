@@ -360,8 +360,8 @@ check("the editable fields are the Rekordbox adapter's set",
       caps.tracks.editable_fields == sorted(["title", "artist", "album", "genre", "label",
                                              "remixer", "comment", "rating", "release_date"]),
       str(caps.tracks.editable_fields))
-check("adding and removing tracks are not offered YET",
-      not caps.tracks.addable and not caps.tracks.removable)
+check("tracks can be added and removed, the library placing the audio",
+      caps.tracks.addable and caps.tracks.removable and caps.tracks.places_audio)
 check("playlists can be reordered", caps.playlists.reorder is True)
 check("ratings are 0-5", caps.tracks.rating_max == 5)
 check("folders are supported by the format", caps.playlists.folders is True)
@@ -428,7 +428,7 @@ LANDED = {"set_track_metadata", "create_playlist", "rename_playlist", "delete_pl
           "set_playlist_entries", "save",
           "set_cue", "set_cue_type", "set_cue_color", "delete_cue", "place_cues",
           "add_grid_marker", "move_grid_marker", "set_grid_marker_bpm", "delete_grid_marker",
-          "replace_grid", "set_analysed_grid", "delete_grid"}
+          "replace_grid", "set_analysed_grid", "delete_grid", "remove_tracks"}
 pending = [(n, fn) for n, fn in COMMANDS if n not in LANDED]
 refused = [name for name, fn in pending if not _raises(fn, Unsupported)]
 check(f"the {len(pending)} commands not written yet raise Unsupported", not refused, "; ".join(refused))

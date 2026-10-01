@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
 import { useCaps } from '../lib/capabilities'
-import { overwriteWarning, readOnlyNotice, saveLabel } from '../lib/platformCopy'
+import { exportManagedWarning, overwriteWarning, readOnlyNotice, saveLabel } from '../lib/platformCopy'
 import { Icon } from '../lib/icons'
 import { askConfirm } from '../lib/confirm'
 
@@ -55,6 +55,7 @@ export function SaveBar({ onError, trailing, onDiscarded }: Props) {
 
   const caps = useCaps()
   const warning = overwriteWarning(caps.save)
+  const exportWarning = exportManagedWarning(caps.save)
   const dirty = state?.dirty ?? false
   const pending = state?.pending_stems
   const readOnly = readOnlyNotice(caps)
@@ -79,6 +80,12 @@ export function SaveBar({ onError, trailing, onDiscarded }: Props) {
         <div className="mb-2 flex gap-1.5 rounded-xl bg-gold/10 px-2.5 py-1.5 text-[11px] leading-snug text-gold">
           <Icon name="warning" size={13} className="mt-px shrink-0" />
           <span>{warning}</span>
+        </div>
+      )}
+      {dirty && exportWarning && (
+        <div className="mb-2 flex gap-1.5 rounded-xl bg-gold/10 px-2.5 py-1.5 text-[11px] leading-snug text-gold">
+          <Icon name="warning" size={13} className="mt-px shrink-0" />
+          <span>{exportWarning}</span>
         </div>
       )}
       {/* Decided: the consequence is shown where Save is pressed, not only in

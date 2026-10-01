@@ -1894,7 +1894,10 @@ def _folder_add_plan(body: FolderAddRequest):
     # One source across however many folders the ids came from.
     source = FolderSource(Path(tracks[0].id).parent, tracks)
     destination = None
-    if body.mode == "copy":
+    if importer.places_audio(dest):
+        # The library decides (a stick): no mode, no destination to ask for.
+        destination = dest.audio_home()
+    elif body.mode == "copy":
         if not body.destination:
             raise HTTPException(400, "Copying needs a destination folder")
         destination = Path(body.destination).expanduser()
@@ -1910,9 +1913,11 @@ def _folder_add_plan(body: FolderAddRequest):
 
 @app.post("/api/folder/add/preview")
 def folder_add_preview(body: FolderAddRequest) -> dict:
-    _source, _dest, destination, plan = _folder_add_plan(body)
+    _source, dest, destination, plan = _folder_add_plan(body)
     out = plan.as_dict(free_bytes=importer.free_bytes(destination) if destination else None)
-    if body.mode == "reference":
+    if importer.places_audio(dest):
+        _placed_space(out, dest, plan, destination)
+    elif body.mode == "reference":
         # Nothing is copied, so there is no size to fit anywhere.
         out.update(total_bytes=0, free_bytes=None, enough_space=None)
     drive = _drive_of(Path(body.track_ids[0]), places.drives()) if body.track_ids else None
@@ -1927,12 +1932,13 @@ def folder_add(body: FolderAddRequest) -> JobStatus:
     source, dest, destination, plan = _folder_add_plan(body)
     if not plan.importable and not plan.existing:
         raise HTTPException(400, "Nothing to add (none of those files exist)")
-    if body.mode == "copy":
+    if body.mode == "copy" or importer.places_audio(dest):
         free = importer.free_bytes(destination)
-        if free is not None and free < plan.total_bytes + importer.SPACE_HEADROOM:
+        needed = importer.placed_bytes(dest, plan) if importer.places_audio(dest) else plan.total_bytes
+        if free is not None and free < needed + importer.SPACE_HEADROOM:
             raise HTTPException(
                 400,
-                f"Not enough space: {plan.total_bytes / 1e9:.1f} GB needed, "
+                f"Not enough space: {needed / 1e9:.1f} GB needed, "
                 f"{free / 1e9:.1f} GB free at {destination}",
             )
     if JOBS.active("import"):
@@ -1962,10 +1968,23 @@ def folder_add(body: FolderAddRequest) -> JobStatus:
 # threads rather than something fancier.
 
 
+def _placed_space(out: dict, dest, plan, destination: Path) -> None:
+    """A self-placing library's preview: only what is really COPIED needs room,
+    and the preview says how many files will be copied vs used in place."""
+    needed = importer.placed_bytes(dest, plan)
+    free = importer.free_bytes(destination)
+    in_place = sum(1 for t in plan.importable if t.source_path is not None
+                   and t.source_path.resolve().is_relative_to(destination.resolve()))
+    out.update(total_bytes=needed, free_bytes=free,
+               enough_space=None if free is None else free >= needed + importer.SPACE_HEADROOM,
+               places_audio=True, in_place=in_place, copied=len(plan.importable) - in_place)
+
+
 def _import_plan(body: ImportRequest):
     source, dest = require_source(), require_adapter()
     _require_addable(dest)
-    destination = Path(body.destination).expanduser()
+    destination = (dest.audio_home() if importer.places_audio(dest)
+                   else Path(body.destination).expanduser())
     return source, dest, destination, importer.plan(
         source,
         dest,
@@ -1982,8 +2001,11 @@ def import_preview(body: ImportRequest) -> dict:
     Computed fresh on every call and never stored — a stick can be re-exported
     between the preview and the import, and a stale preview is worse than none.
     """
-    _source, _dest, destination, plan = _import_plan(body)
-    return plan.as_dict(free_bytes=importer.free_bytes(destination))
+    _source, dest, destination, plan = _import_plan(body)
+    out = plan.as_dict(free_bytes=importer.free_bytes(destination))
+    if importer.places_audio(dest):
+        _placed_space(out, dest, plan, destination)
+    return out
 
 
 @app.post("/api/import", response_model=JobStatus)
@@ -1994,10 +2016,11 @@ def start_import(body: ImportRequest) -> JobStatus:
     if not plan.importable:
         raise HTTPException(400, "Nothing to import (no tracks, or none of their files exist)")
     free = importer.free_bytes(destination)
-    if free is not None and free < plan.total_bytes + importer.SPACE_HEADROOM:
+    needed = importer.placed_bytes(dest, plan) if importer.places_audio(dest) else plan.total_bytes
+    if free is not None and free < needed + importer.SPACE_HEADROOM:
         raise HTTPException(
             400,
-            f"Not enough space: {plan.total_bytes / 1e9:.1f} GB needed, "
+            f"Not enough space: {needed / 1e9:.1f} GB needed, "
             f"{free / 1e9:.1f} GB free at {destination}",
         )
     # One at a time: two concurrent imports would race on filename collisions and

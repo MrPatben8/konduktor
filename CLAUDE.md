@@ -305,8 +305,9 @@ Two independent apps that talk over HTTP:
     The cross-vendor USB export format (AlphaTheta + Algoriddim + Native
     Instruments), read by CDJ-class hardware. Editing is landing in steps toward
     parity with the Rekordbox adapter — track metadata, playlists, hot cues and
-    the beatgrid done; adding/removing tracks and the `export.pdb` rebuild next —
-    decided in
+    the beatgrid, and the `export.pdb` rebuild done and VERIFIED in rekordbox 7
+    (both library views matched); adding/removing tracks done (not yet checked
+    in rekordbox) and the UI ("Open for editing…" on a Devices row) — decided in
     [the editing discussion](.claude/discussions/discuss-onelibrary-editing-2026-10-01.md),
     which also holds what rekordbox 7 was MEASURED writing when it edits a stick
     (no update counter moves, the `cue` table stays empty, a new playlist goes on
@@ -333,6 +334,38 @@ Two independent apps that talk over HTTP:
     the first edit — readers prefer `PCO2`, so a one-pad list would hide the rest.
     A track with no analysis files refuses cue/grid edits. Memory cues stay
     preserved-but-uneditable.
+    **`device_library.py` keeps the stick's legacy `export.pdb` in step** at
+    every Save (rekordbox's own edits let its playlists drift — measured). The
+    stick's own pdb is EDITED (`pdb.PdbEditor`), not regenerated: ids are
+    mirrored from OneLibrary (rekordbox exports both from the same ids), only the
+    tracks / lookup / playlist tables are candidates, a table is rewritten only if
+    a row changed, an unchanged row keeps rekordbox's bytes, and a changed track
+    row is the old row with the edited fields overwritten — so phrase strings,
+    `masterDbId` halves and play counts survive. A track row ends at its last
+    string (`pdb.track_extent`), NOT at the next row: rekordbox's heap holds stale
+    tails between rows. Keys and artwork are mirrored too (pdb artwork row =
+    `a<n>.jpg` beside OneLibrary's `b<n>`); history and `exportExt.pdb` are
+    untouched.
+    **Adding and removing tracks** (`tracks.places_audio`: the LIBRARY places
+    added audio, so the importer asks `place_audio` instead of the user, and the
+    routes check space at `audio_home()`): a file already on the stick is used in
+    place, anything else is copied to `Contents/<Artist>/<Album>/` (rekordbox's
+    layout: `UnknownArtist`/`UnknownAlbum`, file names cut to 48 characters) via
+    `<stick>/.konduktor-incoming/`, playable from there until Save moves it into
+    place; Discard deletes it, and a crashed session's incoming folder is cleared
+    on the next EDITABLE open (never a browsing one). Each added track is decoded
+    once and gets the OneLibrary exporter's own `.DAT`/`.EXT`/`.2EX`
+    (`OneLibraryExporter.anlz_files` builds bytes rather than writing) and art
+    (`art_files`), held in memory and written at Save; hot cues replay through
+    `set_cue`, memory cues (and a hot cue with no free pad) cross as memory cues.
+    The row copies a rekordbox stick row column for column (search columns NULL,
+    no counters) and `property.numberOfContents` follows. Removing deletes every
+    row naming the track (playlist entries renumbered from 1) and, AFTER the
+    database is saved, its audio, analysis files and unshared artwork, pruning
+    emptied folders. The adapter re-projects after every save, since Save moves
+    files. `save.managed_by_export` is set when the drive's root carries an
+    export set's `.konduktor-export.json`, and SaveBar warns that the next export
+    run replaces edits made in place.
     Full research, incl. the schema, is in
     [.claude/handoffs/onelibrary-adapter.md](.claude/handoffs/onelibrary-adapter.md);
     the four things that make it unlike the Rekordbox adapter:
@@ -602,12 +635,20 @@ Two independent apps that talk over HTTP:
     clicking a folder is the `folder` source kind — its audio in the ordinary
     table, read-only via `readonly_cause: 'not_in_library'`, with files the
     collection already holds checked off in the # column (`TrackTable`'s
-    `marked`). Capped at 40% of the sidebar and self-scrolling so a deep tree
+    `marked`). A browsed device is read-only (cause `browsing`); **"Open for
+    editing…"** — the drive row's right-click menu, and a button while browsing
+    a device whose caps say `browsing` — opens it as THE library via App's
+    `openForEditing` (unsaved-edits confirm, source closed, library opened).
+    Capped at 40% of the sidebar and self-scrolling so a deep tree
     gives way before the playlists do) + `AddFilesDialog` (copy vs. leave in
     place is **asked every time with nothing preselected** — the answer depends
     on the drive — and warns that a referenced file on an external drive goes
     missing on unplug. A playlist/export target adds to the collection first
-    and says so; it runs through `importer.run(reference=…, into_playlist=…)`),
+    and says so; it runs through `importer.run(reference=…, into_playlist=…)`.
+    A library with `tracks.places_audio` (a stick) is the exception: no
+    question and no destination — the dialog STATES how many files are copied
+    and how many stay in place (`platformCopy.placedAudioSummary`), and
+    `ImportDialog` drops its destination folder the same way),
     `CollectionPicker` (**two steps: which PLATFORM, then which
     library** — Automatic / Open last / Find manually, the last revealing a file
     browser. The platform comes first because every later answer depends on it:
@@ -1319,9 +1360,9 @@ that number and nothing else — everything derives from it:
   A OneLibrary USB drive opens, projects, browses and searches: tracks,
   playlists, hot cues, memory cues, loops and flexible beatgrids. Done: track
   metadata (+ file tags), playlists, hot cues and the beatgrid (in the ANLZ
-  files, each rule matching rekordbox's measured edit), Save via a working copy.
-  Next: the `export.pdb` rebuild on save, adding/removing tracks, "Open for
-  editing…" on a Devices row. All format research — including the schema, which has no
+  files, each rule matching rekordbox's measured edit), the `export.pdb` rebuild
+  on save, Save via a working copy — verified in rekordbox 7. Next: adding and
+  removing tracks, "Open for editing…" on a Devices row. All format research — including the schema, which has no
   public spec — is in [.claude/handoffs/onelibrary-adapter.md](.claude/handoffs/onelibrary-adapter.md).
 - 🟡 **Export/conversion** — **in progress.** Both the design AND the user flow
   are settled; see

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnSizingState, SortingState, VisibilityState } from '@tanstack/react-table'
 import { CapabilitiesContext, slotLabeller } from './lib/capabilities'
-import { writeHint } from './lib/platformCopy'
+import { removalNote, writeHint } from './lib/platformCopy'
 import { invalidateTrackLists } from './lib/trackQueries'
 import { api, type CueBatchResult, type GridBatchResult, type AutoCueSlot, type PlaylistNode, type StemBatchResult, type Track, type TrackOrigin } from './api'
 import { confirmDiscardUnsaved } from './lib/unsaved'
@@ -578,6 +578,21 @@ export default function App() {
     qc.invalidateQueries() // refetch everything for the newly-opened collection
   }
 
+  // "Open for editing…" on a device: the drive becomes THE library — one library,
+  // one dirty state, one SaveBar (decided 2026-10-01). Unsaved edits to the
+  // current library are confirmed first, as switching library always is, and the
+  // browsing copy is closed so the drive is not open twice.
+  const openForEditing = async (path: string) => {
+    if (!(await confirmDiscardUnsaved())) return
+    try {
+      await api.closeSource()
+      await api.openCollection(path)
+      handleOpened()
+    } catch (e) {
+      onError((e as Error).message)
+    }
+  }
+
   // ---- Convert to Stems ------------------------------------------------------
   const canStems = canEdit && !viewForeign && !!capabilities.data?.tracks.stem_convertible
   const finishStemBatch = (state: string, r: StemBatchResult | null, error: string | null) => {
@@ -841,12 +856,7 @@ export default function App() {
           <p>
             Remove {trackNoun(ids)} from the collection and from every playlist?
           </p>
-          <p className="text-faint">
-            The audio {ids.length === 1 ? 'file stays' : 'files stay'} on disk. Nothing is written until you
-            save{capabilities.data?.save.history
-              ? ', and a save can be rolled back from version history.'
-              : ', and that save cannot be undone.'}
-          </p>
+          {capabilities.data && <p className="text-faint">{removalNote(capabilities.data, ids.length)}</p>}
         </>
       ),
       confirmLabel: `Remove ${nTracks(ids.length)}`,
@@ -1161,6 +1171,7 @@ export default function App() {
           onOpenHistory={() => setShowHistory(true)}
           onImport={() => setImporting(true)}
           onSwitchLibrary={() => setForcePicker(true)}
+          onOpenLibrary={(path) => void openForEditing(path)}
           onDone={(msg) => notify('success', msg)}
           onOpenPathMapping={() => setShowPaths(true)}
           onDiscarded={() => afterBulk(prepTrack ? [prepTrack.id] : [], true)}

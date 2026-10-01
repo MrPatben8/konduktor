@@ -227,15 +227,29 @@ with TestClient(main.app, raise_server_exceptions=False) as c:
             check("and saved, not left pending", not rb.dirty)
         rb.close()
 
-    print("== a library that cannot take tracks refuses the route ==")
+    print("== a stick places its own audio; a library that cannot add refuses ==")
     # A COPY: opened as THE library, a OneLibrary drive is editable.
     fixture = Path(tempfile.mkdtemp()) / "onelibrary"
     shutil.copytree(Path(__file__).resolve().parent / "fixtures" / "onelibrary", fixture)
     r = c.post("/api/library/open", json={"path": str(fixture)})
     if r.status_code == 200:
-        check("the add preview is refused (422)",
-              c.post("/api/folder/add/preview",
-                     json={"track_ids": [str(two)], "mode": "reference"}).status_code == 422)
+        # No mode and no destination: the library decides (decision 7).
+        r = c.post("/api/folder/add/preview", json={"track_ids": [str(two)], "mode": "copy"})
+        body = r.json() if r.status_code == 200 else {}
+        check("a stick's preview needs no destination, and counts the copy",
+              r.status_code == 200 and body.get("places_audio") and body.get("copied") == 1
+              and body.get("in_place") == 0, f"{r.status_code} {r.text[:200]}")
+        adapter = main.STATE.adapter
+        real = adapter.capabilities
+        caps = real()
+        adapter.capabilities = lambda: caps.model_copy(
+            update={"tracks": caps.tracks.model_copy(update={"addable": False})})
+        try:
+            check("a library whose capabilities say it cannot add refuses the route (422)",
+                  c.post("/api/folder/add/preview",
+                         json={"track_ids": [str(two)], "mode": "reference"}).status_code == 422)
+        finally:
+            adapter.capabilities = real
     else:
         print(f"  (skipped: fixture did not open — {r.status_code})")
 

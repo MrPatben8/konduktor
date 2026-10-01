@@ -45,6 +45,7 @@ import re
 import shutil
 import tempfile
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -154,7 +155,13 @@ class OneLibraryStore(ReplaceGridCommands):
         # Analysis files with unsaved edits: path -> (edited file, how the
         # original looked on disk when first edited). The SAME objects sit in
         # the caches above, so every read sees the edit; Save writes them.
-        self._pending_anlz: dict[Path, tuple[anlz_file.AnlzFile, tuple]] = {}
+        # (`seen` is None for a file an ADDED track brings: it must not exist yet.)
+        self._pending_anlz: dict[Path, tuple[anlz_file.AnlzFile, tuple | None]] = {}
+        # Adding and removing tracks (see "writes: adding and removing tracks"):
+        # incoming copy -> where it will live; files to create; files to delete.
+        self._incoming: dict[Path, Path] = {}
+        self._new_files: dict[Path, bytes] = {}
+        self._doomed: list[Path] = []
         self._content_cache: list | None = None
         self._by_id: dict[str, object] | None = None
         self._load()
@@ -186,6 +193,10 @@ class OneLibraryStore(ReplaceGridCommands):
         self._db, self._work = db, work
         self._journal.clear()
         self._pending_anlz.clear()
+        self._new_files.clear()
+        self._doomed.clear()
+        if not self.read_only:
+            self._clear_incoming(crashed=True)
         self._dat_cache.clear()
         self._ext_cache.clear()
         self._content_cache = None
@@ -200,6 +211,8 @@ class OneLibraryStore(ReplaceGridCommands):
         """
         db, self._db = self._db, None
         work, self._work = self._work, None
+        if not self.read_only:
+            self._clear_incoming()
         if db is not None:
             for step in (lambda: db.session.rollback(), lambda: db.session.close(),
                          lambda: db.engine.dispose()):
@@ -282,7 +295,16 @@ class OneLibraryStore(ReplaceGridCommands):
         return row
 
     def audio_path(self, track_id: str) -> Path | None:
-        return self.layout.resolve(getattr(self.content(track_id), "path", None))
+        return self.resolve_audio(getattr(self.content(track_id), "path", None))
+
+    def resolve_audio(self, drive_relative: str | None) -> Path | None:
+        """A stored path on this host — or, for a track added this session whose
+        audio has not been published yet, its incoming copy, so it plays."""
+        final = self.layout.resolve(drive_relative)
+        if final is not None and final not in self._incoming.values():
+            return final
+        incoming = next((i for i, f in self._incoming.items() if f == final), None)
+        return incoming if incoming is not None and incoming.is_file() else final
 
     def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
         """The track's artwork: `content.image_id` -> `image.path` -> the file.
@@ -302,6 +324,8 @@ class OneLibraryStore(ReplaceGridCommands):
             return None
         medium = small.with_name(small.stem + "_m" + small.suffix)
         for path in (medium, small):
+            if path in self._new_files:  # an added track's, not written yet
+                return self._new_files[path], "image/jpeg"
             try:
                 return path.read_bytes(), "image/jpeg"
             except OSError:
@@ -311,7 +335,7 @@ class OneLibraryStore(ReplaceGridCommands):
     def all_audio_paths(self) -> list[str]:
         out: list[str] = []
         for row in self.iter_content():
-            resolved = self.layout.resolve(getattr(row, "path", None))
+            resolved = self.resolve_audio(getattr(row, "path", None))
             if resolved is not None:
                 out.append(str(resolved))
         return out
@@ -643,7 +667,8 @@ class OneLibraryStore(ReplaceGridCommands):
 
     def _anlz_paths(self, track_id: str) -> tuple[Path, Path]:
         dat = self.layout.resolve(getattr(self.content(track_id), "analysisDataFilePath", None))
-        if dat is None or not dat.is_file() or not self.layout.extended_anlz(dat).is_file():
+        exists = lambda p: p in self._pending_anlz or p.is_file()  # noqa: E731
+        if dat is None or not exists(dat) or not exists(self.layout.extended_anlz(dat)):
             raise InvalidCommand(
                 "This track has no analysis files on the drive, so it has nowhere to "
                 "store cues or a beatgrid. Analyse it in rekordbox first."
@@ -884,6 +909,261 @@ class OneLibraryStore(ReplaceGridCommands):
         self._require_db().flush()
         self._journal.record("grid", "replace" if ordered else "delete", track_id)
 
+    # ---- writes: adding and removing tracks -------------------------------------
+    #
+    # A stick's audio belongs to its library: added audio is COPIED onto it (a
+    # file already on the stick is used where it is), laid out as rekordbox lays
+    # a stick out, and a removed track's audio goes with it. Decisions 3, 6 and 7
+    # of the editing discussion; layout read off Goober:
+    #   Contents/<Artist>/<Album>/<file>  — `UnknownArtist` / `UnknownAlbum` for
+    #   an empty field, and a file name cut to 48 characters (seen once:
+    #   "…Sell My .mp3"). dateAdded = the day it was added, dateCreated = the
+    #   file's own date, search columns NULL, no update counter set.
+    #
+    # Copies arrive in `<stick>/.konduktor-incoming/` and are moved into place at
+    # Save. Analysis files and artwork for an added track are held in memory
+    # until then. A crash leaves only the incoming folder, cleared on the next
+    # editable open.
+    INCOMING = ".konduktor-incoming"
+    _NAME_MAX = 48
+    _BAD_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+    def audio_home(self) -> Path:
+        return self.layout.root
+
+    def _folder_name(self, value: str | None, fallback: str) -> str:
+        # FAT/exFAT refuse these characters, and a trailing dot or space.
+        name = self._BAD_CHARS.sub("_", (value or "").strip()).rstrip(". ")
+        return name or fallback
+
+    def _final_path(self, source: Path, track) -> Path:
+        folder = (self.layout.root / "Contents"
+                  / self._folder_name(getattr(track, "artist", None), "UnknownArtist")
+                  / self._folder_name(getattr(track, "album", None), "UnknownAlbum"))
+        stem, suffix = Path(self._BAD_CHARS.sub("_", source.name)).stem, source.suffix
+        stem = stem[:max(1, self._NAME_MAX - len(suffix))]
+        taken = {p.name.lower() for p in self._incoming.values() if p.parent == folder}
+        candidate, n = f"{stem}{suffix}", 1
+        while candidate.lower() in taken or (folder / candidate).exists():
+            n += 1
+            tail = f"-{n}{suffix}"
+            candidate = f"{stem[:max(1, self._NAME_MAX - len(tail))]}{tail}"
+        return folder / candidate
+
+    def place_audio(self, source: Path, track) -> Path | None:
+        """Where the importer must copy `source` — or None, if it is already on
+        this stick and can be used where it is (decision 7)."""
+        try:
+            if Path(source).resolve().is_relative_to(self.layout.root.resolve()):
+                return None
+        except OSError:
+            pass
+        final = self._final_path(Path(source), track)
+        incoming = self.layout.root / self.INCOMING / f"{uuid.uuid4().hex[:12]}{final.suffix.lower()}"
+        self._incoming[incoming] = final
+        return incoming
+
+    def final_of(self, audio: Path) -> Path:
+        """Where an added track's audio will live (its incoming copy's target, or
+        the file itself when it was already on the stick)."""
+        return self._incoming.get(Path(audio), Path(audio))
+
+    def drive_relative(self, path: Path) -> str:
+        return "/" + Path(path).relative_to(self.layout.root).as_posix()
+
+    def _clear_incoming(self, *, crashed: bool = False) -> None:
+        """Delete copies this session made and never published — or, at an
+        editable open, whatever a crashed session left (`crashed`)."""
+        folder = self.layout.root / self.INCOMING
+        if crashed:
+            shutil.rmtree(folder, ignore_errors=True)
+        else:
+            for incoming in self._incoming:
+                incoming.unlink(missing_ok=True)
+            try:
+                folder.rmdir()
+            except OSError:
+                pass
+        self._incoming.clear()
+
+    def _anlz_rel(self, rel: str) -> str:
+        """A fresh `/PIONEER/USBANLZ/P0xx/xxxxxxxx/ANLZ0000.DAT` for a track.
+        rekordbox's own hash is unpublished; the column is what players follow,
+        so the exporter's stable derivation is used, nudged past any clash."""
+        from .export import _anlz_dir
+
+        salt = 0
+        while True:
+            dat = f"{_anlz_dir(rel + ('#' * salt))}/ANLZ0000.DAT"
+            path = self.layout.resolve(dat)
+            if not path.parent.exists() and path not in self._pending_anlz:
+                return dat
+            salt += 1
+
+    def _next_id(self, table: str) -> int:
+        from sqlalchemy import text
+
+        value = self._require_db().session.execute(text(f"SELECT MAX({table}_id) FROM {table}")).scalar()
+        return int(value or 0) + 1
+
+    def _next_image(self) -> int:
+        n = self._next_id("image")
+        folder = self.layout.root / "PIONEER" / "Artwork" / "00001"
+        while any((folder / f"{x}{n}{s}.jpg").exists() or (folder / f"{x}{n}{s}.jpg") in self._new_files
+                  for x in "ab" for s in ("", "_m")):
+            n += 1
+        return n
+
+    def add_track(self, audio: Path, track, *, rel: str, anlz_rel: str,
+                  anlz: list[tuple[str, bytes]], jpegs: tuple[bytes, bytes] | None,
+                  bpm: float | None, length: float | None) -> str:
+        """Insert one track's row, and hold its analysis files and artwork for Save.
+
+        The row is filled the way rekordbox fills one on a stick (every column of
+        a Goober row was compared): file facts from the file, lookups found or
+        created by name, no update counter, `contentLink`/`analysedBits` as the
+        exporter writes them (verified in rekordbox 7 there).
+        """
+        from sqlalchemy import text
+
+        from ..rekordbox.projection import render_key
+        from .export import ANALYSED_BITS, CONTENT_LINK, _audio_format, _file_type, _kbps, art_files
+
+        if rel in (self._by_id or {}) or any(self.track_id(r) == rel for r in self.iter_content()):
+            raise InvalidCommand(f"{rel} is already on this drive's library")
+        db = self._require_db()
+        final = self.layout.resolve(rel)
+        cid = self._next_id("content")
+        image_id = None
+        if jpegs is not None:
+            image_id = self._next_image()
+            for path_rel, data in art_files(image_id, jpegs):
+                self._new_files[self.layout.resolve(path_rel)] = data
+            db.session.execute(text("INSERT INTO image (image_id, path) VALUES (:i, :p)"),
+                               {"i": image_id, "p": f"/PIONEER/Artwork/00001/b{image_id}.jpg"})
+        try:
+            st = Path(audio).stat()
+            size, created = st.st_size, datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d")
+        except OSError:
+            size, created = 0, None
+        sample_rate, bit_depth = _audio_format(Path(audio))
+        year, released = 0, ""
+        try:
+            year, released = self._release(getattr(track, "release_date", None))
+        except InvalidCommand:
+            pass
+        lookup = lambda model, value: self._lookup_id(model, (value or "").strip())  # noqa: E731
+        db.session.execute(text(
+            "INSERT INTO content (content_id, title, titleForSearch, subtitle, bpmx100, length, "
+            "trackNo, discNo, artist_id_artist, artist_id_remixer, album_id, genre_id, label_id, "
+            "key_id, color_id, image_id, djComment, rating, releaseYear, releaseDate, dateAdded, "
+            "dateCreated, path, fileName, fileSize, fileType, bitrate, bitDepth, samplingRate, "
+            "isrc, djPlayCount, isHotCueAutoLoadOn, isKuvoDeliverStatusOn, kuvoDeliveryComment, "
+            "masterDbId, masterContentId, analysisDataFilePath, analysedBits, contentLink, "
+            "hasModified) VALUES (:cid, :title, NULL, '', :bpm, :length, 0, 0, :artist, :remixer, "
+            ":album, :genre, :label, :key, 0, :image, :comment, :rating, :year, :released, "
+            ":added, :created, :path, :file, :size, :type, :bitrate, :depth, :rate, '', 0, 1, 1, "
+            "'', 0, :cid, :anlz, :bits, :link, 0)"), {
+                "cid": cid, "title": getattr(track, "title", None) or final.stem,
+                "bpm": int(round(bpm * 100)) if bpm else 0, "length": int(length or 0),
+                "artist": lookup("Artist", track.artist), "remixer": lookup("Artist", track.remixer),
+                "album": lookup("Album", track.album), "genre": lookup("Genre", track.genre),
+                "label": lookup("Label", track.label),
+                # Rendered from the parsed wheel: a source's "10m" means nothing here.
+                "key": lookup("Key", render_key(track.key_wheel, track.key_mode)),
+                "image": image_id, "comment": track.comment or "",
+                "rating": max(0, min(5, int(track.rating or 0))), "year": year, "released": released,
+                "added": datetime.now().strftime("%Y-%m-%d"), "created": created, "path": rel,
+                "file": final.name, "size": size, "type": _file_type(final),
+                "bitrate": _kbps(track.bitrate) or 0, "depth": bit_depth, "rate": sample_rate,
+                "anlz": anlz_rel, "bits": ANALYSED_BITS, "link": CONTENT_LINK,
+            })
+        db.session.execute(text("UPDATE property SET numberOfContents = numberOfContents + 1"))
+        db.flush()
+        dat = self.layout.resolve(anlz_rel)
+        for suffix, data in anlz:
+            path = dat.with_suffix(suffix)
+            if suffix == ".2EX":
+                self._new_files[path] = data
+            else:
+                self._pending_anlz[path] = (anlz_file.parse(data), None)
+        self._content_cache = None
+        self._by_id = None
+        self._dat_cache.pop(rel, None)
+        self._ext_cache.pop(rel, None)
+        self._dat_cache[rel] = self._pending_anlz[dat][0]
+        self._ext_cache[rel] = self._pending_anlz[dat.with_suffix(".EXT")][0]
+        self._journal.record("track", "add", rel)
+        return rel
+
+    def remove_tracks(self, track_ids: list[str]) -> int:
+        """Remove tracks from the library and every list that names them; their
+        audio, analysis files and (unshared) artwork are deleted at Save
+        (decision 3). Not measured against rekordbox — it cannot delete a track
+        from a stick — so this removes every row that references the track, and
+        nothing else."""
+        from sqlalchemy import text
+
+        db = self._require_db()
+        removed = 0
+        for track_id in dict.fromkeys(map(str, track_ids)):
+            row = self.content(track_id)
+            cid, image_id = int(row.content_id), row.image_id
+            audio = self.layout.resolve(row.path)
+            dat = self.layout.resolve(row.analysisDataFilePath)
+            # Files: the audio (or its unpublished copy), the analysis files.
+            for incoming, final in list(self._incoming.items()):
+                if final == audio:
+                    incoming.unlink(missing_ok=True)
+                    del self._incoming[incoming]
+                    audio = None
+            if audio is not None:
+                self._doomed.append(audio)
+            if dat is not None:
+                for suffix in (".DAT", ".EXT", ".2EX"):
+                    path = dat.with_suffix(suffix)
+                    # Pending edits, or an added track's never-written files, go
+                    # with it; whatever is already on the stick is deleted at Save.
+                    self._pending_anlz.pop(path, None)
+                    self._new_files.pop(path, None)
+                    if path.exists():
+                        self._doomed.append(path)
+            # Rows: every table that names the content.
+            affected = [r[0] for r in db.session.execute(
+                text("SELECT DISTINCT playlist_id FROM playlist_content WHERE content_id = :c"), {"c": cid})]
+            for table in ("playlist_content", "history_content", "myTag_content", "cue"):
+                db.session.execute(text(f"DELETE FROM {table} WHERE content_id = :c"), {"c": cid})
+            for pid in affected:
+                rows = db.session.execute(text(
+                    "SELECT rowid FROM playlist_content WHERE playlist_id = :p ORDER BY sequenceNo"),
+                    {"p": pid}).fetchall()
+                for n, (rowid,) in enumerate(rows, start=1):
+                    db.session.execute(text("UPDATE playlist_content SET sequenceNo = :n WHERE rowid = :r"),
+                                       {"n": n, "r": rowid})
+            db.session.execute(text("DELETE FROM content WHERE content_id = :c"), {"c": cid})
+            if image_id and not db.session.execute(
+                    text("SELECT 1 FROM content WHERE image_id = :i LIMIT 1"), {"i": image_id}).first():
+                path = db.session.execute(text("SELECT path FROM image WHERE image_id = :i"),
+                                          {"i": image_id}).scalar()
+                db.session.execute(text("DELETE FROM image WHERE image_id = :i"), {"i": image_id})
+                small = self.layout.resolve(path)
+                if small is not None:
+                    for letter in ("a", "b"):
+                        for tail in ("", "_m"):
+                            p = small.with_name(f"{letter}{small.stem[1:]}{tail}{small.suffix}")
+                            if self._new_files.pop(p, None) is None and p.exists():
+                                self._doomed.append(p)
+            db.session.execute(text("UPDATE property SET numberOfContents = numberOfContents - 1"))
+            self._dat_cache.pop(track_id, None)
+            self._ext_cache.pop(track_id, None)
+            self._journal.record("track", "remove", track_id)
+            removed += 1
+        db.flush()
+        db.session.expire_all()
+        self._content_cache = None
+        self._by_id = None
+        return removed
+
     # ---- save ----------------------------------------------------------------
     @property
     def dirty(self) -> bool:
@@ -928,8 +1208,16 @@ class OneLibraryStore(ReplaceGridCommands):
             )
         changed_anlz = []
         for path, (edited, seen) in self._pending_anlz.items():
-            if not path.is_file() or _fingerprint_file(path) != seen:
+            if seen is None:  # an added track's: nothing may be there yet
+                if path.exists():
+                    changed_anlz.append(path)
+            elif not path.is_file() or _fingerprint_file(path) != seen:
                 changed_anlz.append(path)
+        changed_anlz += [p for p in self._new_files if p.exists()]
+        # Added audio to publish: copies whose track is (still) in the library.
+        referenced = {self.layout.resolve(getattr(r, "path", None)) for r in self.iter_content()}
+        publish = [(i, f) for i, f in self._incoming.items() if i.is_file() and f in referenced]
+        changed_anlz += [f for _i, f in publish if f.exists()]
         pdb_now = _fingerprint_file(self.device_library) if self.device_library.is_file() else None
         if _fingerprint(self.path) != self._opened_as or changed_anlz or pdb_now != self._pdb_seen:
             raise InvalidCommand(
@@ -942,8 +1230,12 @@ class OneLibraryStore(ReplaceGridCommands):
         tag_jobs = self._tag_jobs()
         # Only files whose bytes really changed: an edit that was undone, or a
         # command that failed after reading, leaves nothing to write.
-        anlz_writes = [(path, data) for path, (edited, _seen) in self._pending_anlz.items()
-                       if (data := edited.to_bytes()) != path.read_bytes()]
+        anlz_writes = []
+        for path, (edited, seen) in self._pending_anlz.items():
+            data = edited.to_bytes()
+            if seen is None or data != path.read_bytes():
+                anlz_writes.append((path, data))
+        doomed = list(dict.fromkeys(self._doomed))
         # The legacy Device Library, edited to match (None: already does). Read
         # inside the transaction, which sees every edit.
         pdb_bytes = None
@@ -953,9 +1245,21 @@ class OneLibraryStore(ReplaceGridCommands):
             db.flush()
             pdb_bytes = device_library.rebuild(self.device_library.read_bytes(), db.session)
 
-        self._backup([path for path, _ in anlz_writes]
+        self._backup([path for path, _ in anlz_writes if path.exists()]
                      + ([self.device_library] if pdb_bytes is not None else []))
+        # Added audio first: everything written after it points at it.
+        for incoming, final in publish:
+            final.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(incoming, final)
+            del self._incoming[incoming]
+        for path, data in list(self._new_files.items()):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            partial = path.with_name(f".{path.name}.konduktor-partial")
+            partial.write_bytes(data)
+            os.replace(partial, path)
+            del self._new_files[path]
         for path, data in anlz_writes:
+            path.parent.mkdir(parents=True, exist_ok=True)
             partial = path.with_name(f".{path.name}.konduktor-partial")
             partial.write_bytes(data)
             os.replace(partial, path)
@@ -991,6 +1295,16 @@ class OneLibraryStore(ReplaceGridCommands):
             # retry (after replugging, say) can save them.
             self._reopen_working(work)
             raise
+        # The library no longer names them: removed tracks' files go now, and
+        # never before the database that stopped naming them is on the drive.
+        for path in doomed:
+            try:
+                path.unlink(missing_ok=True)
+                _prune_empty(path.parent, stop=self.layout.root)
+            except OSError as ex:
+                log.warning("Could not delete %s: %s", path, ex)
+        self._doomed.clear()
+        self._clear_incoming()
         tag_results = self._sync_file_tags(tag_jobs)
         shutil.rmtree(work, ignore_errors=True)
         self._work = None
@@ -1062,6 +1376,22 @@ class OneLibraryStore(ReplaceGridCommands):
         return {"title": t.title, "artist": t.artist, "album": t.album, "genre": t.genre,
                 "label": t.label, "remixer": t.remixer, "comment": t.comment,
                 "release_date": t.release_date}
+
+
+def _prune_empty(folder: Path, *, stop: Path) -> None:
+    """Remove `folder` and its parents while empty, never `stop` or above, nor
+    the stick's top-level `Contents`/`PIONEER` folders."""
+    keep = {stop, stop / "Contents", stop / "PIONEER", stop / "PIONEER" / "USBANLZ"}
+    while folder not in keep and folder.is_relative_to(stop):
+        try:
+            if any(p for p in folder.iterdir() if not p.name.startswith("._") and p.name != ".DS_Store"):
+                return
+            for p in folder.iterdir():  # macOS's own litter does not keep a folder
+                p.unlink(missing_ok=True)
+            folder.rmdir()
+        except OSError:
+            return
+        folder = folder.parent
 
 
 def _clear_stale_work() -> None:

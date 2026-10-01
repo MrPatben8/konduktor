@@ -200,11 +200,18 @@ class LibraryAdapter(Protocol):
     # is touched, so a cancel leaves it as it was. Gated on
     # `capabilities().tracks.addable`.
     def add_tracks(self, items: list["NewTrack"], *, checkpoint=None) -> list[str]: ...
+    # OPTIONAL, where `capabilities().tracks.places_audio`: the library decides
+    # where added audio goes. `place_audio(source, track)` returns the path the
+    # importer must COPY `source` to (which becomes `NewTrack.audio_path`), or
+    # None when the file is already where the library can use it in place;
+    # `audio_home()` is where that audio lands, for the free-space check.
+    # (A protocol member would make every adapter implement them.)
 
     # Remove tracks from the library — and so from every playlist, since an
     # entry naming a track the library no longer has is a dangling reference.
-    # Never touches audio files. Returns how many were removed; gated on
-    # `capabilities().tracks.removable`.
+    # Never touches audio files, except where `tracks.places_audio` (a stick's
+    # audio belongs to its library): there the file goes too, at Save. Returns
+    # how many were removed; gated on `capabilities().tracks.removable`.
     def remove_tracks(self, track_ids: list[str]) -> int: ...
 
     # Swap converted stem files into the library (see `StemSwap`), all at once:
