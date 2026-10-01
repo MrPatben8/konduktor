@@ -140,6 +140,7 @@ class RekordboxStore:
         except Exception as ex:  # noqa: BLE001 — surfaced as a clean 4xx
             raise LibraryNotSupported(f"Could not open Rekordbox library: {ex}") from ex
         self._grid_cache.clear()
+        self._stem_cache: dict[str, bool] = {}
         self._content_cache: list | None = None
         self._by_id: dict[str, object] | None = None
 
@@ -372,6 +373,20 @@ class RekordboxStore:
     # ---- paths -----------------------------------------------------------
     def set_path_mapping(self, mapping: PathMapping) -> None:
         self._mapping = mapping or PathMapping()
+
+    def is_stem(self, track_id: str) -> bool:
+        """Whether the track's FILE is a native-instruments stem file — read
+        from its contents (only `.m4a`/`.mp4` are opened, ~0.7 ms each), and
+        cached per path, since the projection asks for every track at open."""
+        from ...core.stem_file import is_stem_file
+
+        path = self.audio_path(track_id)
+        if path is None:
+            return False
+        key = str(path)
+        if key not in self._stem_cache:
+            self._stem_cache[key] = is_stem_file(path)
+        return self._stem_cache[key]
 
     @property
     def path_mapping(self) -> PathMapping:

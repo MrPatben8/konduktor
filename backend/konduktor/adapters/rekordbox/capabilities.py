@@ -86,7 +86,9 @@ def capabilities_for(
             # column (its Composer is a different field), so they are absent
             # rather than mapped onto something approximate.
             editable_fields=sorted(editable_fields or []),
-            media_kinds=["audio"],
+            # A stem file is held (and played by Rekordbox as its mix);
+            # Konduktor's deck plays its stems.
+            media_kinds=["audio", "stem"],
             removable=True,
             addable=True,
             artwork=False,

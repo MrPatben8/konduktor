@@ -97,7 +97,7 @@ def _name_of(related) -> str | None:
     return None
 
 
-def to_track(row, cue_kinds=()) -> Track:
+def to_track(row, cue_kinds=(), *, stem: bool = False) -> Track:
     """Project one ``DjmdContent`` row.
 
     `cue_kinds` is this track's ``(Kind, OutMsec, ColorTableIndex)`` from the store's single
@@ -156,7 +156,10 @@ def to_track(row, cue_kinds=()) -> Track:
         hotcues=chips,
         grid_marker_count=1 if (_bpm(row) and getattr(row, "AnalysisDataPath", None)) else 0,
         grid_locked=False,  # Rekordbox has no per-track grid lock
-        media_kind="audio",
+        # What the FILE is (`store.is_stem`): Rekordbox itself plays a stem
+        # file's mix, but Konduktor's deck plays its stems, and the Type column
+        # must not disagree with the deck.
+        media_kind="stem" if stem else "audio",
     )
 
 

@@ -187,5 +187,55 @@ with TestClient(main.app) as c:
           re.search(r'<PRIMARYKEY TYPE="STEM" KEY="[^"]*Other\.stem\.m4a"', saved) is not None
           and re.search(r'<PRIMARYKEY TYPE="TRACK" KEY="[^"]*Other\.mp3"', saved) is not None)
 
+    # Rekordbox has no <STEMS>: the FILE decides, so the Type column agrees
+    # with the deck, which plays a stem file's stems on every platform.
+    print("== adding a stem file to a Rekordbox library ==")
+    from konduktor.adapters.rekordbox import discovery as rb_discovery
+
+    found = rb_discovery.detect_libraries()
+    if not found:
+        print("  (skipped: no Rekordbox library on this machine)")
+    else:
+        rb_src = Path(found[0]["path"]).parent
+        rb_dir = ROOT / "rekordbox"
+        rb_dir.mkdir()
+        for name in ("master.db", "masterPlaylists6.xml"):
+            if (rb_src / name).exists():
+                shutil.copy2(rb_src / name, rb_dir / name)
+        if (rb_src / "share").is_dir():
+            shutil.copytree(rb_src / "share", rb_dir / "share")
+        rb_stem_dir = ROOT / "ForRekordbox"
+        rb_stem_dir.mkdir()
+        rb_stem = rb_stem_dir / "Rb.stem.m4a"
+        shutil.copy2(stem, rb_stem)
+        rb_plain = make_mp3(rb_stem_dir / "Rb.mp3", seed=11)
+        r = c.post("/api/library/open", json={"path": str(rb_dir / "master.db")})
+        check("(setup) a Rekordbox copy opens", r.status_code == 200, r.text[:300])
+        assert c.get("/api/folder/tracks", params={"path": str(rb_stem_dir)}).status_code == 200
+        job = c.post("/api/folder/add", json={"track_ids": [str(rb_stem), str(rb_plain)],
+                                              "mode": "reference"}).json()
+        while job["state"] == "running":
+            time.sleep(0.05)
+            job = c.get(f"/api/jobs/{job['id']}").json()
+        check("(setup) the add finishes", job["state"] == "done", str(job))
+        rb_new_stem, rb_new_plain = (job.get("result") or {}).get("track_ids") or [None, None]
+
+        def rb_kinds():
+            items = c.get("/api/tracks", params={"limit": 20000}).json()["items"]
+            return {t["id"]: t["media_kind"] for t in items}
+
+        kinds = rb_kinds()
+        check("the added stem file is a stem track, the MP3 beside it audio",
+              kinds.get(rb_new_stem) == "stem" and kinds.get(rb_new_plain) == "audio",
+              f"{kinds.get(rb_new_stem)} {kinds.get(rb_new_plain)}")
+        r = c.post("/api/library/open", json={"path": str(rb_dir / "master.db")})
+        kinds = rb_kinds()
+        check("…and still after a reopen",
+              kinds.get(rb_new_stem) == "stem" and kinds.get(rb_new_plain) == "audio",
+              f"{kinds.get(rb_new_stem)} {kinds.get(rb_new_plain)}")
+        r = c.get("/api/tracks/stems", params={"track_id": rb_new_stem})
+        check("and the deck is offered its stems",
+              r.status_code == 200 and len(r.json()["stems"]) == 4, r.text[:200])
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

@@ -336,6 +336,10 @@ Two independent apps that talk over HTTP:
     big collection unchanged, though every one of those is NI's default
     layout. Without it the entry read as plain audio (Type column, playlist
     `TYPE="TRACK"`) while the deck, which reads the file, played stems.
+    Rekordbox and OneLibrary have no such element, so their projections take
+    `media_kind` from the FILE (`stem_file.is_stem_file`, only `.m4a`/`.mp4`
+    opened, ~0.7 ms each, cached per path in `RekordboxStore.is_stem`) — the
+    same mismatch otherwise: Type said audio while the deck played stems.
   - `importer.py` also serves the folder add: `reference=True` adds each file
     where it is (nothing to copy or roll back), and every planned file the
     destination already points at (matched on `audio_path`, never the display
@@ -854,7 +858,9 @@ serialization path.** It enforces:
   out-of-range / non-stem requests 404; the cache reuses, follows an edited
   file, evicts LRU but never what it just wrote; the folder origin serves too
   and lists the file as a stem track; a stem file ADDED from a folder gets
-  `<STEMS>` and a `TYPE="STEM"` playlist key, the MP3 beside it neither.
+  `<STEMS>` and a `TYPE="STEM"` playlist key, the MP3 beside it neither. On a
+  Rekordbox copy, an added stem file projects as a stem track (also after a
+  reopen) and the deck is offered its stems.
 - `test_traktor_adapter.py` — the **generic layer**: one parse per open, the
   projection refreshing after every command family, cue-type translation,
   capabilities, and `set_analysed_grid` vs `replace_grid`. `test_save_fidelity`

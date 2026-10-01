@@ -69,7 +69,7 @@ def capabilities_for(device_name: str | None = None, version: str | None = None)
         tracks=TrackCapabilities(
             rating_max=5,  # stored 0-5 directly, as in master.db
             editable_fields=[],
-            media_kinds=["audio"],
+            media_kinds=["audio", "stem"],
             # `artwork` gates EDITING, and a drive is read-only here. Reading
             # works: `store.cover_art` follows `content.image_id` -> `image.path`.
             artwork=False,

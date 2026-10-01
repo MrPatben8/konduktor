@@ -50,12 +50,14 @@ class OneLibraryAdapter:
 
     # ---- projection maintenance -----------------------------------------
     def _rebuild(self) -> None:
-        self._index.rebuild(
-            [
-                projection.to_track(row, self._drive_path(row))
-                for row in self._store.iter_content()
-            ]
-        )
+        from ...core.stem_file import is_stem_file
+
+        tracks = []
+        for row in self._store.iter_content():
+            path = self._drive_path(row)
+            tracks.append(projection.to_track(
+                row, path, stem=bool(path) and is_stem_file(path)))
+        self._index.rebuild(tracks)
 
     def _drive_path(self, row) -> str | None:
         resolved = self._store.layout.resolve(getattr(row, "path", None))

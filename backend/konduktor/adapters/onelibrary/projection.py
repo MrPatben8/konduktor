@@ -54,7 +54,7 @@ def _bpm(row) -> float | None:
     return round(int(raw) / 100.0, 2)
 
 
-def to_track(row, drive_path: str | None = None) -> Track:
+def to_track(row, drive_path: str | None = None, *, stem: bool = False) -> Track:
     """Project one ``Content`` row.
 
     **The three count fields are approximations here**, and deliberately so. Cues
@@ -104,7 +104,8 @@ def to_track(row, drive_path: str | None = None) -> Track:
         hotcue_count=0,
         grid_marker_count=1 if (bpm and has_analysis) else 0,
         grid_locked=False,  # OneLibrary has no grid lock
-        media_kind="audio",
+        # What the FILE is, as the deck plays it — see the Rekordbox projection.
+        media_kind="stem" if stem else "audio",
     )
 
 

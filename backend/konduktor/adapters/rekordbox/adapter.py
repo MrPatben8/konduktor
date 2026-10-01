@@ -46,7 +46,8 @@ class RekordboxAdapter:
         kinds = self._store.cue_kinds()
         self._index.rebuild(
             [
-                projection.to_track(row, kinds.get(str(row.ID), ()))
+                projection.to_track(row, kinds.get(str(row.ID), ()),
+                                    stem=self._store.is_stem(str(row.ID)))
                 for row in self._store.iter_content()
             ]
         )
@@ -68,7 +69,8 @@ class RekordboxAdapter:
         """
         kinds = self._store.cue_kinds()
         row = self._store.content(track_id)
-        self._index.replace(projection.to_track(row, kinds.get(str(row.ID), ())))
+        self._index.replace(projection.to_track(row, kinds.get(str(row.ID), ()),
+                                                stem=self._store.is_stem(str(row.ID))))
 
     def close(self) -> None:
         """Release the database connection.
@@ -202,6 +204,8 @@ class RekordboxAdapter:
 
     def set_path_mapping(self, mapping: PathMapping) -> None:
         self._store.set_path_mapping(mapping)
+        # The FILE decides a track's media kind, and the mapping moves files.
+        self._rebuild()
 
     def unresolved_path_groups(self) -> list:
         """Not checked yet: the open-time missing-files check is Traktor-only
@@ -465,7 +469,8 @@ class RekordboxAdapter:
         for item, audio, measured, markers, art in prepared:
             track_id = self._store.add_track(
                 audio, item.track, measured=measured, with_grid=bool(markers), art=art)
-            self._index.add(projection.to_track(self._store.content(track_id), ()))
+            self._index.add(projection.to_track(self._store.content(track_id), (),
+                                                stem=self._store.is_stem(track_id)))
             if markers:
                 self._store.replace_grid(track_id, markers)
             if item.cues is not None:
