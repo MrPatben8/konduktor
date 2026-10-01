@@ -29,6 +29,21 @@ from .relocate import PathGroup
 
 
 @dataclass
+class FileTagResult:
+    """One audio-file tag write a save made — the `SaveOutcome.tag_results` item.
+
+    Promoted from the Traktor store when OneLibrary became the second platform
+    that writes edited fields into the audio files themselves.
+    """
+
+    track_id: str
+    file: str
+    ok: bool
+    status: str  # "written" | "file-not-found" | "unsupported-format" | "error"
+    detail: str = ""
+
+
+@dataclass
 class SaveOutcome:
     """What a save produced, in terms every platform can answer.
 
@@ -274,7 +289,11 @@ class LibraryDriver(Protocol):
     selects: str
 
     def can_open(self, path: Path) -> bool: ...
-    def open(self, path: Path) -> LibraryAdapter: ...
+    # `read_only` opens a library only to READ it, alongside the loaded one (the
+    # sidebar's Devices). An adapter that honours it reports `writable=False`
+    # with cause `browsing`; one that ignores it still reports writable, and the
+    # caller — `AppState.open_source` — refuses it, so ignoring is safe.
+    def open(self, path: Path, *, read_only: bool = False) -> LibraryAdapter: ...
     # OPTIONAL. What to call an opened library on screen. Only the adapter can
     # answer for a platform where one library has more than one valid path —
     # the filename is otherwise assumed, and that assumption is wrong for a

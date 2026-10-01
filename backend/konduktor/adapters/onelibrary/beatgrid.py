@@ -28,7 +28,8 @@ __all__ = ["BPM_EPSILON", "markers_from_beats", "beats_from_pqtz", "markers_from
 
 
 def beats_from_pqtz(anlz) -> tuple[list[float], list[float], list[int]] | None:
-    """Per-beat ``(times_sec, bpms, beat_in_bar)`` from a parsed ANLZ file's `PQTZ` tag.
+    """Per-beat ``(times_sec, bpms, beat_in_bar)`` from a parsed ANLZ file's `PQTZ` tag
+    (an `anlz_file.AnlzFile`).
 
     Returns None when the file has no `PQTZ` — which is a real state, not an
     error: rekordbox analyses one-shot samples too, and gives them an analysis
@@ -39,7 +40,7 @@ def beats_from_pqtz(anlz) -> tuple[list[float], list[float], list[int]] | None:
     for tag in getattr(anlz, "tags", []):
         if tag.type != "PQTZ":
             continue
-        entries = getattr(getattr(tag.struct, "content", None), "entries", None)
+        entries = tag.entries
         if not entries:
             return None
         times: list[float] = []

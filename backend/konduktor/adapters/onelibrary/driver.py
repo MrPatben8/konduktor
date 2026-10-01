@@ -73,8 +73,8 @@ class OneLibraryDriver:
                 except Exception:  # noqa: BLE001
                     pass
 
-    def open(self, path: Path) -> OneLibraryAdapter:
-        return OneLibraryAdapter(path)
+    def open(self, path: Path, *, read_only: bool = False) -> OneLibraryAdapter:
+        return OneLibraryAdapter(path, read_only=read_only)
 
     def detect(self) -> list[dict]:
         return discovery.detect_libraries()

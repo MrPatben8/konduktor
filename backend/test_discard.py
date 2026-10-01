@@ -118,14 +118,24 @@ else:
               RekordboxAdapter(work).track(track.id).title == title)
         del before
 
-print("== read-only ==")
+print("== a OneLibrary drive (editable as THE library) ==")
+# A COPY: an editable drive must never be the checked-in fixture.
 os.environ["KONDUKTOR_NML"] = ""
+drive = Path(tempfile.mkdtemp()) / "Dingus"
+shutil.copytree(FIXTURE, drive, ignore=shutil.ignore_patterns("rekordbox-edited"))
+db_file = drive / "PIONEER" / "rekordbox" / "exportLibrary.db"
+on_disk = db_file.read_bytes()
+track_id = "/Contents/Loopmasters/UnknownAlbum/Demo Track 1.mp3"
 with TestClient(main.app) as c:
-    r = c.post("/api/library/open", json={"path": str(FIXTURE)})
+    r = c.post("/api/library/open", json={"path": str(drive)})
+    check("the drive opens as the library", r.status_code == 200, f"{r.status_code} {r.text[:200]}")
     if r.status_code == 200:
-        check("a read-only library has nothing to discard (409)", c.post("/api/discard").status_code == 409)
-    else:
-        print(f"  (skipped: fixture did not open: {r.status_code})")
+        c.patch("/api/tracks", json={"track_id": track_id, "fields": {"title": "Thrown away"}})
+        check("the edit is held", main.STATE.adapter.dirty)
+        check("discard succeeds", c.post("/api/discard").status_code == 200)
+        check("and drops the edit",
+              main.STATE.adapter.track(track_id).title.startswith("Demo Track 1"))
+        check("the drive was never written", db_file.read_bytes() == on_disk)
 
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

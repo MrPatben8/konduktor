@@ -225,7 +225,7 @@ export interface SaveCapabilities {
 }
 
 /** Why a library cannot be edited. A fact — lib/platformCopy.ts words it. */
-export type ReadonlyCause = 'platform_incomplete' | 'cloud_synced' | 'not_in_library'
+export type ReadonlyCause = 'platform_incomplete' | 'cloud_synced' | 'not_in_library' | 'browsing'
 
 export interface Capabilities {
   platform: Platform

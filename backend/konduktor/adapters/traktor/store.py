@@ -22,7 +22,6 @@ import copy
 import math
 import threading
 import uuid as uuidlib
-from dataclasses import dataclass
 from pathlib import Path
 
 from traktor_nml_utils import (
@@ -46,7 +45,7 @@ from traktor_nml_utils.models.collection import (
 )
 from xsdata.formats.dataclass.serializers import XmlSerializer
 
-from ...core.adapter import InvalidCommand, SaveOutcome, StemSwapResult
+from ...core.adapter import FileTagResult, InvalidCommand, SaveOutcome, StemSwapResult
 from ...core.edit_journal import EditJournal
 from ...core.pathmap import common_dir_prefix
 from ...core.pathmap import PathMapping
@@ -69,15 +68,6 @@ class PlaylistError(InvalidCommand):
     knowing Traktor exists; the name is kept because it is what every call site
     and the fidelity tests already catch.
     """
-
-
-@dataclass
-class FileTagResult:
-    track_id: str
-    file: str
-    ok: bool
-    status: str  # "written" | "file-not-found" | "unsupported-format" | "error"
-    detail: str = ""
 
 
 class TraktorStore:

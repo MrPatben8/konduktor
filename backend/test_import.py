@@ -89,7 +89,8 @@ def stage(src: OneLibraryAdapter, music: Path) -> list[NewTrack]:
 
 print("== a drive's tracks land in the collection ==")
 nml, music, original = fresh_collection()
-source = OneLibraryAdapter(FIXTURE)
+# As the app opens a device: read-only (a drive opened as THE library is editable).
+source = OneLibraryAdapter(FIXTURE, read_only=True)
 dest = TraktorAdapter(nml)
 before = len(dest.tracks)
 items = stage(source, music)

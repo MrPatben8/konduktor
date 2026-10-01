@@ -63,7 +63,7 @@ class RekordboxDriver:
                 except Exception:  # noqa: BLE001
                     pass
 
-    def open(self, path: Path) -> RekordboxAdapter:
+    def open(self, path: Path, *, read_only: bool = False) -> RekordboxAdapter:
         return RekordboxAdapter(path)
 
     def detect(self) -> list[dict]:

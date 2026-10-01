@@ -112,9 +112,11 @@ class _Entry(dict):
 
 
 class _Tag:
+    """A stand-in for `anlz_file.Tag`: a type and its decoded entries."""
+
     def __init__(self, tag_type, entries):
         self.type = tag_type
-        self.struct = type("S", (), {"content": type("C", (), {"entries": entries})()})()
+        self.entries = entries
 
 
 class _Anlz:
@@ -174,6 +176,49 @@ check("nothing read from a drive claims to be editable",
       all(not c.editable for c in merged))
 
 
+print("== a stick rekordbox has EDITED ==")
+# rekordbox 7 writes COMPACT cue entries when it edits a stick, where an export
+# writes 88-byte ones: a hot cue it added is a 48-byte PCP2, a memory cue a
+# 44-byte one with no colour at all. pyrekordbox raised PaddingError on the
+# latter, the whole .EXT failed to parse, and the reader fell back to the .DAT —
+# losing pads D-E and every colour. These files are Goober's after Ben edited it
+# in rekordbox 7 (2026-10-01), trimmed to PPTH + the cue tags, byte for byte.
+from konduktor.adapters.rekordbox import anlz_file  # noqa: E402
+
+EDITED = FIXTURE / "rekordbox-edited"
+for f in sorted(FIXTURE.glob("PIONEER/USBANLZ/*/*/ANLZ*")) + sorted(EDITED.glob("*.*")):
+    raw = f.read_bytes()
+    if anlz_file.parse(raw).to_bytes() != raw:
+        check(f"{f.name} round-trips through the tag reader byte for byte", False)
+        break
+else:
+    check("every analysis file round-trips through the tag reader byte for byte", True)
+
+nemean = cues_from_anlz(anlz_file.parse_file(EDITED / "nemean.DAT"),
+                        anlz_file.parse_file(EDITED / "nemean.EXT"))
+hot = [c for c in nemean if c.role == "hotcue"]
+check("the .EXT holding a 44-byte memory entry still parses: all five pads",
+      [c.slot for c in sorted(hot, key=lambda c: c.slot)] == [0, 1, 2, 3, 4],
+      str([c.slot for c in hot]))
+check("and their colours survive",
+      {c.slot: c.color for c in hot} == {0: "#1AFF00", 1: "#00E0FF", 2: "#FF5E00",
+                                          3: "#B300FF", 4: "#FF0000"},
+      str({c.slot: c.color for c in hot}))
+memory = sorted((c for c in nemean if c.role == "memory"), key=lambda c: (c.start, c.type))
+check("a memory cue ON a memory loop's start is not merged into it",
+      [(round(c.start * 1000), c.type) for c in memory] == [(23, "cue"), (121402, "cue"), (121402, "loop")],
+      str([(c.start, c.type) for c in memory]))
+check("the compact memory entry has no colour, rather than black",
+      all(c.color is None for c in memory))
+
+demo2 = cues_from_anlz(anlz_file.parse_file(EDITED / "demo-track-2.DAT"),
+                       anlz_file.parse_file(EDITED / "demo-track-2.EXT"))
+pad_e = [c for c in demo2 if c.slot == 4]
+check("a 48-byte hot cue (added in rekordbox) reads with its colour",
+      len(pad_e) == 1 and pad_e[0].color == "#00FF30" and round(pad_e[0].start * 1000) == 47525,
+      str(pad_e))
+
+
 # ---- the real drive ------------------------------------------------------
 if not (FIXTURE / "PIONEER" / "rekordbox" / "exportLibrary.db").is_file():
     print(f"\nSKIP: no fixture drive at {FIXTURE}")
@@ -194,7 +239,13 @@ fake.parent.mkdir(parents=True)
 shutil.copy(Path(__file__), fake)  # a plain text file wearing the right name
 check("can_open rejects a non-database in the right place", not driver.can_open(fake.parent.parent.parent))
 
-adapter = OneLibraryAdapter(FIXTURE)
+# A drive is now WRITABLE, so the adapter under test opens a COPY — a stray save
+# here once rewrote the checked-in fixture. The copy keeps the fixture's folder
+# name, which is what the drive's label is checked against.
+DRIVE = Path(tempfile.mkdtemp(prefix="konduktor-ol-drive-")) / FIXTURE.name
+shutil.copytree(FIXTURE, DRIVE)
+FIXTURE_DB_BYTES = (FIXTURE / "PIONEER" / "rekordbox" / "exportLibrary.db").read_bytes()
+adapter = OneLibraryAdapter(DRIVE)
 check("implements the LibraryAdapter protocol", isinstance(adapter, LibraryAdapter))
 
 print("== the projection ==")
@@ -216,7 +267,7 @@ check("comment comes through", (one.comment or "").startswith("Tracks by"))
 check("the track id is its drive-relative path",
       one.id == "/Contents/Loopmasters/UnknownAlbum/Demo Track 1.mp3", one.id)
 check("filepath resolves under the mount point",
-      one.filepath == str(FIXTURE / "Contents/Loopmasters/UnknownAlbum/Demo Track 1.mp3"))
+      one.filepath == str(DRIVE / "Contents/Loopmasters/UnknownAlbum/Demo Track 1.mp3"))
 check("and the resolved file is really there", Path(one.filepath).is_file())
 check("audio_path agrees with the projection", str(adapter.audio_path(one.id)) == one.filepath)
 
@@ -280,8 +331,8 @@ check("its entries are track ids, in order",
       entries == [t.id for t in (adapter.playlist_tracks(node.id) or [])])
 check("and they resolve to the two tracks", len(adapter.playlist_tracks(node.id)) == 2)
 check("a root playlist's parent 0 is not treated as a real node id", len(tree) == 1)
-check("nothing on the drive claims to be editable",
-      not any(n.can_rename or n.can_delete or n.can_add_tracks or n.can_reorder for n in tree))
+check("on an editable drive a playlist offers every edit",
+      all(n.can_rename and n.can_delete and n.can_add_tracks and n.can_reorder for n in tree))
 check("entries for an unknown node are None", adapter.playlist_entries("999999") is None)
 
 print("== capabilities gate the UI ==")
@@ -289,9 +340,7 @@ caps = adapter.capabilities()
 check("platform is onelibrary", caps.platform == "onelibrary")
 # The distinction the whole capability system exists for: this is a roadmap gap,
 # not a protective refusal, and the UI must word the two differently.
-check("the library is read-only", caps.writable is False)
-check("because the platform is incomplete, not because of a sync state",
-      caps.readonly_cause == "platform_incomplete")
+check("opened as THE library, a drive is writable", caps.writable is True and caps.readonly_cause is None)
 check("the version is the drive's dbVersion", caps.version == "1000", str(caps.version))
 # The per-feature flags still describe the FORMAT. Blanking them to false would
 # claim OneLibrary has no hot cues, which is not what read-only means.
@@ -300,16 +349,34 @@ check("cue colour is free RGB here, unlike master.db's palette", caps.cues.color
 check("loops are a cue type, not a separate bank", caps.cues.loops == "cue_type")
 check("memory cues are acknowledged", caps.cues.memory_cues is True)
 check("the grid is flexible even though we do not write it", caps.grid.flexible is True)
-check("nothing is editable", not caps.cues.editable and not caps.grid.editable)
-check("no metadata field is editable", caps.tracks.editable_fields == [])
+check("cues and the grid are not editable YET", not caps.cues.editable and not caps.grid.editable)
+check("the editable fields are the Rekordbox adapter's set",
+      caps.tracks.editable_fields == sorted(["title", "artist", "album", "genre", "label",
+                                             "remixer", "comment", "rating", "release_date"]),
+      str(caps.tracks.editable_fields))
+check("adding and removing tracks are not offered YET",
+      not caps.tracks.addable and not caps.tracks.removable)
+check("playlists can be reordered", caps.playlists.reorder is True)
 check("ratings are 0-5", caps.tracks.rating_max == 5)
 check("folders are supported by the format", caps.playlists.folders is True)
 check("a drive carries no smart playlists", caps.playlists.smart == "none")
 check("drives are not versioned", caps.save.history is False)
-check("nothing else can overwrite it, because we never write", caps.save.overwrite_risk == "none")
-check("the label is the drive's name", caps.save.library_label == FIXTURE.name)
+check("another app's write is caught at save, not risked", caps.save.overwrite_risk == "none")
+check("Save is named for the drive", caps.save.app_name == FIXTURE.name, caps.save.app_name)
 
-print("== every command is refused ==")
+print("== opened for BROWSING (the sidebar's Devices) ==")
+browse = OneLibraryAdapter(DRIVE, read_only=True)
+bcaps = browse.capabilities()
+check("a browsing drive is read-only", bcaps.writable is False)
+check("because it is being browsed, not because the platform is incomplete",
+      bcaps.readonly_cause == "browsing", str(bcaps.readonly_cause))
+check("and the registry opens it that way when asked",
+      registry.open_library(DRIVE, read_only=True).capabilities().readonly_cause == "browsing")
+bnode = browse.playlist_tree()[0]
+check("its playlists offer nothing",
+      not (bnode.can_add_tracks or bnode.can_reorder or bnode.can_rename or bnode.can_delete))
+
+print("== what is refused ==")
 COMMANDS = [
     ("set_track_metadata", lambda: adapter.set_track_metadata(one.id, {"title": "x"})),
     ("set_cover_art", lambda: adapter.set_cover_art(one.id, b"", "image/png")),
@@ -335,9 +402,28 @@ COMMANDS = [
     ("save", lambda: adapter.save()),
     ("snapshot", lambda: adapter.snapshot()),
 ]
-refused = [name for name, fn in COMMANDS if not _raises(fn, Unsupported)]
-check(f"all {len(COMMANDS)} commands raise Unsupported", not refused, "; ".join(refused))
-check("nothing is ever dirty", adapter.dirty is False)
+# Browsing: EVERY command refuses — the ones that work on an editable drive too.
+BROWSE = [(n, (lambda f=f: f(browse))) for n, f in [
+    ("set_track_metadata", lambda a: a.set_track_metadata(one.id, {"title": "x"})),
+    ("create_playlist", lambda a: a.create_playlist("x")),
+    ("create_folder", lambda a: a.create_folder("x")),
+    ("rename_playlist", lambda a: a.rename_playlist(node.id, "x")),
+    ("delete_playlist", lambda a: a.delete_playlist(node.id)),
+    ("set_playlist_entries", lambda a: a.set_playlist_entries(node.id, [])),
+    ("save", lambda a: a.save()),
+]]
+refused = [name for name, fn in BROWSE if not _raises(fn, Unsupported)]
+check("a browsing drive refuses every edit, Save included", not refused, "; ".join(refused))
+check("and is never dirty", browse.dirty is False)
+browse.close()
+
+# Editable: what has not landed yet still refuses (each with its flag False).
+LANDED = {"set_track_metadata", "create_playlist", "rename_playlist", "delete_playlist",
+          "set_playlist_entries", "save"}
+pending = [(n, fn) for n, fn in COMMANDS if n not in LANDED]
+refused = [name for name, fn in pending if not _raises(fn, Unsupported)]
+check(f"the {len(pending)} commands not written yet raise Unsupported", not refused, "; ".join(refused))
+check("refusing leaves nothing dirty", adapter.dirty is False)
 check("an unknown track is a NotFound, not an Unsupported",
       _raises(lambda: adapter.audio_path("no-such-track"), NotFound))
 
@@ -360,6 +446,8 @@ check("detection of unplugged drives is empty, not an error",
 
 adapter.close()
 check("closing twice is safe", adapter.close() is None)
+check("the checked-in fixture was never written",
+      (FIXTURE / "PIONEER" / "rekordbox" / "exportLibrary.db").read_bytes() == FIXTURE_DB_BYTES)
 
 print()
 print("RESULT:", "FAILED" if failed else "ALL PASSED")

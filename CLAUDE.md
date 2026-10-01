@@ -295,9 +295,23 @@ Two independent apps that talk over HTTP:
     `close()` disposes the SQLAlchemy engine, not just the session — otherwise
     the OS file handle stays open and `master.db` cannot be replaced. `AppState`
     closes the previous adapter when opening a new library.
-  - `adapters/onelibrary/` — **read-only.** The cross-vendor USB export format
-    (AlphaTheta + Algoriddim + Native Instruments), read by CDJ-class hardware.
-    Built as the source half of a future "import a stick into Traktor" feature.
+  - `adapters/onelibrary/` — **editable when opened as THE library; read-only
+    when browsed from the sidebar's Devices** (`read_only=True`, cause `browsing`).
+    The cross-vendor USB export format (AlphaTheta + Algoriddim + Native
+    Instruments), read by CDJ-class hardware. Editing is landing in steps toward
+    parity with the Rekordbox adapter — track metadata and playlists done; cues,
+    grid, adding/removing tracks and the `export.pdb` rebuild next — decided in
+    [the editing discussion](.claude/discussions/discuss-onelibrary-editing-2026-10-01.md),
+    which also holds what rekordbox 7 was MEASURED writing when it edits a stick
+    (no update counter moves, the `cue` table stays empty, a new playlist goes on
+    top). **The store never opens the database ON the drive**: it works on a copy
+    in app-data and Save writes it back whole — fingerprint check (refuses if
+    another app wrote the stick since open), backup to app-data, temp file beside
+    the database, stale `-wal`/`-shm` deleted, rename — then writes edited text
+    fields into the audio files' tags as rekordbox does (not the rating). Cue tags
+    are read by Konduktor's own `rekordbox/anlz_file.py`, NOT pyrekordbox: rekordbox
+    writes COMPACT cue entries when it edits (48 / 44 bytes, export: 88), and
+    pyrekordbox's parser raised on the 44-byte one and lost the whole `.EXT`.
     Full research, incl. the schema, is in
     [.claude/handoffs/onelibrary-adapter.md](.claude/handoffs/onelibrary-adapter.md);
     the four things that make it unlike the Rekordbox adapter:
@@ -901,6 +915,17 @@ serialization path.** It enforces:
   Konduktor wrote. Pins the drive-relative path resolution, the `PCOB`/`PCO2`
   merge, and — cross-checked against the same cues in `master.db` — the dense
   ANLZ slot numbering, which is the thing most likely to be silently wrong.
+  Also reads `fixtures/onelibrary/rekordbox-edited/` (a stick after rekordbox
+  itself edited it: compact cue entries) and pins browsing vs editable mode. It
+  opens a temp COPY of the fixture — a stray save once rewrote the checked-in one.
+- `test_onelibrary_fidelity.py` — the row-level diff for OneLibrary writes, on a
+  temp copy of the fixture: nothing reaches the drive before Save, a no-op save
+  changes zero rows, a title edit exactly `content.title` (no counter, as
+  rekordbox), dates as `YYYY-MM-DD` text, lookups found-or-created with
+  `nameForSearch` NULL, a new playlist on top with siblings shifted, entries
+  from 1; and the stick hazards — another app's write refused, an unplugged
+  drive keeps the edits, stale `-shm` deleted, the backup holds the old rows,
+  the drive never held open, file tags written (title yes, rating no).
 - `test_import.py` — the import feature end to end: a drive's tracks into a temp
   copy of the real collection. Asserts the prep survives (hot cues keep their
   PAD, memory cues fill spare ones, the flexible grid crosses intact, no
@@ -1268,15 +1293,15 @@ that number and nothing else — everything derives from it:
     library. Lossiness follows the settled rule: memory cues become hot cues in
     spare pads (earliest first), cue colour is dropped (Traktor derives it from
     type).
-- 🟡 OneLibrary adapter — **read-only, done**. A OneLibrary USB drive opens,
-  projects, browses and searches: tracks, playlists, hot cues, memory cues, loops
-  and flexible beatgrids. Built as the readable SOURCE half of a future
-  **"import a OneLibrary stick into a Traktor library"** feature, which is the
-  motivating use case. Everything unknown about the format is on the write side
-  (the `cue` table's MPEG seek columns, the waveform tags a CDJ draws from, the
-  update counters), so read-only is a deliberate boundary rather than an
-  unfinished one. All research — including the schema, which has no public spec —
-  is in [.claude/handoffs/onelibrary-adapter.md](.claude/handoffs/onelibrary-adapter.md).
+- 🟡 OneLibrary adapter — **reading done; editing in progress** toward parity
+  with Rekordbox (2026-10-01, [decisions](.claude/discussions/discuss-onelibrary-editing-2026-10-01.md)).
+  A OneLibrary USB drive opens, projects, browses and searches: tracks,
+  playlists, hot cues, memory cues, loops and flexible beatgrids. Done: track
+  metadata (+ file tags) and playlists, Save via a working copy. Next: cues and
+  grid in the ANLZ files (rekordbox blanks `PQT2` on a grid edit — measured),
+  the `export.pdb` rebuild on save, adding/removing tracks, "Open for editing…"
+  on a Devices row. All format research — including the schema, which has no
+  public spec — is in [.claude/handoffs/onelibrary-adapter.md](.claude/handoffs/onelibrary-adapter.md).
 - 🟡 **Export/conversion** — **in progress.** Both the design AND the user flow
   are settled; see
   [the export discussion doc](.claude/discussions/discuss-export-implementation-2026-09-22.md),

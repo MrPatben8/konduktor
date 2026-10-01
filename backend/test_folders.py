@@ -228,7 +228,9 @@ with TestClient(main.app, raise_server_exceptions=False) as c:
         rb.close()
 
     print("== a library that cannot take tracks refuses the route ==")
-    fixture = Path(__file__).resolve().parent / "fixtures" / "onelibrary"
+    # A COPY: opened as THE library, a OneLibrary drive is editable.
+    fixture = Path(tempfile.mkdtemp()) / "onelibrary"
+    shutil.copytree(Path(__file__).resolve().parent / "fixtures" / "onelibrary", fixture)
     r = c.post("/api/library/open", json={"path": str(fixture)})
     if r.status_code == 200:
         check("the add preview is refused (422)",

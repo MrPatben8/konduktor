@@ -1,15 +1,17 @@
-"""What a OneLibrary drive can persist: nothing, for now.
+"""What a OneLibrary drive can persist.
 
-`writable` is False with cause `platform_incomplete`. That is the distinction the
-capability system exists to draw — this is a ROADMAP GAP, not a refusal. A
-cloud-synced Rekordbox library is refused permanently to protect the user's other
-machines; a OneLibrary drive simply has no write path yet, and the UI must word
-those two very differently.
+Opened as THE library, a drive is writable, and the per-feature flags say which
+edits have landed: track metadata and playlists so far; cues, the grid, adding
+and removing tracks are still False, so the UI never offers an edit the adapter
+would refuse. Opened `read_only` — the sidebar's Devices, browsing beside the
+loaded library — `writable` is False with cause `browsing`, which the UI words
+as "open it for editing", not as a missing feature.
 
-The per-feature flags below still report what the FORMAT supports rather than
-being blanked to false, because that is what `writable=False` is for: the UI can
-show a drive's cues and grid honestly, and say once, in one place, that the whole
-library is read-only. Blanking them would claim OneLibrary has no hot cues.
+With `writable=False` the per-feature flags still report what the FORMAT
+supports rather than being blanked, because that is what the library-level flag
+is for: the UI can show a drive's cues and grid honestly and say once, in one
+place, that the library is read-only. Blanking them would claim OneLibrary has no
+hot cues.
 
 Two answers are worth recording now, while the evidence is in front of us, since
 getting them wrong later would be a silent data bug rather than a missing
@@ -40,14 +42,18 @@ from ...core.capabilities import (
 HOTCUE_SLOTS = 8
 
 
-def capabilities_for(device_name: str | None = None, version: str | None = None) -> Capabilities:
+def capabilities_for(
+    device_name: str | None = None,
+    version: str | None = None,
+    *,
+    read_only: bool = False,
+    editable_fields: list[str] | None = None,
+) -> Capabilities:
     return Capabilities(
         platform="onelibrary",
         version=version,
-        # A roadmap gap, not a protective refusal — the UI words the two
-        # differently, which is the whole reason `readonly_cause` exists.
-        writable=False,
-        readonly_cause="platform_incomplete",
+        writable=not read_only,
+        readonly_cause="browsing" if read_only else None,
         cues=CueCapabilities(
             editable=False,
             hotcue_slots=HOTCUE_SLOTS,
@@ -68,10 +74,12 @@ def capabilities_for(device_name: str | None = None, version: str | None = None)
         grid=GridCapabilities(editable=False, flexible=True, lockable=False),
         tracks=TrackCapabilities(
             rating_max=5,  # stored 0-5 directly, as in master.db
-            editable_fields=[],
+            # The Rekordbox adapter's set: `producer`/`mix` have no column.
+            editable_fields=sorted(editable_fields or []),
             media_kinds=["audio", "stem"],
-            # `artwork` gates EDITING, and a drive is read-only here. Reading
-            # works: `store.cover_art` follows `content.image_id` -> `image.path`.
+            # `artwork` gates EDITING, which Rekordbox does not do yet either
+            # (parity). Reading works: `store.cover_art` follows
+            # `content.image_id` -> `image.path`.
             artwork=False,
             artwork_note=None,
         ),
@@ -80,12 +88,16 @@ def capabilities_for(device_name: str | None = None, version: str | None = None)
             # A drive carries no smart playlists: rekordbox resolves them to
             # static lists on export, because a CDJ cannot evaluate rules.
             smart="none",
-            reorder=False,
+            reorder=True,
         ),
         save=SaveCapabilities(
-            app_name="OneLibrary",
-            library_label=device_name or "exportLibrary.db",
-            # Nothing is written, so nothing can be overwritten by another app.
+            # Named for the DRIVE ("Save to Goober"): a person has several
+            # sticks, and "Save to OneLibrary" would not say which.
+            app_name=device_name or "OneLibrary",
+            library_label="exportLibrary.db",
+            # Another app writing the drive between open and save is CAUGHT,
+            # not risked: the store fingerprints the database at open and
+            # refuses to save over a change it did not make.
             overwrite_risk="none",
             # A drive is a database plus N analysis files plus the audio itself,
             # so there is no single blob that IS the library — the same reason

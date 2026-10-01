@@ -55,6 +55,8 @@ export function readOnlyNotice(caps: Capabilities): string | null {
       return `This ${caps.save.app_name} library is synced with ${caps.save.app_name} Cloud, so Konduktor will not write to it — an edit it did not make could break syncing on your other devices.`
     case 'not_in_library':
       return 'This file is not in your collection yet — add it to edit its tags, cues or beatgrid.'
+    case 'browsing':
+      return `This ${caps.save.app_name} drive is open for browsing. Open it for editing to change it.`
     case 'platform_incomplete':
     default:
       return `Konduktor can read ${caps.save.app_name} libraries but cannot save changes to them yet.`

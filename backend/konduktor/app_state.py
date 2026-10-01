@@ -79,7 +79,7 @@ class AppState:
         rests on, and an adapter is the thing that knows whether it is true —
         so it is asserted here rather than assumed everywhere else.
         """
-        adapter = registry.open_library(path)
+        adapter = registry.open_library(path, read_only=True)
         if adapter.capabilities().writable:
             if hasattr(adapter, "close"):
                 try:
@@ -87,7 +87,7 @@ class AppState:
                 except Exception:  # noqa: BLE001
                     pass
             raise ValueError(
-                f"{path} is a writable library; only read-only sources "
+                f"{path} cannot be opened read-only; only a library that can "
                 "(such as a OneLibrary drive) can be opened as a source"
             )
         self.close_source()

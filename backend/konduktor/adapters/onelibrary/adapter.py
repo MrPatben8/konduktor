@@ -5,18 +5,17 @@ Mirrors `adapters.rekordbox.adapter`. It holds:
   * a ``OneLibraryStore`` — the retained NATIVE model (the open drive),
   * a ``TrackIndex`` — the generic READ projection built from it.
 
-**Read-only.** Every command is refused and `capabilities.writable` is False with
-cause `platform_incomplete`, so the UI never offers an edit in the first place;
-the raises here are the backstop, not the mechanism.
+**Editable when opened as THE library**, with parity with the Rekordbox adapter
+as the goal (decisions: `.claude/discussions/discuss-onelibrary-editing-2026-10-01.md`).
+Opened `read_only` — as the sidebar's Devices do, beside the loaded library — it
+reports `writable=False` with cause `browsing`, and every command is refused.
 
-That scope is deliberate rather than provisional. The purpose of this adapter is
-to make a OneLibrary drive a readable SOURCE — the half an import into another
-library needs — and every genuinely unknown part of the format sits on the write
-side: the `cue` table's eight MPEG frame/offset columns, whose values a player
-needs to seek accurately in a VBR file; the waveform tags a CDJ draws from; and
-the update counters a drive uses to reconcile edits made on hardware. None of
-those has to be guessed at to read a drive, and none of them should be guessed at
-at all.
+What a write must look like was MEASURED by diffing a stick before and after
+rekordbox 7 edited it, rather than guessed: the update counters a drive carries
+do NOT move, and the `cue` table stays empty. Landing in steps — track metadata
+and playlists first; cues, grid, adding and removing tracks after — and every
+command not written yet is refused, with its capability flag False so the UI
+never offers it.
 """
 from __future__ import annotations
 
@@ -42,9 +41,10 @@ ATTRIBUTE_SMART = 4
 class OneLibraryAdapter:
     platform = "onelibrary"
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, read_only: bool = False):
         self.path = Path(path)
-        self._store = OneLibraryStore(self.path)
+        self.read_only = read_only
+        self._store = OneLibraryStore(self.path, read_only=read_only)
         self._index = TrackIndex()
         self._rebuild()
 
@@ -72,14 +72,25 @@ class OneLibraryAdapter:
         self._store.close()
 
     def reload(self) -> None:
-        self._store._load()
+        """Re-read the drive, DISCARDING unsaved edits."""
+        self._store.discard()
         self._rebuild()
+
+    def _refresh(self, track_id: str) -> None:
+        """Re-project one track after a command, so the UI cannot go stale."""
+        from ...core.stem_file import is_stem_file
+
+        row = self._store.content(track_id)
+        path = self._drive_path(row)
+        self._index.replace(projection.to_track(row, path, stem=bool(path) and is_stem_file(path)))
 
     # ---- identity --------------------------------------------------------
     def capabilities(self) -> Capabilities:
         return caps.capabilities_for(
             device_name=self._store.device_name,
             version=self._store.db_version,
+            read_only=self.read_only,
+            editable_fields=sorted(OneLibraryStore.EDITABLE_FIELDS),
         )
 
     # ---- read ------------------------------------------------------------
@@ -146,7 +157,9 @@ class OneLibraryAdapter:
         rather than an absence, and treating 0 as a real id would orphan every
         top-level playlist.
         """
-        rows = self._store.playlists()
+        rows = sorted(self._store.playlists(),
+                      key=lambda r: (int(getattr(r, "sequenceNo", 0) or 0), int(r.playlist_id)))
+        writable = not self.read_only
         nodes: dict[str, PlaylistNode] = {}
         parents: dict[str, str] = {}
 
@@ -166,12 +179,12 @@ class OneLibraryAdapter:
                 count=(0 if kind == "folder" else len(self._store.playlist_song_ids(node_id))),
                 children=[],
                 selectable=kind == "playlist",
-                # Read-only: every per-node flag is False, and
+                # Opened read-only, every flag is False and
                 # `capabilities.writable` tells the UI why, once.
-                can_add_tracks=False,
-                can_reorder=False,
-                can_rename=False,
-                can_delete=False,
+                can_add_tracks=writable and kind == "playlist",
+                can_reorder=writable and kind == "playlist",
+                can_rename=writable,
+                can_delete=writable,
                 can_contain_children=kind == "folder",
             )
             parent = str(getattr(r, "playlist_id_parent", 0) or 0)
@@ -238,20 +251,30 @@ class OneLibraryAdapter:
     # ---- save -------------------------------------------------------------
     @property
     def dirty(self) -> bool:
-        return False
+        return self._store.dirty
 
     def save(self):
-        raise Unsupported(self._readonly_reason("Saving"))
+        self._require_writable("Saving")
+        return self._store.save()
 
     def snapshot(self) -> bytes:
         raise Unsupported("OneLibrary drives are not versioned by Konduktor")
 
-    # ---- commands: all refused -------------------------------------------
+    # ---- commands -----------------------------------------------------------
     def _readonly_reason(self, what: str) -> str:
+        if self.read_only:
+            return (f"{what} is not possible while the drive is open for browsing. "
+                    "Open it for editing to change it.")
         return f"{what} is not supported yet for OneLibrary drives."
 
     def _refuse(self, what: str):
         raise Unsupported(self._readonly_reason(what))
+
+    def _require_writable(self, what: str) -> None:
+        """Every write passes through here, so a command added later cannot
+        forget that a browsing drive is read-only."""
+        if self.read_only:
+            self._refuse(what)
 
     def add_tracks(self, items: list, *, checkpoint=None) -> list[str]:
         self._refuse("Adding tracks")
@@ -263,7 +286,10 @@ class OneLibraryAdapter:
         self._refuse("Converting tracks to stems")
 
     def set_track_metadata(self, track_id: str, fields: dict) -> Track | None:
-        self._refuse("Editing track metadata")
+        self._require_writable("Editing track metadata")
+        self._store.set_track_metadata(track_id, fields)
+        self._refresh(track_id)
+        return self._index.get(track_id)
 
     def set_cover_art(self, track_id: str, data: bytes, mime: str) -> None:
         self._refuse("Editing cover art")
@@ -272,19 +298,24 @@ class OneLibraryAdapter:
         return self._store.cover_art(track_id)
 
     def create_playlist(self, name: str, parent_id: str | None = None) -> str:
-        self._refuse("Creating playlists")
+        self._require_writable("Creating playlists")
+        return self._store.create_playlist(name, parent_id)
 
     def create_folder(self, name: str, parent_id: str | None = None) -> str:
-        self._refuse("Creating playlist folders")
+        self._require_writable("Creating playlist folders")
+        return self._store.create_folder(name, parent_id)
 
     def rename_playlist(self, node_id: str, name: str) -> None:
-        self._refuse("Renaming playlists")
+        self._require_writable("Renaming playlists")
+        self._store.rename_playlist(node_id, name)
 
     def delete_playlist(self, node_id: str) -> None:
-        self._refuse("Deleting playlists")
+        self._require_writable("Deleting playlists")
+        self._store.delete_playlist(node_id)
 
     def set_playlist_entries(self, node_id: str, track_ids: list[str]) -> int:
-        self._refuse("Editing playlists")
+        self._require_writable("Editing playlists")
+        return self._store.set_playlist_entries(node_id, track_ids)
 
     def set_cue(self, track_id: str, **kw) -> TrackCues:
         self._refuse("Editing cues")

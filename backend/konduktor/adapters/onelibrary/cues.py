@@ -47,14 +47,13 @@ NO_LOOP = 0xFFFFFFFF
 # `hot_cue` for a cue that sits in no pad bank, i.e. a memory cue.
 MEMORY_SLOT = 0
 
-# PCO2/PCOB entry kinds. The value is the same in both tags; PCOB exposes it as
-# a construct enum and PCO2 as a plain int, so both are normalised to an int.
+# PCO2/PCOB entry kinds. The value is the same in both tags.
 ENTRY_CUE = 1
 ENTRY_LOOP = 2
 
 
 def _entry_kind(value) -> int:
-    """PCOB gives an enum, PCO2 an int — one number out of either."""
+    """An entry's kind as an int, defaulting to a point cue if unreadable."""
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -70,6 +69,8 @@ def _color(entry) -> str | None:
     black. Memory cues in the reference export are exactly this case.
     """
     try:
+        # None on an entry too short to carry a colour: every PCPT, and the
+        # compact 44-byte PCP2 rekordbox writes for a memory cue it added.
         r, g, b = int(entry.color_red), int(entry.color_green), int(entry.color_blue)
     except (AttributeError, TypeError, ValueError):
         return None
@@ -130,15 +131,14 @@ def _entries(anlz, tag_type: str) -> list:
     """
     out: list = []
     for tag in getattr(anlz, "tags", []):
-        if tag.type != tag_type:
-            continue
-        content = getattr(tag.struct, "content", None)
-        out.extend(getattr(content, "entries", None) or [])
+        if tag.type == tag_type:
+            out.extend(tag.entries)
     return out
 
 
 def cues_from_anlz(dat, ext) -> list[CuePoint]:
-    """The track's complete cue list, from its parsed `.DAT` and `.EXT`.
+    """The track's complete cue list, from its parsed `.DAT` and `.EXT`
+    (`rekordbox.anlz_file.AnlzFile`s).
 
     Either may be None — a drive can carry a `.DAT` with no `.EXT` — and a track
     with no cues at all yields an empty list rather than an error.
@@ -168,18 +168,23 @@ def cues_from_anlz(dat, ext) -> list[CuePoint]:
 def _dedupe(cues: list[CuePoint]) -> list[CuePoint]:
     """Collapse the same cue appearing in more than one tag or file.
 
-    Identity is (role, slot, start) rather than the whole cue: the same pad can
-    be described by both `PCOB` and `PCO2`, and by both files, and those copies
-    agree on position while differing in how much detail they carry. The first
-    one wins, which — given PCO2 is read first — is the richest.
+    Identity is (role, slot, start, type, length) rather than the whole cue:
+    the same pad can be described by both `PCOB` and `PCO2`, and by both files,
+    and those copies agree on all five while differing in how much detail they
+    carry (colour, comment). The first one wins, which — given PCO2 is read
+    first — is the richest.
+
+    Type and length are part of it because two MEMORY cues may share a position:
+    rekordbox happily stores a memory cue on the start of a memory loop (seen on
+    Goober), and keying on position alone silently dropped the loop.
 
     Ordered by position, then by slot, so the projection is stable across reads
     regardless of the order the tags happened to store.
     """
-    seen: set[tuple[str, int | None, int]] = set()
+    seen: set[tuple] = set()
     out: list[CuePoint] = []
     for c in cues:
-        key = (c.role, c.slot, round(c.start * 1000))
+        key = (c.role, c.slot, round(c.start * 1000), c.type, round(c.length * 1000))
         if key in seen:
             continue
         seen.add(key)

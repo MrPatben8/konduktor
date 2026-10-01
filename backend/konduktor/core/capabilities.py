@@ -22,7 +22,10 @@ from pydantic import BaseModel
 # permanent refusal protecting their other machines.
 # `not_in_library` is a folder of loose files being browsed: nothing there is a
 # library to write to, and the way to edit one is to add it to the collection.
-ReadonlyCause = Literal["platform_incomplete", "cloud_synced", "not_in_library"]
+# `browsing` is an editable library opened only to READ alongside the loaded one
+# (a OneLibrary stick in the sidebar's Devices): the way to edit it is to open it
+# as THE library, which one SaveBar and one dirty state can then follow.
+ReadonlyCause = Literal["platform_incomplete", "cloud_synced", "not_in_library", "browsing"]
 
 CueType = Literal["cue", "fade_in", "fade_out", "load", "loop"]
 CueRole = Literal["hotcue", "memory"]

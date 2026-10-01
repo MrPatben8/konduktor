@@ -25,7 +25,7 @@ class TraktorDriver:
             return False
         return b"<NML" in head and b"VERSION=" in head
 
-    def open(self, path: Path) -> TraktorAdapter:
+    def open(self, path: Path, *, read_only: bool = False) -> TraktorAdapter:
         return TraktorAdapter(path)
 
     def detect(self) -> list[dict]:
