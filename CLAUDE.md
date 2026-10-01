@@ -306,8 +306,9 @@ Two independent apps that talk over HTTP:
     Instruments), read by CDJ-class hardware. Editing is landing in steps toward
     parity with the Rekordbox adapter — track metadata, playlists, hot cues and
     the beatgrid, and the `export.pdb` rebuild done and VERIFIED in rekordbox 7
-    (both library views matched); adding/removing tracks done (not yet checked
-    in rekordbox) and the UI ("Open for editing…" on a Devices row) — decided in
+    (both library views matched); adding/removing tracks done (checked
+    in rekordbox too) and the UI ("Open for editing…" on a Devices row) — all
+    VERIFIED in rekordbox 7 on a real stick (2026-10-01) — decided in
     [the editing discussion](.claude/discussions/discuss-onelibrary-editing-2026-10-01.md),
     which also holds what rekordbox 7 was MEASURED writing when it edits a stick
     (no update counter moves, the `cue` table stays empty, a new playlist goes on
@@ -988,6 +989,31 @@ serialization path.** It enforces:
   from 1; and the stick hazards — another app's write refused, an unplugged
   drive keeps the edits, stale `-shm` deleted, the backup holds the old rows,
   the drive never held open, file tags written (title yes, rating no).
+- `test_onelibrary_anlz.py` — cue and grid edits in the ANLZ files. First
+  against **rekordbox's own edit** of the same thing
+  (`fixtures/onelibrary-goober/after/`): a recolour's `PCO2` and a grid edit's
+  blanked `PQT2` and cleared loop beats are rekordbox's bytes exactly, and the
+  new `PQTZ` keeps the marker where it was (rekordbox's own halving moved its
+  anchor 6 ms; within 10 ms). Then fidelity on the demo drive: nothing on the
+  drive before Save, only the touched tags change (in place, order kept), a
+  moved pad keeps colour and name, memory cues refused, swatches only, a
+  same-tempo marker collapses (a per-beat grid has no markers), another app's
+  ANLZ write refused, an `.EXT` with no `PCO2` keeps every pad, a track with no
+  analysis files refuses.
+- `test_onelibrary_pdb.py` — the Device Library rebuild on Goober's own
+  `export.pdb`: every track row reads (rows end at their last string; stale
+  heap tails ignored), a no-op rebuild returns None and a no-op save leaves the
+  file byte-identical (ids are mirrored), an edit changes only the edited
+  fields, a new playlist and a reorder reach it, every untouched table and
+  `exportExt.pdb` stay byte-identical, another app's pdb write is refused, and a
+  stick without one never gets one.
+- `test_onelibrary_tracks.py` — adding and removing through `importer.run` on
+  Goober: placement (in place on the stick, else `Contents/<Artist>/<Album>/`,
+  Unknown*, FAT-safe names, 48 chars, suffixed on collision), the prep crossing
+  (pad + colour + name, memory cues, a taken pad -> memory, a detected grid),
+  the row's shape, art as a/b pairs, the Device Library rows; a cancel
+  mid-copy, a Discard and a crash leave nothing; removal deletes rows at once
+  and files only at Save, renumbers playlists and prunes empty folders.
 - `test_import.py` — the import feature end to end: a drive's tracks into a temp
   copy of the real collection. Asserts the prep survives (hot cues keep their
   PAD, memory cues fill spare ones, the flexible grid crosses intact, no
@@ -1355,14 +1381,16 @@ that number and nothing else — everything derives from it:
     library. Lossiness follows the settled rule: memory cues become hot cues in
     spare pads (earliest first), cue colour is dropped (Traktor derives it from
     type).
-- 🟡 OneLibrary adapter — **reading done; editing in progress** toward parity
-  with Rekordbox (2026-10-01, [decisions](.claude/discussions/discuss-onelibrary-editing-2026-10-01.md)).
+- ✅ OneLibrary adapter — **reading and editing done**, at parity with the
+  Rekordbox adapter (2026-10-01, [decisions](.claude/discussions/discuss-onelibrary-editing-2026-10-01.md)).
   A OneLibrary USB drive opens, projects, browses and searches: tracks,
   playlists, hot cues, memory cues, loops and flexible beatgrids. Done: track
   metadata (+ file tags), playlists, hot cues and the beatgrid (in the ANLZ
   files, each rule matching rekordbox's measured edit), the `export.pdb` rebuild
-  on save, Save via a working copy — verified in rekordbox 7. Next: adding and
-  removing tracks, "Open for editing…" on a Devices row. All format research — including the schema, which has no
+  on save, adding/removing tracks (the library places the audio), Save via a
+  working copy, and "Open for editing…" on a Devices row — all verified in
+  rekordbox 7. Same gaps as Rekordbox: cover-art writing, memory-cue editing,
+  stem conversion. All format research — including the schema, which has no
   public spec — is in [.claude/handoffs/onelibrary-adapter.md](.claude/handoffs/onelibrary-adapter.md).
 - 🟡 **Export/conversion** — **in progress.** Both the design AND the user flow
   are settled; see
