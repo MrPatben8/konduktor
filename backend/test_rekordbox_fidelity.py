@@ -418,5 +418,95 @@ with tempfile.TemporaryDirectory() as d:
                   str(fields.get("BPM")))
         adapter.close()
 
+    # ---- I: removing a track does what Rekordbox 7 itself does -----------
+    # Measured 2026-10-01 by removing a track in Rekordbox and diffing: its
+    # rows are DELETED (not flagged) from djmdContent, djmdCue, contentCue,
+    # contentFile, djmdMixerParam and djmdSongPlaylist, the playlist row is
+    # left alone, and the files contentFile lists go with their folders.
+    print("== I: removing a track deletes exactly what Rekordbox deletes ==")
+    from konduktor.core.adapter import Unsupported  # noqa: E402
+
+    clean_copy(REAL, work)
+    before = dump(work)
+    measured = ("djmdCue", "contentCue", "contentFile", "djmdMixerParam", "djmdSongPlaylist")
+    sampler = {str(r["ContentID"]) for r in before.get("djmdSongSampler", {}).values()}
+    songs = before["djmdSongPlaylist"].values()
+    # The FIRST entry of the longest playlist, so the entries after it must
+    # be renumbered.
+    by_list: dict[str, list] = {}
+    for r in songs:
+        by_list.setdefault(str(r["PlaylistID"]), []).append(r)
+    longest = max(by_list.values(), key=len, default=[])
+    first = min(longest, key=lambda r: r["TrackNo"]) if len(longest) > 1 else None
+    if first is None or str(first["ContentID"]) in sampler:
+        print("  (skipped: no playlist with two entries to remove from)")
+    else:
+        victim = str(first["ContentID"])
+        playlist_id = str(first["PlaylistID"])
+        listed = [r["Path"] for r in before["contentFile"].values()
+                  if str(r["ContentID"]) == victim]
+        files = [p for p in listed if p.startswith("/PIONEER/USBANLZ/")]
+        art = [p for p in listed if p.startswith("/PIONEER/Artwork/")]
+        adapter = RekordboxAdapter(work)
+        n_tracks = len(adapter.tracks)
+        check("remove_tracks reports one track removed", adapter.remove_tracks([victim]) == 1)
+        check("it leaves the projection at once",
+              adapter.track(victim) is None and len(adapter.tracks) == n_tracks - 1)
+        check("and its playlist", victim not in adapter.playlist_entries(playlist_id))
+        check("the adapter is dirty", adapter.dirty is True)
+        check("nothing is on disk before save", not diff(before, dump(work)))
+        check("its analysis files are still there before save",
+              all((Path(d) / "share" / p.lstrip("/")).is_file() for p in files))
+        adapter.save()
+
+        changes = diff(before, dump(work))
+        expected_deletes = {("djmdContent", victim)} | {
+            (t, pk) for t in measured for pk, r in before[t].items()
+            if str(r.get("ContentID")) == victim
+        }
+        deletes = {(t, pk) for t, pk, kind, _ in changes if kind == "DELETE"}
+        check("exactly the measured rows are deleted", deletes == expected_deletes,
+              f"extra {sorted(deletes - expected_deletes)} missing "
+              f"{sorted(expected_deletes - deletes)}")
+        check("nothing is inserted", not [c for c in changes if c[2] == "INSERT"])
+        updates = {(t, pk): f for t, pk, kind, f in changes if kind == "UPDATE"}
+        later = {pk for pk, r in before["djmdSongPlaylist"].items()
+                 if str(r["PlaylistID"]) == playlist_id and r["TrackNo"] > first["TrackNo"]}
+        check("only the counter and the later entries' TrackNo move",
+              set(updates) == {("agentRegistry", "localUpdateCount")}
+              | {("djmdSongPlaylist", pk) for pk in later}, describe(changes))
+        check("each later entry moves up by one",
+              all(updates[("djmdSongPlaylist", pk)]["TrackNo"][1]
+                  == before["djmdSongPlaylist"][pk]["TrackNo"] - 1 for pk in later))
+        check("the playlist row itself is left alone",
+              ("djmdPlaylist", playlist_id) not in updates)
+        check("the track's analysis files are deleted",
+              not any((Path(d) / "share" / p.lstrip("/")).exists() for p in files), str(files))
+        check("and their emptied folder",
+              not any((Path(d) / "share" / p.lstrip("/")).parent.exists() for p in files))
+        # Unmeasured (the measured track had none), so left in place.
+        check("its artwork is left alone",
+              all((Path(d) / "share" / p.lstrip("/")).is_file() for p in art))
+        check("the analysis root is kept",
+              (Path(d) / "share" / "PIONEER" / "USBANLZ").is_dir())
+        adapter.close()
+        reopened = RekordboxAdapter(work)
+        check("the track is gone after a reopen", reopened.track(victim) is None)
+        reopened.close()
+
+    # A table that was EMPTY in the measured library is not guessed at.
+    if sampler:
+        clean_copy(REAL, work)
+        adapter = RekordboxAdapter(work)
+        target = next(iter(sampler))
+        try:
+            adapter.remove_tracks([adapter.tracks[0].id, target])
+            check("a track in the Sampler is refused", False)
+        except Unsupported as ex:
+            check("a track in the Sampler is refused", "Sampler" in str(ex), str(ex))
+        check("and the whole batch changed nothing",
+              adapter.dirty is False and adapter.track(target) is not None)
+        adapter.close()
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

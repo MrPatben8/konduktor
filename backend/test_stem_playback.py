@@ -16,10 +16,13 @@ stems are distinct scalings of the mix, so each served stem can be told apart.
 """
 from __future__ import annotations
 
+import html
 import os
+import re
 import shutil
 import sys
 import tempfile
+import time
 import warnings
 from pathlib import Path
 
@@ -148,6 +151,41 @@ with TestClient(main.app) as c:
     got = ROOT / "folder-1.m4a"
     got.write_bytes(r.content)
     check("…and serves them", r.status_code == 200 and np.array_equal(decode(got), decode(stem, 2)))
+    kinds = {t["id"]: t["media_kind"] for t in listing.json()["tracks"]}
+    check("the listing marks the stem file as a stem track and the MP3 as audio",
+          kinds.get(str(stem)) == "stem" and kinds.get(str(plain)) == "audio", str(kinds))
+
+    print("== adding a stem file to the collection ==")
+    extra_dir = ROOT / "More"
+    extra_dir.mkdir()
+    extra = extra_dir / "Other.stem.m4a"
+    shutil.copy2(stem, extra)
+    extra_plain = make_mp3(extra_dir / "Other.mp3", seed=9)
+    assert c.get("/api/folder/tracks", params={"path": str(extra_dir)}).status_code == 200
+    pl_id = c.post("/api/playlists", json={"name": "Stem Adds"}).json()["id"]
+    job = c.post("/api/folder/add", json={"track_ids": [str(extra), str(extra_plain)],
+                                          "mode": "reference", "playlist_id": pl_id}).json()
+    while job["state"] == "running":
+        time.sleep(0.05)
+        job = c.get(f"/api/jobs/{job['id']}").json()
+    check("(setup) the add finishes", job["state"] == "done", str(job))
+    new_stem, new_plain = job["result"]["track_ids"]
+    kinds = {t["id"]: t["media_kind"] for t in c.get("/api/tracks", params={"limit": 20000}).json()["items"]}
+    check("the added stem file is a stem track, the MP3 beside it audio",
+          kinds.get(new_stem) == "stem" and kinds.get(new_plain) == "audio", f"{kinds.get(new_stem)} {kinds.get(new_plain)}")
+    saved = work.read_text(encoding="utf-8")
+
+    def entry_of(name: str) -> str:
+        at = saved.find(f'FILE="{name}"')
+        return saved[at:saved.find("</ENTRY>", at)] if at >= 0 else ""
+
+    m = re.search(r'<STEMS STEMS="([^"]*)"', entry_of(extra.name))
+    check("…its saved ENTRY carries <STEMS>, rendered as Traktor renders that file's box",
+          m is not None and html.unescape(m.group(1)) == sf.NML_STEMS_JSON, entry_of(extra.name)[:300])
+    check("…the MP3's carries none", entry_of(extra_plain.name) != "" and "<STEMS" not in entry_of(extra_plain.name))
+    check('…and the playlist keys the stem file TYPE="STEM", the MP3 TYPE="TRACK"',
+          re.search(r'<PRIMARYKEY TYPE="STEM" KEY="[^"]*Other\.stem\.m4a"', saved) is not None
+          and re.search(r'<PRIMARYKEY TYPE="TRACK" KEY="[^"]*Other\.mp3"', saved) is not None)
 
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

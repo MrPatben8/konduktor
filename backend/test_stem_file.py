@@ -108,6 +108,26 @@ if real_nml.is_file():
     check("the NML value is the one Traktor wrote on every stem entry", values == {sf.NML_STEMS_JSON}, str(len(values)))
 else:
     print("  (skipped: the real collection is not on this machine)")
+# How a stem file that Konduktor did NOT write gets its `<STEMS>` when added:
+# rendered from its own box by Traktor's rule.
+check("Traktor's rendering rule turns the box literal into the NML literal",
+      sf.traktor_stems_json(sf.STEM_BOX_JSON) == sf.NML_STEMS_JSON)
+check("…and keeps other names, colours and values (keys sorted, whole floats as integers)",
+      sf.traktor_stems_json(b'{"version": 1, "stems": [{"name": "Kick \\u00e9", "color": "#010203"}], '
+                            b'"x": {"b": 2.5, "a": 3.0, "c": true}}')
+      == '{"stems":[{"color":"#010203","name":"Kick é"}],"version":1,"x":{"a":3,"b":2.5,"c":true}}')
+nml_stem_entries = {}
+for n in (real_nml, Path.home() / "Downloads/collection.nml"):
+    if n.is_file():
+        for file, value in re.findall(r'FILE="([^"]+)"(?:(?!</ENTRY>).)*?<STEMS STEMS="([^"]*)"',
+                                      n.read_text(encoding="utf-8"), re.S):
+            nml_stem_entries[html.unescape(file)] = html.unescape(value)
+pairs = [(p, nml_stem_entries[p.name]) for p in commercial if p.name in nml_stem_entries]
+if pairs:
+    check(f"…and gives exactly what Traktor wrote for {len(pairs)} stem files in its collections",
+          all(sf.nml_stems_for(p) == v for p, v in pairs))
+else:
+    print("  (skipped: no stem file with a Traktor entry on this machine)")
 
 print("== 2. decode: mono level, resampling does not move time ==")
 m = np.zeros((1, 44100), np.float32)

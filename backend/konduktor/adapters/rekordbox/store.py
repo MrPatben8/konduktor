@@ -37,13 +37,22 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import joinedload
 
-from ...core.adapter import InvalidCommand, LibraryNotSupported, NotFound, SaveOutcome
+from ...core.adapter import (
+    InvalidCommand,
+    LibraryNotSupported,
+    NotFound,
+    SaveOutcome,
+    Unsupported,
+)
 from ...core.edit_journal import EditJournal
 from ...core.pathmap import PathMapping
 from . import timebase
 from .cue_types import beat_loop_size, kind_for, role_and_slot
 
 log = logging.getLogger(__name__)
+
+# Where a track's analysis files live, as `contentFile.Path` spells it.
+_ANLZ_ROOT = "/PIONEER/USBANLZ/"
 
 
 @contextmanager
@@ -85,6 +94,9 @@ class RekordboxStore:
         # Grid edits buffered until save(): ANLZ files are written to disk, so
         # applying them at command time would break the save contract.
         self._pending_grids: dict[str, tuple[list, list, list]] = {}
+        # Analysis/artwork files of removed tracks, `share`-relative, deleted
+        # by save() AFTER the commit — a failed commit must leave them in place.
+        self._pending_file_removals: set[str] = set()
         self._load()
 
     # ---- open ------------------------------------------------------------
@@ -117,6 +129,7 @@ class RekordboxStore:
         self.close()
         self._journal = EditJournal()
         self._pending_grids.clear()
+        self._pending_file_removals.clear()
         self._load()
 
     def close(self) -> None:
@@ -526,6 +539,140 @@ class RekordboxStore:
         self._journal.record("playlist", "entries", playlist.Name, after=len(track_ids))
         return len(track_ids)
 
+    # ---- writes: removing tracks -------------------------------------------
+    #
+    # MEASURED, by removing a track in Rekordbox 7.2 and diffing every row and
+    # every file under `share/` (Demo Track 2, 2026-10-01): Rekordbox DELETES
+    # the rows — it does not set `rb_local_deleted` — from these tables, leaves
+    # the playlist row itself alone, and deletes the files `contentFile` lists
+    # (there, the four ANLZ files) together with their emptied folders. That
+    # track had no artwork, and an Artwork folder holds `_m`/`_s` sizes that
+    # `contentFile` does not list, so artwork is left in place: an orphaned
+    # image is harmless, a guessed deletion is not.
+    _REMOVED_WITH_TRACK = ("DjmdCue", "ContentCue", "ContentFile", "DjmdMixerParam",
+                           "DjmdSongPlaylist")
+    # Also keyed by ContentID, but empty in the measured library, so what
+    # Rekordbox does with them is unknown. A track that appears in one is
+    # refused rather than guessed at.
+    _UNMEASURED_LINKS = {
+        "djmdSongHistory": "a History list",
+        "djmdSongSampler": "the Sampler",
+        "djmdSongTagList": "the Tag List",
+        "djmdSongMyTag": "My Tag",
+        "djmdSongHotCueBanklist": "a Hot Cue Bank List",
+        "djmdSongRelatedTracks": "Related Tracks",
+        "djmdSongRequestList": "a request list",
+        "djmdActiveCensor": "an Active Censor",
+        "contentActiveCensor": "an Active Censor",
+        "djmdCloudExportSongPlaylist": "a cloud export",
+    }
+
+    def _unmeasured_links(self, ids: list[str]) -> list[tuple[str, str]]:
+        """``(track_id, where)`` for each track named by an unmeasured table."""
+        params = {f"i{n}": tid for n, tid in enumerate(ids)}
+        marks = ", ".join(f":{k}" for k in params)
+        found: list[tuple[str, str]] = []
+        for table, where in self._UNMEASURED_LINKS.items():
+            try:
+                rows = self._db.session.execute(
+                    text(f'SELECT DISTINCT ContentID FROM "{table}" '
+                         f"WHERE ContentID IN ({marks})"), params
+                ).all()
+            except Exception:  # noqa: BLE001 — table absent in this schema version
+                continue
+            found += [(str(r[0]), where) for r in rows]
+        return found
+
+    def remove_tracks(self, track_ids: list[str]) -> int:
+        """Remove tracks from the library and every playlist; return how many.
+
+        Validated as a whole first, so a refused batch changes nothing. The
+        audio files are never touched; the analysis files go at save().
+        """
+        t = self._tables
+        self.iter_content()
+        assert self._by_id is not None
+        ids = [str(tid) for tid in dict.fromkeys(track_ids) if str(tid) in self._by_id]
+        if not ids:
+            return 0
+        blocked = self._unmeasured_links(ids)
+        if blocked:
+            tid, where = blocked[0]
+            title = self._by_id[tid].Title or tid
+            more = f" (and {len(blocked) - 1} more)" if len(blocked) > 1 else ""
+            raise Unsupported(
+                f"“{title}” is in {where} in Rekordbox{more}, and Konduktor does not "
+                "yet know how Rekordbox removes a track from there. Remove it in "
+                "Rekordbox instead — nothing was changed."
+            )
+
+        playlists: set[str] = set()
+        for tid in ids:
+            for name in self._REMOVED_WITH_TRACK:
+                table = getattr(t, name)
+                for row in self._db.session.query(table).filter(table.ContentID == tid):
+                    if name == "ContentFile" and str(row.Path or "").startswith(_ANLZ_ROOT):
+                        self._pending_file_removals.add(str(row.Path))
+                    elif name == "DjmdSongPlaylist":
+                        playlists.add(str(row.PlaylistID))
+                    self._db.delete(row)
+            self._db.delete(self._by_id[tid])
+            self._pending_grids.pop(tid, None)
+            self._grid_cache.pop(tid, None)
+            self._journal.record("track", "remove", tid)
+        self._db.flush()
+        for playlist_id in playlists:
+            self._renumber(playlist_id)
+        self._content_cache = None
+        self._by_id = None
+        return len(ids)
+
+    def _renumber(self, playlist_id: str) -> None:
+        """Close the gaps removed entries left in a playlist's `TrackNo`s, as
+        `pyrekordbox.remove_from_playlist` does — one 'move' for the registry,
+        not an update per row."""
+        t = self._tables
+        moved = []
+        now = datetime.now()
+        rows = (
+            self._db.session.query(t.DjmdSongPlaylist)
+            .filter(t.DjmdSongPlaylist.PlaylistID == playlist_id)
+            .order_by(t.DjmdSongPlaylist.TrackNo)
+        )
+        with self._db.registry.disabled():
+            for n, row in enumerate(rows, start=1):
+                if row.TrackNo != n:
+                    row.TrackNo = n
+                    row.updated_at = now
+                    moved.append(row)
+        if moved:
+            self._db.registry.on_move(moved)
+
+    def _delete_removed_files(self) -> None:
+        """Delete removed tracks' analysis/artwork files, then their emptied
+        folders. Called after the commit; a file another track still lists is
+        kept, and a failure only leaves an orphan behind, so it is logged."""
+        t = self._tables
+        share = (self.path.parent / "share").resolve()
+        still_listed = {str(p) for (p,) in self._db.session.query(t.ContentFile.Path)}
+        for rel in sorted(self._pending_file_removals - still_listed):
+            parts = Path(rel.lstrip("/\\")).parts
+            path = (share / Path(*parts)).resolve()
+            # Folders below e.g. `PIONEER/USBANLZ` are the track's own; that
+            # level and above are Rekordbox's and stay even when emptied.
+            keep = (share / Path(*parts[:2])).resolve()
+            if len(parts) < 3 or keep not in path.parents:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+                folder = path.parent
+                while folder != keep and not any(folder.iterdir()):
+                    folder.rmdir()
+                    folder = folder.parent
+            except OSError as ex:
+                log.warning("Could not delete %s: %s", path, ex)
+        self._pending_file_removals.clear()
+
     # ---- save --------------------------------------------------------------
     @property
     def dirty(self) -> bool:
@@ -551,6 +698,7 @@ class RekordboxStore:
         # been committed to the database either.
         self._flush_grids()
         self._commit()
+        self._delete_removed_files()
         self._journal.clear()
         # Reads go through the same session, so nothing needs re-projecting from
         # scratch — but the grid cache is keyed by track and survives a save.

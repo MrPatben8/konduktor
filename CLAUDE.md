@@ -158,7 +158,8 @@ Two independent apps that talk over HTTP:
       only a file a scan found is streamed, so `/api/folder/tracks/audio` cannot
       read an arbitrary path. Tagged keys are deliberately dropped (every
       notation there is). The listed suffixes are the collection's
-      `tracks.audio_formats` capability.
+      `tracks.audio_formats` capability. A stem file lists as
+      `media_kind: "stem"` (its `stem` box, read at scan time).
   - `adapters/traktor/` — everything that knows NML exists.
     - `store.py` (`TraktorStore`) — the retained native model: owns the parsed
       dataclass NML, applies every edit, renders + saves. See "Write path".
@@ -327,6 +328,14 @@ Two independent apps that talk over HTTP:
       `track_cues()`. The `PQTZ` beatgrid is the same tag as Rekordbox's, and the
       collapse rule is **shared by import** rather than copied — two definitions of
       "when does a tempo change start a marker" would drift silently.
+  - **A stem file ADDED to a Traktor collection** (folder add, import, the
+    Traktor exporter — all `TraktorStore.add_entry`) gets `<STEMS>` rendered
+    from its OWN box by `stem_file.traktor_stems_json` (keys sorted, compact,
+    whole floats as integers, else 16 significant digits) — measured to give
+    Traktor's value for every local stem file and to re-render all 3,678 in the
+    big collection unchanged, though every one of those is NI's default
+    layout. Without it the entry read as plain audio (Type column, playlist
+    `TYPE="TRACK"`) while the deck, which reads the file, played stems.
   - `importer.py` also serves the folder add: `reference=True` adds each file
     where it is (nothing to copy or roll back), and every planned file the
     destination already points at (matched on `audio_path`, never the display
@@ -843,7 +852,9 @@ serialization path.** It enforces:
   the FILE (an MP3 whose entry carries `<STEMS>` has none); each served stem
   is its own MP4, bit-identical to that stream in place and the RIGHT stem;
   out-of-range / non-stem requests 404; the cache reuses, follows an edited
-  file, evicts LRU but never what it just wrote; the folder origin serves too.
+  file, evicts LRU but never what it just wrote; the folder origin serves too
+  and lists the file as a stem track; a stem file ADDED from a folder gets
+  `<STEMS>` and a `TYPE="STEM"` playlist key, the MP3 beside it neither.
 - `test_traktor_adapter.py` — the **generic layer**: one parse per open, the
   projection refreshing after every command family, cue-type translation,
   capabilities, and `set_analysed_grid` vs `replace_grid`. `test_save_fidelity`
@@ -858,7 +869,15 @@ serialization path.** It enforces:
   against SQLite). Asserts a no-op save changes zero rows; a one-field edit
   changes exactly two — the track and `agentRegistry.localUpdateCount` — with the
   counter up by one and the edited row stamped with it; edits are invisible on
-  disk until save; and playlist create/fill/rename/delete round-trip.
+  disk until save; and playlist create/fill/rename/delete round-trip. And
+  **removing a track** deletes exactly the rows Rekordbox 7 deletes (measured
+  2026-10-01 by diffing a removal made in Rekordbox itself: `djmdContent`,
+  `djmdCue`, `contentCue`, `contentFile`, `djmdMixerParam`, `djmdSongPlaylist`
+  — DELETED, never `rb_local_deleted`; the playlist row untouched, later
+  entries renumbered) plus, after the commit, its ANLZ files and their emptied
+  folder. Artwork is left (unmeasured: `_m`/`_s` sizes are not in
+  `contentFile`), and a track in a table that was empty when measured (Sampler,
+  History, Tag List, My Tag, …) is refused with nothing changed.
 - `test_onelibrary_adapter.py` — the third adapter against the same contract.
   Unlike the Rekordbox tests it needs **nothing installed and nothing plugged
   in**: it runs against `fixtures/onelibrary/`, a real rekordbox 7 export trimmed
@@ -905,10 +924,9 @@ serialization path.** It enforces:
   projection AND its playlists while its audio file is untouched, removal is
   gated on `tracks.removable`, and all three are refused while a batch
   analysis runs. `remove_tracks` is the protocol's only DESTROYING verb for
-  tracks; Traktor implements it, Rekordbox and OneLibrary refuse (a Rekordbox
-  track spans rows in several tables plus ANLZ files, and which Rekordbox
-  expects deleted together is unmeasured). The journal records it as
-  `track/remove`, NOT an edit — otherwise history would read "edited 40 tracks".
+  tracks; Traktor and Rekordbox implement it, OneLibrary (read-only) refuses.
+  The journal records it as `track/remove`, NOT an edit — otherwise history
+  would read "edited 40 tracks".
 - `test_folders.py` — the Files trees and adding loose files, through the
   routes, on generated FLACs and a temp copy of the collection: a folder lists
   only the visible audio DIRECTLY in it; the audio route refuses anything a

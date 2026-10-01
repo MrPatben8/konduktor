@@ -843,7 +843,9 @@ export default function App() {
           </p>
           <p className="text-faint">
             The audio {ids.length === 1 ? 'file stays' : 'files stay'} on disk. Nothing is written until you
-            save, and a save can be rolled back from version history.
+            save{capabilities.data?.save.history
+              ? ', and a save can be rolled back from version history.'
+              : ', and that save cannot be undone.'}
           </p>
         </>
       ),

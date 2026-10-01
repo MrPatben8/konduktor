@@ -36,6 +36,7 @@ Things that were measured and are easy to get wrong:
 from __future__ import annotations
 
 import fractions
+import json
 import struct
 import sys
 from dataclasses import dataclass
@@ -373,6 +374,43 @@ def stem_layout(path: Path | str) -> list[dict] | None:
             for i, s in enumerate(stems)]
 
 
+def _traktor_json(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float):
+        return str(int(v)) if v.is_integer() else "%.16g" % v
+    if isinstance(v, (int, str)) or v is None:
+        return json.dumps(v, ensure_ascii=False)
+    if isinstance(v, list):
+        return "[" + ",".join(_traktor_json(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return "{" + ",".join(f"{json.dumps(k, ensure_ascii=False)}:{_traktor_json(v[k])}"
+                              for k in sorted(v)) + "}"
+    raise TypeError(f"not JSON: {v!r}")
+
+
+def traktor_stems_json(box: bytes) -> str:
+    """A `stem` box payload as Traktor writes it into `<STEMS STEMS="…">`: keys
+    sorted, no spaces, a whole float as an integer, any other to 16 significant
+    digits. Measured: it reproduces Traktor's value for every stem file on this
+    machine, and re-renders each of the 3,678 `<STEMS>` in the user's big
+    collection unchanged — but all of those carry ONE layout (NI's defaults),
+    so a box with other values is the same rule extrapolated. Raises ValueError
+    on a box that is not JSON."""
+    return _traktor_json(json.loads(box))
+
+
+def nml_stems_for(path: Path | str) -> str | None:
+    """The `<STEMS>` value a library entry for this file should carry, or None
+    when it is not a playable stem file (the test `stem_layout` applies)."""
+    if stem_layout(path) is None:
+        return None
+    try:
+        return traktor_stems_json(read_stem_box(path))
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def extract_stream(path: Path | str, stream: int, fp) -> None:
     """Copy audio stream `stream` (0 = the mix, 1-4 the stems) into its own MP4,
     written to the file object `fp` — packets COPIED, never re-encoded.
@@ -404,5 +442,6 @@ def extract_stream(path: Path | str, stream: int, fp) -> None:
 __all__ = [
     "DEMUCS_ORDER", "NML_STEMS_JSON", "SR", "STEM_BOX_JSON", "STEM_NAMES", "Source",
     "StemFileError", "Written", "add_stem_box", "build", "choose_bitrate", "decode",
-    "default_encoder", "extract_stream", "is_stem_file", "read_stem_box", "stem_layout", "stem_target_name", "verify",
+    "default_encoder", "extract_stream", "is_stem_file", "nml_stems_for", "read_stem_box", "stem_layout",
+    "stem_target_name", "traktor_stems_json", "verify",
 ]

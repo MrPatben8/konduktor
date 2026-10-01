@@ -87,6 +87,7 @@ def capabilities_for(
             # rather than mapped onto something approximate.
             editable_fields=sorted(editable_fields or []),
             media_kinds=["audio"],
+            removable=True,
             artwork=False,
             artwork_note=None,
         ),

@@ -31,6 +31,7 @@ from pathlib import Path
 from .capabilities import Capabilities, SaveCapabilities, TrackCapabilities
 from .model import PlaylistNode, Track, TrackCues
 from .places import is_hidden
+from .stem_file import is_stem_file
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +60,8 @@ def _bpm(tags) -> float | None:
 
 def read_track(path: Path) -> Track:
     """Project one audio file. Never raises: an unreadable tag is an untitled track."""
-    track = Track(id=str(path), title=path.stem, filepath=str(path))
+    track = Track(id=str(path), title=path.stem, filepath=str(path),
+                  media_kind="stem" if is_stem_file(path) else "audio")
     try:
         import mutagen
 
@@ -112,7 +114,7 @@ def capabilities_for(folder: Path) -> Capabilities:
         platform="folder",
         writable=False,
         readonly_cause="not_in_library",
-        tracks=TrackCapabilities(editable_fields=[], artwork=False),
+        tracks=TrackCapabilities(editable_fields=[], artwork=False, media_kinds=["audio", "stem"]),
         save=SaveCapabilities(
             app_name="Files",
             library_label=folder.name or str(folder),

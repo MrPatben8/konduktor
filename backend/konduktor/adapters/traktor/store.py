@@ -51,7 +51,7 @@ from ...core.edit_journal import EditJournal
 from ...core.pathmap import common_dir_prefix
 from ...core.pathmap import PathMapping
 from ...core.relocate import PathGroup
-from ...core.stem_file import NML_STEMS_JSON
+from ...core.stem_file import NML_STEMS_JSON, nml_stems_for
 from ...schemas import PlaylistNode
 from . import beatgrid, timebase
 from .locations import os_path_to_location, resolve_path
@@ -429,7 +429,14 @@ class TraktorStore:
         and ``loudness``. Both are outputs of Traktor's own analysis and cannot
         be computed here; Traktor re-analyses a track that has none. Writing a
         plausible-looking fingerprint would be inventing data.
+
+        A stem FILE gets ``<STEMS>``, rendered from its own ``stem`` box as
+        Traktor renders it: that element is what makes the entry a stem track
+        (its playlist keys ``TYPE="STEM"``, the Type column), and without it a
+        stem file added here read as plain audio.
         """
+        # Read before the lock: it opens the file.
+        stems = nml_stems_for(audio_path)
         with self._lock:
             volume, dir_, file = os_path_to_location(Path(audio_path))
             key = f"{volume}{dir_}{file}"
@@ -473,6 +480,7 @@ class TraktorStore:
                 # `replace_grid` overwrites it from the markers when they land.
                 tempo=Tempotype(bpm=float(bpm)) if bpm else None,
                 cue_v2=[],
+                stems=Stemstype(stems=stems) if stems else None,
             )
             self._nml.collection.entry.append(entry)
             self._entry_by_key[key] = entry

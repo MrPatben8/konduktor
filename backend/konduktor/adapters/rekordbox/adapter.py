@@ -421,10 +421,12 @@ class RekordboxAdapter:
         self._refuse("Adding tracks")
 
     def remove_tracks(self, track_ids: list[str]) -> int:
-        # Same shape as adding: a track is a djmdContent row plus its cues,
-        # playlist rows, contentCue/contentFile mirrors and ANLZ files, and
-        # which of those Rekordbox expects to be deleted together is unmeasured.
-        self._refuse("Removing tracks")
+        # What goes with a track was measured in Rekordbox 7 — see the store.
+        self._require_writable("Removing tracks")
+        n = self._store.remove_tracks(track_ids)
+        if n:
+            self._rebuild()
+        return n
 
     def apply_stem_swaps(self, swaps, *, add_to_playlist=None):
         # Rekordbox does not play native-instruments stem files as stems.
