@@ -197,6 +197,20 @@ Two independent apps that talk over HTTP:
       bank. Point cues AND loops both write; `cue_types` owns the translation.
       **Memory cues stay preserved-but-uneditable** (Rekordbox is the only
       platform with them — the two-platform promotion rule).
+      **Hot cue colour is writable** (`set_cue_color`, `PATCH
+      /api/tracks/cue/color`) from `palette.SWATCHES` — the 15 MEASURED swatches
+      of rekordbox's 16 (the teal-green is left out, not guessed); a pick must
+      be an exact swatch (`swatch_code`), unlike the exporter's nearest-hue
+      `code_for`. Not a breach of the promotion rule: Rekordbox, OneLibrary and
+      Serato all colour cues — Traktor is the odd one out, by type only, so it
+      reports `color="none"`. **The colour belongs to the PAD**: `set_cue` with
+      no colour keeps the slot's existing code, so rename, type change and an
+      Auto Hotcues Replace keep it; only Delete or "Default" clear it. Both
+      columns go through `RekordboxStore._apply_color` (coloured: code +
+      `Color=-1`; uncoloured loop: `255/0`; uncoloured cue: `-1/NULL`). An
+      unknown code projects as no colour but stays on the row. Uncoloured cues
+      still DRAW in Konduktor's type colours, not rekordbox's green/orange
+      defaults (decided 2026-10-01: those defaults are unmeasured).
     - **Saving warns but does not block when Rekordbox is running.**
       `pyrekordbox.commit()` refuses outright, and its check is process-wide
       rather than per-file, so `RekordboxStore._commit()` suppresses that veto
@@ -492,8 +506,9 @@ Two independent apps that talk over HTTP:
       loop BEFORE seeking: `PlaybackEngine.seek` honours the loop in force, so
       seeking first wraps the playhead back into the old loop.
     - **Hotcue edits live on the pad's right-click menu** (type as one-click
-      choices, Rename…, Delete); there is no standalone type dropdown or delete
-      button. Rename re-sets the slot with its own start/type/length plus the
+      choices, a colour swatch grid + Default where `cues.color` is `palette` —
+      `ContextMenu`'s `swatches` item, Rename…, Delete); there is no standalone
+      type dropdown or delete button. Rename re-sets the slot with its own start/type/length plus the
       new name, since `set_cue` replaces a slot. A non-editable cue gets the
       same menu disabled, not no menu.
     Prep libs live in `src/lib/`: `playbackEngine.ts` (Web Audio, seamless loops),
@@ -516,11 +531,12 @@ Two independent apps that talk over HTTP:
     listening, and shows a "Read-only" badge).
   - Capability-gated today: hotcue bank size (`HotcueBar`, the auto-cue guard and
   the digit shortcuts all read `cues.hotcue_slots`), the cue-type dropdown
-  (`cues.types`), the rating scale (`tracks.rating_max`), the grid Lock button
-  (`grid.lockable`). Per-node playlist flags (`can_rename`, `can_delete`,
+  (`cues.types`), the cue colour swatches (`cues.color === 'palette'` +
+  `cues.palette`; a `free` platform gets no picker yet), the rating scale
+  (`tracks.rating_max`), the grid Lock button (`grid.lockable`). Per-node playlist flags (`can_rename`, `can_delete`,
   `can_add_tracks`) gate the sidebar and the context menu's "Add to" — each on its OWN flag,
   since a platform may allow renaming but not deleting. Carried but deliberately unused until a second adapter
-  exists: `slot_labels: 'letter'`, `palette`, `loops: 'separate_bank'`, and
+  exists: `slot_labels: 'letter'`, `loops: 'separate_bank'`, and
   memory-cue *editing* (one-platform features stay preserved-but-uneditable).
 - `lib/trackColumns.tsx` — single source of truth for the library table's
     columns (defs, default widths/visibility/order, the Columns-menu list, the

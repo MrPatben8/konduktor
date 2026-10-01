@@ -819,6 +819,9 @@ export const api = {
     }),
   setCueType: (trackId: string, slot: number, type: CueType) =>
     send<TrackCues>('PATCH', '/api/tracks/cue', { track_id: trackId, slot, type }),
+  /** Recolour a cue from `capabilities.cues.palette`; null = uncoloured. */
+  setCueColor: (trackId: string, slot: number, color: string | null) =>
+    send<TrackCues>('PATCH', '/api/tracks/cue/color', { track_id: trackId, slot, color }),
   deleteCue: (trackId: string, slot: number) =>
     send<TrackCues>(
       'DELETE',

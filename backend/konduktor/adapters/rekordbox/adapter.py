@@ -21,13 +21,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ...core.adapter import Unsupported
+from ...core.adapter import InvalidCommand, Unsupported
 from ...core.capabilities import Capabilities
 from ...core.model import GridMarker, PlaylistNode, Track, TrackCues
 from ...core.pathmap import PathMapping, common_dir_prefix
 from ...core.query import TrackIndex
 from . import capabilities as caps
-from . import projection
+from . import palette, projection
 from .store import RekordboxStore
 
 
@@ -295,6 +295,18 @@ class RekordboxAdapter:
         self._require_writable("Editing cues")
         self._check_cue_type(cue_type)
         self._store.set_cue_type(track_id, slot, cue_type)
+        return self._refresh_cues(track_id)
+
+    def set_cue_color(self, track_id: str, slot: int, color: str | None) -> TrackCues:
+        self._require_writable("Editing cues")
+        code = None
+        if color is not None:
+            code = palette.swatch_code(color)
+            if code is None:
+                raise InvalidCommand(
+                    f"{color!r} is not one of Rekordbox's hot cue colours"
+                )
+        self._store.set_cue_color(track_id, slot, code)
         return self._refresh_cues(track_id)
 
     def delete_cue(self, track_id: str, slot: int) -> TrackCues:

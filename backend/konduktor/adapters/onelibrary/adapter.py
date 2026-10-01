@@ -287,6 +287,9 @@ class OneLibraryAdapter:
     def set_cue_type(self, track_id: str, slot: int, cue_type: str) -> TrackCues:
         self._refuse("Editing cues")
 
+    def set_cue_color(self, track_id: str, slot: int, color: str | None) -> TrackCues:
+        self._refuse("Editing cues")
+
     def delete_cue(self, track_id: str, slot: int) -> TrackCues:
         self._refuse("Deleting cues")
 

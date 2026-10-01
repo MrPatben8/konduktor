@@ -88,6 +88,7 @@ from .schemas import (
     SourceCandidate,
     SourceStatus,
     SetCue,
+    SetCueColor,
     SetCueType,
     SetGridLock,
     Stats,
@@ -1149,6 +1150,12 @@ def auto_hotcues_batch(body: AutoHotcuesBatchRequest) -> JobStatus:
 def edit_cue_type(body: SetCueType) -> TrackCues:
     """Change the type of an existing cue (keeps its position)."""
     return require_adapter().set_cue_type(body.track_id, body.slot, body.type)
+
+
+@app.patch("/api/tracks/cue/color", response_model=TrackCues)
+def edit_cue_color(body: SetCueColor) -> TrackCues:
+    """Recolour an existing cue from the platform's palette (None = uncoloured)."""
+    return require_adapter().set_cue_color(body.track_id, body.slot, body.color)
 
 
 @app.delete("/api/tracks/cue", response_model=TrackCues)

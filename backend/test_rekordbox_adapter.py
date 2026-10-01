@@ -14,6 +14,7 @@ import shutil
 import sys
 import tempfile
 import warnings
+from types import SimpleNamespace
 from pathlib import Path
 
 warnings.filterwarnings("ignore")
@@ -31,6 +32,7 @@ from konduktor.adapters.rekordbox.cue_types import (  # noqa: E402
     kind_for,
     role_and_slot,
 )
+from konduktor.adapters.rekordbox import palette  # noqa: E402
 from konduktor.adapters.rekordbox.driver import RekordboxDriver  # noqa: E402
 from konduktor.adapters.rekordbox.projection import parse_key  # noqa: E402
 from konduktor.core import registry  # noqa: E402
@@ -87,6 +89,21 @@ check("pad H is Kind 9", kind_for("hotcue", 7) == 9)
 # Verified against two real loops: 1 beat @125 BPM and 4 beats @120 BPM.
 check("BeatLoopSize encodes (beats << 16) | 1", beat_loop_size(4) == 262145 and beat_loop_size(1) == 65537)
 check("and decodes back", beats_in_loop(262145) == 4 and beats_in_loop(None) is None)
+
+print("== hot cue colour palette ==")
+# rekordbox has 16; the teal-green between 0x0E and 0x16 was never measured, and
+# is left out rather than offered with a guessed RGB.
+check("15 pickable swatches, without the observed-only red",
+      len(palette.SWATCHES) == 15 and 0x2B not in palette.SWATCHES)
+check("a code projects as its measured RGB", palette.hex_for(0x16) == "#1AFF00")
+check("uncoloured (None, or a loop's 0) projects as no colour",
+      palette.hex_for(None) is None and palette.hex_for(0) is None)
+# The unmeasured teal-green is probably 0x12: claim nothing rather than guess.
+check("an unknown code projects as no colour", palette.hex_for(0x12) is None)
+check("a swatch maps back to its code, case-insensitively",
+      all(palette.swatch_code(palette.hex_for(c).lower()) == c for c in palette.SWATCHES))
+# A user's pick must BE a swatch; nearest-hue is the exporter's rule, not an edit's.
+check("a non-palette colour is not a swatch", palette.swatch_code("#123456") is None)
 
 print("== key parsing (Rekordbox names keys musically, not in Camelot) ==")
 check("Fm -> 4A", parse_key("Fm") == (4, "minor"))
@@ -303,6 +320,9 @@ with tempfile.TemporaryDirectory() as d:
     # library, and the opposite of what the original plan assumed.
     check("a loop is a cue type, not a separate bank", caps.cues.loops == "cue_type")
     check("cue colour is a palette, not free RGB", caps.cues.color == "palette")
+    check("and the palette is the measured swatches",
+          caps.cues.palette == [palette.hex_for(c) for c in palette.SWATCHES],
+          str(caps.cues.palette))
     check("the editable field set is advertised", bool(caps.tracks.editable_fields))
     # Rekordbox has no column for these; Traktor does. Mapping them onto its
     # Composer field would silently write the wrong thing.
@@ -427,6 +447,71 @@ with tempfile.TemporaryDirectory() as d:
     check("a negative position is rejected",
           _raises(lambda: adapter.set_cue(cue_track.id, slot=2, start_sec=-1.0,
                                           cue_type="cue"), InvalidCommand))
+
+    print("== hot cue colours ==")
+    # Slot 0 holds a point cue at 1.0 s; put a loop in slot 7.
+    adapter.set_cue(cue_track.id, slot=7, start_sec=60.0, cue_type="loop", length_sec=1.92)
+    red, green = palette.hex_for(0x2A), palette.hex_for(0x16)
+
+    def slot_cue(tc, slot):
+        return next((c for c in tc.cues if c.slot == slot), None)
+
+    def mirror_of(slot):
+        import json
+        store = adapter._store
+        t = store._tables
+        row = store._db.session.query(t.ContentCue).filter(
+            t.ContentCue.ContentID == str(cue_track.id)).first()
+        kind = kind_for("hotcue", slot)
+        return next((r for r in json.loads(row.Cues) if r.get("Kind") == kind), None)
+
+    before = slot_cue(adapter.track_cues(cue_track.id), 0)
+    tc = adapter.set_cue_color(cue_track.id, 0, red.lower())
+    c0 = slot_cue(tc, 0)
+    check("a cue takes a palette colour", c0 is not None and c0.color == red, str(c0 and c0.color))
+    check("recolouring does not move it", c0 is not None and before is not None
+          and c0.start == before.start, f"{before and before.start} -> {c0 and c0.start}")
+    raw = adapter._store._cue_row(cue_track.id, 0)
+    check("stored as the palette code with Color -1",
+          raw.ColorTableIndex == 0x2A and raw.Color == -1, f"{raw.ColorTableIndex}/{raw.Color}")
+    m = mirror_of(0)
+    check("the contentCue mirror carries the colour",
+          m is not None and m.get("ColorTableIndex") == 0x2A and m.get("Color") == -1, str(m))
+    chip = next((h for h in adapter.track(cue_track.id).hotcues if h.slot == 0), None)
+    check("the table's hotcue dot shows it", chip is not None and chip.color == red,
+          str(chip))
+    # The colour belongs to the PAD: a rename, a move or a type change keeps it.
+    tc = adapter.set_cue(cue_track.id, slot=0, start_sec=3.0, cue_type="cue", name="Renamed")
+    check("re-setting the slot keeps its colour", slot_cue(tc, 0).color == red,
+          str(slot_cue(tc, 0).color))
+    tc = adapter.set_cue_color(cue_track.id, 7, green)
+    check("a loop takes a colour too", slot_cue(tc, 7).color == green)
+    raw = adapter._store._cue_row(cue_track.id, 7)
+    check("a coloured loop stores the code, not the loop's 255/0",
+          raw.ColorTableIndex == 0x16 and raw.Color == -1, f"{raw.ColorTableIndex}/{raw.Color}")
+    tc = adapter.set_cue_type(cue_track.id, 7, "cue")
+    check("a type change keeps the colour", slot_cue(tc, 7).color == green)
+    tc = adapter.place_cues(cue_track.id, [SimpleNamespace(slot=7, start=70.0, type="cue",
+                                                          length=0.0, name="Drop")],
+                            overwrite=True)
+    check("an Auto Hotcues Replace keeps the slot's colour", slot_cue(tc, 7).color == green)
+    tc = adapter.set_cue_color(cue_track.id, 0, None)
+    raw = adapter._store._cue_row(cue_track.id, 0)
+    check("Default makes it uncoloured again",
+          slot_cue(tc, 0).color is None and raw.ColorTableIndex is None and raw.Color == -1,
+          f"{raw.ColorTableIndex}/{raw.Color}")
+    adapter.set_cue(cue_track.id, slot=7, start_sec=60.0, cue_type="loop", length_sec=1.92)
+    adapter.set_cue_color(cue_track.id, 7, None)
+    raw = adapter._store._cue_row(cue_track.id, 7)
+    check("an uncoloured loop is back to Rekordbox's own 255/0",
+          raw.ColorTableIndex == 0 and raw.Color == 255, f"{raw.ColorTableIndex}/{raw.Color}")
+    adapter.delete_cue(cue_track.id, 0)
+    tc = adapter.set_cue(cue_track.id, slot=0, start_sec=1.0, cue_type="cue")
+    check("a new cue in an emptied slot starts uncoloured", slot_cue(tc, 0).color is None)
+    check("a colour outside the palette is refused",
+          _raises(lambda: adapter.set_cue_color(cue_track.id, 0, "#123456"), InvalidCommand))
+    check("recolouring an empty slot is NotFound",
+          _raises(lambda: adapter.set_cue_color(cue_track.id, 6, red), NotFound))
 
     print("== beatgrid edits ==")
     grid_track = next((t for t in adapter.tracks if t.bpm), None)

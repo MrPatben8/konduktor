@@ -86,6 +86,8 @@ with tempfile.TemporaryDirectory() as d:
     check("8 hotcue slots", caps.cues.hotcue_slots == 8)
     check("no memory cues on Traktor", caps.cues.memory_cues is False)
     check("loops are a cue type, not a separate bank", caps.cues.loops == "cue_type")
+    # Traktor colours a cue by its type, so no colour picker may be offered.
+    check("no cue colours to pick", caps.cues.color == "none" and caps.cues.palette == [])
     check("flexible beatgrids supported", caps.grid.flexible is True)
     check("grid is lockable", caps.grid.lockable is True)
     check("save facts present for the UI to compose copy from",
@@ -127,6 +129,11 @@ with tempfile.TemporaryDirectory() as d:
         check("memory cues are refused on Traktor", False, "no error raised")
     except Unsupported:
         check("memory cues are refused on Traktor", True)
+    try:
+        adapter.set_cue_color(tid2, free, "#FF0000")
+        check("cue colour is refused on Traktor", False, "no error raised")
+    except Unsupported:
+        check("cue colour is refused on Traktor", True)
 
     # grid
     grid_before = len(adapter.track_cues(tid2).grid_markers)

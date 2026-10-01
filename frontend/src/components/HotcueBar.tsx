@@ -12,7 +12,7 @@ interface Props {
   selectedSlot: number | null
   onSlotPress: (slot: number) => void
   onSlotRelease: (slot: number) => void
-  /** Right-click on a pad: the deck opens its Type / Rename / Delete menu. */
+  /** Right-click on a pad: the deck opens its Type / Colour / Rename / Delete menu. */
   onSlotMenu: (slot: number, x: number, y: number) => void
   /** The pad whose name is being edited in place, if any. */
   renamingSlot: number | null

@@ -91,3 +91,28 @@ def code_for(color: str | None) -> tuple[int, tuple[int, int, int]]:
         return min(d, 1 - d)
     best = min((c for c in PALETTE if c != 0x2B), key=hue_gap)
     return best, PALETTE[best]
+
+
+#: The swatches a user can pick, in rekordbox's own order — what
+#: `capabilities.cues.palette` offers. 15 of rekordbox's 16: the unmeasured
+#: teal-green is left out rather than offered with a guessed RGB, and 0x2B is
+#: not a swatch at all (see the module note).
+SWATCHES: list[int] = [code for code in PALETTE if code != 0x2B]
+
+
+def hex_for(code: int | None) -> str | None:
+    """`#RRGGBB` for a stored palette code; None for uncoloured or unknown.
+
+    An unknown code (the unmeasured teal-green) projects as no colour rather
+    than a guessed one; it is still kept on the row, since editing a cue's
+    position, type or name never rewrites its colour.
+    """
+    rgb = PALETTE.get(code) if code else None
+    return None if rgb is None else f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+
+
+def swatch_code(color: str) -> int | None:
+    """The code of an EXACT palette colour, else None — for a user's pick, which
+    must be a swatch, unlike `code_for`'s nearest-hue mapping for exports."""
+    rgb = _parse(color)
+    return next((code for code, value in PALETTE.items() if value == rgb), None)

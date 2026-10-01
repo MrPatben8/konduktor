@@ -320,6 +320,7 @@ COMMANDS = [
     ("set_playlist_entries", lambda: adapter.set_playlist_entries(node.id, [])),
     ("set_cue", lambda: adapter.set_cue(one.id, slot=0, start_sec=1.0, cue_type="cue")),
     ("set_cue_type", lambda: adapter.set_cue_type(one.id, 0, "loop")),
+    ("set_cue_color", lambda: adapter.set_cue_color(one.id, 0, "#FF0000")),
     ("delete_cue", lambda: adapter.delete_cue(one.id, 0)),
     ("place_cues", lambda: adapter.place_cues(one.id, [])),
     ("add_grid_marker", lambda: adapter.add_grid_marker(one.id, 1.0)),

@@ -287,6 +287,10 @@ class TraktorAdapter:
             self._store.set_hotcue_type(track_id, slot, self._native_cue_type(cue_type))
         return self._refresh(track_id)
 
+    def set_cue_color(self, track_id: str, slot: int, color: str | None) -> TrackCues:
+        # Traktor colours a cue by its type (capabilities.cues.color = "none").
+        raise Unsupported("Traktor colours cues by their type")
+
     def delete_cue(self, track_id: str, slot: int) -> TrackCues:
         with _translate():
             self._store.delete_hotcue(track_id, slot)

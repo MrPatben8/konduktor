@@ -866,6 +866,19 @@ export function PrepStrip({
     }
   }
 
+  // Only a fixed palette is offered: a platform with free RGB would need a
+  // picker of its own, and none that stores free RGB is writable yet.
+  const cuePalette = caps.cues.color === 'palette' ? caps.cues.palette : []
+  const setSlotColor = async (slot: number, color: string | null) => {
+    if (!track) return
+    if (refuseCueEdit()) return
+    try {
+      applyCueEdit(await api.setCueColor(track.id, slot, color))
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+
   const deleteHotcueSlot = async (slot: number) => {
     const existing = hotcueAt(slot)
     if (!track || !existing) return // nothing to remove in an empty slot
@@ -1125,7 +1138,7 @@ export function PrepStrip({
     : ''
 
   // The pad's right-click menu: its type (as one-click choices, the current one
-  // ticked), Rename, Delete. A cue the adapter will not edit gets the same menu
+  // ticked), its colour where the platform has a palette, Rename, Delete. A cue the adapter will not edit gets the same menu
   // disabled, so the reason is visible instead of the menu silently not opening.
   const padMenuItems = (slot: number): MenuItem[] => {
     const cue = hotcueAt(slot)
@@ -1153,6 +1166,16 @@ export function PrepStrip({
       }
     } else {
       items.push({ heading: `Hotcue ${slotLabel(slot)}` })
+    }
+    if (cuePalette.length > 0) {
+      items.push({ separator: true })
+      items.push({ heading: 'Colour' })
+      items.push({
+        swatches: cuePalette,
+        selected: cue.color,
+        disabled: locked,
+        onPick: (color) => color !== cue.color && void setSlotColor(slot, color),
+      })
     }
     if (locked) items.push({ heading: 'Managed by the DJ app — not editable here' })
     items.push({ separator: true })

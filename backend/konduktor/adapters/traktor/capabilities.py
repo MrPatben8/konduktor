@@ -49,7 +49,9 @@ def capabilities_for(path: Path, editable_fields: list[str]) -> Capabilities:
             # Traktor has no memory cues — every cue occupies a bank slot.
             memory_cues=False,
             types=CUE_TYPES,
-            color="free",
+            # Traktor colours a cue by its TYPE; the only COLOR it stores is a
+            # grid marker's white companion, so there is nothing to pick.
+            color="none",
             named=True,
             # A saved loop is a cue TYPE in Traktor, not a separate bank.
             loops="cue_type",

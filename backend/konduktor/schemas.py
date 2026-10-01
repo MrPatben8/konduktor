@@ -146,6 +146,12 @@ class SetCueType(BaseModel):
     type: CueType
 
 
+class SetCueColor(BaseModel):
+    track_id: str
+    slot: int
+    color: str | None = None  # a capabilities.cues.palette entry; None = uncoloured
+
+
 class EditState(BaseModel):
     dirty: bool  # unsaved in-memory changes exist
     library: LibraryInfo

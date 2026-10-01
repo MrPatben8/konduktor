@@ -192,8 +192,9 @@ class RekordboxStore:
             raise NotFound(f"No track {track_id!r}")
         return row
 
-    def cue_kinds(self) -> dict[str, list[tuple[int | None, int | None]]]:
-        """``{track_id: [(Kind, OutMsec), ...]}`` for every live cue, in one query.
+    def cue_kinds(self) -> dict[str, list[tuple[int | None, int | None, int | None]]]:
+        """``{track_id: [(Kind, OutMsec, ColorTableIndex), ...]}`` for every live
+        cue, in one query.
 
         Just enough per cue for the library table's count and hotcue dots,
         without a per-track round trip. What a ``Kind`` means is decided in the
@@ -202,12 +203,13 @@ class RekordboxStore:
         """
         t = self._tables
         rows = self._db.session.execute(
-            select(t.DjmdCue.ContentID, t.DjmdCue.Kind, t.DjmdCue.OutMsec)
+            select(t.DjmdCue.ContentID, t.DjmdCue.Kind, t.DjmdCue.OutMsec,
+                   t.DjmdCue.ColorTableIndex)
             .where(t.DjmdCue.rb_local_deleted == 0)
         ).all()
-        out: dict[str, list[tuple[int | None, int | None]]] = {}
-        for content_id, kind, out_msec in rows:
-            out.setdefault(str(content_id), []).append((kind, out_msec))
+        out: dict[str, list[tuple[int | None, int | None, int | None]]] = {}
+        for content_id, kind, out_msec, color_code in rows:
+            out.setdefault(str(content_id), []).append((kind, out_msec, color_code))
         return out
 
     def cues(self, track_id: str) -> list:
@@ -651,13 +653,17 @@ class RekordboxStore:
     ) -> None:
         """Create or replace the cue in `slot`. A loop is a cue with a length.
 
-        `color_code` is a rekordbox palette code (`palette.PALETTE`); None or 0
-        writes the uncoloured convention, which is what every edit through the
-        adapter does — only the exporter passes a colour.
+        `color_code` is a rekordbox palette code (`palette.PALETTE`). None KEEPS
+        the colour of the cue already in the slot — the colour belongs to the
+        pad, so a rename, a type change or an Auto Hotcues Replace leaves it as
+        the user set it — and a new cue is uncoloured. Only `set_cue_color`
+        clears one.
         """
         if int(slot) < 0:
             raise InvalidCommand(f"Hot cue slot cannot be negative, got {slot}")
         existing = self._cue_row(track_id, slot)
+        if color_code is None and existing is not None:
+            color_code = existing.ColorTableIndex or None
         self._write_cue(
             track_id, existing, kind=kind_for("hotcue", slot), start_sec=start_sec,
             cue_type=cue_type, length_sec=length_sec, name=name, color_code=color_code,
@@ -730,25 +736,43 @@ class RekordboxStore:
             cue.BeatLoopSize = beat_loop_size(beats) if beats else None
             cue.ActiveLoop = 0
             cue.CueMicrosec = 0
-            cue.Color = 255
-            cue.ColorTableIndex = 0
         else:
             cue.BeatLoopSize = None
             cue.ActiveLoop = None
             cue.CueMicrosec = None
-            cue.Color = -1
-            cue.ColorTableIndex = None
-        if color_code:
-            # A palette-coloured cue, as the real library stores one: the code in
-            # ColorTableIndex (22 = green), Color -1. How rekordbox stores a
-            # COLOURED LOOP is not in the reference library; the same column is
-            # assumed and is what the smoke test checks.
-            cue.ColorTableIndex = int(color_code)
-            cue.Color = -1
+        self._apply_color(cue, color_code, is_loop)
         cue.Comment = name or None
 
         self._db.flush()
         self._sync_content_cue(track_id)
+
+    @staticmethod
+    def _apply_color(cue, color_code: int | None, is_loop: bool) -> None:
+        """A row's two colour columns — the one definition of both conventions."""
+        if color_code:
+            # A palette-coloured cue, as the real library stores one: the code in
+            # ColorTableIndex (22 = green), Color -1. Coloured loops store the
+            # same; verified in Rekordbox 7 through the master.db export.
+            cue.ColorTableIndex = int(color_code)
+            cue.Color = -1
+        elif is_loop:
+            # What Rekordbox writes on the loops and auto-cues it creates.
+            cue.Color = 255
+            cue.ColorTableIndex = 0
+        else:
+            cue.Color = -1
+            cue.ColorTableIndex = None
+
+    def set_cue_color(self, track_id: str, slot: int, color_code: int | None) -> None:
+        """Recolour the cue in `slot`; None makes it uncoloured. Touches only the
+        colour columns, so the position does not take a time-base round trip."""
+        cue = self._cue_row(track_id, slot)
+        if cue is None:
+            raise NotFound(f"No cue in slot {slot}")
+        self._apply_color(cue, color_code, (cue.OutMsec or 0) > 0)
+        self._db.flush()
+        self._sync_content_cue(track_id)
+        self._journal.record("cue", "modify", track_id, f"slot:{slot}")
 
     def set_cue_type(self, track_id: str, slot: int, cue_type: str) -> None:
         cue = self._cue_row(track_id, slot)

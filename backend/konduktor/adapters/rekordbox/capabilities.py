@@ -30,6 +30,7 @@ from ...core.capabilities import (
     SaveCapabilities,
     TrackCapabilities,
 )
+from . import palette
 from .cue_types import WRITABLE_CUE_TYPES
 
 # Rekordbox's addressable hot cue bank. The pads are labelled A-H; the stored
@@ -68,8 +69,10 @@ def capabilities_for(
             max_memory_cues=None,  # unlimited
             # Both cue types write; Rekordbox has no fade/load types.
             types=WRITABLE_CUE_TYPES,
+            # A hot cue's colour is one of rekordbox's swatches (the 15 that
+            # were measured, see `palette`), offered in rekordbox's own order.
             color="palette",
-            palette=[],  # TODO milestone 2: the built-in cue colour table
+            palette=[palette.hex_for(code) for code in palette.SWATCHES],
             named=True,  # djmdCue.Comment
             loops="cue_type",
         ),

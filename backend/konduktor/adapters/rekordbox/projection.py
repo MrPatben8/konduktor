@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 
 from ...core.model import CuePoint, GridMarker, HotcueChip, Track, TrackCues
-from . import beatgrid, timebase
+from . import beatgrid, palette, timebase
 from .cue_types import cue_type, role_and_slot
 
 # Rekordbox names keys musically ("Abm", "F", "Ebm") rather than in Camelot or
@@ -100,7 +100,7 @@ def _name_of(related) -> str | None:
 def to_track(row, cue_kinds=()) -> Track:
     """Project one ``DjmdContent`` row.
 
-    `cue_kinds` is this track's ``(Kind, OutMsec)`` pairs from the store's single
+    `cue_kinds` is this track's ``(Kind, OutMsec, ColorTableIndex)`` from the store's single
     query — passed in rather than read off the row, which would be a per-track
     round trip. "Is this a hot cue, and on which pad?" is `role_and_slot`, the
     same definition `to_track_cues` uses, so the table's count and dots agree
@@ -118,12 +118,11 @@ def to_track(row, cue_kinds=()) -> Track:
     BPM are precisely the 22 with no grid.
     """
     chips: list[HotcueChip] = []
-    for kind, out_msec in cue_kinds:
+    for kind, out_msec, color_code in cue_kinds:
         role, slot = role_and_slot(kind)
         if role == "hotcue" and slot is not None:
-            # Rekordbox's colour is a palette index nobody has decoded yet (see
-            # `_cue_color`), so no colour is claimed and the UI uses the type's.
-            chips.append(HotcueChip(slot=slot, type=cue_type(out_msec), color=None))
+            chips.append(HotcueChip(slot=slot, type=cue_type(out_msec),
+                                    color=palette.hex_for(color_code)))
     chips.sort(key=lambda chip: chip.slot)
     key_name = _name_of(getattr(row, "Key", None))
     wheel, mode = parse_key(key_name)
@@ -210,11 +209,6 @@ def to_track_cues(cue_rows: list, grid: tuple | None, time_offset: float = 0.0) 
 
 
 def _cue_color(row) -> str | None:
-    """Rekordbox stores a PALETTE INDEX, not an RGB value.
-
-    The generic model carries ``#RRGGBB``, and the built-in palette that index
-    refers to is not yet known, so no colour is claimed rather than a wrong one
-    being invented. `capabilities.cues.color` already says "palette", so the UI
-    knows not to offer a free colour picker.
-    """
-    return None
+    """Rekordbox stores a PALETTE CODE (`ColorTableIndex`), not an RGB value;
+    `Color` is -1 on a coloured cue. A loop's uncoloured convention is code 0."""
+    return palette.hex_for(getattr(row, "ColorTableIndex", None))
