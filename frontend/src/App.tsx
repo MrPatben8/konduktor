@@ -1461,6 +1461,8 @@ export default function App() {
                 done: batchJobStatus.data?.done ?? 0,
                 total: batchJobStatus.data?.total ?? 0,
                 detail: batchJobStatus.data?.message,
+                fraction: batchJobStatus.data?.fraction,
+                status: batchJobStatus.data?.status,
                 cancelling: batchCancelling,
                 onCancel: () => {
                   setBatchCancelling(true)

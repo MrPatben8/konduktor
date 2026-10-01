@@ -53,6 +53,13 @@ class Job:
     #: library is written — so the UI can word them. Empty = unspecified.
     unit: str = ""
     message: str = ""
+    #: How far the CURRENT unit of work has got, 0..1 — so the overall bar can
+    #: move within a long item: at 99 % of the first of two tracks it reads
+    #: ~50 %, not 0. Reset whenever `done` advances.
+    fraction: float = 0.0
+    #: What the current item is doing ("separating 41 %"), shown beside its name
+    #: and never truncated in its place. Reset whenever `done` advances.
+    status: str = ""
     result: Any = None
     error: str | None = None
     started_at: float = field(default_factory=time.time)
@@ -75,6 +82,8 @@ class Job:
             "done": self.done,
             "unit": self.unit,
             "message": self.message,
+            "fraction": self.fraction,
+            "status": self.status,
             "result": self.result,
             "error": self.error,
             "started_at": self.started_at,
@@ -94,11 +103,19 @@ class JobHandle:
         self._job = job
 
     def progress(self, done: int | None = None, total: int | None = None,
-                 message: str | None = None, unit: str | None = None) -> None:
+                 message: str | None = None, unit: str | None = None,
+                 fraction: float | None = None, status: str | None = None) -> None:
         if unit is not None:
             self._job.unit = unit
         if done is not None:
+            if done != self._job.done:  # a new item: its progress starts over
+                self._job.fraction = 0.0
+                self._job.status = ""
             self._job.done = done
+        if fraction is not None:
+            self._job.fraction = max(0.0, min(1.0, fraction))
+        if status is not None:
+            self._job.status = status
         if total is not None:
             self._job.total = total
         if message is not None:

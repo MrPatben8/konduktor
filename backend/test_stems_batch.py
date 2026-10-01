@@ -202,7 +202,7 @@ with TestClient(main.app) as c:
     os.environ["FAKE_DELAY"] = "0.15"
     jid = c.post("/api/tracks/stems/convert", json={"track_ids": ids, "mode": "replace"}).json()["id"]
     end = time.time() + 30
-    while time.time() < end and "separating" not in c.get(f"/api/jobs/{jid}").json()["message"]:
+    while time.time() < end and "separating" not in c.get(f"/api/jobs/{jid}").json()["status"]:
         time.sleep(0.05)
     time.sleep(1.8)  # into the second track
     c.post(f"/api/jobs/{jid}/cancel")

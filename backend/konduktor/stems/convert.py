@@ -39,6 +39,13 @@ _BYTES_PER_SECOND = {256_000: 5 * 256_000 / 8 * 1.03, 320_000: 5 * 320_000 / 8 *
 _WORK_BYTES_PER_SECOND = 5 * 2 * 4 * sf.SR
 
 
+#: Shares of ONE track's conversion time, for the status bar's within-track
+#: progress (measured on the M3 Pro: decode ~1 s, separate ~50 s, encode +
+#: verify ~4 s for a 4-minute track).
+_DECODE_SHARE = 0.03
+_SEPARATE_SHARE = 0.90
+
+
 class ConvertError(Exception):
     """User-facing; refuses the whole batch."""
 
@@ -87,10 +94,13 @@ class Plan:
 
 
 def _title(track) -> str:
+    """How a track is named in progress, skip lists and reports: the track's
+    name FIRST — it is what tells one track from another when the end is cut
+    off in the status bar."""
     if track is None:
         return "?"
     if track.artist and track.title:
-        return f"{track.artist} - {track.title}"
+        return f"{track.title} - {track.artist}"
     return track.title or Path(track.filepath or "").name or track.id
 
 
@@ -229,7 +239,7 @@ def run(handle, adapter, planned: Plan, opts: Options, pending: Pending, *,
         try:
             for i, item in enumerate(items):
                 checkpoint()
-                handle.progress(done=i, message=item.title)
+                handle.progress(done=i, message=item.title, fraction=0.0, status="")
                 partial = partial_name(item.target)
                 if item.reuse is not None:
                     written = sf.Written(path=partial, **{k: item.reuse["written"][k] for k in ("bit_rate", "duration", "size")},
@@ -241,21 +251,29 @@ def run(handle, adapter, planned: Plan, opts: Options, pending: Pending, *,
                     finished.append((item, pitem, written))
                     continue
                 if engine is None:
-                    handle.progress(message="Starting the stem engine…")
+                    handle.progress(status="starting…")
                     engine = stack.enter_context(EngineProcess(mgr.executable(), mgr.weights_dir(), device=opts.device))
                     stack.enter_context(keep_awake(engine.proc.pid))
                 pitem = pending.add({"track_id": item.track_id, "mode": opts.collection, "source": str(item.source),
                                      "stem": str(item.target), "state": "converting", "facts": source_facts(item.source)})
                 item.target.parent.mkdir(parents=True, exist_ok=True)
 
-                def on_progress(f: float, i=i, item=item) -> None:
-                    handle.progress(message=f"{item.title} — separating {f * 100:.0f} %")
+                # Of a TRACK's time, separation is nearly all (~90 % on MPS);
+                # decoding before it and encoding + verifying after share the rest.
+                def on_progress(f: float) -> None:
+                    frac = _DECODE_SHARE + f * (_SEPARATE_SHARE)
+                    handle.progress(fraction=frac, status=f"separating {frac * 100:.0f} %")
 
+                def separate(pcm):
+                    handle.progress(fraction=_DECODE_SHARE, status=f"separating {_DECODE_SHARE * 100:.0f} %")
+                    stems = engine.separate(pcm, work, on_progress=on_progress, cancelled=lambda: handle.cancelled)
+                    done_at = _DECODE_SHARE + _SEPARATE_SHARE
+                    handle.progress(fraction=done_at, status=f"encoding {done_at * 100:.0f} %")
+                    return stems
+
+                handle.progress(status="decoding 0 %")
                 try:
-                    written = sf.build(item.source, partial,
-                                       lambda pcm: engine.separate(pcm, work, on_progress=on_progress,
-                                                                   cancelled=lambda: handle.cancelled),
-                                       checkpoint=checkpoint)
+                    written = sf.build(item.source, partial, separate, checkpoint=checkpoint)
                 except (_Cancel, EngineCancelled):
                     partial.unlink(missing_ok=True)
                     pending.drop([pitem])
@@ -281,7 +299,7 @@ def run(handle, adapter, planned: Plan, opts: Options, pending: Pending, *,
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
-    handle.progress(done=len(items), message="Swapping the converted tracks into the collection…")
+    handle.progress(done=len(items), message="Swapping the converted tracks into the collection…", status="")
     with mutation:
         if not still_current():
             for _item, pitem, written in finished:

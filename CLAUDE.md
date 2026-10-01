@@ -628,7 +628,7 @@ Two independent apps that talk over HTTP:
     platform cannot play stem files as stems. SaveBar adds "Saving deletes N
     original files" while conversions are pending (decided: the consequence is
     shown where Save is pressed). `Toast` takes an optional `action`;
-    `StatusJob.unit: 'bytes'` shows a download in MB.
+    `StatusJob.unit: 'bytes'` shows a download in MB. Every background job's status-bar entry reads label + count · a bar SPLIT horizontally when the job reports per-item progress (top = the current item's `fraction`, 0-100 %; bottom = the whole job, (done + fraction) / total, so 99 % into the first of two tracks reads ~50 %) — a single bar otherwise; two colours in one bar was tried and read as confusing · its `status` ("separating 41 %") at its natural width · the item's name LAST (the only part that truncates; full name on hover). The section is a FIXED width (560 px; the view name on the left gives way instead) and everything BEFORE the bar is fixed (count sized for its largest value, "cancelling…" as a status, not a label), so neither a long name nor a phase change moves the bar. The status deliberately has no fixed slot: it is after the bar, and a slot left a gap before the name. `Job.fraction`/`status` come from `JobHandle.progress(fraction=, status=)` and reset whenever `done` advances; a stem conversion maps decode / separate / encode onto a track's 0-1 by measured shares.
     `AutoCueDialog` (the Auto Hotcues slot template: event + beat offset per
     slot, a per-slot Replace tick for occupied slots — never remembered, since
     overwriting is a decision about THIS track — and the template itself

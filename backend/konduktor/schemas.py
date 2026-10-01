@@ -489,6 +489,9 @@ class JobStatus(BaseModel):
     # needs to tell a byte count from a track count.
     unit: str = ""
     message: str
+    # The current item's own progress (0..1) and what it is doing — see jobs.Job.
+    fraction: float = 0.0
+    status: str = ""
     result: dict | None = None
     error: str | None = None
     started_at: float

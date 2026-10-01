@@ -411,6 +411,11 @@ export interface JobStatus {
    *  is written; '' when unspecified. */
   unit: string
   message: string
+  /** The CURRENT item's own progress, 0..1 — so the overall bar moves within
+   *  a long item. Resets as each item starts. */
+  fraction: number
+  /** What the current item is doing, e.g. "separating 41 %". */
+  status: string
   result: Record<string, unknown> | null
   error: string | null
   started_at: number

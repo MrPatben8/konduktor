@@ -213,6 +213,24 @@ with tempfile.TemporaryDirectory() as d:
         gate.set()
         check("…and returns once it has finished", main.JOBS.wait(first.id, timeout=5) is True)
 
+        # Within-item progress: what lets the overall bar move inside a long
+        # track (99 % of the first of two = ~50 %), and it starts over per item.
+        from konduktor.jobs import Job, JobHandle
+        j = Job(id="x", kind="t")
+        h = JobHandle(j)
+        h.progress(done=0, total=2, fraction=0.99, status="separating 99 %")
+        d = j.as_dict()
+        check("a job reports its current item's fraction and status",
+              d["fraction"] == 0.99 and d["status"] == "separating 99 %", str(d))
+        h.progress(done=1)
+        check("…both reset when the next item starts", j.fraction == 0.0 and j.status == "")
+        h.progress(fraction=1.7)
+        check("…and the fraction is clamped to 0..1", j.fraction == 1.0)
+        from konduktor.schemas import JobStatus
+        r = JobStatus(**j.as_dict()).model_dump()
+        check("the job's response model carries fraction and status (not silently dropped)",
+              r["fraction"] == 1.0 and "status" in r, str(r)[:200])
+
         check("nothing was written to disk (edits stay in memory until Save)",
               work.read_bytes() == REAL.read_bytes())
 
