@@ -2,6 +2,8 @@ import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type ImportPreview, type JobStatus } from '../api'
+import { useCaps } from '../lib/capabilities'
+import { placedAudioSummary } from '../lib/platformCopy'
 import { FolderPicker } from './FolderPicker'
 
 /**
@@ -39,6 +41,10 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
   // different decisions: where your music lives, and how one import is filed
   // inside it. Joining them for display would make the toggle look like it was
   // editing the folder you picked.
+  // The LIBRARY's capabilities (mounted outside the browsed device's context).
+  // One that places its own audio — a stick — needs no destination.
+  const caps = useCaps()
+  const places = caps.tracks.places_audio
   const [baseFolder, setBaseFolder] = useState('')
   const [useSubfolder, setUseSubfolder] = useState(true)
   const [browsing, setBrowsing] = useState(false)
@@ -166,6 +172,12 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
         <div className="space-y-4 px-5 py-4 text-sm">
           {!job && (
             <>
+              {places && p && (
+                <div className="rounded well px-3 py-2 text-xs text-muted">
+                  {placedAudioSummary(caps.save, p.copied ?? 0, p.in_place ?? 0)}
+                </div>
+              )}
+              {!places && (
               <div>
                 <span className="mb-1 block text-xs text-muted">Copy audio into</span>
                 <div className="flex items-center gap-2">
@@ -204,6 +216,7 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
                   {destination}
                 </div>
               </div>
+              )}
 
               {preview.isLoading && <div className="text-faint">Checking…</div>}
               {preview.isError && (
@@ -216,7 +229,7 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
                     {p.importable} track{p.importable === 1 ? '' : 's'}
                     {p.playlists.length > 0 &&
                       ` · ${p.playlists.length} playlist${p.playlists.length === 1 ? '' : 's'}`}
-                    <span className="text-muted"> · {gb(p.total_bytes)} to copy</span>
+                    {p.total_bytes > 0 && <span className="text-muted"> · {gb(p.total_bytes)} to copy</span>}
                   </div>
 
                   {p.free_bytes != null && (
@@ -240,7 +253,7 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
                       entry, so a re-import legitimately duplicates. */}
                   {p.duplicates.length > 0 && (
                     <div className="rounded well px-3 py-2 text-xs text-gold">
-                      {p.duplicates.length} of these look like tracks your collection already has.
+                      {p.duplicates.length} of these look like tracks {places ? caps.save.app_name : 'your collection'} already has.
                       They will be added again as new entries.
                     </div>
                   )}

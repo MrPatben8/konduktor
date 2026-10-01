@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ShortcutsDialog } from './ShortcutsDialog'
+import { StemsSettings } from './StemsSettings'
 
 interface Props {
   onOpenPathMapping: () => void
@@ -8,11 +9,12 @@ interface Props {
 }
 
 /** Overflow menu for low-frequency, collection-level settings. Currently holds
- * path remapping and the shortcut list; the natural home for future advanced
+ * path remapping, Stems and the shortcut list; the natural home for future advanced
  * settings. The shortcuts dialog is owned here, since nothing else opens it. */
 export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
   const [open, setOpen] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
+  const [showStems, setShowStems] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -68,6 +70,16 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
           </button>
           <button
             onClick={() => {
+              setShowStems(true)
+              setOpen(false)
+            }}
+            className={item}
+          >
+            <span className="text-sm text-text">Stems…</span>
+            <span className="text-[11px] text-faint">The stem engine, device and conversion defaults</span>
+          </button>
+          <button
+            onClick={() => {
               setShowShortcuts(true)
               setOpen(false)
             }}
@@ -79,6 +91,7 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
         </div>
       )}
       {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}
+      {showStems && <StemsSettings onClose={() => setShowStems(false)} />}
     </div>
   )
 }

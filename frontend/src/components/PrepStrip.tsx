@@ -8,27 +8,34 @@ import {
   type GridMarker,
   type Track,
   type TrackCues,
+  type StemInfo,
   type TrackOrigin,
   trackAudioUrl,
   trackCuesFor,
+  trackStemsFor,
+  trackStemUrl,
 } from '../api'
 import { buildBeatGrid, GRID_EPS } from '../lib/beatgrid'
 import { slotLabeller, useCaps } from '../lib/capabilities'
 import { CUE_TYPE_LABELS, cueTypeColor } from '../lib/cues'
 import { keyColor } from '../lib/format'
 import { readOnlyShort, readOnlyNotice } from '../lib/platformCopy'
-import { analyzeWaveform, type WaveColumn } from '../lib/waveform'
+import { analyzeStems, analyzeWaveform, type WaveColumn } from '../lib/waveform'
 import { setAmbientFromArt } from '../lib/ambient'
 import { Icon } from '../lib/icons'
 import { ScratchEngine } from '../lib/scratchEngine'
 import { PlaybackEngine } from '../lib/playbackEngine'
+import { invalidateTrackLists } from '../lib/trackQueries'
 import { AutoCueDialog, eventLabel } from './AutoCueDialog'
 import { ContextMenu, type MenuItem } from './ContextMenu'
-import { BpmReadout, GridEditStrip, TempoControls } from './GridControls'
+import { BpmReadout, GridEditStrip, TempoControls, TempoFold } from './GridControls'
 import { HotcueBar } from './HotcueBar'
 import { LoopControls, LOOP_SIZES, type LoopMode } from './LoopControls'
-import { MainWaveform, MIN_SEC, MAX_SEC, DEFAULT_SEC } from './MainWaveform'
+import { MainWaveform, MIN_SEC, MAX_SEC, DEFAULT_SEC, type StemLane } from './MainWaveform'
 import { OverviewWaveform } from './OverviewWaveform'
+
+/** Keys that mute stems 1-4 (Shift = solo), by `KeyboardEvent.code`. */
+const STEM_KEYS = ['KeyQ', 'KeyW', 'KeyE', 'KeyR']
 
 interface Props {
   /** The track currently loaded into the prep deck, if any. */
@@ -49,6 +56,8 @@ interface Props {
   /** Bumped when something outside the deck (batch grid analysis) rewrote the
    *  loaded track's cues/grid, so the deck re-reads them. */
   cuesRefresh?: number
+  /** Reports whether the deck is playing, so the library can light its row. */
+  onPlayingChange?: (playing: boolean) => void
 }
 
 /** m:ss.t — the deck's readouts show tenths, as a CDJ does. */
@@ -91,9 +100,11 @@ export function PrepStrip({
   onNotify,
   origin = 'collection',
   cuesRefresh = 0,
+  onPlayingChange,
 }: Props) {
   const qc = useQueryClient()
   const [playing, setPlaying] = useState(false)
+  useEffect(() => onPlayingChange?.(playing), [playing, onPlayingChange])
   const [previewing, setPreviewing] = useState(false) // momentary hold-to-play active
   // CUE is held down (mouse OR the C key) — drives the button's pressed look,
   // which the pointer's :active alone cannot, since the key never touches it.
@@ -102,6 +113,13 @@ export function PrepStrip({
   const [duration, setDuration] = useState(0)
   const [ready, setReady] = useState(false)
   const [cols, setCols] = useState<WaveColumn[] | null>(null)
+  // A stem track: its stems (from the FILE), their lanes, and which are muted
+  // — reset per track, as Traktor's stem deck does. There is no separate solo
+  // state: solo is a shortcut that SETS the mutes, so every stem stays freely
+  // mutable afterwards.
+  const [stems, setStems] = useState<StemInfo[] | null>(null)
+  const [stemLanes, setStemLanes] = useState<Float32Array[] | null>(null)
+  const [stemMuted, setStemMuted] = useState<boolean[]>([])
   const [waveStatus, setWaveStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [cueData, setCueData] = useState<TrackCues | null>(null)
   // The beatgrid, rebuilt whenever the cue data is replaced (every edit returns
@@ -249,6 +267,7 @@ export function PrepStrip({
     previewRef.current = null
     setPreviewing(false)
     setCueHeld(false)
+    setStemMuted([])
   }, [trackId])
 
   // Recolour the whole app from this track's cover art. A device's art is not
@@ -269,23 +288,40 @@ export function PrepStrip({
     }
     let cancelled = false
     setCols(null)
+    setStems(null)
+    setStemLanes(null)
     setWaveStatus('loading')
-    analyzeWaveform(trackAudioUrl(origin, trackId))
+    // A stem FILE loads its four stems and plays their sum (decided: always,
+    // for every stem track); anything else loads as one buffer, as before.
+    const load = trackStemsFor(origin, trackId)
+      .catch(() => [] as StemInfo[])
+      .then(async (found) => {
+        if (found.length) {
+          const res = await analyzeStems(found.map((_, k) => trackStemUrl(origin, trackId, k)))
+          return { cols: res.cols, buffers: res.buffers, lanes: res.lanes, stems: found }
+        }
+        const res = await analyzeWaveform(trackAudioUrl(origin, trackId))
+        return { cols: res.cols, buffers: [res.buffer], lanes: null, stems: null }
+      })
+    load
       .then((res) => {
         if (cancelled) return
         setCols(res.cols)
+        setStems(res.stems)
+        setStemLanes(res.lanes)
         setWaveStatus('ready')
         const ctx = getCtx()
         const sc = new ScratchEngine()
-        sc.load(res.buffer)
+        if (res.stems) sc.loadStems(res.buffers, res.buffers.map(() => 1))
+        else sc.load(res.buffers[0])
         sc.attach(getScratchCtx()) // own context; warm up so the first scratch isn't silent
         scratchRef.current = sc
         if (!playbackRef.current) {
           playbackRef.current = new PlaybackEngine()
           playbackRef.current.setOnEnded(() => setPlaying(false))
         }
-        playbackRef.current.load(ctx, res.buffer)
-        setDuration(res.buffer.duration)
+        playbackRef.current.load(ctx, res.stems ? res.buffers : res.buffers[0])
+        setDuration(res.buffers[0].duration)
         setReady(true)
         loadedIdRef.current = trackId
         // A play was requested (library row button) → start now that it's ready.
@@ -729,9 +765,7 @@ export function PrepStrip({
 
   const applyCueEdit = (fresh: TrackCues) => {
     setCueData(fresh)
-    qc.invalidateQueries({ queryKey: ['state'] })
-    qc.invalidateQueries({ queryKey: ['tracks'] })
-    qc.invalidateQueries({ queryKey: ['playlist'] })
+    invalidateTrackLists(qc)
   }
 
   // Map a loop length (seconds) back to a preset beat count for the size
@@ -783,9 +817,19 @@ export function PrepStrip({
     if (!eng || !eng.ready) return
     getCtx()
     // A loop hotcue jumps to its start AND engages a loop of its length — the
-    // new loop FIRST, so the seek is not wrapped back into the old one.
+    // new loop FIRST, so the seek is not wrapped back into the old one. The loop
+    // controls follow it: a beat-sized loop takes over the shared size (so −/+
+    // resize THIS loop), and one of no preset size shows in MAN, where its
+    // toggle is.
     if (cue.type === 'loop' && cue.length > 0) {
-      engagLoop(cue.start, cue.start + cue.length, beatsForLoop(cue.start, cue.length))
+      const beats = beatsForLoop(cue.start, cue.length)
+      engagLoop(cue.start, cue.start + cue.length, beats)
+      if (beats != null) {
+        setBeatSize(beats)
+        setLoopMode('beat')
+      } else {
+        setLoopMode('manual')
+      }
     } else {
       leaveLoopFor(cue.start)
     }
@@ -848,6 +892,19 @@ export function PrepStrip({
     if (refuseCueEdit()) return
     try {
       applyCueEdit(await api.createCue(track.id, slot, cue.start, cue.type, cue.length, name))
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+
+  // Only a fixed palette is offered: a platform with free RGB would need a
+  // picker of its own, and none that stores free RGB is writable yet.
+  const cuePalette = caps.cues.color === 'palette' ? caps.cues.palette : []
+  const setSlotColor = async (slot: number, color: string | null) => {
+    if (!track) return
+    if (refuseCueEdit()) return
+    try {
+      applyCueEdit(await api.setCueColor(track.id, slot, color))
     } catch (e) {
       onError?.((e as Error).message)
     }
@@ -1020,6 +1077,43 @@ export function PrepStrip({
   // (Shift+↑/↓ is the track table's extend-selection).
   // Digits are read from e.code (layout-/Shift-independent) and a ref holds the
   // latest handlers so the listener attaches once and never goes stale.
+  // ---- stems: mute / solo ------------------------------------------------------
+  // What each stem plays at: a muted stem is 0. Both engines follow it (the
+  // scratch engine re-sums).
+  const stemLevels = useMemo(() => (stems ?? []).map((_, k) => (stemMuted[k] ? 0 : 1)), [stems, stemMuted])
+  const stemLevelKey = stemLevels.join(',')
+  useEffect(() => {
+    if (!stems) return
+    playbackRef.current?.setGains(stemLevels)
+    scratchRef.current?.setLevels(stemLevels)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stemLevelKey])
+  // Solo = "mute every stem but this one". Soloing a stem that is already the
+  // only one playing brings them all back (so solo twice undoes it).
+  const toggleStem = (k: number, solo: boolean) => {
+    if (!stems || k >= stems.length) return
+    setStemMuted((m) => {
+      if (!solo) return stems.map((_, i) => (i === k ? !m[i] : !!m[i]))
+      const alone = stems.every((_, i) => (i === k ? !m[i] : !!m[i]))
+      return stems.map((_, i) => (alone ? false : i !== k))
+    })
+  }
+  // The ring on a lane button: that stem is the only one playing.
+  const soloed = stemLevels.filter((l) => l > 0).length === 1 && stemLevels.length > 1
+    ? stemLevels.findIndex((l) => l > 0)
+    : null
+  const lanes: StemLane[] | null =
+    stems && stemLanes
+      ? stems.map((st, k) => ({
+          data: stemLanes[k],
+          name: st.name,
+          color: st.color,
+          audible: stemLevels[k] > 0,
+          solo: soloed === k,
+          shortcut: STEM_KEYS[k] ? STEM_KEYS[k].slice(3) : '',
+        }))
+      : null
+
   const shortcutsRef = useRef({
     toggle,
     onSlotPress,
@@ -1032,6 +1126,7 @@ export function PrepStrip({
     prevMarker,
     nextMarker,
     slotCount,
+    toggleStem,
   })
   shortcutsRef.current = {
     toggle,
@@ -1045,6 +1140,7 @@ export function PrepStrip({
     prevMarker,
     nextMarker,
     slotCount,
+    toggleStem,
   }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1069,6 +1165,14 @@ export function PrepStrip({
       if (e.code === 'KeyC') {
         e.preventDefault()
         shortcutsRef.current.onCuePress()
+        return
+      }
+      // Q W E R: mute a stem; Shift+ solos it (a stem track only — elsewhere
+      // there is nothing to toggle, and the keys stay free).
+      const stemKey = STEM_KEYS.indexOf(e.code)
+      if (stemKey >= 0) {
+        e.preventDefault()
+        shortcutsRef.current.toggleStem(stemKey, e.shiftKey)
         return
       }
       if (e.code === 'ArrowLeft') {
@@ -1112,7 +1216,7 @@ export function PrepStrip({
     : ''
 
   // The pad's right-click menu: its type (as one-click choices, the current one
-  // ticked), Rename, Delete. A cue the adapter will not edit gets the same menu
+  // ticked), its colour where the platform has a palette, Rename, Delete. A cue the adapter will not edit gets the same menu
   // disabled, so the reason is visible instead of the menu silently not opening.
   const padMenuItems = (slot: number): MenuItem[] => {
     const cue = hotcueAt(slot)
@@ -1141,6 +1245,16 @@ export function PrepStrip({
     } else {
       items.push({ heading: `Hotcue ${slotLabel(slot)}` })
     }
+    if (cuePalette.length > 0) {
+      items.push({ separator: true })
+      items.push({ heading: 'Colour' })
+      items.push({
+        swatches: cuePalette,
+        selected: cue.color,
+        disabled: locked,
+        onPick: (color) => color !== cue.color && void setSlotColor(slot, color),
+      })
+    }
     if (locked) items.push({ heading: 'Managed by the DJ app — not editable here' })
     items.push({ separator: true })
     items.push({
@@ -1158,6 +1272,20 @@ export function PrepStrip({
   }
 
   const DIVIDER = <span aria-hidden className="h-7 w-px shrink-0 bg-line" />
+  // Rendered twice — inline on a wide row, inside TempoFold on a narrow one.
+  const tempoProps = {
+    bpm: activeMarker?.bpm ?? null,
+    locked: cueData?.grid_locked ?? false,
+    lockable: caps.grid.lockable,
+    flexible: markerCount > 1,
+    markerIndex: activeMarkerIndex,
+    onTapStart: tapStart,
+    onTapBpm: (bpm: number) => commitBpm(bpm, tapAnchorRef.current),
+    onNudgeBpm: nudgeBpm,
+    onHalve: halveBpm,
+    onDouble: doubleBpm,
+    onToggleLock: toggleLock,
+  }
 
   return (
     <div className="glass flex h-[19.75rem] shrink-0 flex-col gap-2 p-4">
@@ -1287,6 +1415,8 @@ export function PrepStrip({
                 onScratchStart={onScratchStart}
                 onScratchMove={onScratchMove}
                 onScratchEnd={onScratchEnd}
+                lanes={lanes}
+                onStemToggle={toggleStem}
               />
             ) : (
               <div className="flex h-full items-center justify-center text-xs text-faint">
@@ -1311,8 +1441,15 @@ export function PrepStrip({
         </>
       )}
 
-      {/* ---- Controls: transport · loop/jump · pads or grid · tempo ---- */}
-      <div className="flex h-11 shrink-0 items-center gap-3">
+      {/* ---- Controls: transport · loop/jump · pads or grid · tempo ----
+          A container, so the row gives way in stages as the window narrows
+          instead of the pads sliding under the tempo group: the pads drop
+          their names first (each pad queries its own width, see HotcueBar),
+          then below 74rem the tempo group folds into one BPM button, and below
+          60rem the Grid toggle keeps only its icon. Those are the row's
+          measured widths just before the pad bank would hit its minimum (with
+          a lockable grid's extra Lock button), so move them with the controls. */}
+      <div className="@container flex h-11 shrink-0 items-center gap-3">
         <button
           onClick={toggle}
           disabled={!ready}
@@ -1405,19 +1542,10 @@ export function PrepStrip({
           />
         )}
         {DIVIDER}
-        <TempoControls
-          bpm={activeMarker?.bpm ?? null}
-          locked={cueData?.grid_locked ?? false}
-          lockable={caps.grid.lockable}
-          flexible={markerCount > 1}
-          markerIndex={activeMarkerIndex}
-          onTapStart={tapStart}
-          onTapBpm={(bpm) => commitBpm(bpm, tapAnchorRef.current)}
-          onNudgeBpm={nudgeBpm}
-          onHalve={halveBpm}
-          onDouble={doubleBpm}
-          onToggleLock={toggleLock}
-        />
+        <TempoControls {...tempoProps} className="@max-[74rem]:hidden" />
+        <TempoFold locked={tempoProps.locked} className="hidden @max-[74rem]:flex">
+          <TempoControls {...tempoProps} />
+        </TempoFold>
         <button
           onClick={() => {
             setGridMode((g) => !g)
@@ -1427,14 +1555,15 @@ export function PrepStrip({
           aria-pressed={gridMode}
           disabled={!track}
           title={gridMode ? 'Back to the hotcue pads' : 'Edit the beatgrid: markers, phase, reset'}
-          className={`flex h-10 shrink-0 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold transition-colors disabled:opacity-40 ${
+          aria-label="Grid"
+          className={`flex h-10 shrink-0 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold transition-colors disabled:opacity-40 @max-[60rem]:w-10 @max-[60rem]:justify-center @max-[60rem]:px-0 ${
             gridMode
               ? 'bg-gold/15 text-gold shadow-[inset_0_0_0_1px_rgb(255_200_97/0.5),0_0_16px_-4px_rgb(255_200_97/0.6)]'
               : 'btn-glass text-text'
           }`}
         >
           <Icon name="grid" size={14} />
-          Grid
+          <span className="@max-[60rem]:hidden">Grid</span>
         </button>
       </div>
 

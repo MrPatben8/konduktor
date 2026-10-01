@@ -25,12 +25,14 @@ human summary, and this module versions them.
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 from . import __version__, adapters, history, library_id, prefs  # noqa: F401 — registers adapters
 from .core import registry
 from .core.adapter import LibraryAdapter
 from .core.pathmap import PathMapping
+from .relocation import RelocationCheck
 
 
 class AppState:
@@ -47,6 +49,18 @@ class AppState:
         # module docstring for why it is not symmetrical with `adapter`.
         self.source_path: Path | None = None
         self.source: LibraryAdapter | None = None
+        # This open's missing-files check (see `relocation.py`). A new one per
+        # open, which is what makes the dialog ask again on a reopen.
+        self.relocation: RelocationCheck | None = None
+        # Serialises the operations that REPLACE or COMMIT the whole library —
+        # open, save, discard (and a stem batch's swap step). A save landing in
+        # the middle of another would commit a half-applied state; reentrant so
+        # one of them may call another.
+        self.mutation = threading.RLock()
+        # Converted-to-stem tracks awaiting Save or Discard (see stems/pending.py),
+        # and what the last open's crash recovery did about any left over.
+        self.pending = None
+        self.recovery: dict | None = None
 
     @property
     def loaded(self) -> bool:
@@ -65,7 +79,7 @@ class AppState:
         rests on, and an adapter is the thing that knows whether it is true —
         so it is asserted here rather than assumed everywhere else.
         """
-        adapter = registry.open_library(path)
+        adapter = registry.open_library(path, read_only=True)
         if adapter.capabilities().writable:
             if hasattr(adapter, "close"):
                 try:
@@ -73,7 +87,7 @@ class AppState:
                 except Exception:  # noqa: BLE001
                     pass
             raise ValueError(
-                f"{path} is a writable library; only read-only sources "
+                f"{path} cannot be opened read-only; only a library that can "
                 "(such as a OneLibrary drive) can be opened as a source"
             )
         self.close_source()
@@ -91,6 +105,10 @@ class AppState:
                 pass
 
     def open(self, path: Path) -> None:
+        with self.mutation:
+            self._open(path)
+
+    def _open(self, path: Path) -> None:
         # The registry picks the adapter by probing the file, not by extension —
         # a Rekordbox library is a .db and a Serato one is a directory. Raises on
         # an unrecognised or unparseable file; only commit once it has parsed.
@@ -103,6 +121,10 @@ class AppState:
         # library gets corrupted. Only close once the new one has parsed, so a
         # failed open leaves the current library intact.
         previous = self.adapter
+        # Leaving a library discards its unsaved edits (the UI has confirmed), so
+        # a stem conversion's parked originals go back under their own names.
+        if self.pending is not None and self.pending.items:
+            self.pending.restore()
         if previous is not None and hasattr(previous, "close"):
             try:
                 previous.close()
@@ -127,6 +149,18 @@ class AppState:
             label=Path(str(path)).name,
             sidecar=not getattr(driver, "removable", False),
         )
+        # A crash may have left converted tracks mid-lifecycle: settle them from
+        # what the SAVED library says, BEFORE the missing-files check — a parked
+        # original is exactly what that check would report as missing.
+        from .stems.pending import Pending
+
+        self.pending = Pending(self.library_id)
+        self.recovery = None
+        if self.pending.items:
+            self.recovery = self.pending.recover(lambda item: adapter.track(item["new_id"]) is not None)
+        # Started after the saved mapping is applied, so a volume that mapping
+        # already fixes is not asked about.
+        self.relocation = RelocationCheck(adapter)
         # Version history: record an "as I found it" baseline (deduped, so
         # re-opening an unchanged library is a no-op). Best-effort.
         history.ensure_baseline(path)
@@ -139,6 +173,10 @@ class AppState:
         cannot restore from.
         """
         assert self.adapter is not None and self.path is not None
+        with self.mutation:
+            return self._save()
+
+    def _save(self):
         outcome = self.adapter.save()
         # Not every platform is versioned. A library that is more than one file
         # has no single blob that IS the library, and it says so through its
@@ -149,7 +187,29 @@ class AppState:
             commit = history.commit(
                 self.path, outcome.snapshot, outcome.summary, __version__
             )
+        # The swap is now on disk: what it replaced can go. After the library
+        # write, so a failed save deletes nothing; here rather than in the save
+        # route, because import and path remap save too.
+        if self.pending is not None and self.pending.swapped():
+            renames = self.pending.commit()
+            if renames and self.library_id:
+                from . import exports
+
+                exports.retarget(self.library_id, renames)
         return outcome, commit
+
+    def discard(self) -> None:
+        """Drop every unsaved edit: the library re-reads itself from disk.
+
+        Through the adapter's own `reload`, NOT `open` — reopening would start a
+        new missing-files check and forget this session's relocation answers,
+        which are not edits and survive a reload (the store keeps them).
+        """
+        assert self.adapter is not None
+        with self.mutation:
+            if self.pending is not None and self.pending.items:
+                self.pending.restore()
+            self.adapter.reload()
 
 
 STATE = AppState()

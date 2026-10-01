@@ -5,6 +5,8 @@ export interface ToastMsg {
   id: number
   kind: 'success' | 'error' | 'warning'
   text: string
+  /** A button in the toast, e.g. "Details". Keeps the toast up longer. */
+  action?: { label: string; onClick: () => void }
 }
 
 const KIND_CLS: Record<ToastMsg['kind'], string> = {
@@ -16,7 +18,7 @@ const KIND_CLS: Record<ToastMsg['kind'], string> = {
 export function Toast({ toast, onClose }: { toast: ToastMsg | null; onClose: () => void }) {
   useEffect(() => {
     if (!toast) return
-    const t = setTimeout(onClose, toast.kind === 'success' ? 4000 : 6000)
+    const t = setTimeout(onClose, toast.action ? 10000 : toast.kind === 'success' ? 4000 : 6000)
     return () => clearTimeout(t)
   }, [toast, onClose])
 
@@ -29,6 +31,17 @@ export function Toast({ toast, onClose }: { toast: ToastMsg | null; onClose: () 
         {/* The glass carries no colour; a lit dot says which kind this is. */}
         <span className={`h-2 w-2 shrink-0 rounded-full ${KIND_CLS[toast.kind]}`} />
         {toast.text}
+        {toast.action && (
+          <button
+            onClick={() => {
+              toast.action!.onClick()
+              onClose()
+            }}
+            className="shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold text-accent hover:bg-ink-800"
+          >
+            {toast.action.label}
+          </button>
+        )}
       </div>
     </div>,
     document.body,

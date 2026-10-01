@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 
 from ...core.model import CuePoint, GridMarker, HotcueChip, Track, TrackCues
-from . import beatgrid
+from . import beatgrid, timebase
 from .cue_types import NATIVE_TO_CUE_TYPE
 
 # Traktor displays keys in Open Key ("10m" / "8d") or Camelot ("8A" / "8B"),
@@ -17,6 +17,9 @@ from .cue_types import NATIVE_TO_CUE_TYPE
 _OPEN_KEY = re.compile(r"^(\d{1,2})\s*([md])$", re.I)
 _CAMELOT = re.compile(r"^(\d{1,2})\s*([ab])$", re.I)
 _DATE = re.compile(r"^(\d{4})/(\d{1,2})/(\d{1,2})$")
+# "YYYY", "YYYY-MM" or "YYYY-MM-DD", optionally followed by a time (a
+# timestamp's date part is the date).
+_ISO_DATE = re.compile(r"^(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?(?:[T ].*)?$")
 
 
 def parse_key(key: str | None) -> tuple[int | None, str | None]:
@@ -48,6 +51,28 @@ def iso_date(value: str | None) -> str | None:
         return value
     y, mo, d = m.groups()
     return f"{y}-{int(mo):02d}-{int(d):02d}"
+
+
+def traktor_date(value: str | None) -> str | None:
+    """The inverse of `iso_date`: an ISO-8601 date as Traktor writes it.
+
+    Traktor's form is unpadded "YYYY/M/D" — every one of the 16,000-odd dates
+    in the real collection. A year alone becomes "YYYY/1/1", as Traktor itself
+    records a year-only release date (2,094 of 2,122 there). Anything that is
+    neither ISO nor already Traktor's form passes through unchanged, as
+    `iso_date` does in the other direction: losing a date is worse than
+    carrying one Traktor may not parse.
+    """
+    if not value:
+        return None
+    s = value.strip()
+    if m := _DATE.match(s):
+        y, mo, d = m.groups()
+        return f"{y}/{int(mo)}/{int(d)}"
+    if m := _ISO_DATE.match(s):
+        y, mo, d = m.groups()
+        return f"{y}/{int(mo or 1)}/{int(d or 1)}"
+    return value
 
 
 def primary_key(location) -> str:
@@ -109,6 +134,8 @@ def to_track(e) -> Track:
         producer=info.producer if info else None,
         mix=info.mix if info else None,
         comment=info.comment if info else None,
+        # Traktor's "Comment 2" is stored in INFO@RATING (stars are RANKING).
+        comment2=info.rating if info else None,
         bpm=beatgrid.effective_bpm(e),
         key=info.key if info else None,
         key_wheel=wheel,
@@ -130,8 +157,12 @@ def to_track(e) -> Track:
     )
 
 
-def to_track_cues(entry) -> TrackCues:
+def to_track_cues(entry, offset_ms: float = 0.0) -> TrackCues:
     """Project an ENTRY's beatgrid + cues.
+
+    `offset_ms` is how far the entry's positions sit behind the decoded audio
+    (`TraktorStore.time_offset_ms`, see `timebase`); positions come out in the
+    decoded time base, unclamped.
 
     The beatgrid is the FULL ordered marker list — a constant grid is a list of
     length one. Grid markers themselves are not cues; their companion cues are,
@@ -144,7 +175,7 @@ def to_track_cues(entry) -> TrackCues:
     marker_of = {id(c): i for i, c in comps.items()}
     grid_markers = [
         GridMarker(
-            start=(m.start or 0.0) / 1000.0,  # Traktor stores START in ms
+            start=timebase.from_traktor_ms(m.start or 0.0, offset_ms),  # START is ms
             bpm=m.grid.bpm if m.grid and m.grid.bpm else 0.0,
             name=m.name,
             companion=comps[i].hotcue if i in comps else None,
@@ -165,7 +196,7 @@ def to_track_cues(entry) -> TrackCues:
                 type=NATIVE_TO_CUE_TYPE.get(c.type, "cue"),
                 # Every Traktor cue lives in the hotcue bank.
                 role="hotcue",
-                start=(c.start or 0.0) / 1000.0,
+                start=timebase.from_traktor_ms(c.start or 0.0, offset_ms),
                 length=(c.len or 0.0) / 1000.0,
                 slot=slot,
                 color=c.color,

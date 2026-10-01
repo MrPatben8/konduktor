@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -36,12 +37,69 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import joinedload
 
-from ...core.adapter import InvalidCommand, LibraryNotSupported, NotFound, SaveOutcome
+from ...core.adapter import (
+    InvalidCommand,
+    LibraryNotSupported,
+    NotFound,
+    SaveOutcome,
+    Unsupported,
+)
 from ...core.edit_journal import EditJournal
+from ...core.grid_edit import ReplaceGridCommands
 from ...core.pathmap import PathMapping
+from . import timebase
 from .cue_types import beat_loop_size, kind_for, role_and_slot
 
 log = logging.getLogger(__name__)
+
+
+def _file_facts(audio: Path) -> dict:
+    """What Rekordbox reads off the file itself for a new track's row."""
+    from datetime import date
+
+    out: dict = {}
+    try:
+        st = audio.stat()
+        born = getattr(st, "st_birthtime", None) or st.st_mtime
+        out["created"] = date.fromtimestamp(born)
+    except OSError:
+        pass
+    try:
+        import mutagen
+
+        info = mutagen.File(str(audio)).info
+        out["length"] = int(round(info.length)) if info.length else None
+        if getattr(info, "bitrate", None):
+            out["bitrate"] = int(round(info.bitrate / 1000))   # kbps, as Rekordbox stores it
+        if getattr(info, "sample_rate", None):
+            out["sample_rate"] = int(info.sample_rate)
+        if getattr(info, "bits_per_sample", None):
+            out["bit_depth"] = int(info.bits_per_sample)
+    except Exception:  # noqa: BLE001 — facts are a nicety; the row stands without them
+        log.debug("could not read %s", audio, exc_info=True)
+    return out
+
+# Where a track's analysis files live, as `contentFile.Path` spells it.
+_ANLZ_ROOT = "/PIONEER/USBANLZ/"
+
+
+@contextmanager
+def rekordbox_probe_suppressed():
+    """Stop `pyrekordbox.commit()` refusing because a Rekordbox process exists.
+
+    Its check is process-wide, not per-file: it refuses to write ANY database
+    while Rekordbox is open — including a temp copy, or a brand-new export
+    Rekordbox cannot possibly have open. Neutralising the probe for the call
+    keeps everything else `commit()` does. SQLite's own lock still applies.
+    """
+    from pyrekordbox.masterdb import database as rb_database
+
+    original = rb_database.get_rekordbox_pid
+    rb_database.get_rekordbox_pid = lambda *a, **kw: 0
+    try:
+        yield
+    finally:
+        rb_database.get_rekordbox_pid = original
 
 
 def _iso_stamp(value) -> str:
@@ -53,17 +111,23 @@ def _iso_stamp(value) -> str:
     return str(value)
 
 
-class RekordboxStore:
+class RekordboxStore(ReplaceGridCommands):
     """One open Rekordbox library."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
         self._mapping = PathMapping()
-        self._grid_cache: dict[str, tuple[list[float], list[float]] | None] = {}
+        self._grid_cache: dict[str, tuple[list[float], list[float], list[int]] | None] = {}
         self._journal = EditJournal()
         # Grid edits buffered until save(): ANLZ files are written to disk, so
         # applying them at command time would break the save contract.
         self._pending_grids: dict[str, tuple[list, list, list]] = {}
+        # Analysis/artwork files of removed tracks, `share`-relative, deleted
+        # by save() AFTER the commit — a failed commit must leave them in place.
+        self._pending_file_removals: set[str] = set()
+        # Files of ADDED tracks, `share`-relative path -> bytes, written by
+        # save() BEFORE the commit (and removed again if it fails).
+        self._pending_new_files: dict[str, bytes] = {}
         self._load()
 
     # ---- open ------------------------------------------------------------
@@ -77,8 +141,29 @@ class RekordboxStore:
         except Exception as ex:  # noqa: BLE001 — surfaced as a clean 4xx
             raise LibraryNotSupported(f"Could not open Rekordbox library: {ex}") from ex
         self._grid_cache.clear()
+        self._stem_cache: dict[str, bool] = {}
         self._content_cache: list | None = None
         self._by_id: dict[str, object] | None = None
+
+    def discard(self) -> None:
+        """Drop every unsaved edit and re-open the library as it is on disk.
+
+        Three things hold edits here, and all three must go: the SQLAlchemy
+        session (rolled back, then closed with its engine — `_load()` alone
+        would open a SECOND connection and leak the first), the buffered grid
+        writes (which the next save would otherwise still write to ANLZ files),
+        and the journal (else the library keeps reporting unsaved changes).
+        """
+        try:
+            self._db.session.rollback()
+        except Exception:  # noqa: BLE001 — discarding must not fail halfway
+            pass
+        self.close()
+        self._journal = EditJournal()
+        self._pending_grids.clear()
+        self._pending_file_removals.clear()
+        self._pending_new_files.clear()
+        self._load()
 
     def close(self) -> None:
         """Release the session AND the pooled connection.
@@ -171,8 +256,9 @@ class RekordboxStore:
             raise NotFound(f"No track {track_id!r}")
         return row
 
-    def cue_kinds(self) -> dict[str, list[tuple[int | None, int | None]]]:
-        """``{track_id: [(Kind, OutMsec), ...]}`` for every live cue, in one query.
+    def cue_kinds(self) -> dict[str, list[tuple[int | None, int | None, int | None]]]:
+        """``{track_id: [(Kind, OutMsec, ColorTableIndex), ...]}`` for every live
+        cue, in one query.
 
         Just enough per cue for the library table's count and hotcue dots,
         without a per-track round trip. What a ``Kind`` means is decided in the
@@ -181,12 +267,13 @@ class RekordboxStore:
         """
         t = self._tables
         rows = self._db.session.execute(
-            select(t.DjmdCue.ContentID, t.DjmdCue.Kind, t.DjmdCue.OutMsec)
+            select(t.DjmdCue.ContentID, t.DjmdCue.Kind, t.DjmdCue.OutMsec,
+                   t.DjmdCue.ColorTableIndex)
             .where(t.DjmdCue.rb_local_deleted == 0)
         ).all()
-        out: dict[str, list[tuple[int | None, int | None]]] = {}
-        for content_id, kind, out_msec in rows:
-            out.setdefault(str(content_id), []).append((kind, out_msec))
+        out: dict[str, list[tuple[int | None, int | None, int | None]]] = {}
+        for content_id, kind, out_msec, color_code in rows:
+            out.setdefault(str(content_id), []).append((kind, out_msec, color_code))
         return out
 
     def cues(self, track_id: str) -> list:
@@ -234,8 +321,10 @@ class RekordboxStore:
         return sum(1 for p in self.playlists() if int(p.Attribute or 0) != folder)
 
     # ---- analysis files (the beatgrid) -----------------------------------
-    def anlz_grid(self, track_id: str) -> tuple[list[float], list[float]] | None:
-        """``(times_sec, bpms)`` per beat for a track, or None if unanalysed.
+    def anlz_grid(self, track_id: str) -> tuple[list[float], list[float], list[int]] | None:
+        """``(times_sec, bpms, beat_in_bar)`` per beat for a track, or None if
+        unanalysed. The beat numbers matter: they say where the first DOWNBEAT
+        is, which a grid starting mid-bar does not put first.
 
         Parsed on demand and cached — see the module docstring for why this is
         not done eagerly.
@@ -244,6 +333,10 @@ class RekordboxStore:
         if key in self._grid_cache:
             return self._grid_cache[key]
         result = self._read_anlz_grid(key)
+        if result is not None:
+            off = self.time_offset(key)
+            times, bpms, beats = result
+            result = ([timebase.from_pioneer(t, off) for t in times], bpms, beats)
         self._grid_cache[key] = result
         return result
 
@@ -269,7 +362,8 @@ class RekordboxStore:
             # pyrekordbox 0.4.4.
             if tag.type == "PQTZ":
                 try:
-                    return [float(t) for t in tag.times], [float(b) for b in tag.bpms]
+                    return ([float(t) for t in tag.times], [float(b) for b in tag.bpms],
+                            [int(b) for b in tag.beats])
                 except Exception:  # noqa: BLE001
                     return None
         return None
@@ -281,6 +375,20 @@ class RekordboxStore:
     def set_path_mapping(self, mapping: PathMapping) -> None:
         self._mapping = mapping or PathMapping()
 
+    def is_stem(self, track_id: str) -> bool:
+        """Whether the track's FILE is a native-instruments stem file — read
+        from its contents (only `.m4a`/`.mp4` are opened, ~0.7 ms each), and
+        cached per path, since the projection asks for every track at open."""
+        from ...core.stem_file import is_stem_file
+
+        path = self.audio_path(track_id)
+        if path is None:
+            return False
+        key = str(path)
+        if key not in self._stem_cache:
+            self._stem_cache[key] = is_stem_file(path)
+        return self._stem_cache[key]
+
     @property
     def path_mapping(self) -> PathMapping:
         return self._mapping
@@ -291,6 +399,14 @@ class RekordboxStore:
         if not folder:
             return None
         return self._mapping.apply(Path(str(folder)))
+
+    def time_offset(self, track_id: str) -> float:
+        """Seconds rekordbox's clock runs behind the decoded audio for this
+        track — per FILE (an MP3's header, an M4A's edit list; 0 lossless).
+        Added on every position written, subtracted on every position read —
+        see `timebase`. Read from the file as it resolves here (path mapping
+        applied); a file that is offline falls back to its format's default."""
+        return timebase.offset(self.audio_path(track_id))
 
     def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
         """The art embedded in the audio file, else Rekordbox's own copy.
@@ -463,12 +579,273 @@ class RekordboxStore:
             .filter(t.DjmdSongPlaylist.PlaylistID == str(node_id))
             .all()
         )
+        # NOT `remove_from_playlist`: it commits, which wrote an unsaved edit
+        # to disk (beyond Discard's reach) and raised while Rekordbox ran.
+        # The list is rebuilt from 1 below, so no renumbering is needed.
         for song in existing:
-            self._db.remove_from_playlist(playlist, song)
+            self._db.delete(song)
+        self._db.flush()
         for n, track_id in enumerate(track_ids, start=1):
             self._db.add_to_playlist(playlist, str(track_id), track_no=n)
         self._journal.record("playlist", "entries", playlist.Name, after=len(track_ids))
         return len(track_ids)
+
+    # ---- writes: adding tracks ---------------------------------------------
+    #
+    # MEASURED, by dragging two files into Rekordbox 7.2's collection and
+    # diffing (2026-10-01): see `new_content`. Rekordbox fills the row from the
+    # FILE (size, sample rate, bit rate, and `DateCreated` from the file's
+    # creation date), stamps it with this library's device, and lists every
+    # file it writes for the track in `contentFile` with the file's MD5.
+    def add_track(self, audio: Path, track, *, measured, with_grid: bool,
+                  art: bytes | None) -> str:
+        """Add one track's row, return its id. Its analysis files and artwork
+        are held until save(); its grid and cues are the caller's to replay
+        through the ordinary commands. `with_grid` reserves an empty `PQTZ`
+        in the `.DAT` for `replace_grid` to fill."""
+        from . import new_content
+        from .projection import render_key
+
+        audio = Path(audio)
+        if not audio.is_file():
+            raise InvalidCommand(f"No audio file at {audio}")
+        t = self._tables
+        if self._db.session.query(t.DjmdContent).filter_by(FolderPath=str(audio)).count():
+            raise InvalidCommand(f"The library already holds {audio}")
+        facts = _file_facts(audio)
+        content = self._db.add_content(
+            str(audio),
+            Title=track.title or audio.stem,
+            Length=facts.get("length") or track.length,
+            BitRate=facts.get("bitrate") or (int(track.bitrate / 1000) if track.bitrate else None),
+            SampleRate=facts.get("sample_rate"),
+            BitDepth=facts.get("bit_depth", 16),
+            Rating=track.rating or 0,
+            Commnt=track.comment or "",
+            ReleaseDate=track.release_date or "",
+        )
+        year = str(track.release_date or "")[:4]
+        if year.isdigit():
+            content.ReleaseYear = int(year)
+        if facts.get("created"):
+            content.DateCreated = facts["created"]
+        content.ArtistID = new_content.lookup(self._db, "artist", track.artist)
+        content.AlbumID = new_content.lookup(self._db, "album", track.album)
+        content.GenreID = new_content.lookup(self._db, "genre", track.genre)
+        content.LabelID = new_content.lookup(self._db, "label", track.label)
+        # Rendered from the wheel, never copied: the source's notation is not
+        # Rekordbox's ("10m" is "Cm" here).
+        content.KeyID = new_content.lookup(
+            self._db, "key", render_key(track.key_wheel, track.key_mode))
+        content.ContentLink = new_content.CONTENT_LINK
+
+        track_uuid = str(content.UUID)
+        rel = new_content.anlz_rel(track_uuid)
+        content.AnalysisDataPath = rel
+        content.Analysed = 105        # what a rekordbox-analysed track carries
+        content.AnalysisUpdated = 1
+        files = new_content.anlz_files(audio, measured, [] if with_grid else None)
+        for suffix, data in files.items():
+            self._pending_new_files[str(Path(rel).with_suffix(suffix))] = data
+        art_files = new_content.artwork_files(art)
+        if art_files:
+            folder = new_content.artwork_rel(track_uuid)
+            for name, data in art_files.items():
+                self._pending_new_files[f"{folder}/{name}"] = data
+            content.ImagePath = f"{folder}/artwork.jpg"
+        self._db.flush()
+
+        track_id = str(content.ID)
+        if self._content_cache is not None and self._by_id is not None:
+            self._content_cache.append(content)
+            self._by_id[track_id] = content
+        self._grid_cache.pop(track_id, None)
+        self._journal.record("track", "add", track_id)
+        return track_id
+
+    def _write_new_files(self) -> list[Path]:
+        """Write added tracks' files; return what was written."""
+        share = self.path.parent / "share"
+        written: list[Path] = []
+        try:
+            for rel, data in self._pending_new_files.items():
+                path = share / rel.lstrip("/")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                written.append(path)  # before the write: a partial file is cleaned too
+                path.write_bytes(data)
+        except BaseException:
+            for path in written:
+                path.unlink(missing_ok=True)
+            raise
+        return written
+
+    def _add_content_files(self, written: list[Path]) -> None:
+        """One `contentFile` row per file an added track carries, as Rekordbox
+        writes them: `Hash` is the file's MD5, and its `_m`/`_s` artwork sizes
+        are not listed."""
+        import hashlib
+        from urllib.parse import quote
+
+        t = self._tables
+        share = self.path.parent / "share"
+        by_folder = {}
+        for row in self.iter_content():
+            for rel in (row.AnalysisDataPath, row.ImagePath):
+                if rel:
+                    by_folder[str(Path(rel).parent)] = row
+        for path in written:
+            if path.name in ("artwork_m.jpg", "artwork_s.jpg"):
+                continue
+            rel = "/" + path.relative_to(share).as_posix()
+            row = by_folder.get(str(Path(rel).parent))
+            if row is None:
+                continue
+            self._db.add(t.ContentFile(
+                ID=f"{row.UUID}_{quote(rel, safe='')}",
+                ContentID=str(row.ID),
+                Path=rel,
+                Hash=hashlib.md5(path.read_bytes()).hexdigest(),
+                Size=path.stat().st_size,
+                rb_local_path=str(path),
+                UUID=str(uuid.uuid4()),
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
+            ))
+        self._db.flush()
+
+    # ---- writes: removing tracks -------------------------------------------
+    #
+    # MEASURED, by removing a track in Rekordbox 7.2 and diffing every row and
+    # every file under `share/` (Demo Track 2, 2026-10-01): Rekordbox DELETES
+    # the rows — it does not set `rb_local_deleted` — from these tables, leaves
+    # the playlist row itself alone, and deletes the files `contentFile` lists
+    # (there, the four ANLZ files) together with their emptied folders. That
+    # track had no artwork, and an Artwork folder holds `_m`/`_s` sizes that
+    # `contentFile` does not list, so artwork is left in place: an orphaned
+    # image is harmless, a guessed deletion is not.
+    _REMOVED_WITH_TRACK = ("DjmdCue", "ContentCue", "ContentFile", "DjmdMixerParam",
+                           "DjmdSongPlaylist")
+    # Also keyed by ContentID, but empty in the measured library, so what
+    # Rekordbox does with them is unknown. A track that appears in one is
+    # refused rather than guessed at.
+    _UNMEASURED_LINKS = {
+        "djmdSongHistory": "a History list",
+        "djmdSongSampler": "the Sampler",
+        "djmdSongTagList": "the Tag List",
+        "djmdSongMyTag": "My Tag",
+        "djmdSongHotCueBanklist": "a Hot Cue Bank List",
+        "djmdSongRelatedTracks": "Related Tracks",
+        "djmdSongRequestList": "a request list",
+        "djmdActiveCensor": "an Active Censor",
+        "contentActiveCensor": "an Active Censor",
+        "djmdCloudExportSongPlaylist": "a cloud export",
+    }
+
+    def _unmeasured_links(self, ids: list[str]) -> list[tuple[str, str]]:
+        """``(track_id, where)`` for each track named by an unmeasured table."""
+        params = {f"i{n}": tid for n, tid in enumerate(ids)}
+        marks = ", ".join(f":{k}" for k in params)
+        found: list[tuple[str, str]] = []
+        for table, where in self._UNMEASURED_LINKS.items():
+            try:
+                rows = self._db.session.execute(
+                    text(f'SELECT DISTINCT ContentID FROM "{table}" '
+                         f"WHERE ContentID IN ({marks})"), params
+                ).all()
+            except Exception:  # noqa: BLE001 — table absent in this schema version
+                continue
+            found += [(str(r[0]), where) for r in rows]
+        return found
+
+    def remove_tracks(self, track_ids: list[str]) -> int:
+        """Remove tracks from the library and every playlist; return how many.
+
+        Validated as a whole first, so a refused batch changes nothing. The
+        audio files are never touched; the analysis files go at save().
+        """
+        t = self._tables
+        self.iter_content()
+        assert self._by_id is not None
+        ids = [str(tid) for tid in dict.fromkeys(track_ids) if str(tid) in self._by_id]
+        if not ids:
+            return 0
+        blocked = self._unmeasured_links(ids)
+        if blocked:
+            tid, where = blocked[0]
+            title = self._by_id[tid].Title or tid
+            more = f" (and {len(blocked) - 1} more)" if len(blocked) > 1 else ""
+            raise Unsupported(
+                f"“{title}” is in {where} in Rekordbox{more}, and Konduktor does not "
+                "yet know how Rekordbox removes a track from there. Remove it in "
+                "Rekordbox instead — nothing was changed."
+            )
+
+        playlists: set[str] = set()
+        for tid in ids:
+            for name in self._REMOVED_WITH_TRACK:
+                table = getattr(t, name)
+                for row in self._db.session.query(table).filter(table.ContentID == tid):
+                    if name == "ContentFile" and str(row.Path or "").startswith(_ANLZ_ROOT):
+                        self._pending_file_removals.add(str(row.Path))
+                    elif name == "DjmdSongPlaylist":
+                        playlists.add(str(row.PlaylistID))
+                    self._db.delete(row)
+            self._db.delete(self._by_id[tid])
+            self._pending_grids.pop(tid, None)
+            self._grid_cache.pop(tid, None)
+            self._journal.record("track", "remove", tid)
+        self._db.flush()
+        for playlist_id in playlists:
+            self._renumber(playlist_id)
+        self._content_cache = None
+        self._by_id = None
+        return len(ids)
+
+    def _renumber(self, playlist_id: str) -> None:
+        """Close the gaps removed entries left in a playlist's `TrackNo`s, as
+        `pyrekordbox.remove_from_playlist` does — one 'move' for the registry,
+        not an update per row."""
+        t = self._tables
+        moved = []
+        now = datetime.now()
+        rows = (
+            self._db.session.query(t.DjmdSongPlaylist)
+            .filter(t.DjmdSongPlaylist.PlaylistID == playlist_id)
+            .order_by(t.DjmdSongPlaylist.TrackNo)
+        )
+        with self._db.registry.disabled():
+            for n, row in enumerate(rows, start=1):
+                if row.TrackNo != n:
+                    row.TrackNo = n
+                    row.updated_at = now
+                    moved.append(row)
+        if moved:
+            self._db.registry.on_move(moved)
+
+    def _delete_removed_files(self) -> None:
+        """Delete removed tracks' analysis/artwork files, then their emptied
+        folders. Called after the commit; a file another track still lists is
+        kept, and a failure only leaves an orphan behind, so it is logged."""
+        t = self._tables
+        share = (self.path.parent / "share").resolve()
+        still_listed = {str(p) for (p,) in self._db.session.query(t.ContentFile.Path)}
+        for rel in sorted(self._pending_file_removals - still_listed):
+            parts = Path(rel.lstrip("/\\")).parts
+            path = (share / Path(*parts)).resolve()
+            # Folders below e.g. `PIONEER/USBANLZ` are the track's own; that
+            # level and above are Rekordbox's and stay even when emptied.
+            keep = (share / Path(*parts[:2])).resolve()
+            if len(parts) < 3 or keep not in path.parents:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+                folder = path.parent
+                while folder != keep and not any(folder.iterdir()):
+                    folder.rmdir()
+                    folder = folder.parent
+            except OSError as ex:
+                log.warning("Could not delete %s: %s", path, ex)
+        self._pending_file_removals.clear()
 
     # ---- save --------------------------------------------------------------
     @property
@@ -492,9 +869,20 @@ class RekordboxStore:
         """
         summary = self._journal.summary()
         # Files first: if an analysis file cannot be written, nothing should have
-        # been committed to the database either.
-        self._flush_grids()
-        self._commit()
+        # been committed to the database either. An added track's files go
+        # before the grids, which write into them, and their `contentFile`
+        # rows after, which hash what was finally written.
+        written = self._write_new_files()
+        try:
+            self._flush_grids()
+            self._add_content_files(written)
+            self._commit()
+        except BaseException:
+            for path in written:
+                path.unlink(missing_ok=True)
+            raise
+        self._pending_new_files.clear()
+        self._delete_removed_files()
         self._journal.clear()
         # Reads go through the same session, so nothing needs re-projecting from
         # scratch — but the grid cache is keyed by track and survives a save.
@@ -524,10 +912,9 @@ class RekordboxStore:
                 "Rekordbox appears to be running; saving anyway. It may overwrite "
                 "or re-sync the library while it is open."
             )
-        original = rb_database.get_rekordbox_pid
-        rb_database.get_rekordbox_pid = lambda *a, **kw: 0
         try:
-            self._db.commit(autoinc=True)
+            with rekordbox_probe_suppressed():
+                self._db.commit(autoinc=True)
         except OperationalError as ex:
             # Suppressing pyrekordbox's veto does not remove SQLite's own lock:
             # a running Rekordbox really does hold the database, and the raw
@@ -538,8 +925,6 @@ class RekordboxStore:
                 "Rekordbox has the library open, so it cannot be written right "
                 "now. Close Rekordbox and save again — your changes are still here."
             ) from ex
-        finally:
-            rb_database.get_rekordbox_pid = original
 
     @property
     def app_running(self) -> bool:
@@ -589,7 +974,7 @@ class RekordboxStore:
         bpm = None
         grid = self.anlz_grid(track_id)
         if grid:
-            times, bpms = grid
+            times, bpms = grid[0], grid[1]
             for t, b in zip(times, bpms):
                 if t <= start_sec:
                     bpm = b
@@ -614,21 +999,62 @@ class RekordboxStore:
         cue_type: str,
         length_sec: float = 0.0,
         name: str | None = None,
+        color_code: int | None = None,
     ) -> None:
-        """Create or replace the cue in `slot`. A loop is a cue with a length."""
-        if start_sec < 0:
-            raise InvalidCommand("A cue cannot be before the start of the track")
+        """Create or replace the cue in `slot`. A loop is a cue with a length.
+
+        `color_code` is a rekordbox palette code (`palette.PALETTE`). None KEEPS
+        the colour of the cue already in the slot — the colour belongs to the
+        pad, so a rename, a type change or an Auto Hotcues Replace leaves it as
+        the user set it — and a new cue is uncoloured. Only `set_cue_color`
+        clears one.
+        """
         if int(slot) < 0:
             raise InvalidCommand(f"Hot cue slot cannot be negative, got {slot}")
-        row = self.content(track_id)
-        in_ms = int(round(start_sec * 1000))
-        is_loop = cue_type == "loop" and length_sec > 0
-        out_ms = int(round((start_sec + length_sec) * 1000)) if is_loop else -1
-
-        kind = kind_for("hotcue", slot)
         existing = self._cue_row(track_id, slot)
-        op = "add" if existing is None else "modify"
-        cue = existing
+        if color_code is None and existing is not None:
+            color_code = existing.ColorTableIndex or None
+        self._write_cue(
+            track_id, existing, kind=kind_for("hotcue", slot), start_sec=start_sec,
+            cue_type=cue_type, length_sec=length_sec, name=name, color_code=color_code,
+        )
+        self._journal.record("cue", "add" if existing is None else "modify", track_id, f"slot:{slot}")
+
+    def add_memory_cue(
+        self,
+        track_id: str,
+        *,
+        start_sec: float,
+        cue_type: str = "cue",
+        length_sec: float = 0.0,
+        name: str | None = None,
+        color_code: int | None = None,
+    ) -> None:
+        """Add a MEMORY cue (`Kind` 0) — for the exporter building a new library.
+
+        The adapter never calls this: editing memory cues in a user's library
+        stays refused under the two-platform promotion rule. A new export is not
+        an edit, and dropping the source's memory cues would lose prep.
+        """
+        self._write_cue(
+            track_id, None, kind=kind_for("memory", None), start_sec=start_sec,
+            cue_type=cue_type, length_sec=length_sec, name=name, color_code=color_code,
+        )
+        self._journal.record("cue", "add", track_id, "memory")
+
+    def _write_cue(self, track_id: str, cue, *, kind: int, start_sec: float, cue_type: str,
+                   length_sec: float, name: str | None, color_code: int | None) -> None:
+        """Fill one `djmdCue` row (a new one when `cue` is None) and resync the
+        `contentCue` mirror — the single definition of a cue row's fields."""
+        if start_sec < 0:
+            raise InvalidCommand("A cue cannot be before the start of the track")
+        row = self.content(track_id)
+        off = self.time_offset(track_id)
+        in_ms = int(round(timebase.to_pioneer(start_sec, off) * 1000))
+        is_loop = cue_type == "loop" and length_sec > 0
+        out_ms = (int(round(timebase.to_pioneer(start_sec + length_sec, off) * 1000))
+                  if is_loop else -1)
+
         if cue is None:
             t = self._tables
             cue = t.DjmdCue.create(
@@ -660,25 +1086,50 @@ class RekordboxStore:
             cue.BeatLoopSize = beat_loop_size(beats) if beats else None
             cue.ActiveLoop = 0
             cue.CueMicrosec = 0
-            cue.Color = 255
-            cue.ColorTableIndex = 0
         else:
             cue.BeatLoopSize = None
             cue.ActiveLoop = None
             cue.CueMicrosec = None
-            cue.Color = -1
-            cue.ColorTableIndex = None
+        self._apply_color(cue, color_code, is_loop)
         cue.Comment = name or None
 
         self._db.flush()
         self._sync_content_cue(track_id)
-        self._journal.record("cue", op, track_id, f"slot:{slot}")
+
+    @staticmethod
+    def _apply_color(cue, color_code: int | None, is_loop: bool) -> None:
+        """A row's two colour columns — the one definition of both conventions."""
+        if color_code:
+            # A palette-coloured cue, as the real library stores one: the code in
+            # ColorTableIndex (22 = green), Color -1. Coloured loops store the
+            # same; verified in Rekordbox 7 through the master.db export.
+            cue.ColorTableIndex = int(color_code)
+            cue.Color = -1
+        elif is_loop:
+            # What Rekordbox writes on the loops and auto-cues it creates.
+            cue.Color = 255
+            cue.ColorTableIndex = 0
+        else:
+            cue.Color = -1
+            cue.ColorTableIndex = None
+
+    def set_cue_color(self, track_id: str, slot: int, color_code: int | None) -> None:
+        """Recolour the cue in `slot`; None makes it uncoloured. Touches only the
+        colour columns, so the position does not take a time-base round trip."""
+        cue = self._cue_row(track_id, slot)
+        if cue is None:
+            raise NotFound(f"No cue in slot {slot}")
+        self._apply_color(cue, color_code, (cue.OutMsec or 0) > 0)
+        self._db.flush()
+        self._sync_content_cue(track_id)
+        self._journal.record("cue", "modify", track_id, f"slot:{slot}")
 
     def set_cue_type(self, track_id: str, slot: int, cue_type: str) -> None:
         cue = self._cue_row(track_id, slot)
         if cue is None:
             raise NotFound(f"No cue in slot {slot}")
-        start = (cue.InMsec or 0) / 1000.0
+        # Back to the decoded time base: set_cue re-applies the offset.
+        start = timebase.from_pioneer((cue.InMsec or 0) / 1000.0, self.time_offset(track_id))
         length = 0.0
         if cue_type == "loop":
             if cue.OutMsec and cue.OutMsec > 0:
@@ -800,8 +1251,7 @@ class RekordboxStore:
         grid = self.anlz_grid(track_id)
         if grid is None:
             return []
-        times, bpms = grid
-        return grid_math.markers_from_beats(times, bpms)
+        return grid_math.markers_from_beats(*grid)
 
     def track_duration(self, track_id: str) -> float:
         """Seconds, for expanding markers back into beats."""
@@ -829,59 +1279,12 @@ class RekordboxStore:
         # Buffer as the same (times, bpms) shape the reader returns, so the
         # projection needs no special case for an unsaved grid.
         self._pending_grids[str(track_id)] = (beat_nums, bpms, times)
-        self._grid_cache[str(track_id)] = (times, bpms) if times else None
+        self._grid_cache[str(track_id)] = (times, bpms, beat_nums) if times else None
         # TEMPO mirrors the first marker, exactly as Traktor's <TEMPO> does —
         # Rekordbox will not do it for us.
         row = self.content(track_id)
         row.BPM = int(round(ordered[0].bpm * 100)) if ordered else 0
         self._journal.record("grid", "replace" if ordered else "delete", track_id)
-
-    def delete_grid(self, track_id: str) -> None:
-        self.replace_grid(track_id, [])
-
-    def add_grid_marker(self, track_id: str, start_sec: float, bpm: float | None = None) -> None:
-        from ...core.model import GridMarker
-
-        markers = self.current_markers(track_id)
-        if bpm is None:
-            # Inherit the tempo governing this point, like Traktor's add does.
-            governing = [m for m in markers if m.start <= start_sec]
-            bpm = governing[-1].bpm if governing else (markers[0].bpm if markers else None)
-        if not bpm:
-            raise InvalidCommand("The first marker on an ungridded track needs a tempo")
-        if any(abs(m.start - start_sec) < 0.001 for m in markers):
-            raise InvalidCommand("There is already a marker here")
-        markers.append(GridMarker(start=float(start_sec), bpm=float(bpm)))
-        self.replace_grid(track_id, markers)
-
-    def _marker_at(self, track_id: str, index: int) -> tuple[list, int]:
-        markers = self.current_markers(track_id)
-        if not 0 <= index < len(markers):
-            raise NotFound(f"No grid marker {index}")
-        return markers, index
-
-    def move_grid_marker(self, track_id: str, index: int, start_sec: float) -> None:
-        markers, i = self._marker_at(track_id, index)
-        # Clamp between neighbours so the list cannot reorder under the caller.
-        low = markers[i - 1].start + 0.001 if i > 0 else 0.0
-        high = markers[i + 1].start - 0.001 if i + 1 < len(markers) else None
-        target = max(low, float(start_sec))
-        if high is not None:
-            target = min(target, high)
-        markers[i] = markers[i].model_copy(update={"start": target})
-        self.replace_grid(track_id, markers)
-
-    def set_grid_marker_bpm(self, track_id: str, index: int, bpm: float) -> None:
-        markers, i = self._marker_at(track_id, index)
-        if bpm <= 0:
-            raise InvalidCommand(f"A tempo must be positive, got {bpm}")
-        markers[i] = markers[i].model_copy(update={"bpm": float(bpm)})
-        self.replace_grid(track_id, markers)
-
-    def delete_grid_marker(self, track_id: str, index: int) -> None:
-        markers, i = self._marker_at(track_id, index)
-        del markers[i]
-        self.replace_grid(track_id, markers)
 
     def _flush_grids(self) -> None:
         """Write buffered grids into their ANLZ files. Called by save().
@@ -901,5 +1304,7 @@ class RekordboxStore:
             path = self.path.parent / "share" / str(rel).lstrip("/\\")
             if not path.is_file():
                 raise InvalidCommand(f"Analysis file is missing: {path}")
-            grid_math.write_pqtz(path, beat_nums, bpms, times)
+            off = self.time_offset(track_id)
+            grid_math.write_pqtz(path, beat_nums, bpms,
+                                 [timebase.to_pioneer(t, off) for t in times])
         self._pending_grids.clear()

@@ -38,6 +38,10 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
   const [starting, setStarting] = useState(false)
   const pollRef = useRef<number | null>(null)
 
+  // Platform names for wording the facts the preview and result carry as ids.
+  const platforms = useQuery({ queryKey: ['export-targets'], queryFn: api.exportTargets })
+  const nameOf = (id: string) => platforms.data?.find((p) => p.platform === id)?.name ?? id
+
   const preview = useQuery<ExportPreview>({
     queryKey: ['export-preview', set.id],
     queryFn: () => api.exportPreview(set.id),
@@ -55,11 +59,12 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
         if (next.state !== 'running') {
           if (pollRef.current) window.clearInterval(pollRef.current)
           if (next.state === 'done') {
-            const r = next.result as { tracks?: number; playlists?: number } | null
+            const r = next.result as { tracks?: number; playlists?: number; unchanged?: number } | null
             qc.invalidateQueries({ queryKey: ['export-contents', set.id] })
             onDone(
               `Exported ${r?.tracks ?? 0} track${r?.tracks === 1 ? '' : 's'}` +
-                (r?.playlists ? ` and ${r.playlists} playlist${r.playlists === 1 ? '' : 's'}` : ''),
+                (r?.playlists ? ` and ${r.playlists} playlist${r.playlists === 1 ? '' : 's'}` : '') +
+                (r?.unchanged ? ` (${r.unchanged} unchanged)` : ''),
             )
           } else if (next.state === 'failed') {
             onError(next.error || 'Export failed')
@@ -98,7 +103,14 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
   const p = preview.data
   const running = job?.state === 'running'
   const finished = job != null && job.state !== 'running'
-  const pct = job && job.total > 0 ? Math.min(100, (job.done / job.total) * 100) : null
+  // A finished export is a full bar, whatever the last phase reported — a
+  // re-export that copied nothing never had a byte count to fill.
+  const pct =
+    job?.state === 'done'
+      ? 100
+      : job && job.total > 0
+        ? Math.min(100, (job.done / job.total) * 100)
+        : null
   const blocked = p?.blocked ?? null
 
   return createPortal(
@@ -133,7 +145,9 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
                     {p.exportable} track{p.exportable === 1 ? '' : 's'}
                     {p.playlists.length > 0 &&
                       ` · ${p.playlists.length} playlist${p.playlists.length === 1 ? '' : 's'}`}
-                    <span className="text-muted"> · {gb(p.total_bytes)} to copy</span>
+                    <span className="text-muted">
+                      {p.unchanged > 0 && ` · ${p.unchanged} unchanged`} · {gb(p.total_bytes)} to copy
+                    </span>
                   </div>
                   {p.free_bytes != null && (
                     <div className={p.enough_space === false ? 'text-pink' : 'text-faint'}>
@@ -152,12 +166,22 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
                   )}
                   {p.replacing && (
                     <div className="rounded well px-3 py-2 text-xs text-gold">
-                      This folder already holds an export. Its files will be replaced.
+                      This folder already holds an export. Tracks that haven’t changed are kept; everything else is replaced.
+                    </div>
+                  )}
+                  {/* A warning, not a block: the other targets are fine anywhere,
+                      and staging a stick's contents in a folder is legitimate. */}
+                  {p.not_drive_root.length > 0 && (
+                    <div className="rounded well px-3 py-2 text-xs text-gold">
+                      {p.not_drive_root.map(nameOf).join(' and ')} is only found at the top of a
+                      drive, and this folder isn’t one — players won’t see it unless you move the
+                      folder’s contents to a drive’s top level.
                     </div>
                   )}
                   <div className="text-xs text-faint">
-                    Writes a <span className="font-mono">collection.nml</span> plus a copy of every
-                    track, in your own folder structure.
+                    Writes a library for {set.targets.map(nameOf).join(' and ')}, sharing one copy
+                    of every track under <span className="font-mono">Contents/</span>, in your own
+                    folder structure.
                   </div>
                 </div>
               )}
@@ -193,7 +217,9 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
 
           {job && (
             <div className="space-y-3">
-              <div className="text-text">{job.message || 'Working…'}</div>
+              <div className="text-text">
+                {job.state === 'done' ? finishedLine(job.result) : job.message || 'Working…'}
+              </div>
               <div className="h-2 overflow-hidden rounded-full bg-well">
                 <div
                   className={`h-full transition-[width] duration-200 ${
@@ -202,28 +228,34 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
                   style={pct == null ? undefined : { width: `${pct}%` }}
                 />
               </div>
-              {pct != null && running && (
+              {/* Tracks say their count in the message ("Analysing … (12/207)"). */}
+              {pct != null && running && job.unit === 'bytes' && (
                 <div className="text-xs text-faint">
                   {gb(job.done)} of {gb(job.total)}
                 </div>
               )}
               {job.state === 'cancelled' && (
                 <div className="text-xs text-muted">
-                  Cancelled. Everything this export copied was removed, and no library file was
+                  Cancelled. Everything this export copied was removed, and no library was
                   written.
                 </div>
               )}
-              {job.state === 'failed' && <div className="text-xs text-pink">{job.error}</div>}
+              {job.state === 'failed' && (
+                <div className="text-xs text-pink">
+                  {job.error} — nothing was left behind: no audio, and no library for any platform.
+                </div>
+              )}
               {job.state === 'done' && (
                 <div className="space-y-1 text-xs text-mint">
                   <div>Done — the folder is ready.</div>
-                  {/* Ben's workflow: the exported collection.nml is swapped into
-                      a Traktor install, which REPLACES that machine's own. */}
-                  <div className="text-faint">
-                    To use it: quit Traktor, back up its existing{' '}
-                    <span className="font-mono">collection.nml</span>, then put this one in its
-                    place.
-                  </div>
+                  {(
+                    (job.result as { libraries?: { platform: string; library: string }[] } | null)
+                      ?.libraries ?? []
+                  ).map((l) => (
+                    <div key={l.platform} className="text-faint">
+                      {nameOf(l.platform)}: <span className="font-mono">{l.library}</span>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -273,4 +305,17 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
     </div>,
     document.body,
   )
+}
+
+/** "207 tracks exported — 207 unchanged, nothing copied." Worded from the result's counts. */
+function finishedLine(result: Record<string, unknown> | null): string {
+  const r = (result ?? {}) as { tracks?: number; unchanged?: number }
+  const tracks = r.tracks ?? 0
+  const unchanged = r.unchanged ?? 0
+  const head = `${tracks} track${tracks === 1 ? '' : 's'} exported`
+  if (!unchanged) return head
+  const copied = tracks - unchanged
+  return `${head} — ${unchanged} unchanged, ${
+    copied ? `${copied} copied` : 'nothing copied'
+  }`
 }

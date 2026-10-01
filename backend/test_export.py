@@ -14,6 +14,7 @@ work perfectly on the machine that made it and resolve to nothing at the gig.
 Runs against the 8,485-entry fixture collection, so the tracks have real prep —
 flexible grids, hot cues on specific pads — rather than anything invented here.
 """
+import json
 import os
 import re
 import tempfile
@@ -216,7 +217,7 @@ ad = STATE.adapter
 LIB = STATE.library_id
 
 dest = Path(tempfile.mkdtemp()) / "GIG"
-eset = exports.create(LIB, name="GIG", target="traktor", destination=str(dest))
+eset = exports.create(LIB, name="GIG", targets=["traktor"], destination=str(dest))
 source_pl = next(n for n in ad.playlist_tree()[0].children if n.kind == "playlist")
 exports.add(LIB, eset.id, playlist_ids=[source_pl.id], track_ids=[ad.tracks[3].id])
 eset = exports.get(LIB, eset.id)
@@ -229,14 +230,18 @@ def run_now(plan):
     return job
 
 
-print("== the plan mirrors the source tree, relative to its shared root ==")
+print("== the plan mirrors the source tree under Contents/, relative to its shared root ==")
 built = exporter.plan(ad, eset)
 check("nothing is blocking it", built.blocked is None, str(built.blocked))
 check("every track has somewhere to go", all(t.destination for t in built.exportable))
 rel = [str(t.destination.relative_to(dest)) for t in built.exportable]
+# Under Contents/, so the audio can never land on top of a library's own path.
+check("all audio lives under Contents/",
+      all(r.startswith(exporter.AUDIO_DIR + "/") for r in rel), rel)
 # Mirroring ABSOLUTE paths would put the user's home directory on the stick.
 check("the user's own folders are preserved",
-      all(r.startswith(("House/", "Techno/")) for r in rel), rel)
+      all(r.startswith(("Contents/House/", "Contents/Techno/")) for r in rel), rel)
+check("a Traktor-only export never warns about a drive root", built.not_drive_root == [])
 check("and nothing above the shared root comes with them",
       not any("Users" in r or r.startswith("/") for r in rel), rel)
 check("space is checked before starting", exporter.space_for(built) is not None)
@@ -337,6 +342,336 @@ check("no manifest either", not (fresh / exporter.MANIFEST_NAME).exists())
 # COMPLETED copies leaves the in-flight one behind — the bug import had.
 leftover = [p for p in fresh.rglob("*") if p.is_file()] if fresh.exists() else []
 check("and no audio was left behind", leftover == [], [str(p) for p in leftover])
+
+print("== several targets share ONE copy of the audio ==")
+from konduktor.adapters.onelibrary.driver import OneLibraryDriver  # noqa: E402
+
+multi = Path(tempfile.mkdtemp()) / "STICK"
+exports.update(LIB, eset.id, destination=str(multi), targets=["traktor", "onelibrary"])
+eset = exports.get(LIB, eset.id)
+check("the set keeps both targets, in order", eset.targets == ["traktor", "onelibrary"], eset.targets)
+mplan = exporter.plan(ad, eset)
+check("nothing is blocking it", mplan.blocked is None, str(mplan.blocked))
+# A temp folder is not a drive's root, and only OneLibrary cares.
+check("only the drive-root target is warned about", mplan.not_drive_root == ["onelibrary"],
+      mplan.not_drive_root)
+mjob = run_now(mplan)
+check("it finishes", mjob.state == "done", f"{mjob.state}: {mjob.error}")
+check("the result names both libraries",
+      [l["platform"] for l in mjob.result["libraries"]] == ["traktor", "onelibrary"],
+      mjob.result.get("libraries"))
+mrel = [t.destination.relative_to(multi) for t in mplan.exportable]
+audio_files = [p for p in multi.rglob("*") if p.is_file() and p.parts[len(multi.parts)] == "Contents"]
+check("the audio was copied once, not once per target", len(audio_files) == len(mrel),
+      f"{len(audio_files)} files for {len(mrel)} tracks")
+t_lib = TraktorDriver().open(multi / "collection.nml")
+o_lib = OneLibraryDriver().open(multi)
+check("the Traktor collection re-opens with every track", len(t_lib.tracks) == len(mrel))
+check("so does the OneLibrary drive", len(o_lib.tracks) == len(mrel))
+# Both libraries must point at the SAME files — a second copy would be a bug
+# in the plan, and a dangling path would be one in a writer.
+check("every OneLibrary track resolves to a copied file",
+      all(o_lib.audio_path(t.id) and o_lib.audio_path(t.id).is_file() for t in o_lib.tracks))
+check("OneLibrary paths are drive-relative under /Contents/",
+      all(t.id.startswith("/Contents/") for t in o_lib.tracks), [t.id for t in o_lib.tracks][:2])
+manifest = json.loads((multi / exporter.MANIFEST_NAME).read_text())
+check("the manifest lists both libraries",
+      sorted(manifest["libraries"]) == sorted(["collection.nml", str(Path("PIONEER/rekordbox/exportLibrary.db"))]),
+      manifest["libraries"])
+del t_lib, o_lib
+
+print("== unticking a target removes its library on the next export ==")
+exports.update(LIB, eset.id, targets=["traktor"])
+eset = exports.get(LIB, eset.id)
+job3 = run_now(exporter.plan(ad, eset))
+check("the re-export succeeds", job3.state == "done", f"{job3.state}: {job3.error}")
+check("the OneLibrary library is gone", not (multi / "PIONEER").exists(),
+      sorted(str(p.relative_to(multi)) for p in (multi / "PIONEER").rglob("*")) if (multi / "PIONEER").exists() else "")
+check("the Traktor one and the audio remain",
+      (multi / "collection.nml").is_file() and all((multi / r).is_file() for r in mrel))
+
+print("== a manifest from a single-target export is still cleared ==")
+old = Path(tempfile.mkdtemp()) / "OldExport"
+old.mkdir()
+(old / "collection.nml").write_text("stale")
+(old / "House").mkdir()
+(old / "House" / "stale.mp3").write_bytes(b"x")
+(old / exporter.MANIFEST_NAME).write_text(json.dumps(
+    {"library": "collection.nml", "files": ["House/stale.mp3"]}))
+exports.update(LIB, eset.id, destination=str(old))
+job4 = run_now(exporter.plan(ad, exports.get(LIB, eset.id)))
+check("the re-export succeeds", job4.state == "done", f"{job4.state}: {job4.error}")
+check("the old root-level audio was cleared", not (old / "House").exists())
+check("and the new collection replaced the old one",
+      (old / "collection.nml").read_text() != "stale")
+
+print("== a failing LATER target undoes everything, earlier targets included ==")
+failing = Path(tempfile.mkdtemp()) / "Failing"
+exports.update(LIB, eset.id, destination=str(failing), targets=["traktor", "onelibrary"])
+onelib = core_export.for_platform("onelibrary")
+
+
+def _half_written(payload, destination):
+    # Writes files it never gets to REPORT, then fails — the case the rollback's
+    # snapshot exists for.
+    stray = Path(destination) / "PIONEER" / "USBANLZ" / "P000" / "0000" / "ANLZ0000.DAT"
+    stray.parent.mkdir(parents=True, exist_ok=True)
+    stray.write_bytes(b"partial")
+    raise RuntimeError("disk full")
+
+
+eset = exports.get(LIB, eset.id)   # run_now() runs the module-level set
+onelib.write = _half_written
+try:
+    job5 = run_now(exporter.plan(ad, eset))
+finally:
+    del onelib.write
+check("the export fails", job5.state == "failed", job5.state)
+left = sorted(str(p.relative_to(failing)) for p in failing.rglob("*")) if failing.exists() else []
+check("nothing at all is left behind — no audio, no Traktor library, no stray analysis",
+      left == [], left)
+exports.update(LIB, eset.id, destination=str(dest), targets=["traktor"])
+eset = exports.get(LIB, eset.id)
+
+print("== a re-export copies only what changed ==")
+from konduktor.core import analysis_cache, waveform  # noqa: E402
+
+calls = {"copy": 0, "analyse": 0}
+_real_copy, _real_analyse = exporter.copy_file, waveform.analyse
+
+
+def _counting_copy(*a, **kw):
+    calls["copy"] += 1
+    return _real_copy(*a, **kw)
+
+
+def _counting_analyse(*a, **kw):
+    calls["analyse"] += 1
+    return _real_analyse(*a, **kw)
+
+
+exporter.copy_file, waveform.analyse = _counting_copy, _counting_analyse
+
+
+def run_set(s, plan, handle=None):
+    if handle is not None:
+        return exporter.run(ad, s, plan, handle)
+    job = JOBS.submit("export", lambda h: exporter.run(ad, s, plan, h))
+    while not job.finished:
+        time.sleep(0.02)
+    return job
+
+
+def reset():
+    calls["copy"] = calls["analyse"] = 0
+
+
+def inodes(root):
+    return {str(p.relative_to(root)): p.stat().st_ino
+            for p in (root / exporter.AUDIO_DIR).rglob("*") if p.is_file()}
+
+
+inc = Path(tempfile.mkdtemp()) / "INC"
+iset = exports.create(LIB, name="INC", targets=["traktor", "onelibrary"], destination=str(inc))
+exports.add(LIB, iset.id, track_ids=[t.id for t in ad.tracks[:4]])
+iset = exports.get(LIB, iset.id)
+
+first = exporter.plan(ad, iset)
+check("a first export reuses nothing", first.unchanged == 0 and first.total_bytes == 4 * 300_000,
+      (first.unchanged, first.total_bytes))
+reset()
+j = run_set(iset, first)
+check("it finishes", j.state == "done", f"{j.state}: {j.error}")
+check("every file was copied and measured once", calls == {"copy": 4, "analyse": 4}, calls)
+manifest = json.loads((inc / exporter.MANIFEST_NAME).read_text())
+check("the manifest records each copy's source",
+      sorted(r["source"] for r in manifest["audio"].values())
+      == sorted(str(ad.audio_path(t.id)) for t in ad.tracks[:4]))
+check("no temporary files are left", not any(
+    p.name.endswith(exporter.PARTIAL_SUFFIX) for p in inc.rglob("*")))
+before_ino = inodes(inc)
+
+again = exporter.plan(ad, iset)
+check("nothing changed, so nothing is to be copied",
+      again.unchanged == 4 and again.total_bytes == 0 and again.as_dict()["unchanged"] == 4,
+      (again.unchanged, again.total_bytes))
+reset()
+j = run_set(iset, again)
+check("the re-export finishes", j.state == "done", f"{j.state}: {j.error}")
+check("no audio was copied and no track decoded", calls == {"copy": 0, "analyse": 0}, calls)
+check("the kept files are the very same files", inodes(inc) == before_ino)
+check("both libraries were still rewritten and re-open with every track",
+      len(TraktorDriver().open(inc / "collection.nml").tracks) == 4
+      and len(OneLibraryDriver().open(inc).tracks) == 4)
+
+
+
+class _Recorder:
+    """A handle that keeps every progress report."""
+
+    def __init__(self):
+        self.reports = []
+
+    def progress(self, **kw):
+        self.reports.append(kw)
+
+    cancelled = False
+
+    def raise_if_cancelled(self):
+        pass
+
+
+rec = _Recorder()
+run_set(iset, exporter.plan(ad, iset), rec)
+track_steps = [(r["done"], r["total"]) for r in rec.reports
+               if r.get("unit") == "tracks" and r.get("total")]
+# The bug: the bar counted only bytes, so a re-export that copied nothing sat
+# on an indeterminate bar through the whole (slow) library write.
+check("with nothing to copy, the bar still moves — per track, while writing",
+      track_steps and track_steps[-1] == (3, 4) and len(track_steps) >= 4, track_steps)
+
+print("== an edited source is copied again, and only it ==")
+edited = ad.audio_path(ad.tracks[0].id)
+edited.write_bytes(b"\1" * 310_000)   # what a tag write does: new bytes, new mtime
+plan3 = exporter.plan(ad, iset)
+check("one track is to be copied", plan3.unchanged == 3 and plan3.total_bytes == 310_000,
+      (plan3.unchanged, plan3.total_bytes))
+reset()
+j = run_set(iset, plan3)
+check("it finishes", j.state == "done", f"{j.state}: {j.error}")
+check("one file copied, one decoded", calls == {"copy": 1, "analyse": 1}, calls)
+edited_copy = next(Path(t.destination) for t in plan3.exportable if t.source_path == edited)
+check("the copy on the stick is the new version", edited_copy.read_bytes() == b"\1" * 310_000)
+
+print("== a copy changed ON the stick is not trusted ==")
+tampered = next(Path(t.destination) for t in plan3.exportable if t.source_path != edited)
+with tampered.open("ab") as f:
+    f.write(b"junk")
+plan4 = exporter.plan(ad, iset)
+check("it alone is copied again",
+      [Path(t.destination) for t in plan4.exportable if t.reuse is None] == [tampered],
+      [str(t.destination) for t in plan4.exportable if t.reuse is None])
+j = run_set(iset, plan4)
+check("and the original is restored", j.state == "done" and tampered.stat().st_size == 300_000)
+
+print("== a moved shared root renames kept copies instead of copying them ==")
+house = [t for t in ad.tracks[:4] if "/House/" in str(ad.audio_path(t.id))]
+techno = [t for t in ad.tracks[:4] if t not in house]
+moved = Path(tempfile.mkdtemp()) / "MOVED"
+mset = exports.create(LIB, name="MOVED", targets=["traktor"], destination=str(moved))
+exports.add(LIB, mset.id, track_ids=[t.id for t in house])
+mset = exports.get(LIB, mset.id)
+run_set(mset, exporter.plan(ad, mset))
+old_paths = inodes(moved)
+check("with only House tracks, the root is House itself",
+      all(not r.startswith("Contents/House/") for r in old_paths), sorted(old_paths))
+exports.add(LIB, mset.id, track_ids=[techno[0].id])
+mset = exports.get(LIB, mset.id)
+mplan = exporter.plan(ad, mset)
+check("adding a Techno track moves every path, yet the House copies are reused",
+      mplan.unchanged == len(house)
+      and mplan.total_bytes == ad.audio_path(techno[0].id).stat().st_size,
+      (mplan.unchanged, mplan.total_bytes))
+reset()
+j = run_set(mset, mplan)
+check("it finishes", j.state == "done", f"{j.state}: {j.error}")
+check("only the new track was copied", calls["copy"] == 1, calls)
+new_paths = inodes(moved)
+check("the kept copies now sit under House/, as the same files",
+      sorted(v for r, v in new_paths.items() if r.startswith("Contents/House/"))
+      == sorted(old_paths.values()), sorted(new_paths))
+check("and nothing is left at the old paths or in staging",
+      not any((moved / r).exists() for r in old_paths)
+      and not (moved / exporter.MOVING_DIR).exists())
+check("the collection points at the moved copies",
+      all(TraktorDriver().open(moved / "collection.nml").audio_path(t.id).is_file()
+          for t in TraktorDriver().open(moved / "collection.nml").tracks))
+
+print("== a removed track's copy is removed ==")
+exports.remove(LIB, mset.id, track_ids=[techno[0].id])
+mset = exports.get(LIB, mset.id)
+j = run_set(mset, exporter.plan(ad, mset))
+check("it finishes", j.state == "done", f"{j.state}: {j.error}")
+check("the Techno copy is gone", not any("Techno" in str(p) for p in moved.rglob("*")),
+      sorted(str(p.relative_to(moved)) for p in moved.rglob("*")))
+
+print("== cancelling a re-export keeps what it kept, and the folder stays ours ==")
+edited.write_bytes(b"\2" * 320_000)
+cplan = exporter.plan(ad, iset)
+kept_before = {Path(t.destination) for t in cplan.exportable if t.reuse is not None}
+try:
+    run_set(iset, cplan, _CancelAfter(2))
+    check("it stops", False, "it did not raise")
+except JobCancelled:
+    check("it stops", True)
+check("no library was left", not (inc / "collection.nml").exists()
+      and not (inc / "PIONEER" / "rekordbox" / "exportLibrary.db").exists())
+check("the kept copies are still there", all(p.is_file() for p in kept_before))
+check("the half-copied file is not", not (edited_copy.exists() or any(
+    p.name.endswith(exporter.PARTIAL_SUFFIX) for p in inc.rglob("*"))))
+retry = exporter.plan(ad, iset)
+check("the folder is still ours, not refused", retry.blocked is None, str(retry.blocked))
+check("and the retry still reuses the kept copies", retry.unchanged == len(kept_before),
+      (retry.unchanged, len(kept_before)))
+reset()
+j = run_set(iset, retry)
+check("the retry finishes", j.state == "done", f"{j.state}: {j.error}")
+check("decoding only the changed track — the rest came from the cache", calls["analyse"] == 1, calls)
+
+print("== the analysis cache ==")
+cache_dir = inc / analysis_cache.CACHE_DIR
+check("it lives on the drive", cache_dir.is_dir() and len(list(cache_dir.iterdir())) == 4,
+      sorted(p.name for p in cache_dir.iterdir()) if cache_dir.exists() else "")
+check("and is not in the manifest, so a re-export never clears it",
+      not any(f.startswith(analysis_cache.CACHE_DIR)
+              for f in json.loads((inc / exporter.MANIFEST_NAME).read_text())["files"]))
+exports.remove(LIB, iset.id, track_ids=[ad.tracks[3].id])
+iset = exports.get(LIB, iset.id)
+run_set(iset, exporter.plan(ad, iset))
+check("a removed track's entry is pruned", len(list(cache_dir.iterdir())) == 3)
+# Round-trips a real measurement, not just the undecodable marker the silent
+# fixture files produce.
+import numpy as np  # noqa: E402
+import soundfile as sf  # noqa: E402
+
+tone_dir = Path(tempfile.mkdtemp())
+tone = tone_dir / "tone.wav"
+sf.write(tone, 0.5 * np.sin(np.linspace(0, 2000 * np.pi, 44100 * 3)), 44100)
+c = analysis_cache.AnalysisCache(tone_dir / "cache")
+key = analysis_cache.fingerprint(tone, tone.stat().st_size, tone.stat().st_mtime_ns)
+fresh_a = c.analyse(tone, key, lead=0.025)
+reset()
+cached_a = c.analyse(tone, key, lead=0.025)
+check("a hit does not decode", calls["analyse"] == 0, calls)
+check("and returns the same measurement, exactly",
+      fresh_a is not None and cached_a is not None
+      and np.array_equal(fresh_a.columns.rms, cached_a.columns.rms)
+      and np.array_equal(fresh_a.columns.brightness, cached_a.columns.brightness)
+      and np.array_equal(fresh_a.frames.bands, cached_a.frames.bands)
+      and fresh_a.duration == cached_a.duration)
+c.analyse(tone, key, lead=0.0)
+check("a different lead is a separate entry", calls["analyse"] == 1, calls)
+next((tone_dir / "cache").glob("*-25000-400.npz")).write_bytes(b"garbage")
+reset()
+check("a damaged entry is a miss, not a failure",
+      c.analyse(tone, key, lead=0.025) is not None and calls["analyse"] == 1)
+
+exporter.copy_file, waveform.analyse = _real_copy, _real_analyse
+exports.delete(LIB, iset.id)
+exports.delete(LIB, mset.id)
+
+print("== targets are validated and migrated ==")
+check("a set saved with the old single `target` loads as a list",
+      exports._targets({"target": "onelibrary"}) == ["onelibrary"])
+check("an empty list falls back rather than yielding a set with no target",
+      exports._targets({"targets": []}) == ["traktor"])
+dup = exports.create(LIB, name="Dup", targets=["traktor", "traktor"], destination=str(dest / "x"))
+check("duplicate targets collapse", dup.targets == ["traktor"], dup.targets)
+exports.delete(LIB, dup.id)
+bad = exports.create(LIB, name="Bad", targets=["traktor", "serato"], destination=str(dest / "y"))
+check("one unsupported target blocks the whole plan",
+      exporter.plan(ad, bad).blocked == exporter.BLOCKED_NO_TARGET)
+exports.delete(LIB, bad.id)
 
 print("== a missing file is skipped, not fatal ==")
 gone = Path(seed_items[0].destination)

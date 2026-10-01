@@ -1,0 +1,11 @@
+# Konduktor stem engine — Python 3.12. NOT the backend's requirements: this is a
+# separate program (it carries torch; the backend deliberately does not).
+# Pinned to the versions the 2026-09-29 benchmark and the user's listening test
+# ran on. Hashes are added when the frozen build (engine.yml) lands.
+torch==2.14.0
+demucs==4.1.0
+numpy==2.5.3
+safetensors==0.8.0
+pyyaml==6.0.3
+einops==0.8.2
+julius==0.2.8

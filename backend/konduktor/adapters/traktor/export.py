@@ -63,7 +63,9 @@ OTHER_PLAYLIST = "Other"
 
 class TraktorExporter:
     platform = "traktor"
+    menu_order = 20
     library_filename = "collection.nml"
+    drive_root = False
 
     def capabilities(self):
         """What a Traktor library can hold — answered with no library to read.
@@ -75,7 +77,7 @@ class TraktorExporter:
             Path(self.library_filename),
             [
                 "title", "artist", "album", "genre", "label", "remixer",
-                "producer", "mix", "release_date", "comment", "rating",
+                "producer", "mix", "release_date", "comment", "comment2", "rating",
             ],
         )
 

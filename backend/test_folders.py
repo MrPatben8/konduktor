@@ -158,7 +158,7 @@ with TestClient(main.app, raise_server_exceptions=False) as c:
 
     print("== a held file is never added twice, but still reaches its target ==")
     library = STATE.library_id
-    eset = exports.create(library, name="Folder Export", target="traktor",
+    eset = exports.create(library, name="Folder Export", targets=["traktor"],
                           destination=str(Path(tempfile.mkdtemp()) / "out"))
     req = {"track_ids": [str(one), str(two)], "mode": "reference",
            "playlist_id": playlist, "export_id": eset.id}
@@ -192,6 +192,66 @@ with TestClient(main.app, raise_server_exceptions=False) as c:
     check("an unscanned file cannot be added",
           c.post("/api/folder/add/preview",
                  json={"track_ids": ["/etc/passwd"], "mode": "reference"}).status_code == 404)
+
+    print("== Rekordbox: the same route adds to a master.db ==")
+    from konduktor.adapters.rekordbox import discovery as rb_discovery
+
+    found = rb_discovery.detect_libraries()
+    if not found:
+        print("  (skipped: no Rekordbox library on this machine)")
+    else:
+        rb_src = Path(found[0]["path"]).parent
+        rb_dir = Path(tempfile.mkdtemp()) / "rekordbox"
+        rb_dir.mkdir()
+        for name in ("master.db", "masterPlaylists6.xml"):
+            if (rb_src / name).exists():
+                shutil.copy2(rb_src / name, rb_dir / name)
+        if (rb_src / "share").is_dir():
+            shutil.copytree(rb_src / "share", rb_dir / "share")
+        r = c.post("/api/library/open", json={"path": str(rb_dir / "master.db")})
+        check("a Rekordbox copy opens", r.status_code == 200, r.text[:300])
+        caps = c.get("/api/capabilities").json()
+        check("it advertises adding", caps["tracks"]["addable"] is True)
+        rb = main.require_adapter()
+        n_before = len(rb.tracks)
+        req = {"track_ids": [str(two)], "mode": "reference"}
+        job = wait(c, c.post("/api/folder/add", json=req).json())
+        check("the job finishes", job["state"] == "done", str(job))
+        new_ids = (job.get("result") or {}).get("track_ids") or []
+        check("one track was added", len(rb.tracks) == n_before + 1 and len(new_ids) == 1)
+        if new_ids:
+            check("it points at the original file", rb.audio_path(new_ids[0]) == two)
+            row = rb._store.content(new_ids[0])
+            dat = rb_dir / "share" / row.AnalysisDataPath.lstrip("/")
+            check("its analysis file was written", dat.is_file(), str(dat))
+            check("and saved, not left pending", not rb.dirty)
+        rb.close()
+
+    print("== a stick places its own audio; a library that cannot add refuses ==")
+    # A COPY: opened as THE library, a OneLibrary drive is editable.
+    fixture = Path(tempfile.mkdtemp()) / "onelibrary"
+    shutil.copytree(Path(__file__).resolve().parent / "fixtures" / "onelibrary", fixture)
+    r = c.post("/api/library/open", json={"path": str(fixture)})
+    if r.status_code == 200:
+        # No mode and no destination: the library decides (decision 7).
+        r = c.post("/api/folder/add/preview", json={"track_ids": [str(two)], "mode": "copy"})
+        body = r.json() if r.status_code == 200 else {}
+        check("a stick's preview needs no destination, and counts the copy",
+              r.status_code == 200 and body.get("places_audio") and body.get("copied") == 1
+              and body.get("in_place") == 0, f"{r.status_code} {r.text[:200]}")
+        adapter = main.STATE.adapter
+        real = adapter.capabilities
+        caps = real()
+        adapter.capabilities = lambda: caps.model_copy(
+            update={"tracks": caps.tracks.model_copy(update={"addable": False})})
+        try:
+            check("a library whose capabilities say it cannot add refuses the route (422)",
+                  c.post("/api/folder/add/preview",
+                         json={"track_ids": [str(two)], "mode": "reference"}).status_code == 422)
+        finally:
+            adapter.capabilities = real
+    else:
+        print(f"  (skipped: fixture did not open — {r.status_code})")
 
     print("== hidden entries ==")
     check("AppleDouble twins are hidden", places.is_hidden(music / "._one.flac"))

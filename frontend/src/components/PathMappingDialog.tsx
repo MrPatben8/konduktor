@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type RemapPreview } from '../api'
 import type { ToastMsg } from './Toast'
 import { Icon } from '../lib/icons'
+import { invalidateTrackLists } from '../lib/trackQueries'
 
 interface Props {
   onClose: () => void
@@ -65,7 +66,7 @@ export function PathMappingDialog({ onClose, onNotify, onError }: Props) {
       await api.putPathMapping({ from: from.trim(), to: to.trim() })
       // Re-resolve everything that depends on the file path.
       qc.invalidateQueries({ queryKey: ['pathMapping'] })
-      qc.invalidateQueries({ queryKey: ['tracks'] })
+      invalidateTrackLists(qc)
       const cleared = !from.trim() || !to.trim()
       onNotify('success', cleared ? 'Path mapping cleared.' : 'Path mapping saved.')
       onClose()
@@ -81,8 +82,8 @@ export function PathMappingDialog({ onClose, onNotify, onError }: Props) {
     try {
       const res = await api.remapPaths(from.trim(), to.trim())
       // Locations changed, so track ids changed — refetch library + state.
-      qc.invalidateQueries({ queryKey: ['tracks'] })
-      qc.invalidateQueries({ queryKey: ['state'] })
+      invalidateTrackLists(qc)
+      qc.invalidateQueries({ queryKey: ['export-contents'] })
       if (res.rewritten === 0) {
         onNotify('warning', 'No tracks matched — nothing was rewritten.')
       } else {
@@ -101,7 +102,10 @@ export function PathMappingDialog({ onClose, onNotify, onError }: Props) {
     }
   }
 
-  const canCommit = !!from.trim() && !!to.trim()
+  // The backend refuses a rewrite that would give two tracks one path; say so
+  // here rather than only after the click.
+  const collides = (preview?.collisions ?? 0) > 0
+  const canCommit = !!from.trim() && !!to.trim() && !collides
 
   return createPortal(
     <div
@@ -189,6 +193,19 @@ export function PathMappingDialog({ onClose, onNotify, onError }: Props) {
                   {preview.matched} of {preview.total} tracks match; {preview.existing} of{' '}
                   {preview.matched} exist at the target.
                 </span>
+              )}
+              {collides && (
+                <div className="mt-1.5 text-pink">
+                  {preview.collisions} target path{preview.collisions === 1 ? '' : 's'} would
+                  belong to more than one track, so the paths can’t be rewritten:
+                  <ul className="mt-1 list-disc pl-4 text-muted">
+                    {preview.collision_samples.map((p) => (
+                      <li key={p} className="truncate" title={p}>
+                        {p}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
             </div>
           )}

@@ -22,7 +22,10 @@ from pydantic import BaseModel
 # permanent refusal protecting their other machines.
 # `not_in_library` is a folder of loose files being browsed: nothing there is a
 # library to write to, and the way to edit one is to add it to the collection.
-ReadonlyCause = Literal["platform_incomplete", "cloud_synced", "not_in_library"]
+# `browsing` is an editable library opened only to READ alongside the loaded one
+# (a OneLibrary stick in the sidebar's Devices): the way to edit it is to open it
+# as THE library, which one SaveBar and one dirty state can then follow.
+ReadonlyCause = Literal["platform_incomplete", "cloud_synced", "not_in_library", "browsing"]
 
 CueType = Literal["cue", "fade_in", "fade_out", "load", "loop"]
 CueRole = Literal["hotcue", "memory"]
@@ -61,8 +64,20 @@ class TrackCapabilities(BaseModel):
     editable_fields: list[str] = []
     media_kinds: list[MediaKind] = ["audio"]
     # Tracks can be removed from the library (and so from its playlists). The
-    # audio file is never touched either way.
+    # audio file is never touched — except where `places_audio`: a library that
+    # owns where its audio lives (a stick) deletes it with the track, at Save.
     removable: bool = False
+    # Tracks can be added to the library (`add_tracks`): an import from a
+    # device, or browsed files added to the collection.
+    addable: bool = False
+    # The LIBRARY decides where added audio goes (`place_audio`), so the user is
+    # neither asked "copy or leave in place?" nor for a destination: a OneLibrary
+    # stick can only point at files on itself, and lays them out as rekordbox
+    # does. False: the user chooses, as for a desktop collection.
+    places_audio: bool = False
+    # Tracks can be converted to native-instruments STEM files, which this
+    # platform plays as stems (`apply_stem_swaps`).
+    stem_convertible: bool = False
     # The audio files this library can hold, as lower-case suffixes. What a
     # browsed folder offers to add — a file the library would refuse, or that
     # the DJ app cannot play, is not worth listing as addable.
@@ -89,6 +104,9 @@ class SaveCapabilities(BaseModel):
     library_label: str
     overwrite_risk: Literal["none", "on_exit", "while_running"] = "none"
     history: bool = True
+    # The library was written by one of Konduktor's EXPORT sets, whose next run
+    # replaces it — so an edit made here directly is undone by the next export.
+    managed_by_export: bool = False
 
 
 class Capabilities(BaseModel):

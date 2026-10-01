@@ -56,3 +56,16 @@ implementation — open and write to it.
 
 Not loaded by the tests; kept as documentation, and as the starting point if
 Konduktor ever needs to create a drive from nothing.
+
+## rekordbox-edited/
+
+Analysis files from a SECOND stick (Goober), after rekordbox 7 itself edited it
+(2026-10-01): a hot cue added on pad E of `demo-track-2`, and a memory cue added on
+the start of `nemean`'s memory loop. Trimmed the same way as above, by dropping
+whole tags: only `PPTH`, `PCOB` and `PCO2` are kept, byte for byte.
+
+They exist for one property: rekordbox writes **compact** cue entries when it
+edits (48 bytes for that hot cue, 44 with no colour for the memory cue; an export
+writes 88). pyrekordbox's parser raises on the 44-byte form, which once made the
+reader drop the whole `.EXT`, losing pads D-H and every colour. See
+`adapters/rekordbox/anlz_file.py`.

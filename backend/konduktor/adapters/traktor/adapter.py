@@ -20,6 +20,7 @@ from ...core.capabilities import Capabilities
 from ...core.model import PlaylistNode, Track, TrackCues
 from ...core.pathmap import PathMapping
 from ...core.query import TrackIndex
+from ...core.relocate import PathGroup
 from . import capabilities as caps
 from . import projection
 from .cue_types import CUE_TYPE_TO_NATIVE
@@ -49,7 +50,7 @@ class TraktorAdapter:
         if entry is None:
             return TrackCues()
         self._index.replace(projection.to_track(entry))
-        return projection.to_track_cues(entry)
+        return projection.to_track_cues(entry, self._store.time_offset_ms(entry))
 
     # ---- read ------------------------------------------------------------
     @property
@@ -74,7 +75,9 @@ class TraktorAdapter:
 
     def track_cues(self, track_id: str) -> TrackCues | None:
         entry = self._store.model_entry(track_id)
-        return projection.to_track_cues(entry) if entry is not None else None
+        if entry is None:
+            return None
+        return projection.to_track_cues(entry, self._store.time_offset_ms(entry))
 
     # ---- transitional shims --------------------------------------------
     # main.py still drives the store directly and calls replace_track after each
@@ -160,8 +163,17 @@ class TraktorAdapter:
             self._rebuild()
         return n
 
+    # ---- stem conversion --------------------------------------------------
+    def apply_stem_swaps(self, swaps: list, *, add_to_playlist: str | None = None):
+        with _translate():
+            result = self._store.apply_stem_swaps(swaps, add_to_playlist=add_to_playlist)
+        # One rebuild for the whole batch: ids changed (repoint) or appeared
+        # (add), and `TrackIndex` has no per-id remove.
+        self._rebuild()
+        return result
+
     # ---- adding tracks ----------------------------------------------------
-    def add_tracks(self, items: list) -> list[str]:
+    def add_tracks(self, items: list, *, checkpoint=None) -> list[str]:
         """Add tracks that came from somewhere else, with their prep.
 
         Two steps, and the split is the point. The store creates a bare ENTRY —
@@ -183,6 +195,7 @@ class TraktorAdapter:
             type, so a free RGB value has nowhere to go.
 
         Returns the new track ids, in the order the items were given.
+        `checkpoint` is unused: nothing here is slow (Traktor analyses on load).
         """
         added: list[str] = []
         for item in items:
@@ -286,6 +299,10 @@ class TraktorAdapter:
             self._store.set_hotcue_type(track_id, slot, self._native_cue_type(cue_type))
         return self._refresh(track_id)
 
+    def set_cue_color(self, track_id: str, slot: int, color: str | None) -> TrackCues:
+        # Traktor colours a cue by its type (capabilities.cues.color = "none").
+        raise Unsupported("Traktor colours cues by their type")
+
     def delete_cue(self, track_id: str, slot: int) -> TrackCues:
         with _translate():
             self._store.delete_hotcue(track_id, slot)
@@ -362,6 +379,12 @@ class TraktorAdapter:
 
     def set_path_mapping(self, mapping: PathMapping) -> None:
         self._store.set_path_mapping(mapping)
+
+    def set_session_mappings(self, mappings: list[PathMapping]) -> None:
+        self._store.set_session_mappings(mappings)
+
+    def unresolved_path_groups(self) -> list[PathGroup]:
+        return self._store.unresolved_path_groups()
 
     def path_prefix_suggestions(self) -> dict:
         return self._store.path_prefix_suggestions()

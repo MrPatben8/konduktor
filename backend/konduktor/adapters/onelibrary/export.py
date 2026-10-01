@@ -42,7 +42,9 @@ from datetime import date
 from pathlib import Path
 
 from ...core.export import ExportPayload, ExportTrack, WrittenLibrary
+from ...core.cue_colors import effective_color
 from ..rekordbox import anlz_writer as W
+from ..rekordbox import artwork, palette, timebase
 from ..rekordbox.beatgrid import beats_from_markers
 from ..rekordbox.projection import render_key
 from .capabilities import capabilities_for
@@ -51,11 +53,21 @@ from .layout import DB_SUBPATH
 log = logging.getLogger(__name__)
 
 SCHEMA = Path(__file__).resolve().parents[3] / "fixtures" / "onelibrary" / "schema.sql"
+#: rekordbox's scaffolding rows — browse menu items, categories, sort columns,
+#: the colour palette — copied from a real export. See the file's header.
+SEED = SCHEMA.with_name("seed.sql")
 
 #: rekordbox writes this in `property.dbVersion` on a real export.
 DB_VERSION = "1000"
 #: Seen on every track of a real export; semantics undocumented, copied as-is.
 ANALYSED_BITS = 41
+#: `content.contentLink`, as rekordbox 7 writes it beside `analysedBits` 41 (a
+#: re-analysed track carried 1902336 beside 105; what the bits mean is unknown).
+#: NOT optional: measured by blanking it on one track of a rekordbox-written
+#: stick — that row's song-list preview fell back to plain blue and gained a "?"
+#: beside CUE, exactly as every row of Konduktor's exports did while it was NULL.
+#: `masterDbId`/`masterContentId` were cleared the same way and changed nothing.
+CONTENT_LINK = 788224
 
 OTHER_PLAYLIST = "Other"
 
@@ -84,8 +96,11 @@ def _anlz_dir(drive_relative: str) -> str:
 
 class OneLibraryExporter:
     platform = "onelibrary"
+    menu_order = 10
     #: Relative to the drive root, which is what the destination folder is.
     library_filename = str(Path("PIONEER") / DB_SUBPATH)
+    #: A CDJ looks for `PIONEER/` at the root of the stick and nowhere else.
+    drive_root = True
 
     def capabilities(self):
         """What a drive can hold — no device, no path, no library to read.
@@ -96,9 +111,13 @@ class OneLibraryExporter:
         yes to. Leaving the adapter's answer here would have the UI report that
         the thing it just wrote cannot be written.
         """
-        return capabilities_for().model_copy(
-            update={"writable": True, "readonly_cause": None}
-        )
+        caps = capabilities_for()
+        # An exported drive CARRIES artwork (`_write_art`); the adapter's False
+        # means "cannot edit a plugged-in drive's art", a different question.
+        return caps.model_copy(update={
+            "writable": True, "readonly_cause": None,
+            "tracks": caps.tracks.model_copy(update={"artwork": True}),
+        })
 
     def write(self, payload: ExportPayload, destination: Path) -> WrittenLibrary:
         import sqlcipher3.dbapi2 as sqlcipher
@@ -108,8 +127,14 @@ class OneLibraryExporter:
         root = Path(destination)
         library = root / "PIONEER" / DB_SUBPATH
         library.parent.mkdir(parents=True, exist_ok=True)
-        if library.exists():
-            library.unlink()  # SQLCipher will not re-key an existing file
+        # SQLCipher will not re-key an existing file — and the WAL and shared
+        # memory files beside it must go too. rekordbox leaves both on a stick
+        # it has mounted, and SQLite REPLAYS a leftover WAL into whatever
+        # database it finds, so a fresh library would open with the old one's
+        # pages written over it.
+        for stale in (library, *(library.with_name(library.name + s) for s in ("-wal", "-shm"))):
+            if stale.exists():
+                stale.unlink()
 
         extra: list[Path] = []
         con = sqlcipher.connect(str(library))
@@ -118,6 +143,7 @@ class OneLibraryExporter:
             # stick is readable by any of them, which is the point of it.
             con.execute(f"PRAGMA key='{deobfuscate(BLOB)}'")
             con.executescript(SCHEMA.read_text())
+            con.executescript(SEED.read_text(encoding="utf-8"))
             extra += self._fill(con, payload, root)
             con.commit()
         finally:
@@ -128,10 +154,17 @@ class OneLibraryExporter:
 
     def _fill(self, con, payload: ExportPayload, root: Path) -> list[Path]:
         lookups = {name: {} for name in ("artist", "album", "genre", "label", "key")}
+        # Image ids are handed out in track order, one per track that HAS art —
+        # rekordbox does not share an image between tracks, even identical ones.
+        lookups["image"] = {"next": 0}
         written: list[Path] = []
         by_source: dict[str, int] = {}
 
+        total = len(payload.tracks)
         for n, item in enumerate(payload.tracks, start=1):
+            # Each track is DECODED for its waveform, so this loop is the slow
+            # part of the write — report it, and let a cancel land between tracks.
+            payload.checkpoint(f"Analysing {item.track.title or item.destination.name} ({n}/{total})", step=n, of=total)
             by_source[item.source_id] = n
             written += self._write_track(con, n, item, root, lookups)
 
@@ -170,16 +203,18 @@ class OneLibraryExporter:
             size = item.destination.stat().st_size
         except OSError:
             size = 0
+        sample_rate, bit_depth = _audio_format(item.destination)
+        image_id, art_files = self._write_art(con, item, root, lookups["image"])
 
         con.execute(
             "INSERT INTO content (content_id, title, titleForSearch, bpmx100, length, "
-            "trackNo, artist_id_artist, album_id, genre_id, label_id, key_id, "
+            "trackNo, artist_id_artist, album_id, genre_id, label_id, key_id, image_id, "
             "djComment, rating, releaseDate, dateAdded, path, fileName, fileSize, "
-            "fileType, bitrate, samplingRate, isHotCueAutoLoadOn, "
+            "fileType, bitrate, bitDepth, samplingRate, isHotCueAutoLoadOn, "
             "isKuvoDeliverStatusOn, masterDbId, masterContentId, "
-            "analysisDataFilePath, analysedBits, hasModified, cueUpdateCount, "
+            "analysisDataFilePath, analysedBits, contentLink, hasModified, cueUpdateCount, "
             "analysisDataUpdateCount, informationUpdateCount) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 content_id, track.title, (track.title or "").lower(),
                 int(round((track.bpm or 0) * 100)) or None, track.length,
@@ -193,40 +228,112 @@ class OneLibraryExporter:
                 # where the deck expects "Cm". Rendered from the parsed wheel.
                 self._lookup(con, "key", lookups["key"],
                              render_key(track.key_wheel, track.key_mode)),
+                image_id,
                 track.comment, track.rating or 0, track.release_date,
                 date.today().isoformat(), rel, item.destination.name, size,
-                1, track.bitrate, None, 1, 1, 0, content_id,
-                anlz_rel, ANALYSED_BITS, 0, 0, 0, 0,
+                # kbps, as every Pioneer library stores it; the generic model
+                # carries bits per second.
+                _file_type(item.destination), _kbps(track.bitrate),
+                bit_depth, sample_rate, 1, 1, 0, content_id,
+                anlz_rel, ANALYSED_BITS, CONTENT_LINK, 0, 0, 0, 0,
             ),
         )
-        return self._write_anlz(item, rel, root / anlz_rel.lstrip("/"))
+        return art_files + self._write_anlz(item, rel, root / anlz_rel.lstrip("/"))
+
+    # ---- artwork -------------------------------------------------------------
+
+    @staticmethod
+    def _write_art(con, item: ExportTrack, root: Path, counter: dict) -> tuple[int | None, list[Path]]:
+        """One track's cover: four JPEGs and an `image` row, as rekordbox 7 writes.
+
+        `PIONEER/Artwork/00001/` holds `a<n>.jpg` / `a<n>_m.jpg` and a byte-
+        identical `b<n>.jpg` / `b<n>_m.jpg` (80 and 240 px); `image.path` names the
+        `b` file and `content.image_id` points at the row. rekordbox's own export
+        writes both letters — the `a` pair presumably for the legacy `export.pdb`
+        readers — so both are written here too.
+
+        Everything goes in folder `00001`. How rekordbox splits a large library
+        across folders is not known (the reference export has 6 images); a single
+        folder is what it demonstrably reads.
+        """
+        if not item.art:
+            return None, []
+        jpegs = artwork.pioneer_jpegs(item.art[0])
+        if jpegs is None:
+            return None, []
+        counter["next"] += 1
+        n = counter["next"]
+        folder = root / "PIONEER" / "Artwork" / "00001"
+        folder.mkdir(parents=True, exist_ok=True)
+        files = []
+        for rel, data in art_files(n, jpegs):
+            path = root / rel.lstrip("/")
+            path.write_bytes(data)
+            files.append(path)
+        con.execute("INSERT INTO image (image_id, path) VALUES (?, ?)",
+                    (n, f"/PIONEER/Artwork/00001/b{n}.jpg"))
+        return n, files
 
     # ---- the analysis files --------------------------------------------------
 
-    def _write_anlz(self, item: ExportTrack, rel: str, dat: Path) -> list[Path]:
-        """The `.DAT` and, when there are cues beyond pad C, the `.EXT`.
+    def anlz_files(self, item: ExportTrack, rel: str) -> list[tuple[str, bytes]]:
+        """The `.DAT`, `.EXT` and `.2EX` as `(suffix, bytes)`, as rekordbox 7 writes
+        them — built, not written, so a library adding a track to a stick can hold
+        them until Save (`OneLibraryStore.add_track`).
 
-        Always both when there are any cues: `PCO2` lives only in the `.EXT` and
-        is the complete list, which is what the reader prefers.
+        All three, and every cue list, even for a track with no cues: rekordbox
+        never produces a track without them, and `PCO2` — the complete list,
+        which readers prefer — lives only in the `.EXT`.
+
+        **The `.DAT` must carry `PVBR` and the preview waveforms**, or rekordbox
+        shows neither the grid nor the cues (see `anlz_writer`). The `.EXT` and
+        `.2EX` waveforms only affect drawing: the song-list preview and the
+        deck's scrolling waveform. Tag order is rekordbox's in each file:
+          .DAT  PPTH PVBR PQTZ PWAV PWV2 PCOB PCOB
+          .EXT  PPTH PWV3 PCOB PCOB PCO2 PCO2 PWV5 PWV4
+          .2EX  PPTH PWV7 PWV6 PWVC
+        An undecodable file still gets the `.DAT` (with a flat preview) and the
+        `.EXT` cue lists — its grid and cues must show — but no drawn waveforms.
         """
-        cues = self._cue_dicts(item)
-        beats = self._beats(item)
+        # rekordbox's clock runs ~25 ms behind the decoded audio on MP3/AAC (see
+        # `timebase`): beats and cues are computed in the decoded time base and
+        # shifted as they are packed, and the waveform frames are measured with
+        # the same lead so they line up with the beats.
+        off = timebase.offset(item.destination)
+        measured = item.waveform(lead=off)
+        # The DECODED length where there is one: `Track.length` is whole seconds
+        # rounded down, and a grid expanded to it loses the track's last beat.
+        beats = self._beats(item, measured.duration if measured else None)
+        cues = self._cue_dicts(item, beats, off)
+        if measured:
+            previews = W.preview_tags(measured.columns.rms, measured.columns.brightness)
+            ext_waves, two_ex = W.waveform_tags(measured.frames.bands)
+        else:
+            previews, ext_waves, two_ex = W.flat_preview_tags(), [], []
 
-        tags = [W.path_tag(rel)]
+        tags = [W.path_tag(rel), W.vbr_tag(W.mp3_samples(item.destination))]
         if beats:
-            tags.append(W.beatgrid_tag(beats))
+            tags.append(W.beatgrid_tag([(n, bpm, timebase.to_pioneer(t, off))
+                                        for n, bpm, t in beats]))
+        tags += previews
         tags += W.cue_tags(cues, extended=False)
-        written = [W.write_anlz(dat, tags)]
+        ext = [W.path_tag(rel), *ext_waves[:1], *W.cue_tags(cues, extended=True), *ext_waves[1:]]
+        files = [(".DAT", W.anlz_bytes(tags)), (".EXT", W.anlz_bytes(ext))]
+        if two_ex:
+            files.append((".2EX", W.anlz_bytes([W.path_tag(rel), *two_ex])))
+        return files
 
-        if cues:
-            written.append(
-                W.write_anlz(dat.with_suffix(".EXT"),
-                             [W.path_tag(rel), *W.cue_tags(cues, extended=True)])
-            )
+    def _write_anlz(self, item: ExportTrack, rel: str, dat: Path) -> list[Path]:
+        written = []
+        for suffix, data in self.anlz_files(item, rel):
+            path = dat.with_suffix(suffix)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            written.append(path)
         return written
 
     @staticmethod
-    def _beats(item: ExportTrack) -> list[tuple[int, float, float]]:
+    def _beats(item: ExportTrack, duration: float | None = None) -> list[tuple[int, float, float]]:
         """Every beat, expanded from the generic marker list.
 
         A Pioneer grid has no tempo markers — it is a flat list of beats — so a
@@ -237,12 +344,13 @@ class OneLibraryExporter:
         cues = item.cues
         if not cues or not cues.grid_markers:
             return []
-        duration = float(item.track.length or 0) or (cues.grid_markers[-1].start + 60.0)
+        duration = (duration or float(item.track.length or 0)
+                    or (cues.grid_markers[-1].start + 60.0))
         nums, bpms, times = beats_from_markers(cues.grid_markers, duration)
         return list(zip(nums, bpms, times))
 
     @staticmethod
-    def _cue_dicts(item: ExportTrack) -> list[dict]:
+    def _cue_dicts(item: ExportTrack, beats: list | None = None, off: float = 0.0) -> list[dict]:
         """Generic cues in the shape `anlz_writer` packs.
 
         Slot numbering is ANLZ's own: **dense 1-based**, 0 for a memory cue.
@@ -253,13 +361,20 @@ class OneLibraryExporter:
         out: list[dict] = []
         for cue in (item.cues.cues if item.cues else []):
             is_loop = cue.type == "loop" or cue.length > 0
+            # A hot cue carries what Konduktor SHOWS — stored colour, else the
+            # type's (blue cue, green loop) — as a rekordbox palette CODE, which
+            # is what rekordbox draws from; "unset" draws its own defaults. A
+            # memory cue keeps rekordbox's own "unset".
+            code, rgb = palette.code_for(cue.color if cue.role == "memory" else effective_color(cue))
             out.append({
                 "hot_cue": 0 if cue.role == "memory" or cue.slot is None else cue.slot + 1,
                 "kind": 2 if is_loop else 1,
-                "time_ms": int(round(cue.start * 1000)),
-                "loop_ms": int(round((cue.start + cue.length) * 1000)) if is_loop else None,
-                "rgb": _rgb(cue.color),
-                "beats": None,
+                "time_ms": int(round(timebase.to_pioneer(cue.start, off) * 1000)),
+                "loop_ms": (int(round(timebase.to_pioneer(cue.start + cue.length, off) * 1000))
+                            if is_loop else None),
+                "rgb": rgb,
+                "code": code,
+                "beats": _loop_beats(cue.start, cue.length, beats or []) if is_loop else None,
             })
         return out
 
@@ -312,10 +427,60 @@ class OneLibraryExporter:
                 )
 
 
-def _rgb(color: str | None) -> tuple[int, int, int] | None:
-    if not color or not color.startswith("#") or len(color) != 7:
+#: rekordbox's `fileType` codes, as `pyrekordbox.devicelib_plus.FileType` has them.
+#: `.stem.m4a` (a Traktor STEM) is an M4A to a Pioneer player.
+_FILE_TYPES = {".mp3": 1, ".m4a": 4, ".mp4": 4, ".aac": 4, ".flac": 5, ".wav": 11,
+               ".aif": 12, ".aiff": 12}
+
+
+def art_files(n: int, jpegs: tuple[bytes, bytes]) -> list[tuple[str, bytes]]:
+    """Image `n`'s four files as `(drive-relative path, bytes)`: `a<n>`/`b<n>`
+    and their `_m`, byte-identical pairs, in `Artwork/00001/` (see `_write_art`).
+    `image.path` names the `b` file; `export.pdb`'s artwork table the `a` one."""
+    small, medium = jpegs
+    return [(f"/PIONEER/Artwork/00001/{letter}{n}{suffix}.jpg", data)
+            for letter in ("a", "b") for suffix, data in (("", small), ("_m", medium))]
+
+
+def _file_type(path: Path) -> int:
+    return _FILE_TYPES.get(path.suffix.lower(), 1)
+
+
+def _kbps(bitrate: int | None) -> int | None:
+    """Generic bits per second → Pioneer's kbps."""
+    if not bitrate:
         return None
+    return int(round(bitrate / 1000))
+
+
+def _audio_format(path: Path) -> tuple[int | None, int | None]:
+    """(sample rate, bit depth) read from the COPIED file, or Nones.
+
+    Not in the generic model, and not worth adding for one target: the file is
+    right here, and reading its header costs a millisecond.
+    """
     try:
-        return (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16))
-    except ValueError:
+        import mutagen
+
+        info = getattr(mutagen.File(str(path)), "info", None)
+    except Exception:  # an unreadable file still exports; these stay empty
+        return None, None
+    rate = getattr(info, "sample_rate", None)
+    depth = getattr(info, "bits_per_sample", None)
+    return (int(rate) if rate else None), (int(depth) if depth else None)
+
+
+def _loop_beats(start: float, length: float, beats: list[tuple[int, float, float]]) -> int | None:
+    """A loop's length in whole beats at the tempo governing its start.
+
+    rekordbox stores it (`loop_num`/`loop_den`, e.g. 4/1). A loop that is not a
+    whole number of beats — or a track with no grid — gets none, as rekordbox
+    itself writes for a loop set by hand.
+    """
+    bpm = next((b for _, b, t in reversed(beats) if t <= start + 1e-3), None)
+    if not bpm or length <= 0:
         return None
+    count = length * bpm / 60.0
+    whole = round(count)
+    return whole if whole >= 1 and abs(count - whole) < 0.05 else None
+

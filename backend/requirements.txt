@@ -4,6 +4,8 @@ fastapi>=0.115
 uvicorn[standard]>=0.34
 pydantic>=2.11
 mutagen>=1.47  # embedded audio-file tag read/write (ID3/MP4/FLAC/AIFF)
+av>=18.1  # PyAV: FFmpeg's decoders in the wheel — waveforms for export, AAC on every OS
+Pillow>=11  # cover art -> the 80/240 px JPEGs a Pioneer export carries
 python-multipart>=0.0.9  # multipart form parsing for cover-art upload
 # Version-history backups: a self-contained git impl (no system git needed;
 # ships prebuilt py3.14 wheels, no from-source build) + a per-OS user-writable
@@ -29,3 +31,6 @@ traktor-nml-utils @ git+https://github.com/MrPatben8/traktor-nml-utils.git
 # deprecated alias and is removed in 0.6.0, so the Rekordbox adapter keeps
 # running as-is — but that rename is the thing to fix before taking 0.6.
 pyrekordbox @ git+https://github.com/dylanljones/pyrekordbox.git
+# The stem engine and its weights are downloaded over HTTPS by the sidecar; a
+# frozen Python on macOS has no system CA bundle of its own.
+certifi>=2024.7

@@ -44,8 +44,8 @@ def driver_for(path: Path) -> LibraryDriver:
     raise LibraryNotSupported(f"No DJ library Konduktor recognises at {path}")
 
 
-def open_library(path: Path):
-    return driver_for(path).open(path)
+def open_library(path: Path, *, read_only: bool = False):
+    return driver_for(path).open(path, read_only=read_only)
 
 
 def describe(path: Path) -> dict:

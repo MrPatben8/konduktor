@@ -18,9 +18,10 @@ Playlists are identified by their stable UUID; folders by a synthetic path id
 """
 from __future__ import annotations
 
+import copy
+import math
 import threading
 import uuid as uuidlib
-from dataclasses import dataclass
 from pathlib import Path
 
 from traktor_nml_utils import (
@@ -38,18 +39,22 @@ from traktor_nml_utils.models.collection import (
     Nodetype,
     Playlisttype,
     Primarykeytype,
+    Stemstype,
     Subnodestype,
     Tempotype,
 )
 from xsdata.formats.dataclass.serializers import XmlSerializer
 
-from ...core.adapter import InvalidCommand, SaveOutcome
+from ...core.adapter import FileTagResult, InvalidCommand, SaveOutcome, StemSwapResult
 from ...core.edit_journal import EditJournal
 from ...core.pathmap import common_dir_prefix
 from ...core.pathmap import PathMapping
+from ...core.relocate import PathGroup
+from ...core.stem_file import NML_STEMS_JSON, nml_stems_for
 from ...schemas import PlaylistNode
-from . import beatgrid
+from . import beatgrid, timebase
 from .locations import os_path_to_location, resolve_path
+from .projection import iso_date, traktor_date
 
 # Traktor's POPM frame owner: an ID3 rating is per-owner, so writing under
 # this email is what makes the stars show up in Traktor itself.
@@ -65,15 +70,6 @@ class PlaylistError(InvalidCommand):
     """
 
 
-@dataclass
-class FileTagResult:
-    track_id: str
-    file: str
-    ok: bool
-    status: str  # "written" | "file-not-found" | "unsupported-format" | "error"
-    detail: str = ""
-
-
 class TraktorStore:
     def __init__(self, nml_path: Path):
         self.nml_path = Path(nml_path)
@@ -81,6 +77,9 @@ class TraktorStore:
         self.dirty = False
         # Active OS-path prefix remapping (empty = identity). Survives _load().
         self._path_mapping = PathMapping()
+        # Mappings the user confirmed in the open-time missing-files check.
+        # Session-only: never saved, re-derived on every open.
+        self._session_mappings: list[PathMapping] = []
         self._load()
 
     # ---- load ----------------------------------------------------------
@@ -362,7 +361,10 @@ class TraktorStore:
     # (it's the primary key), bpm/key (audio/grid territory), and read-only info
     # like bitrate/playcount.
     _INFO_FIELDS = {"genre", "label", "remixer", "producer", "comment", "mix", "release_date"}
-    EDITABLE_FIELDS = {"title", "artist", "album", "rating"} | _INFO_FIELDS
+    EDITABLE_FIELDS = {"title", "artist", "album", "rating", "comment2"} | _INFO_FIELDS
+    # Fields that live only in the collection: Traktor itself writes no file tag
+    # for "Comment 2" (verified on an m4a it had just edited), so neither do we.
+    _COLLECTION_ONLY_FIELDS = {"comment2"}
 
     def set_track_metadata(self, track_id: str, fields: dict) -> None:
         with self._lock:
@@ -378,8 +380,16 @@ class TraktorStore:
                     if entry.album is None:
                         entry.album = Albumtype()
                     entry.album.title = v or None
+                elif k == "release_date":
+                    # Edited as ISO (that is what the projection shows); stored
+                    # as Traktor's "YYYY/M/D".
+                    entry.info.release_date = traktor_date(v)
                 elif k in self._INFO_FIELDS:
                     setattr(entry.info, k, v or None)
+                elif k == "comment2":
+                    # Traktor's "Comment 2" is INFO@RATING — a free-text
+                    # attribute, unrelated to the star rating (RANKING).
+                    entry.info.rating = v or None
                 elif k == "rating":
                     stars = max(0, min(5, int(v))) if v is not None else 0
                     # Traktor RANKING = stars * 51; unrated has no RANKING attr.
@@ -409,7 +419,14 @@ class TraktorStore:
         and ``loudness``. Both are outputs of Traktor's own analysis and cannot
         be computed here; Traktor re-analyses a track that has none. Writing a
         plausible-looking fingerprint would be inventing data.
+
+        A stem FILE gets ``<STEMS>``, rendered from its own ``stem`` box as
+        Traktor renders it: that element is what makes the entry a stem track
+        (its playlist keys ``TYPE="STEM"``, the Type column), and without it a
+        stem file added here read as plain audio.
         """
+        # Read before the lock: it opens the file.
+        stems = nml_stems_for(audio_path)
         with self._lock:
             volume, dir_, file = os_path_to_location(Path(audio_path))
             key = f"{volume}{dir_}{file}"
@@ -422,14 +439,16 @@ class TraktorStore:
                 genre=getattr(track, "genre", None) or None,
                 label=getattr(track, "label", None) or None,
                 comment=getattr(track, "comment", None) or None,
+                rating=getattr(track, "comment2", None) or None,  # "Comment 2"
                 remixer=getattr(track, "remixer", None) or None,
                 producer=getattr(track, "producer", None) or None,
                 mix=getattr(track, "mix", None) or None,
                 key=getattr(track, "key", None) or None,
                 bitrate=getattr(track, "bitrate", None) or None,
                 playcount=getattr(track, "playcount", None) or None,
-                release_date=getattr(track, "release_date", None) or None,
-                import_date=getattr(track, "import_date", None) or None,
+                # The generic model carries ISO dates; Traktor writes "YYYY/M/D".
+                release_date=traktor_date(getattr(track, "release_date", None)),
+                import_date=traktor_date(getattr(track, "import_date", None)),
                 # Traktor's RANKING is stars x 51; an unrated track has no
                 # attribute at all rather than a zero.
                 ranking=(max(0, min(5, int(getattr(track, "rating", 0) or 0))) * 51) or None,
@@ -451,6 +470,7 @@ class TraktorStore:
                 # `replace_grid` overwrites it from the markers when they land.
                 tempo=Tempotype(bpm=float(bpm)) if bpm else None,
                 cue_v2=[],
+                stems=Stemstype(stems=stems) if stems else None,
             )
             self._nml.collection.entry.append(entry)
             self._entry_by_key[key] = entry
@@ -585,7 +605,9 @@ class TraktorStore:
             raise PlaylistError(f"Unsupported cue type: {cue_type}")
         with self._lock:
             entry = self._entry_or_raise(track_id)
-            start_ms = max(0.0, start_sec * 1000.0)  # Traktor stores START/LEN in ms
+            # Traktor stores START/LEN in ms, on its own clock (see `timebase`).
+            # A length is a duration, so the offset does not apply to it.
+            start_ms = timebase.to_traktor_ms(start_sec, self.time_offset_ms(entry))
             len_ms = max(0.0, length_sec * 1000.0)
             existing = next(
                 (c for c in (entry.cue_v2 or []) if c.hotcue == slot), None
@@ -740,7 +762,7 @@ class TraktorStore:
             raise PlaylistError(f"BPM must be positive: {bpm}")
         with self._lock:
             entry = self._entry_or_raise(track_id)
-            start_ms = max(0.0, start_sec * 1000.0)
+            start_ms = timebase.to_traktor_ms(start_sec, self.time_offset_ms(entry))
             markers = beatgrid.grid_markers(entry)
             for m in markers:
                 if abs((m.start or 0.0) - start_ms) < self._MARKER_MIN_GAP_MS:
@@ -800,7 +822,7 @@ class TraktorStore:
         with self._lock:
             entry = self._entry_or_raise(track_id)
             markers, marker = self._markers_or_raise(entry, index)
-            start_ms = max(0.0, start_sec * 1000.0)
+            start_ms = timebase.to_traktor_ms(start_sec, self.time_offset_ms(entry))
             if index > 0:
                 lo = (markers[index - 1].start or 0.0) + self._MARKER_MIN_GAP_MS
                 start_ms = max(start_ms, lo)
@@ -864,6 +886,7 @@ class TraktorStore:
                 raise PlaylistError(f"BPM must be positive: {bpm}")
         with self._lock:
             entry = self._entry_or_raise(track_id)
+            off_ms = self.time_offset_ms(entry)
             self._drop_grid(entry)
             if entry.cue_v2 is None:
                 entry.cue_v2 = []
@@ -875,7 +898,7 @@ class TraktorStore:
                         name="AutoGrid" if i == 0 else "n.n.",
                         displ_order=0,
                         type=4,
-                        start=max(0.0, start_sec * 1000.0),
+                        start=timebase.to_traktor_ms(start_sec, off_ms),
                         len=0.0,
                         repeats=-1,
                         hotcue=-1,
@@ -965,23 +988,61 @@ class TraktorStore:
         with self._lock:
             self._path_mapping = mapping
 
+    def set_session_mappings(self, mappings: list[PathMapping]) -> None:
+        """Set the mappings confirmed for this session (applied at resolve time)."""
+        with self._lock:
+            self._session_mappings = [m for m in mappings if not m.empty]
+
     def _resolve(self, loc) -> "Path | None":
-        """Resolve a LOCATION to an OS path, applying the active path mapping.
+        """Resolve a LOCATION to an OS path, applying the active path mappings.
 
         The single FS chokepoint: LOCATION -> `resolve_path` -> prefix remap.
-        Falls back to the un-remapped path when the remapped target doesn't
-        exist, so a misconfigured mapping never makes a present file unreachable.
+        The saved mapping is tried first, then — only for a file still not
+        found — the session's. Falls back to the un-remapped path when no
+        remapped target exists, so a misconfigured mapping never makes a
+        present file unreachable.
         """
 
         if loc is None:
             return None
         base = resolve_path(loc.volume, loc.dir, loc.file)
-        if self._path_mapping.empty:
-            return base
-        remapped = self._path_mapping.apply(base)
-        if remapped == base:
-            return base
-        return remapped if remapped.exists() else base
+        if not self._path_mapping.empty:
+            remapped = self._path_mapping.apply(base)
+            if remapped != base and remapped.exists():
+                return remapped
+        if self._session_mappings and not base.exists():
+            for mapping in self._session_mappings:
+                remapped = mapping.apply(base)
+                if remapped != base and remapped.exists():
+                    return remapped
+        return base
+
+    def unresolved_path_groups(self) -> list[PathGroup]:
+        """Each stored VOLUME in which not one track resolves, with its tracks'
+        stored paths — the input to the open-time missing-files search.
+
+        "Not one" is the threshold: a volume missing a few deleted files is a
+        library with a few deleted files, not a library that needs remapping.
+        The stats happen outside the lock; checking stops at a volume's first
+        present file, and a missing path fails fast, so this is cheap either way.
+        """
+        with self._lock:
+            by_volume: dict[str, list] = {}
+            for e in self._nml.collection.entry:
+                if e.location is not None and e.location.file:
+                    by_volume.setdefault(e.location.volume or "", []).append(e.location)
+        groups = []
+        for volume, locs in by_volume.items():
+            if any(self._resolve(loc).exists() for loc in locs):
+                continue
+            groups.append(
+                PathGroup(
+                    label=volume,
+                    root=str(resolve_path(volume, "/:", "")),
+                    paths=[str(resolve_path(l.volume, l.dir, l.file)) for l in locs],
+                )
+            )
+        return groups
 
     def cover_art(self, track_id: str) -> tuple[bytes, str] | None:
         """Staged replacement if present, else the file's current embedded art."""
@@ -995,6 +1056,12 @@ class TraktorStore:
                 return None
             path = self._resolve(entry.location)
             return file_tags.read_cover(path) if path else None
+
+    def time_offset_ms(self, entry: Entrytype) -> float:
+        """How far this entry's positions sit behind the decoded audio, in ms
+        (see `timebase`). Every seconds <-> START conversion goes through it:
+        the four writes here and `projection.to_track_cues` on the way out."""
+        return timebase.offset_ms(self._resolve(entry.location) if entry.location else None)
 
     def audio_path(self, track_id: str) -> "Path | None":
         """Resolve a track's audio file to an OS path (for playback streaming)."""
@@ -1032,10 +1099,51 @@ class TraktorStore:
             ranked = [g for g in ranked if g["prefix"]]
             return {"primary": ranked[0]["prefix"] if ranked else "", "groups": ranked[:5]}
 
+    def _plan_remap(self, mapping: PathMapping):
+        """Where a mapping would move each matching entry, and what that clashes
+        with — computed before anything changes. Caller holds the lock.
+
+        Returns ``(moves, clashes)``: ``moves`` is ``[(entry, old_key, new_key,
+        (volume, dir, file))]`` for every entry whose key would change, and
+        ``clashes`` maps each clashing NEW key to the old keys landing on it.
+
+        A key is a Traktor primary key, so two ENTRYs sharing one is a corrupt
+        collection (`add_entry` refuses the same thing). A new key clashes when
+        tracks with DIFFERENT old keys land on it, or when it is the key of an
+        entry that stays where it is. A chain or swap — A onto B's old path
+        while B moves on — is fine, and so is a duplicate the collection already
+        had: two entries sharing one key move together, no worse than before.
+        """
+        moves = []
+        for e in self._nml.collection.entry:
+            loc = e.location
+            if not loc:
+                continue
+            base = resolve_path(loc.volume, loc.dir, loc.file)
+            if not mapping.matches(base):
+                continue
+            volume, dir_, file = os_path_to_location(mapping.apply(base))
+            old_key = f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}"
+            new_key = f"{volume or ''}{dir_ or ''}{file or ''}"
+            if old_key != new_key:  # a no-op (e.g. from == to) stays byte-identical
+                moves.append((e, old_key, new_key, (volume, dir_, file)))
+        moving = {id(e) for e, *_ in moves}
+        staying = {self._key_of(e) for e in self._nml.collection.entry
+                   if e.location and id(e) not in moving}
+        landing: dict[str, set[str]] = {}
+        for _e, old_key, new_key, _loc in moves:
+            landing.setdefault(new_key, set()).add(old_key)
+        clashes = {
+            new_key: sorted(olds) for new_key, olds in landing.items()
+            if len(olds) > 1 or new_key in staying
+        }
+        return moves, clashes
+
     def remap_preview(self, mapping: PathMapping) -> dict:
         """How a mapping would affect the collection, without changing anything:
-        total tracks, how many match ``from``, and how many exist at ``to``
-        (plus a few samples). Powers the mapping editor's validation line."""
+        total tracks, how many match ``from``, how many exist at ``to``, and how
+        many would CLASH with another track's path (which `remap_locations`
+        refuses) — plus a few samples. Powers the mapping editor's validation."""
 
         with self._lock:
             total = matched = existing = 0
@@ -1054,7 +1162,17 @@ class TraktorStore:
                         existing += 1
                     if len(samples) < 5:
                         samples.append({"from": str(base), "to": str(target), "exists": ok})
-            return {"total": total, "matched": matched, "existing": existing, "samples": samples}
+            _moves, clashes = self._plan_remap(mapping)
+            return {
+                "total": total, "matched": matched, "existing": existing, "samples": samples,
+                "collisions": len(clashes),
+                "collision_samples": [self._display_key(k) for k in sorted(clashes)[:5]],
+            }
+
+    @staticmethod
+    def _display_key(key: str) -> str:
+        """A primary key as a readable path ("Volume/:dir/:file" -> "Volume/dir/file")."""
+        return key.replace("/:", "/")
 
     def remap_locations(self, mapping: PathMapping) -> dict[str, str]:
         """Permanently rewrite matching track LOCATIONs to the mapping's ``to``
@@ -1066,29 +1184,44 @@ class TraktorStore:
         untouched. Returns ``{old track id: new track id}`` for every track
         rewritten — callers holding ids (export sets) follow them with it, and
         must not rebuild it from paths; the caller saves.
+
+        **Refused, with nothing changed, if any track would land on another
+        track's path** (see `_plan_remap`): the collection would then hold two
+        ENTRYs sharing a primary key. Every re-key below is applied AT ONCE, not
+        track by track, so a chain (A onto B's old path, B onward) cannot carry
+        A's staged art or edits along to B's destination.
         """
 
         if mapping.empty:
             return {}
         with self._lock:
-            key_remap: dict[str, str] = {}
-            for e in self._nml.collection.entry:
-                loc = e.location
-                if not loc:
-                    continue
-                base = resolve_path(loc.volume, loc.dir, loc.file)
-                if not mapping.matches(base):
-                    continue
-                target = mapping.apply(base)
-                volume, dir_, file = os_path_to_location(target)
-                old_key = f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}"
-                new_key = f"{volume or ''}{dir_ or ''}{file or ''}"
-                if old_key == new_key:
-                    continue  # no-op (e.g. from == to); leave byte-identical
-                loc.volume, loc.dir, loc.file = volume, dir_, file
-                key_remap[old_key] = new_key
-            if not key_remap:
+            moves, clashes = self._plan_remap(mapping)
+            if clashes:
+                paths = [self._display_key(k) for k in sorted(clashes)]
+                shown = ", ".join(paths[:3]) + (f" and {len(paths) - 3} more" if len(paths) > 3 else "")
+                raise PlaylistError(
+                    f"Remapping would give {len(paths)} path{'s' if len(paths) != 1 else ''} to more "
+                    f"than one track ({shown}). Two entries sharing a path corrupt the collection, "
+                    "so nothing was changed."
+                )
+            if not moves:
                 return {}
+            key_remap = {old_key: new_key for _e, old_key, new_key, _loc in moves}
+            for e, _old, _new, (volume, dir_, file) in moves:
+                e.location.volume, e.location.dir, e.location.file = volume, dir_, file
+            # Re-key the index too. Everything that finds an ENTRY by track id
+            # goes through it — later edits, and the file-tag sync on save,
+            # which would otherwise silently skip every edit made to this track
+            # before the remap. Drop every old key first, then add every new
+            # one, so a chain cannot delete an entry another has just claimed.
+            for e, old_key, _new, _loc in moves:
+                if self._entry_by_key.get(old_key) is e:
+                    del self._entry_by_key[old_key]
+            for e, _old, new_key, _loc in moves:
+                self._entry_by_key[new_key] = e
+            art = {old: self._track_art.pop(old) for old in key_remap if old in self._track_art}
+            for old, staged in art.items():
+                self._track_art[key_remap[old]] = staged
             # Rewrite playlist entry primary keys that referenced moved tracks.
             for node in self._iter_nodes(self._root()):
                 pl = node.playlist
@@ -1100,11 +1233,187 @@ class TraktorStore:
                         pk.key = key_remap[pk.key]
             # Track ids derive from the LOCATION, so a remap renames them. Carry
             # this session's journal entries across or their file-tag sync is lost.
-            for old_key, new_key in key_remap.items():
-                self._journal.retarget(old_key, new_key)
+            self._journal.retarget_many(key_remap)
             self._note("remap", str(len(key_remap)))
             self.dirty = True
             return key_remap
+
+    # ---- stem conversion ---------------------------------------------------
+    #: Whether a converted entry keeps Traktor's analysis fingerprint (AUDIO_ID).
+    #: KEPT, as measured in Traktor 4.5 (kit 5, 2026-09-30): with it kept, Traktor
+    #: loads the stem entry as it is — cues, grid and fingerprint untouched. With
+    #: it cleared, Traktor re-analyses on load: it keeps grid POSITIONS (even a
+    #: hand-nudged, unlocked one) but re-measures the grid's BPM (125.000023 ->
+    #: 125.00042), i.e. it rewrites prep the user set. The stem file's mix is the
+    #: same audio as the original, so the old fingerprint still describes it.
+    _KEEP_AUDIO_ID_ON_STEM = True
+
+    def apply_stem_swaps(self, swaps: list, *, add_to_playlist: str | None = None) -> StemSwapResult:
+        """Point entries at converted stem files ("repoint"), or add entries for
+        them ("add"), ALL AT ONCE — every swap validated before any is applied,
+        so a clash leaves the collection untouched.
+
+        What a stem entry is, measured on the real collection: the ordinary
+        ENTRY plus a `<STEMS>` element (after CUE_V2), and playlist PRIMARYKEYs of
+        `TYPE="STEM"`. INFO's bitrate / playtime / playtime_float / filesize (KB)
+        describe the new file.
+
+        **Positions move with the time base.** An MP3 with a header sits
+        `timebase.offset_ms` later on Traktor's clock than the decoded audio; the
+        stem file (an MP4 whose edit list Traktor honours) sits at 0. So every
+        START shifts by (new offset - old offset), with the old offset read from
+        `original_audio` — where the original's bytes are NOW (its parked name in
+        Replace mode) — under the original's own suffix. Read from the old path
+        instead, the file would be gone, the offset 0, and every cue ~51 ms late.
+        A shifted grid anchor that would fall before 0 moves forward by whole
+        beats (its companion with it), which leaves the grid itself unchanged; a
+        hotcue that would is clamped to 0 and reported.
+        """
+        with self._lock:
+            # ---- validate everything first ----
+            seen_ids: set[str] = set()
+            planned: list[tuple[object, Entrytype, str, tuple[str, str, str]]] = []
+            new_keys: set[str] = set()
+            for swap in swaps:
+                entry = self._entry_by_key.get(swap.track_id)
+                if entry is None or entry.location is None:
+                    raise PlaylistError(f"Track not found: {swap.track_id}")
+                if swap.track_id in seen_ids:
+                    raise PlaylistError(f"Track listed twice: {swap.track_id}")
+                if swap.mode not in ("repoint", "add"):
+                    raise PlaylistError(f"Unknown stem swap mode: {swap.mode}")
+                seen_ids.add(swap.track_id)
+                loc = os_path_to_location(Path(swap.stem_path))
+                new_key = "".join(x or "" for x in loc)
+                if new_key in self._entry_by_key or new_key in new_keys:
+                    raise PlaylistError(
+                        f"The collection already has an entry for {swap.stem_path}"
+                    )
+                new_keys.add(new_key)
+                planned.append((swap, entry, new_key, loc))
+            playlist = None
+            if add_to_playlist is not None:
+                playlist = self._find_playlist_node(add_to_playlist)
+                if playlist is None or playlist.playlist is None:
+                    raise PlaylistError(f"Playlist not found: {add_to_playlist}")
+
+            # ---- apply ----
+            result = StemSwapResult()
+            renames: dict[str, str] = {}
+            for swap, entry, new_key, loc in planned:
+                old_key = swap.track_id
+                old_suffix = Path(entry.location.file or "").suffix
+                shift = timebase.offset_ms(swap.stem_path) - timebase.offset_ms(
+                    swap.original_audio, suffix=old_suffix)
+                target = entry if swap.mode == "repoint" else copy.deepcopy(entry)
+                clamped = self._retime(target, shift)
+                self._point_at_stem(target, loc, swap)
+                if swap.mode == "repoint":
+                    renames[old_key] = new_key
+                    if self._entry_by_key.get(old_key) is entry:
+                        del self._entry_by_key[old_key]
+                    self._entry_by_key[new_key] = entry
+                    if old_key in self._track_art:
+                        self._track_art[new_key] = self._track_art.pop(old_key)
+                else:
+                    self._nml.collection.entry.append(target)
+                    self._entry_by_key[new_key] = target
+                    # Unsaved tag edits and staged art must reach the NEW file
+                    # too on Save; the original keeps its own.
+                    for field in self._journal.fields_for(old_key):
+                        self._journal.record("track", "set", new_key, field)
+                    if old_key in self._track_art:
+                        self._track_art[new_key] = self._track_art[old_key]
+                result.renamed[old_key] = new_key
+                if clamped:
+                    result.clamped[new_key] = clamped
+                self._journal.record("stem", swap.mode, new_key, old_key)
+            if any(s.mode == "add" for s, *_ in planned):
+                self._nml.collection.entries = len(self._nml.collection.entry)
+            # Playlists follow a repointed track — and it is a STEM now.
+            if renames:
+                for node in self._iter_nodes(self._root()):
+                    pl = node.playlist
+                    if pl is None or not pl.entry:
+                        continue
+                    for pe in pl.entry:
+                        pk = pe.primarykey
+                        if pk and pk.key in renames:
+                            pk.key = renames[pk.key]
+                            pk.type = "STEM"
+                self._journal.retarget_many(renames)
+            if playlist is not None:
+                added = [new for (s, _e, new, _l) in planned if s.mode == "add"]
+                pl = playlist.playlist
+                pl.entry = list(pl.entry or []) + [
+                    Entrytype(primarykey=Primarykeytype(type="STEM", key=k)) for k in added
+                ]
+                pl.entries = len(pl.entry)
+                self._note("playlist-entries", playlist.name)
+            self.dirty = True
+            return result
+
+    def _point_at_stem(self, entry: Entrytype, loc: tuple[str, str, str], swap) -> None:
+        """LOCATION, `<STEMS>` and the file-describing INFO fields, for the stem file."""
+        volume, dir_, file = loc
+        old_volume = entry.location.volume if entry.location else None
+        volumeid = entry.location.volumeid if entry.location else None
+        if volume != old_volume:
+            # VOLUMEID names a volume, so it cannot follow the file to another one;
+            # borrow it from any entry already on that volume, else leave it for
+            # Traktor to fill in (as `add_entry` does).
+            volumeid = next(
+                (e.location.volumeid for e in self._nml.collection.entry
+                 if e.location and e.location.volume == volume and e.location.volumeid),
+                None,
+            )
+        entry.location = Locationtype(volume=volume, dir=dir_, file=file, volumeid=volumeid)
+        entry.stems = Stemstype(stems=NML_STEMS_JSON)
+        if entry.info is None:
+            entry.info = Infotype()
+        entry.info.bitrate = int(swap.bit_rate)
+        entry.info.playtime = int(round(swap.duration))
+        entry.info.playtime_float = float(swap.duration)
+        entry.info.filesize = int(round(swap.size / 1024))
+        if not self._KEEP_AUDIO_ID_ON_STEM:
+            entry.audio_id = None
+
+    def _retime(self, entry: Entrytype, shift_ms: float) -> list[int]:
+        """Shift every cue and grid marker by `shift_ms`; returns the hotcue
+        slots clamped at 0. Companions move WITH their marker, as the same float,
+        so the pairing survives exactly."""
+        if not shift_ms or not entry.cue_v2:
+            return []
+        markers = beatgrid.grid_markers(entry)
+        comps = beatgrid.companions(entry)
+        comp_ids = {id(c) for c in comps.values()}
+        clamped: list[int] = []
+        for c in entry.cue_v2:
+            if c.grid is not None or id(c) in comp_ids:
+                continue
+            start = (c.start or 0.0) + shift_ms
+            if start < 0:
+                if c.hotcue is not None and c.hotcue >= 0:
+                    clamped.append(c.hotcue)
+                start = 0.0
+            c.start = start
+        for i, m in enumerate(markers):
+            start = (m.start or 0.0) + shift_ms
+            if start < 0:
+                bpm = m.grid.bpm if m.grid and m.grid.bpm else 0.0
+                if bpm > 0:
+                    beat = 60000.0 / bpm
+                    start += math.ceil(-start / beat) * beat
+                    nxt = markers[i + 1].start + shift_ms if i + 1 < len(markers) else None
+                    if nxt is not None and start >= nxt:
+                        start = 0.0  # a pathological grid: keep the order, lose the phase
+                else:
+                    start = 0.0
+            m.start = start
+            if i in comps:
+                comps[i].start = m.start
+        self._sort_cues(entry)
+        return clamped
 
     def _entry_field_value(self, entry: Entrytype, field: str):
         """Read a single editable field's current value from the model, in the
@@ -1118,6 +1427,11 @@ class TraktorStore:
         if field == "rating":
             r = entry.info.ranking if entry.info else None
             return round(r / 51) if r else 0
+        if field == "comment2":
+            return entry.info.rating if entry.info else None
+        if field == "release_date":
+            # A file tag wants ISO, not the NML's "YYYY/M/D".
+            return iso_date(entry.info.release_date) if entry.info else None
         return getattr(entry.info, field, None) if entry.info else None
 
     def count_playlists(self) -> int:
@@ -1159,7 +1473,8 @@ class TraktorStore:
             # Report BOTH writes: a failed tag write must not be masked by a
             # successful art write on the same track.
             written = []
-            if fields := self._journal.fields_for(track_id):
+            fields = self._journal.fields_for(track_id) - self._COLLECTION_ONLY_FIELDS
+            if fields:
                 meta = {f: self._entry_field_value(entry, f) for f in fields}
                 written.append(file_tags.write_tags(path, meta, popm_email=TRAKTOR_POPM_EMAIL))
             if track_id in self._track_art:

@@ -6,6 +6,7 @@ in the environment auto-loads that file on startup (used by dev and tests).
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -30,9 +31,14 @@ from .core.adapter import (
     Unsupported,
 )
 from .core.capabilities import Capabilities
-from .jobs import JOBS
+from .jobs import JOBS, Job, JobBusy
 from .core.pathmap import PathMapping
 from .schemas import (
+    Relocation,
+    RelocationApplied,
+    RelocationApply,
+    RelocationCandidate,
+    RelocationVolume,
     AutoGridBatchRequest,
     AutoGridRequest,
     AutoCueOutcome,
@@ -83,13 +89,19 @@ from .schemas import (
     SourceCandidate,
     SourceStatus,
     SetCue,
+    SetCueColor,
     SetCueType,
     SetGridLock,
     Stats,
     Track,
     TrackCues,
     TrackPage,
+    StemEngineInstall,
+    StemSideLoad,
+    StemConvert,
 )
+
+log = logging.getLogger(__name__)
 
 app = FastAPI(title="Konduktor API", version=__version__)
 
@@ -154,10 +166,7 @@ def open_collection(body: OpenCollection) -> CollectionStatus:
     # This checks only that the path is there at all; `can_open()` decides.
     if not path.exists():
         raise HTTPException(400, f"Not found: {path}")
-    # A running analysis writes into the library being replaced; stop it.
-    for kind in BATCH_JOBS:
-        for job in JOBS.active(kind):
-            JOBS.cancel(job.id)
+    _stop_batches()
     try:
         STATE.open(path)
     except AdapterError as ex:
@@ -209,6 +218,7 @@ def put_path_mapping(body: PathMappingInfo) -> PathMappingInfo:
     """Set (or, with blank prefixes, clear) the current collection's remapping.
     Persists to userprefs AND updates the live store so playback/analysis
     re-resolve immediately — no reopen needed. Never touches the .nml."""
+    _require_no_pending_stems("Changing the path mapping")
     a = require_adapter()
     mapping = PathMapping.make(body.from_, body.to)
     prefs.set_path_mapping(
@@ -244,6 +254,7 @@ def remap_paths(body: PathMappingInfo) -> RemapResult:
     playlist references that join to them) to the `to` prefix, then save (a
     version-history commit is written). Destructive and OS-specific — the UI
     warns accordingly."""
+    _require_no_pending_stems("Rewriting paths")
     mapping = PathMapping.make(body.from_, body.to)
     if mapping.empty:
         raise HTTPException(400, "Both a `from` and `to` prefix are required")
@@ -263,6 +274,58 @@ def remap_paths(body: PathMappingInfo) -> RemapResult:
     # that writes, and skipping it would leave a gap in the version history.
     _outcome, commit = STATE.save()
     return RemapResult(rewritten=len(moved), commit=commit)
+
+
+@app.get("/api/library/relocation", response_model=Relocation)
+def get_relocation() -> Relocation:
+    """The open-time missing-files check: every stored volume in which NO track
+    resolves, and where the search found its tracks. Empty once answered, so the
+    UI can refetch freely without re-asking.
+
+    Waits briefly for the search, then reports `scanning` so a slow drive
+    cannot hold a request open; the UI polls until it is done.
+    """
+    require_adapter()
+    check = STATE.relocation
+    if check is None:
+        return Relocation()
+    if not check.wait(timeout=10):
+        return Relocation(scanning=True)
+    return Relocation(
+        volumes=[
+            RelocationVolume(
+                label=p.label,
+                root=p.root,
+                total=p.total,
+                status=p.status,
+                candidates=[
+                    RelocationCandidate.model_validate(
+                        {"from": c.mapping.from_prefix, "to": c.mapping.to_prefix, "found": c.found}
+                    )
+                    for c in p.candidates
+                ],
+            )
+            for p in check.pending
+        ]
+    )
+
+
+@app.post("/api/library/relocation", response_model=RelocationApplied)
+def answer_relocation(body: RelocationApply) -> RelocationApplied:
+    """Answer the check: apply the chosen mappings for THIS SESSION only (no
+    mappings = "Not now"). Nothing is written to the library or to prefs, and a
+    reopen asks again."""
+    _require_no_pending_stems("Relocating files")
+    require_adapter()
+    check = STATE.relocation
+    if check is None:
+        raise HTTPException(409, "There is no missing-files check to answer")
+    mappings = [PathMapping.make(m.from_, m.to) for m in body.mappings]
+    try:
+        tracks = check.answer(mappings)
+    except ValueError as ex:
+        raise HTTPException(400, str(ex))
+    return RelocationApplied(mappings=len(mappings), tracks=tracks)
 
 
 @app.get("/api/prefs")
@@ -386,12 +449,11 @@ def create_export(body: CreateExportSet) -> ExportSetOut:
     # Only platforms that can actually be WRITTEN may be targets. Gating here as
     # well as in the UI, because a set persists: one created against a target
     # that later stops being supported would otherwise fail at export time.
-    if body.target not in _export_targets():
-        raise HTTPException(422, f"Konduktor cannot export to {body.target} yet")
+    _check_targets(body.targets)
     created = exports.create(
         _require_library_id(),
         name=body.name,
-        target=body.target,
+        targets=body.targets,
         destination=body.destination,
     )
     return ExportSetOut(**created.as_dict())
@@ -400,13 +462,13 @@ def create_export(body: CreateExportSet) -> ExportSetOut:
 @app.patch("/api/exports/{set_id}", response_model=ExportSetOut)
 def update_export(set_id: str, body: UpdateExportSet) -> ExportSetOut:
     _require_set(set_id)
-    if body.target is not None and body.target not in _export_targets():
-        raise HTTPException(422, f"Konduktor cannot export to {body.target} yet")
+    if body.targets is not None:
+        _check_targets(body.targets)
     updated = exports.update(
         _require_library_id(),
         set_id,
         name=body.name,
-        target=body.target,
+        targets=body.targets,
         destination=body.destination,
     )
     return ExportSetOut(**updated.as_dict())
@@ -544,6 +606,19 @@ def _export_targets() -> set[str]:
     return core_export.targets()
 
 
+def _check_targets(targets: list[str]) -> None:
+    """Refuse a set with no targets, or one naming a platform with no exporter.
+
+    Checked when the set is saved: a target that later stops being supported
+    would otherwise fail at export time.
+    """
+    if not targets:
+        raise HTTPException(400, "An export needs at least one platform to export for")
+    unsupported = [t for t in targets if t not in _export_targets()]
+    if unsupported:
+        raise HTTPException(422, f"Konduktor cannot export to {', '.join(unsupported)} yet")
+
+
 @app.get("/api/export-targets", response_model=list[PlatformOption])
 def export_targets() -> list[PlatformOption]:
     """Every platform, flagged by whether it can be an export TARGET.
@@ -553,18 +628,41 @@ def export_targets() -> list[PlatformOption]:
     absent option reads as a missing feature; a disabled one reads as a roadmap.
     """
     supported = _export_targets()
-    return [
-        PlatformOption(
+    options = []
+    for d in registry.drivers():
+        exporter = core_export.for_platform(d.platform)
+        options.append(PlatformOption(
             platform=d.platform,
-            name=d.display_name,
+            name=getattr(exporter, "display_name", None) or d.display_name,
             library_label=getattr(d, "library_label", ""),
             selects="directory",   # an export destination is always a folder
             installed=d.platform in supported,
             found=0,
             removable=bool(getattr(d, "removable", False)),
-        )
-        for d in registry.drivers()
-    ]
+            drive_root=bool(getattr(exporter, "drive_root", False)),
+            computer_only=bool(getattr(exporter, "computer_only", False)),
+        ))
+    # Targets with no reader of their own (the stick's legacy Device Library):
+    # listed too, or registering one would not make it selectable.
+    readers = {d.platform for d in registry.drivers()}
+    order = {e.platform: getattr(e, "menu_order", 1000) for e in core_export.exporters()}
+    for exporter in core_export.exporters():
+        if exporter.platform in readers:
+            continue
+        options.append(PlatformOption(
+            platform=exporter.platform,
+            name=getattr(exporter, "display_name", exporter.platform),
+            library_label="",
+            selects="directory",
+            installed=True,
+            found=0,
+            removable=bool(getattr(exporter, "drive_root", False)),
+            drive_root=bool(getattr(exporter, "drive_root", False)),
+            computer_only=bool(getattr(exporter, "computer_only", False)),
+        ))
+    # Each exporter states its own place; a platform with no exporter (not yet a
+    # target, shown disabled) goes last. Stable, so equal places keep their order.
+    return sorted(options, key=lambda o: order.get(o.platform, 1000))
 
 
 # ---- health / state ---------------------------------------------------
@@ -636,11 +734,196 @@ def capabilities() -> Capabilities:
 
 @app.get("/api/state", response_model=EditState)
 def state() -> EditState:
-    return EditState(dirty=require_adapter().dirty, library=_library_info())
+    stem_job = JOBS.active(STEM_JOB)
+    pending = STATE.pending.summary() if STATE.pending is not None else None
+    return EditState(dirty=require_adapter().dirty, library=_library_info(),
+                     pending_stems=pending if pending and pending["tracks"] else None,
+                     stem_job=stem_job[0].id if stem_job else None,
+                     stem_recovery=STATE.recovery)
+
+
+# ---- stem engine (download / side-load / remove) --------------------------
+# The engine and its weights live outside the app (see stems/engine_manager.py).
+ENGINE_JOB = "stem-engine-install"
+STEM_JOB = "stem-conversion"
+
+
+@app.get("/api/stems/engine")
+def stem_engine_status() -> dict:
+    """What is installed, what this computer can run, and what a download costs."""
+    from .stems import engine_manager as em
+
+    mgr = em.default_manager()
+    running = JOBS.active(ENGINE_JOB)
+    return {**mgr.status(), "device": prefs.load_prefs().get("stemDevice", "auto"),
+            "install_job": running[0].id if running else None}
+
+
+@app.post("/api/stems/engine/install", response_model=JobStatus)
+def install_stem_engine(body: StemEngineInstall) -> JobStatus:
+    """Download the engine (and the weights) as a job, in bytes."""
+    from .jobs import JobCancelled
+    from .stems import download
+    from .stems import engine_manager as em
+
+    mgr = em.default_manager()
+    if mgr.base_target is None:
+        raise HTTPException(422, "There is no stem engine for this computer")
+    target = body.target or mgr.base_target
+    if target not in mgr.status(network=False)["offered_targets"]:
+        raise HTTPException(400, f"The {target} engine is not offered on this computer")
+
+    def run(handle):
+        info = mgr.target_info(target)
+        if info is None:
+            raise em.EngineError("Could not reach the engine download — check the internet connection")
+        installed = mgr.installed()
+        need_engine = not (installed and installed["target"] == target)
+        need_weights = body.weights and not mgr.weights_installed()
+        total = (info["size"] if need_engine else 0) + (mgr.weights_size() if need_weights else 0)
+        handle.progress(done=0, total=total, unit="bytes", message="Downloading the stem engine…")
+        done = [0]
+
+        def on_bytes(n: int) -> None:
+            done[0] += n
+            handle.progress(done=done[0])
+
+        try:
+            if need_engine:
+                mgr.install_engine(target, on_bytes=on_bytes, cancelled=lambda: handle.cancelled)
+            if need_weights:
+                handle.progress(message="Downloading the separation model…")
+                mgr.install_weights(on_bytes=on_bytes, cancelled=lambda: handle.cancelled)
+        except download.DownloadCancelled:
+            raise JobCancelled()
+        return {"target": target, "ready": mgr.ready()}
+
+    try:
+        job = JOBS.submit(ENGINE_JOB, run, exclusive_with=(ENGINE_JOB, STEM_JOB))
+    except JobBusy:
+        raise HTTPException(409, "The stem engine is already downloading, or a conversion is running")
+    return JobStatus(**job.as_dict())
+
+
+def _require_no_pending_stems(what: str) -> None:
+    """Refuse an operation that would SAVE or DROP a stem conversion's swap as a
+    side effect — import and remap save pending edits, reload and restore drop
+    them — while converted tracks await Save/Discard or a conversion runs."""
+    if JOBS.active(STEM_JOB):
+        raise HTTPException(409, f"{what} is not possible while tracks are being converted to stems")
+    if STATE.pending is not None and STATE.pending.blocking():
+        raise HTTPException(409, f"{what} is not possible until the converted tracks are saved or discarded")
+
+
+def _stem_options(body):
+    from .stems import convert
+
+    return convert.Options(
+        mode=body.mode, destination=Path(body.destination).expanduser() if body.destination else None,
+        collection=body.collection, playlist_id=body.playlist_id, new_playlist=body.new_playlist,
+        device=prefs.load_prefs().get("stemDevice", "auto"),
+    )
+
+
+def _stem_plan(body):
+    from .stems import convert
+
+    adapter = require_adapter()
+    caps = adapter.capabilities()
+    if not (caps.writable and caps.tracks.stem_convertible):
+        raise HTTPException(422, "This library cannot hold stem files")
+    try:
+        return adapter, convert.plan(adapter, body.track_ids, _stem_options(body), STATE.pending)
+    except convert.ConvertError as ex:
+        raise HTTPException(400, str(ex))
+
+
+@app.post("/api/tracks/stems/preview")
+def preview_stem_conversion(body: StemConvert) -> dict:
+    """What a conversion would do — converted, skipped (and why), disk space."""
+    _adapter, planned = _stem_plan(body)
+    return planned.as_dict()
+
+
+@app.post("/api/tracks/stems/convert", response_model=JobStatus)
+def convert_to_stems(body: StemConvert) -> JobStatus:
+    """Convert tracks to stem files as a job; the swap lands at its end."""
+    from .stems import convert
+    from .stems import engine_manager as em
+
+    _require_no_batch()
+    if JOBS.active("import"):
+        raise HTTPException(409, "Wait for the import to finish")
+    adapter, planned = _stem_plan(body)
+    if planned.blocked:
+        raise HTTPException(409, planned.blocked)
+    if not planned.items:
+        raise HTTPException(400, "None of these tracks can be converted")
+    if any(p.reuse is None for p in planned.items) and not em.default_manager().ready():
+        raise HTTPException(409, "The stem engine is not installed")
+    opts = _stem_options(body)
+
+    def run(handle):
+        return convert.run(handle, adapter, planned, opts, STATE.pending, mutation=STATE.mutation,
+                           still_current=lambda: STATE.adapter is adapter)
+
+    try:
+        job = JOBS.submit(STEM_JOB, run, exclusive_with=BATCH_JOBS + (ENGINE_JOB, "import"))
+    except JobBusy:
+        raise HTTPException(409, "Another batch, download or import is running")
+    return JobStatus(**job.as_dict())
+
+
+@app.post("/api/stems/engine/sideload")
+def side_load_stem_engine(body: StemSideLoad) -> dict:
+    """Install the engine or the weights from files the user already has."""
+    from .stems import engine_manager as em
+
+    if JOBS.active(ENGINE_JOB) or JOBS.active(STEM_JOB):
+        raise HTTPException(409, "Wait for the running download or conversion to finish")
+    mgr = em.default_manager()
+    path = Path(body.path).expanduser()
+    if not path.exists():
+        raise HTTPException(400, f"Not found: {path}")
+    try:
+        if body.kind == "engine":
+            mgr.side_load_engine(path)
+        else:
+            mgr.side_load_weights(path)
+    except em.EngineError as ex:
+        raise HTTPException(400, str(ex))
+    return stem_engine_status()
+
+
+@app.delete("/api/stems/engine")
+def remove_stem_engine() -> dict:
+    from .stems import engine_manager as em
+
+    if JOBS.active(ENGINE_JOB) or JOBS.active(STEM_JOB):
+        raise HTTPException(409, "Wait for the running download or conversion to finish")
+    em.default_manager().remove()
+    return stem_engine_status()
+
+
+@app.post("/api/discard", response_model=EditState)
+def discard_changes() -> EditState:
+    """Drop every unsaved edit — the library re-reads itself from disk.
+
+    A running batch is stopped first (and waited for): it writes into the
+    library being discarded, so it would otherwise keep adding edits to the
+    freshly reloaded one.
+    """
+    adapter = require_adapter()
+    if not adapter.capabilities().writable:
+        raise HTTPException(409, "This library cannot be edited, so there is nothing to discard")
+    _stop_batches()
+    STATE.discard()
+    return state()
 
 
 @app.post("/api/reload")
 def reload_collection() -> dict:
+    _require_no_pending_stems("Reloading")
     if not STATE.loaded:
         raise HTTPException(409, "No collection loaded")
     STATE.open(STATE.path)  # re-parse current file from disk
@@ -797,14 +1080,47 @@ _AUDIO_MIME = {
 }
 
 
+def _stem_audio(path: Path, stem: int) -> FileResponse:
+    """One stem of a stem file as a file of its own (see stems/stream_cache.py):
+    a browser only ever decodes an MP4's first stream, which is the mix."""
+    from .core import stem_file
+    from .stems import stream_cache
+
+    layout = stem_file.stem_layout(path)
+    if layout is None or not 0 <= stem < len(layout):
+        raise HTTPException(404, "That file has no such stem")
+    try:
+        return FileResponse(stream_cache.stem_file_for(path, stem), media_type="audio/mp4")
+    except (stem_file.StemFileError, OSError) as ex:
+        raise HTTPException(500, f"Could not read the stem: {ex}")
+
+
+def _stem_layout_of(path: Path | None) -> dict:
+    from .core import stem_file
+
+    if path is None or not path.exists():
+        raise HTTPException(404, "Audio file not found")
+    return {"stems": stem_file.stem_layout(path) or []}
+
+
+@app.get("/api/tracks/stems")
+def track_stems(track_id: str) -> dict:
+    """The stems a track's FILE carries for playback — `[{name, color}]`, empty
+    for anything that is not a stem file (whatever the library says)."""
+    return _stem_layout_of(require_adapter().audio_path(track_id))
+
+
 @app.get("/api/tracks/audio")
-def track_audio(track_id: str) -> FileResponse:
-    """Stream a track's audio file for playback (supports HTTP Range/seeking)."""
+def track_audio(track_id: str, stem: int | None = None) -> FileResponse:
+    """Stream a track's audio file for playback (supports HTTP Range/seeking);
+    with `stem`, that stem of a stem file (0-based) instead."""
     path = require_adapter().audio_path(track_id)
     if path is None:
         raise HTTPException(404, "Track not found")
     if not path.exists():
         raise HTTPException(404, f"Audio file not found: {path}")
+    if stem is not None:
+        return _stem_audio(path, stem)
     # .stem.m4a and other MP4s serve as audio/mp4; browsers play the first track.
     mime = _AUDIO_MIME.get(path.suffix.lower(), "application/octet-stream")
     # Cacheable so the waveform's decode-fetch and the <audio> element can share
@@ -936,11 +1252,36 @@ class _AnalysisError(Exception):
 # beats that no longer exist.
 GRID_JOB = "grid-analysis"
 CUE_JOB = "auto-hotcues"
-BATCH_JOBS = (GRID_JOB, CUE_JOB)
+BATCH_JOBS = (GRID_JOB, CUE_JOB, STEM_JOB)
+
+
+def _stop_batches() -> None:
+    """Cancel every running batch analysis and WAIT for it to stop.
+
+    Used wherever the library is about to be replaced or reloaded: a job still
+    finishing its current track would otherwise keep writing into it (or, for
+    file work, keep moving files) afterwards. Batches check for a cancel
+    between tracks, so this is short.
+    """
+    stopping = [job for kind in BATCH_JOBS for job in JOBS.active(kind)]
+    for job in stopping:
+        JOBS.cancel(job.id)
+    for job in stopping:
+        if not JOBS.wait(job.id, timeout=60):
+            log.warning("batch %s (%s) still running after cancel; continuing", job.id, job.kind)
 
 
 def _require_no_batch() -> None:
+    """An early, friendly refusal. Not race-free on its own — the batch routes
+    START through `_submit_batch`, which re-checks under the registry's lock."""
     if any(JOBS.active(k) for k in BATCH_JOBS):
+        raise HTTPException(409, "A batch analysis is already running")
+
+
+def _submit_batch(kind: str, run) -> "Job":
+    try:
+        return JOBS.submit(kind, run, exclusive_with=BATCH_JOBS)
+    except JobBusy:
         raise HTTPException(409, "A batch analysis is already running")
 
 
@@ -999,7 +1340,7 @@ def auto_grid_batch(body: AutoGridBatchRequest) -> JobStatus:
             handle.progress(done=i + 1)
         return result
 
-    job = JOBS.submit(GRID_JOB, run)
+    job = _submit_batch(GRID_JOB, run)
     return JobStatus(**job.as_dict())
 
 
@@ -1050,7 +1391,7 @@ def auto_hotcues_batch(body: AutoHotcuesBatchRequest) -> JobStatus:
             handle.progress(done=i + 1)
         return result
 
-    job = JOBS.submit(CUE_JOB, run)
+    job = _submit_batch(CUE_JOB, run)
     return JobStatus(**job.as_dict())
 
 
@@ -1058,6 +1399,12 @@ def auto_hotcues_batch(body: AutoHotcuesBatchRequest) -> JobStatus:
 def edit_cue_type(body: SetCueType) -> TrackCues:
     """Change the type of an existing cue (keeps its position)."""
     return require_adapter().set_cue_type(body.track_id, body.slot, body.type)
+
+
+@app.patch("/api/tracks/cue/color", response_model=TrackCues)
+def edit_cue_color(body: SetCueColor) -> TrackCues:
+    """Recolour an existing cue from the platform's palette (None = uncoloured)."""
+    return require_adapter().set_cue_color(body.track_id, body.slot, body.color)
 
 
 @app.delete("/api/tracks/cue", response_model=TrackCues)
@@ -1222,6 +1569,7 @@ def restore_version(commit_id: str) -> CollectionStatus:
     """Restore the collection to a past version. Writes that version back as a
     NEW forward save (a fresh commit on top of history — never a rewind), then
     reloads. The user should close Traktor first (it overwrites on exit)."""
+    _require_no_pending_stems("Restoring a version")
     require_adapter()
     data = history.read_version(STATE.path, commit_id)
     if data is None:
@@ -1390,7 +1738,7 @@ def source_track_cues(track_id: str) -> TrackCues:
 
 
 @app.get("/api/source/tracks/audio")
-def source_track_audio(track_id: str) -> FileResponse:
+def source_track_audio(track_id: str, stem: int | None = None) -> FileResponse:
     """Stream a track's audio straight off the source drive.
 
     So the deck can audition a track BEFORE importing it, which is most of the
@@ -1402,8 +1750,15 @@ def source_track_audio(track_id: str) -> FileResponse:
         raise HTTPException(404, "Track not found")
     if not path.exists():
         raise HTTPException(404, f"Audio file not found: {path}")
+    if stem is not None:
+        return _stem_audio(path, stem)
     mime = _AUDIO_MIME.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(path, media_type=mime)
+
+
+@app.get("/api/source/tracks/stems")
+def source_track_stems(track_id: str) -> dict:
+    return _stem_layout_of(require_source().audio_path(track_id))
 
 
 # ---- drives and folders -----------------------------------------------
@@ -1505,16 +1860,30 @@ def folder_track_cues(track_id: str) -> TrackCues:
 
 
 @app.get("/api/folder/tracks/audio")
-def folder_track_audio(track_id: str) -> FileResponse:
+def folder_track_audio(track_id: str, stem: int | None = None) -> FileResponse:
     path = _folder_track(track_id).audio_path(track_id)
     if path is None or not path.is_file():
         raise HTTPException(404, "Audio file not found")
+    if stem is not None:
+        return _stem_audio(path, stem)
     mime = _AUDIO_MIME.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(path, media_type=mime)
 
 
+@app.get("/api/folder/tracks/stems")
+def folder_track_stems(track_id: str) -> dict:
+    return _stem_layout_of(_folder_track(track_id).audio_path(track_id))
+
+
+def _require_addable(dest) -> None:
+    caps = dest.capabilities()
+    if not (caps.writable and caps.tracks.addable):
+        raise HTTPException(422, "Tracks cannot be added to this library")
+
+
 def _folder_add_plan(body: FolderAddRequest):
     dest = require_adapter()
+    _require_addable(dest)
     tracks = []
     for track_id in body.track_ids:
         track = _folder_track(track_id).track(track_id)
@@ -1525,7 +1894,10 @@ def _folder_add_plan(body: FolderAddRequest):
     # One source across however many folders the ids came from.
     source = FolderSource(Path(tracks[0].id).parent, tracks)
     destination = None
-    if body.mode == "copy":
+    if importer.places_audio(dest):
+        # The library decides (a stick): no mode, no destination to ask for.
+        destination = dest.audio_home()
+    elif body.mode == "copy":
         if not body.destination:
             raise HTTPException(400, "Copying needs a destination folder")
         destination = Path(body.destination).expanduser()
@@ -1541,9 +1913,11 @@ def _folder_add_plan(body: FolderAddRequest):
 
 @app.post("/api/folder/add/preview")
 def folder_add_preview(body: FolderAddRequest) -> dict:
-    _source, _dest, destination, plan = _folder_add_plan(body)
+    _source, dest, destination, plan = _folder_add_plan(body)
     out = plan.as_dict(free_bytes=importer.free_bytes(destination) if destination else None)
-    if body.mode == "reference":
+    if importer.places_audio(dest):
+        _placed_space(out, dest, plan, destination)
+    elif body.mode == "reference":
         # Nothing is copied, so there is no size to fit anywhere.
         out.update(total_bytes=0, free_bytes=None, enough_space=None)
     drive = _drive_of(Path(body.track_ids[0]), places.drives()) if body.track_ids else None
@@ -1554,15 +1928,17 @@ def folder_add_preview(body: FolderAddRequest) -> dict:
 @app.post("/api/folder/add", response_model=JobStatus)
 def folder_add(body: FolderAddRequest) -> JobStatus:
     """Add browsed files to the collection. A job, like import: copying can be long."""
+    _require_no_pending_stems("Adding files")
     source, dest, destination, plan = _folder_add_plan(body)
     if not plan.importable and not plan.existing:
         raise HTTPException(400, "Nothing to add (none of those files exist)")
-    if body.mode == "copy":
+    if body.mode == "copy" or importer.places_audio(dest):
         free = importer.free_bytes(destination)
-        if free is not None and free < plan.total_bytes + importer.SPACE_HEADROOM:
+        needed = importer.placed_bytes(dest, plan) if importer.places_audio(dest) else plan.total_bytes
+        if free is not None and free < needed + importer.SPACE_HEADROOM:
             raise HTTPException(
                 400,
-                f"Not enough space: {plan.total_bytes / 1e9:.1f} GB needed, "
+                f"Not enough space: {needed / 1e9:.1f} GB needed, "
                 f"{free / 1e9:.1f} GB free at {destination}",
             )
     if JOBS.active("import"):
@@ -1592,9 +1968,23 @@ def folder_add(body: FolderAddRequest) -> JobStatus:
 # threads rather than something fancier.
 
 
+def _placed_space(out: dict, dest, plan, destination: Path) -> None:
+    """A self-placing library's preview: only what is really COPIED needs room,
+    and the preview says how many files will be copied vs used in place."""
+    needed = importer.placed_bytes(dest, plan)
+    free = importer.free_bytes(destination)
+    in_place = sum(1 for t in plan.importable if t.source_path is not None
+                   and t.source_path.resolve().is_relative_to(destination.resolve()))
+    out.update(total_bytes=needed, free_bytes=free,
+               enough_space=None if free is None else free >= needed + importer.SPACE_HEADROOM,
+               places_audio=True, in_place=in_place, copied=len(plan.importable) - in_place)
+
+
 def _import_plan(body: ImportRequest):
     source, dest = require_source(), require_adapter()
-    destination = Path(body.destination).expanduser()
+    _require_addable(dest)
+    destination = (dest.audio_home() if importer.places_audio(dest)
+                   else Path(body.destination).expanduser())
     return source, dest, destination, importer.plan(
         source,
         dest,
@@ -1611,21 +2001,26 @@ def import_preview(body: ImportRequest) -> dict:
     Computed fresh on every call and never stored — a stick can be re-exported
     between the preview and the import, and a stale preview is worse than none.
     """
-    _source, _dest, destination, plan = _import_plan(body)
-    return plan.as_dict(free_bytes=importer.free_bytes(destination))
+    _source, dest, destination, plan = _import_plan(body)
+    out = plan.as_dict(free_bytes=importer.free_bytes(destination))
+    if importer.places_audio(dest):
+        _placed_space(out, dest, plan, destination)
+    return out
 
 
 @app.post("/api/import", response_model=JobStatus)
 def start_import(body: ImportRequest) -> JobStatus:
     """Start an import. Returns immediately; poll the job for progress."""
+    _require_no_pending_stems("Importing")
     source, dest, destination, plan = _import_plan(body)
     if not plan.importable:
         raise HTTPException(400, "Nothing to import (no tracks, or none of their files exist)")
     free = importer.free_bytes(destination)
-    if free is not None and free < plan.total_bytes + importer.SPACE_HEADROOM:
+    needed = importer.placed_bytes(dest, plan) if importer.places_audio(dest) else plan.total_bytes
+    if free is not None and free < needed + importer.SPACE_HEADROOM:
         raise HTTPException(
             400,
-            f"Not enough space: {plan.total_bytes / 1e9:.1f} GB needed, "
+            f"Not enough space: {needed / 1e9:.1f} GB needed, "
             f"{free / 1e9:.1f} GB free at {destination}",
         )
     # One at a time: two concurrent imports would race on filename collisions and

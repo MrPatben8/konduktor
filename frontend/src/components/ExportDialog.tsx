@@ -5,7 +5,11 @@ import { api, type ExportSet } from '../api'
 import { FolderPicker } from './FolderPicker'
 
 /**
- * Create or edit an export: its name, its target platform and where it lands.
+ * Create or edit an export: its name, its target platforms and where it lands.
+ *
+ * Several platforms can be ticked. They share the destination and ONE copy of
+ * the audio (under `Contents/`), each writing its own library beside it — so a
+ * stick can carry a Traktor collection and a OneLibrary library at once.
  *
  * All three are settled up front, and the destination especially is NOT a
  * detail deferred to export time. A Traktor `<LOCATION>` is a volume name plus
@@ -23,7 +27,7 @@ interface Props {
 
 export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
   const [name, setName] = useState(editing?.name ?? '')
-  const [target, setTarget] = useState(editing?.target ?? 'traktor')
+  const [chosen, setChosen] = useState<string[]>(editing?.targets ?? ['traktor'])
   const [destination, setDestination] = useState(editing?.destination ?? '')
   const [browsing, setBrowsing] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -42,12 +46,34 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
     enabled: !!editing,
   }).data?.destination_conflict
 
-  const valid = name.trim() !== '' && destination.trim() !== ''
+  // Some targets are only found at a drive's root (a CDJ looks for `PIONEER/`
+  // there and nowhere else). Warned, not refused: the other targets are fine in
+  // any folder. Checked against the same polled drive list the sidebar uses.
+  const drives = useQuery({ queryKey: ['drives'], queryFn: api.drives })
+  const trim = (p: string) => p.replace(/[\\/]+$/, '') || p
+  const atDriveRoot =
+    destination.trim() !== '' &&
+    (drives.data ?? []).some((d) => trim(d.path) === trim(destination.trim()))
+  const needsRoot = (targets.data ?? []).filter(
+    (p) => p.drive_root && chosen.includes(p.platform),
+  )
+  // A computer-only library ticked beside a stick format: harmless, but it does
+  // nothing on the stick, which is easy to mistake for a broken export.
+  const computerOnly = (targets.data ?? []).filter(
+    (p) => p.computer_only && chosen.includes(p.platform),
+  )
+
+  const toggle = (platform: string, on: boolean) =>
+    setChosen((prev) =>
+      on ? [...prev.filter((t) => t !== platform), platform] : prev.filter((t) => t !== platform),
+    )
+
+  const valid = name.trim() !== '' && destination.trim() !== '' && chosen.length > 0
 
   const save = async () => {
     setBusy(true)
     try {
-      const body = { name: name.trim(), target, destination: destination.trim() }
+      const body = { name: name.trim(), targets: chosen, destination: destination.trim() }
       const saved = editing
         ? await api.updateExport(editing.id, body)
         : await api.createExport(body)
@@ -102,10 +128,10 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
                     }`}
                   >
                     <input
-                      type="radio"
+                      type="checkbox"
                       disabled={!p.installed}
-                      checked={target === p.platform}
-                      onChange={() => setTarget(p.platform)}
+                      checked={chosen.includes(p.platform)}
+                      onChange={(e) => toggle(p.platform, e.target.checked)}
                       className="accent-accent"
                     />
                     <span className={p.installed ? 'text-text' : 'text-faint'}>{p.name}</span>
@@ -117,6 +143,13 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
                   </label>
                 ))}
               </div>
+              {computerOnly.length > 0 && needsRoot.length > 0 && (
+                <div className="mt-2 rounded well px-3 py-2 text-xs text-gold">
+                  {computerOnly.map((p) => p.name).join(' and ')} is only read on a computer, never
+                  from a USB drive, so it adds nothing to {needsRoot.map((p) => p.name).join(' and ')}.
+                  It replaces a collection on this computer and only works on this machine.
+                </div>
+              )}
             </div>
 
             <div>
@@ -137,9 +170,16 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
                 </button>
               </div>
               <div className="mt-1 text-[11px] text-faint">
-                The folder gets a <span className="font-mono">collection.nml</span> and a copy of
-                every track, in your own folder structure.
+                The folder gets a library for each platform, plus one copy of every track under{' '}
+                <span className="font-mono">Contents/</span>, in your own folder structure.
               </div>
+              {needsRoot.length > 0 && destination.trim() !== '' && !atDriveRoot && (
+                <div className="mt-2 rounded well px-3 py-2 text-xs text-gold">
+                  {needsRoot.map((p) => p.name).join(' and ')} is only found at the top of a
+                  drive. Choose the drive itself rather than a folder on it, or players won’t see
+                  this export.
+                </div>
+              )}
               {conflict && (
                 <div className="mt-2 rounded well px-3 py-2 text-xs text-gold">
                   “{conflict}” already exports here. Exporting replaces whatever the other one

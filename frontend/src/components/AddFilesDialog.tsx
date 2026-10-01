@@ -2,12 +2,18 @@ import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type FolderAddPreview, type FolderAddRequest, type JobStatus } from '../api'
+import { useCaps } from '../lib/capabilities'
+import { placedAudioSummary } from '../lib/platformCopy'
 import { FolderPicker } from './FolderPicker'
 
 /**
  * Add browsed files to the collection — and, optionally, to a playlist or export.
  *
- * Copy vs. leave-in-place is ASKED every time, with nothing preselected: the
+ * A library that places its own audio (`tracks.places_audio`, a OneLibrary
+ * stick) is the exception: only files already on it can stay in place, so the
+ * dialog STATES what will happen instead of asking (decided 2026-10-01).
+ *
+ * Otherwise copy vs. leave-in-place is ASKED every time, with nothing preselected: the
  * right answer depends on the drive (a stick is about to be unplugged) and on
  * how the DJ keeps their music, and a remembered default would quietly apply
  * last week's answer to a different drive.
@@ -42,6 +48,11 @@ interface Props {
 
 export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: Props) {
   const qc = useQueryClient()
+  // The LIBRARY's capabilities (this dialog is mounted outside the browsed
+  // view's swapped context). A library that places its own audio — a stick —
+  // decides copy vs in place itself, so there is nothing to ask.
+  const caps = useCaps()
+  const places = caps.tracks.places_audio
   const [mode, setMode] = useState<'copy' | 'reference' | null>(null)
   const [folder, setFolder] = useState('')
   const [browsing, setBrowsing] = useState(false)
@@ -62,16 +73,16 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
     track_ids: trackIds,
     // The preview needs A mode to size anything; "reference" costs nothing to
     // ask about and is replaced as soon as the user picks.
-    mode: mode ?? 'reference',
-    destination: mode === 'copy' ? folder : null,
+    mode: places ? 'copy' : (mode ?? 'reference'),
+    destination: !places && mode === 'copy' ? folder : null,
     playlist_id: target?.kind === 'playlist' ? target.id : null,
     export_id: target?.kind === 'export' ? target.id : null,
   }
 
   const preview = useQuery<FolderAddPreview>({
-    queryKey: ['folder-add-preview', trackIds, mode, folder, target?.id],
+    queryKey: ['folder-add-preview', trackIds, places ? 'placed' : mode, folder, target?.id],
     queryFn: () => api.folderAddPreview(body),
-    enabled: !job && (mode !== 'copy' || !!folder),
+    enabled: !job && (places || mode !== 'copy' || !!folder),
     staleTime: 0,
     gcTime: 0,
   })
@@ -146,13 +157,15 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
   const pct = job && job.total > 0 ? Math.min(100, (job.done / job.total) * 100) : null
   const n = trackIds.length
   const newCount = p?.importable ?? 0
+  const shown = places ? 'placed' : mode
+  const libraryName = places ? caps.save.app_name : 'your collection'
   const canAdd =
-    !starting && mode !== null && !!p && (newCount > 0 || (!!target && p.existing.length > 0)) &&
+    !starting && shown !== null && !!p && (newCount > 0 || (!!target && p.existing.length > 0)) &&
     p.enough_space !== false
 
   const title = target
     ? `Add ${n} track${n === 1 ? '' : 's'} to ${target.name}`
-    : `Add ${n} track${n === 1 ? '' : 's'} to your collection`
+    : `Add ${n} track${n === 1 ? '' : 's'} to ${libraryName}`
 
   const option = (value: 'copy' | 'reference', label: string, detail: ReactNode) => (
     <label
@@ -205,6 +218,13 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
                   </div>
                 )}
 
+                {places && p && (
+                  <div className="rounded well px-3 py-2 text-xs text-muted">
+                    {placedAudioSummary(caps.save, p.copied ?? 0, p.in_place ?? 0)}
+                  </div>
+                )}
+
+                {!places && (
                 <div className="space-y-1">
                   {option(
                     'copy',
@@ -232,6 +252,7 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
                     'Your collection points at these files. Nothing is copied.',
                   )}
                 </div>
+                )}
 
                 {mode === 'reference' && p?.removable && (
                   <div className="rounded well px-3 py-2 text-xs text-gold">
@@ -244,15 +265,15 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
                   <div className="text-pink">{(preview.error as Error).message}</div>
                 )}
 
-                {mode && p && (
+                {shown && p && (
                   <div className="space-y-2">
                     <div className="text-text">
-                      {newCount} new to your collection
-                      {mode === 'copy' && (
+                      {newCount} new to {libraryName}
+                      {shown !== 'reference' && p.total_bytes > 0 && (
                         <span className="text-muted"> · {gb(p.total_bytes)} to copy</span>
                       )}
                     </div>
-                    {mode === 'copy' && p.free_bytes != null && (
+                    {shown !== 'reference' && p.free_bytes != null && (
                       <div className={p.enough_space === false ? 'text-pink' : 'text-faint'}>
                         {gb(p.free_bytes)} free
                         {p.enough_space === false && ' — not enough space'}
@@ -261,7 +282,7 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
                     {p.existing.length > 0 && (
                       <div className="rounded well px-3 py-2 text-xs text-muted">
                         {p.existing.length} {p.existing.length === 1 ? 'is' : 'are'} already in
-                        your collection and will not be added again
+                        {' '}{libraryName} and will not be added again
                         {target ? ` — but will still go into ${target.name}` : ''}.
                       </div>
                     )}
@@ -271,7 +292,7 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
                         there and will be skipped.
                       </div>
                     )}
-                    {mode === 'copy' && p.duplicates.length > 0 && (
+                    {shown !== 'reference' && p.duplicates.length > 0 && (
                       <div className="rounded well px-3 py-2 text-xs text-gold">
                         {p.duplicates.length} of these look like tracks your collection already
                         has. The copies will be added as new entries.

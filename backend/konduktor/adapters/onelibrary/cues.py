@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 
 from ...core.model import CuePoint
+from ..rekordbox import palette
 
 log = logging.getLogger(__name__)
 
@@ -47,14 +48,13 @@ NO_LOOP = 0xFFFFFFFF
 # `hot_cue` for a cue that sits in no pad bank, i.e. a memory cue.
 MEMORY_SLOT = 0
 
-# PCO2/PCOB entry kinds. The value is the same in both tags; PCOB exposes it as
-# a construct enum and PCO2 as a plain int, so both are normalised to an int.
+# PCO2/PCOB entry kinds. The value is the same in both tags.
 ENTRY_CUE = 1
 ENTRY_LOOP = 2
 
 
 def _entry_kind(value) -> int:
-    """PCOB gives an enum, PCO2 an int — one number out of either."""
+    """An entry's kind as an int, defaulting to a point cue if unreadable."""
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -68,8 +68,17 @@ def _color(entry) -> str | None:
     real black in principle, but rekordbox uses it as "unset" and shows such a
     cue in the default colour, so it is reported as no colour rather than as
     black. Memory cues in the reference export are exactly this case.
+
+    rekordbox DRAWS a cue from its palette CODE (`rekordbox.palette`), so a known
+    code is reported as that swatch; a cue with code 0 and an RGB (older
+    exports, the reference fixture) is reported by its RGB.
     """
+    swatch = palette.hex_for(getattr(entry, "color_code", None))
+    if swatch is not None:
+        return swatch
     try:
+        # None on an entry too short to carry a colour: every PCPT, and the
+        # compact 44-byte PCP2 rekordbox writes for a memory cue it added.
         r, g, b = int(entry.color_red), int(entry.color_green), int(entry.color_blue)
     except (AttributeError, TypeError, ValueError):
         return None
@@ -78,7 +87,7 @@ def _color(entry) -> str | None:
     return f"#{r:02X}{g:02X}{b:02X}"
 
 
-def _to_cue(entry, *, with_color: bool) -> CuePoint | None:
+def _to_cue(entry, *, with_color: bool, editable: bool = False) -> CuePoint | None:
     """One ANLZ cue entry as a generic `CuePoint`, or None if unreadable."""
     try:
         hot_cue = int(entry.hot_cue)
@@ -111,11 +120,11 @@ def _to_cue(entry, *, with_color: bool) -> CuePoint | None:
         length=length,
         slot=slot,
         color=_color(entry) if with_color else None,
-        # A OneLibrary drive is read-only in Konduktor, so no cue accepts a
-        # command. `capabilities.writable` is what the UI actually gates on;
-        # this keeps the per-cue answer consistent with it.
-        editable=False,
-        readonly_reason="platform_managed",
+        # Hot cues are editable on a drive opened for editing (the caller says
+        # so). MEMORY cues never are — preserved-but-uneditable, as in the
+        # Rekordbox adapter (the two-platform rule).
+        editable=editable and role == "hotcue",
+        readonly_reason=None if editable and role == "hotcue" else "platform_managed",
         grid_marker=None,
     )
 
@@ -130,15 +139,14 @@ def _entries(anlz, tag_type: str) -> list:
     """
     out: list = []
     for tag in getattr(anlz, "tags", []):
-        if tag.type != tag_type:
-            continue
-        content = getattr(tag.struct, "content", None)
-        out.extend(getattr(content, "entries", None) or [])
+        if tag.type == tag_type:
+            out.extend(tag.entries)
     return out
 
 
-def cues_from_anlz(dat, ext) -> list[CuePoint]:
-    """The track's complete cue list, from its parsed `.DAT` and `.EXT`.
+def cues_from_anlz(dat, ext, *, editable: bool = False) -> list[CuePoint]:
+    """The track's complete cue list, from its parsed `.DAT` and `.EXT`
+    (`rekordbox.anlz_file.AnlzFile`s).
 
     Either may be None — a drive can carry a `.DAT` with no `.EXT` — and a track
     with no cues at all yields an empty list rather than an error.
@@ -153,14 +161,14 @@ def cues_from_anlz(dat, ext) -> list[CuePoint]:
     for f in files:
         pco2.extend(_entries(f, "PCO2"))
     if pco2:
-        cues = [c for e in pco2 if (c := _to_cue(e, with_color=True)) is not None]
+        cues = [c for e in pco2 if (c := _to_cue(e, with_color=True, editable=editable)) is not None]
     else:
         # Fallback: merge PCOB across BOTH files. The .DAT holds pads 1-3 and the
         # .EXT the rest, so either alone is an incomplete bank.
         pcob: list = []
         for f in files:
             pcob.extend(_entries(f, "PCOB"))
-        cues = [c for e in pcob if (c := _to_cue(e, with_color=False)) is not None]
+        cues = [c for e in pcob if (c := _to_cue(e, with_color=False, editable=editable)) is not None]
 
     return _dedupe(cues)
 
@@ -168,18 +176,23 @@ def cues_from_anlz(dat, ext) -> list[CuePoint]:
 def _dedupe(cues: list[CuePoint]) -> list[CuePoint]:
     """Collapse the same cue appearing in more than one tag or file.
 
-    Identity is (role, slot, start) rather than the whole cue: the same pad can
-    be described by both `PCOB` and `PCO2`, and by both files, and those copies
-    agree on position while differing in how much detail they carry. The first
-    one wins, which — given PCO2 is read first — is the richest.
+    Identity is (role, slot, start, type, length) rather than the whole cue:
+    the same pad can be described by both `PCOB` and `PCO2`, and by both files,
+    and those copies agree on all five while differing in how much detail they
+    carry (colour, comment). The first one wins, which — given PCO2 is read
+    first — is the richest.
+
+    Type and length are part of it because two MEMORY cues may share a position:
+    rekordbox happily stores a memory cue on the start of a memory loop (seen on
+    Goober), and keying on position alone silently dropped the loop.
 
     Ordered by position, then by slot, so the projection is stable across reads
     regardless of the order the tags happened to store.
     """
-    seen: set[tuple[str, int | None, int]] = set()
+    seen: set[tuple] = set()
     out: list[CuePoint] = []
     for c in cues:
-        key = (c.role, c.slot, round(c.start * 1000))
+        key = (c.role, c.slot, round(c.start * 1000), c.type, round(c.length * 1000))
         if key in seen:
             continue
         seen.add(key)

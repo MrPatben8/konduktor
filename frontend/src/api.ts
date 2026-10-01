@@ -11,6 +11,8 @@ export interface Track {
   producer: string | null
   mix: string | null
   comment: string | null
+  /** A second free-text comment (Traktor's "Comment 2"). */
+  comment2: string | null
   bpm: number | null
   /** The platform's own display string, shown verbatim: "10m", "8A", "Am". */
   key: string | null
@@ -116,7 +118,7 @@ export type MediaKind = 'audio' | 'stem' | 'video'
 export type PlaylistKind = 'folder' | 'playlist' | 'smart'
 export type TrackField =
   | 'title' | 'artist' | 'album' | 'genre' | 'label' | 'remixer'
-  | 'producer' | 'mix' | 'release_date' | 'comment' | 'rating'
+  | 'producer' | 'mix' | 'release_date' | 'comment' | 'comment2' | 'rating'
 
 export interface CuePoint {
   name: string | null
@@ -220,10 +222,12 @@ export interface SaveCapabilities {
   library_label: string
   overwrite_risk: 'none' | 'on_exit' | 'while_running'
   history: boolean
+  /** Written by a Konduktor export set, whose next run replaces it. */
+  managed_by_export: boolean
 }
 
 /** Why a library cannot be edited. A fact — lib/platformCopy.ts words it. */
-export type ReadonlyCause = 'platform_incomplete' | 'cloud_synced' | 'not_in_library'
+export type ReadonlyCause = 'platform_incomplete' | 'cloud_synced' | 'not_in_library' | 'browsing'
 
 export interface Capabilities {
   platform: Platform
@@ -245,6 +249,12 @@ export interface Capabilities {
     media_kinds: MediaKind[]
     /** Tracks can be removed from the library (audio files are never touched). */
     removable: boolean
+    /** Tracks can be added to the library (import, add browsed files). */
+    addable: boolean
+    /** The library decides where added audio goes — no copy/in-place question. */
+    places_audio: boolean
+    /** Tracks can be converted to native-instruments STEM files. */
+    stem_convertible: boolean
     /** Lower-case suffixes this library can hold — what a browsed folder lists. */
     audio_formats: string[]
     artwork: boolean
@@ -275,11 +285,21 @@ export interface PlatformOption {
   /** The library lives on plugged-in media, so `found` changes between calls —
    *  and `found === 0` means "nothing plugged in", not "not installed". */
   removable: boolean
+  /** As an export target: its library is only found at a drive's ROOT. */
+  drive_root?: boolean
+  /** As an export target: only ever read on a computer, never from a drive. */
+  computer_only?: boolean
 }
 
 export interface EditState {
   dirty: boolean
   library: LibraryInfo
+  /** Converted-to-stem tracks awaiting Save or Discard (parked originals). */
+  pending_stems: { tracks: number; parked: number; bytes: number } | null
+  /** A running stem conversion's job id, so a reloaded page can find it. */
+  stem_job: string | null
+  /** What this open's crash recovery did about an interrupted conversion. */
+  stem_recovery: { committed: number; restored: number; kept: number } | null
 }
 
 export interface CollectionStatus {
@@ -345,6 +365,11 @@ export interface ImportPreview {
   destination: string | null
   free_bytes: number | null
   enough_space: boolean | null
+  /** Set when the library places its own audio (`tracks.places_audio`): how
+   *  many files will be copied onto it, and how many are already there. */
+  places_audio?: boolean
+  copied?: number
+  in_place?: number
 }
 
 // ---- drives and folders ----
@@ -393,7 +418,15 @@ export interface JobStatus {
   /** 0 until the job knows its size — show an indeterminate bar until positive. */
   total: number
   done: number
+  /** What done/total count: 'bytes' while copying, 'tracks' while a library
+   *  is written; '' when unspecified. */
+  unit: string
   message: string
+  /** The CURRENT item's own progress, 0..1 — so the overall bar moves within
+   *  a long item. Resets as each item starts. */
+  fraction: number
+  /** What the current item is doing, e.g. "separating 41 %". */
+  status: string
   result: Record<string, unknown> | null
   error: string | null
   started_at: number
@@ -415,6 +448,73 @@ export interface CueBatchResult {
   cues_placed: number
   grids_created: number
   failed: { title: string; reason: string }[]
+}
+
+/** Convert to Stems: where the files go and what the collection does. */
+export interface StemConvertOptions {
+  /** `replace`: the stem file supersedes the original where it lives (the
+   *  original is parked, and Save deletes it). `destination`: a chosen folder;
+   *  the originals are never touched. */
+  mode: 'replace' | 'destination'
+  destination?: string | null
+  /** `repoint`: the entry names the stem file. `add`: a new entry beside it
+   *  (destination mode only). */
+  collection: 'repoint' | 'add'
+  playlist_id?: string | null
+  new_playlist?: string | null
+}
+
+export interface StemSkip {
+  track_id: string
+  title: string
+  reason: string
+}
+
+/** What a conversion would do (`POST /api/tracks/stems/preview`). */
+export interface StemPlan {
+  convert: { track_id: string; title: string; target: string; reuse: boolean }[]
+  skipped: StemSkip[]
+  space: { volume: string; folder: string; bytes: number; free: number | null }[]
+  /** Set when the batch cannot run at all (not enough space). */
+  blocked: string | null
+  /** Audio still to separate, in seconds (reused leftovers excluded). */
+  seconds: number
+  /** What the new stem files will take on disk. */
+  bytes: number
+  /** The originals' size — what Save deletes in Replace mode. */
+  original_bytes: number
+}
+
+/** A stem conversion job's `result`. */
+export interface StemBatchResult {
+  converted: { track_id: string; new_id: string; title: string }[]
+  /** Old id → new id, for entries repointed at their stem file. */
+  renamed: Record<string, string>
+  /** Original id → the NEW entry added beside it. */
+  added: Record<string, string>
+  skipped: StemSkip[]
+  failed: StemSkip[]
+  cancelled: boolean
+  playlist_missing?: boolean
+}
+
+export type StemTarget = 'macos-arm64' | 'windows-x64-cpu' | 'windows-x64-cuda'
+
+/** `GET /api/stems/engine`: the engine and weights on this computer. */
+export interface StemEngineStatus {
+  supported: boolean
+  required_version: string
+  installed: { version: string; target: StemTarget; size: number | null } | null
+  offered_targets: StemTarget[]
+  download_sizes: Partial<Record<StemTarget, number | null>>
+  manifest_available: boolean
+  nvidia: { name: string; driver: string; capability: number } | null
+  weights: { installed: boolean; size: number; revision: string }
+  root: string
+  /** `auto` | `cpu` | `gpu`, from prefs (`stemDevice`). */
+  device: string
+  /** A running download's job id. */
+  install_job: string | null
 }
 
 export interface SourceCandidate {
@@ -445,8 +545,9 @@ export interface SourceStatus {
 export interface ExportSet {
   id: string
   name: string
-  /** Platform id of the export TARGET, e.g. "traktor". */
-  target: string
+  /** Platform ids of the export TARGETS, e.g. ["traktor", "onelibrary"]. Never
+   *  empty. They share one destination and ONE copy of the audio. */
+  targets: string[]
   destination: string
   playlist_ids: string[]
   /** LOOSE tracks only — tracks a referenced playlist supplies are not listed. */
@@ -480,6 +581,9 @@ export interface ExportContents {
 export interface ExportPreview {
   tracks: number
   exportable: number
+  /** Tracks whose copy from the last export is still current, so are kept
+   *  rather than copied. `total_bytes` counts only what WILL be copied. */
+  unchanged: number
   missing: string[]
   playlists: string[]
   total_bytes: number
@@ -490,6 +594,9 @@ export interface ExportPreview {
   blocked: 'destination_not_empty' | 'nothing_to_export' | 'unsupported_target' | null
   /** The destination already holds a Konduktor export, which will be replaced. */
   replacing: boolean
+  /** Targets whose library is only found at a drive's root, when the destination
+   *  is not one. A warning — the export can still run. */
+  not_drive_root: string[]
 }
 
 export interface FsPlace {
@@ -540,6 +647,42 @@ export interface RemapPreview {
   matched: number
   existing: number
   samples: RemapSample[]
+  /** Target paths more than one track would land on. Non-zero = the rewrite
+   *  would be refused (two entries sharing a path corrupt the library). */
+  collisions: number
+  collision_samples: string[]
+}
+
+/** One place a stored volume's tracks were found — a mapping the user can pick. */
+export interface RelocationCandidate {
+  from: string
+  to: string
+  /** Of the volume's tracks, how many exist under this mapping. */
+  found: number
+}
+
+/** A stored volume in which NO track resolves, and where its tracks are now.
+ *  `ambiguous`: more than one candidate resolves most of it (a drive and its
+ *  backup clone) — the user chooses, nothing is preselected. */
+export interface RelocationVolume {
+  /** How the library names the place, e.g. Traktor's "X:". */
+  label: string
+  root: string
+  total: number
+  status: 'found' | 'ambiguous' | 'not_found'
+  candidates: RelocationCandidate[]
+}
+
+/** The open-time missing-files check. `volumes` is empty once answered, so it
+ *  is safe to refetch. */
+export interface Relocation {
+  scanning: boolean
+  volumes: RelocationVolume[]
+}
+
+export interface RelocationApplied {
+  mappings: number
+  tracks: number
 }
 
 export interface RemapResult {
@@ -615,9 +758,9 @@ export const api = {
   // All scoped to the LOADED library on the server, by its stable id, so
   // nothing here has to carry which collection it means.
   exports: () => getJSON<ExportSet[]>('/api/exports'),
-  createExport: (body: { name: string; target: string; destination: string }) =>
+  createExport: (body: { name: string; targets: string[]; destination: string }) =>
     send<ExportSet>('POST', '/api/exports', body),
-  updateExport: (id: string, body: Partial<Pick<ExportSet, 'name' | 'target' | 'destination'>>) =>
+  updateExport: (id: string, body: Partial<Pick<ExportSet, 'name' | 'targets' | 'destination'>>) =>
     send<ExportSet>('PATCH', `/api/exports/${encodeURIComponent(id)}`, body),
   deleteExport: (id: string) =>
     send<{ deleted: boolean }>('DELETE', `/api/exports/${encodeURIComponent(id)}`),
@@ -665,6 +808,12 @@ export const api = {
   remapPaths: (from: string, to: string) =>
     send<RemapResult>('POST', '/api/library/remap-paths', { from, to }),
 
+  // The open-time missing-files check; answering with no mappings is "Not now".
+  // Applied mappings last for this session only.
+  relocation: () => getJSON<Relocation>('/api/library/relocation'),
+  answerRelocation: (mappings: PathMapping[]) =>
+    send<RelocationApplied>('POST', '/api/library/relocation', { mappings }),
+
   capabilities: () => getJSON<Capabilities>('/api/capabilities'),
   platforms: () => getJSON<PlatformOption[]>('/api/platforms'),
   facets: () => getJSON<Facets>('/api/facets'),
@@ -698,6 +847,8 @@ export const api = {
   patchPrefs: (patch: Record<string, unknown>) =>
     send<Record<string, unknown>>('PATCH', '/api/prefs', patch),
   save: () => send<SaveResult>('POST', '/api/save'),
+  /** Drop every unsaved edit; the library re-reads itself from disk. */
+  discard: () => send<EditState>('POST', '/api/discard'),
 
   // ---- version history ----
   history: () => getJSON<HistoryEntry[]>('/api/history'),
@@ -758,6 +909,18 @@ export const api = {
   /** Remove tracks from the library and every playlist. Audio files stay. */
   removeTracks: (trackIds: string[]) =>
     send<{ removed: number }>('POST', '/api/tracks/remove', { track_ids: trackIds }),
+  stemPreview: (trackIds: string[], opts: StemConvertOptions) =>
+    send<StemPlan>('POST', '/api/tracks/stems/preview', { track_ids: trackIds, ...opts }),
+  /** Starts a `stem-conversion` job; its `result` is a `StemBatchResult`. */
+  stemConvert: (trackIds: string[], opts: StemConvertOptions) =>
+    send<JobStatus>('POST', '/api/tracks/stems/convert', { track_ids: trackIds, ...opts }),
+  stemEngine: () => getJSON<StemEngineStatus>('/api/stems/engine'),
+  /** Starts a `stem-engine-install` job, counting bytes (engine + weights). */
+  stemEngineInstall: (target?: StemTarget | null) =>
+    send<JobStatus>('POST', '/api/stems/engine/install', { target: target ?? null, weights: true }),
+  stemSideload: (path: string, kind: 'engine' | 'weights') =>
+    send<StemEngineStatus>('POST', '/api/stems/engine/sideload', { path, kind }),
+  stemEngineRemove: () => send<StemEngineStatus>('DELETE', '/api/stems/engine'),
   autoGridBatch: (trackIds: string[], replaceExisting: boolean) =>
     send<JobStatus>('POST', '/api/tracks/grid/auto-batch', {
       track_ids: trackIds,
@@ -765,6 +928,9 @@ export const api = {
     }),
   setCueType: (trackId: string, slot: number, type: CueType) =>
     send<TrackCues>('PATCH', '/api/tracks/cue', { track_id: trackId, slot, type }),
+  /** Recolour a cue from `capabilities.cues.palette`; null = uncoloured. */
+  setCueColor: (trackId: string, slot: number, color: string | null) =>
+    send<TrackCues>('PATCH', '/api/tracks/cue/color', { track_id: trackId, slot, color }),
   deleteCue: (trackId: string, slot: number) =>
     send<TrackCues>(
       'DELETE',
@@ -856,6 +1022,27 @@ export function trackAudioUrl(origin: TrackOrigin, trackId: string): string {
   if (origin === 'device') return api.sourceAudioUrl(trackId)
   if (origin === 'folder') return api.folderAudioUrl(trackId)
   return api.audioUrl(trackId)
+}
+
+/** One stem a stem file carries, in stream order (stem k = stream k+1). */
+export interface StemInfo {
+  name: string
+  /** "#RRGGBB", as the file names it. */
+  color: string
+}
+
+/** The stems the track's FILE carries — empty for anything that is not a
+ *  playable stem file, whatever the library says about it. */
+export async function trackStemsFor(origin: TrackOrigin, trackId: string): Promise<StemInfo[]> {
+  const base = origin === 'device' ? '/api/source/tracks/stems' : origin === 'folder' ? '/api/folder/tracks/stems' : '/api/tracks/stems'
+  const res = await getJSON<{ stems: StemInfo[] }>(`${base}?track_id=${encodeURIComponent(trackId)}`)
+  return res.stems
+}
+
+/** Stem `k` (0-based) of a stem file, served as a file of its own: a browser
+ *  decodes only an MP4's first audio stream, which is the mix. */
+export function trackStemUrl(origin: TrackOrigin, trackId: string, k: number): string {
+  return `${trackAudioUrl(origin, trackId)}&stem=${k}`
 }
 
 export function trackCuesFor(origin: TrackOrigin, trackId: string): Promise<TrackCues> {

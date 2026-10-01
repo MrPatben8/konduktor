@@ -61,7 +61,7 @@ playlist_tracks = adapter.playlist_entries(playlist.id) or []
 all_tracks = [t.id for t in adapter.tracks]
 
 print("== creating, listing, updating, deleting ==")
-s1 = exports.create(LIB, name="GIG", target="traktor", destination=str(work / "out"))
+s1 = exports.create(LIB, name="GIG", targets=["traktor"], destination=str(work / "out"))
 check("a set is created with an id", bool(s1.id))
 check("it lists", [s.id for s in exports.all_sets(LIB)] == [s1.id])
 check("it survives a reload from disk", exports.get(LIB, s1.id).name == "GIG")
@@ -128,7 +128,7 @@ check("and is NOT counted as exportable",
       "Macintosh HD/:nowhere/:ghost.mp3" not in gone.track_ids)
 exports.remove(LIB, s1.id, track_ids=["Macintosh HD/:nowhere/:ghost.mp3"])
 
-s2 = exports.create(LIB, name="Deleted playlist test", target="traktor",
+s2 = exports.create(LIB, name="Deleted playlist test", targets=["traktor"],
                     destination=str(work / "out2"))
 exports.add(LIB, s2.id, playlist_ids=["no-such-playlist"])
 ghost = exports.resolve(adapter, exports.get(LIB, s2.id))
@@ -141,7 +141,7 @@ print("== two sets, one destination ==")
 # Caught when the destination is chosen, not when it is too late to warn.
 check("no conflict for distinct destinations",
       exports.destination_conflict(LIB, str(work / "out"), ignore=s1.id) is None)
-s3 = exports.create(LIB, name="Clash", target="traktor", destination=str(work / "out"))
+s3 = exports.create(LIB, name="Clash", targets=["traktor"], destination=str(work / "out"))
 check("a clash is reported by NAME",
       exports.destination_conflict(LIB, str(work / "out"), ignore=s3.id) == "Ibiza")
 check("a set never conflicts with itself",
@@ -189,7 +189,7 @@ import konduktor.main as main  # noqa: E402
 ad, lib = STATE.adapter, STATE.library_id
 prefix = ad.path_prefix_suggestions()["primary"]
 loose = next(t.id for t in ad.tracks if str(ad.audio_path(t.id) or "").startswith(prefix))
-s3 = exports.create(lib, name="Remapped", target="traktor", destination=str(work / "remapped"))
+s3 = exports.create(lib, name="Remapped", targets=["traktor"], destination=str(work / "remapped"))
 exports.add(lib, s3.id, track_ids=[loose])
 r = TestClient(main.app, raise_server_exceptions=False).post(
     "/api/library/remap-paths", json={"from": prefix, "to": "/Volumes/KonduktorTest"}

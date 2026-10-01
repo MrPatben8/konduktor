@@ -52,6 +52,12 @@ const MARKS: Record<string, Mark> = {
   onelibrary: () => <path d="M44.29 9.4A41 41 0 1 0 58.52 90.1L55.41 75.43A26 26 0 1 1 46.38 24.25ZM61.58 89.33A41 41 0 0 0 66.41 87.57L61.23 75.71A28.05 28.05 0 0 1 57.92 76.91ZM70.13 85.72A41 41 0 0 0 74.45 82.92L67.45 73.5A29.27 29.27 0 0 1 64.37 75.5ZM77.65 80.28A41 41 0 0 0 81.22 76.57L73.09 69.65A30.32 30.32 0 0 1 70.44 72.39ZM83.75 73.28A41 41 0 0 0 86.4 68.87L77.65 64.33A31.14 31.14 0 0 1 75.63 67.68ZM88.12 65.09A41 41 0 0 0 89.71 60.2L80.71 57.89A31.71 31.71 0 0 1 79.48 61.67ZM90.54 56.13A41 41 0 0 0 90.99 51L81.97 50.78A31.98 31.98 0 0 1 81.62 54.78ZM90.88 46.85A41 41 0 0 0 90.16 41.76L81.29 43.58A31.94 31.94 0 0 1 81.85 47.55ZM89.12 37.74A41 41 0 0 0 87.28 32.93L78.73 36.84A31.6 31.6 0 0 1 80.16 40.55ZM85.36 29.25A41 41 0 0 0 82.48 24.98L74.54 31.1A30.97 30.97 0 0 1 76.72 34.33ZM79.79 21.83A41 41 0 0 0 76.02 18.32L69.1 26.75A30.09 30.09 0 0 1 71.86 29.32ZM72.69 15.85A41 41 0 0 0 68.23 13.28L62.89 24.02A29 29 0 0 1 66.05 25.85ZM64.43 11.62A41 41 0 0 0 59.5 10.12L56.43 23A27.75 27.75 0 0 1 59.77 24.02ZM55.42 9.36A41 41 0 0 0 50.29 9L50.18 23.58A26.42 26.42 0 0 1 53.49 23.81Z" />,
 }
 
+/** Export targets that are another FORMAT of a platform, drawn with its mark:
+ *  "Rekordbox Export" (a stick's Device Library) is still Rekordbox. */
+const ALIASES: Record<string, string> = {
+  rekordbox_export: 'rekordbox',
+}
+
 export function PlatformIcon({
   platform,
   size = 20,
@@ -63,7 +69,7 @@ export function PlatformIcon({
 }) {
   // Masks are addressed by id, and one page can show the same mark twice.
   const mask = `pm-${useId().replace(/:/g, '')}`
-  const Mark = MARKS[platform]
+  const Mark = MARKS[platform] ?? MARKS[ALIASES[platform]]
   if (!Mark) return <Icon name="music" size={size} className={className} />
   return (
     <svg

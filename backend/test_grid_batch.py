@@ -193,10 +193,51 @@ with tempfile.TemporaryDirectory() as d:
         other = Path(d) / "other.nml"
         shutil.copy2(REAL, other)
         c.post("/api/library/open", json={"path": str(other)})
+        check("opening another library has STOPPED the run by the time it returns",
+              main.JOBS.get(jid).finished and main.JOBS.get(jid).state == "cancelled",
+              main.JOBS.get(jid).state)
         check("opening another library cancels the run", wait(c, jid)["state"] == "cancelled")
+
+        # Exclusive submit is checked and registered under one lock: a second
+        # batch cannot start while one runs, however the requests interleave.
+        from konduktor.jobs import JobBusy
+        import threading as _th
+        gate = _th.Event()
+        first = main.JOBS.submit(main.GRID_JOB, lambda h: gate.wait(5), exclusive_with=main.BATCH_JOBS)
+        try:
+            main.JOBS.submit(main.CUE_JOB, lambda h: None, exclusive_with=main.BATCH_JOBS)
+            check("a second batch kind is refused while one runs", False, "it started")
+        except JobBusy:
+            check("a second batch kind is refused while one runs", True)
+        check("wait() times out on a running job", main.JOBS.wait(first.id, timeout=0.05) is False)
+        gate.set()
+        check("…and returns once it has finished", main.JOBS.wait(first.id, timeout=5) is True)
+
+        # Within-item progress: what lets the overall bar move inside a long
+        # track (99 % of the first of two = ~50 %), and it starts over per item.
+        from konduktor.jobs import Job, JobHandle
+        j = Job(id="x", kind="t")
+        h = JobHandle(j)
+        h.progress(done=0, total=2, fraction=0.99, status="separating 99 %")
+        d = j.as_dict()
+        check("a job reports its current item's fraction and status",
+              d["fraction"] == 0.99 and d["status"] == "separating 99 %", str(d))
+        h.progress(done=1)
+        check("…both reset when the next item starts", j.fraction == 0.0 and j.status == "")
+        h.progress(fraction=1.7)
+        check("…and the fraction is clamped to 0..1", j.fraction == 1.0)
+        from konduktor.schemas import JobStatus
+        r = JobStatus(**j.as_dict()).model_dump()
+        check("the job's response model carries fraction and status (not silently dropped)",
+              r["fraction"] == 1.0 and "status" in r, str(r)[:200])
 
         check("nothing was written to disk (edits stay in memory until Save)",
               work.read_bytes() == REAL.read_bytes())
+
+        # The status bar tells a byte count from a track count by `unit`; the
+        # response model once dropped it on every job route.
+        jid = main.JOBS.submit("unit-probe", lambda h: h.progress(done=1, total=2, unit="bytes")).id
+        check("a job's unit reaches the client", wait(c, jid).get("unit") == "bytes")
 
 print()
 print("FAILED" if failed else "RESULT: ALL PASSED")

@@ -20,8 +20,9 @@ binaries = []
 for pkg in ("uvicorn", "xsdata", "dulwich"):
     hiddenimports += collect_submodules(pkg)
 
-# Native standard extras — grab modules + shared libs + any data.
-for pkg in ("uvloop", "httptools", "websockets"):
+# Native standard extras — grab modules + shared libs + any data. PyAV (`av`)
+# carries FFmpeg's shared libraries, which the export's waveform analysis needs.
+for pkg in ("uvloop", "httptools", "websockets", "av"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
@@ -34,6 +35,25 @@ hiddenimports += ["multipart", "anyio"]
 # runtime from sys._MEIPASS (frontend/package.json is the single source of the
 # app version — see konduktor/__init__.py). Path is relative to this spec.
 datas += [("../frontend/package.json", ".")]
+
+# The Rekordbox and OneLibrary exporters build their databases from the real
+# DDL + scaffolding rows under fixtures/, found at `parents[3] / "fixtures"` —
+# i.e. the bundle root. Without these a packaged app cannot export to either.
+datas += [
+    ("fixtures/rekordbox/schema.sql", "fixtures/rekordbox"),
+    ("fixtures/rekordbox/seed.sql", "fixtures/rekordbox"),
+    ("fixtures/onelibrary/schema.sql", "fixtures/onelibrary"),
+    ("fixtures/onelibrary/seed.sql", "fixtures/onelibrary"),
+    # The "Rekordbox Export" target starts from rekordbox's own empty device library.
+    ("fixtures/rekordbox/device/export.pdb", "fixtures/rekordbox/device"),
+    ("fixtures/rekordbox/device/exportExt.pdb", "fixtures/rekordbox/device"),
+]
+# Which stem engine this build needs, and the pinned weights (read at import by
+# konduktor/stems/engine_manager.py).
+datas += [
+    ("konduktor/stems/engine.json", "konduktor/stems"),
+    ("konduktor/stems/weights.json", "konduktor/stems"),
+]
 
 a = Analysis(
     ["sidecar.py"],

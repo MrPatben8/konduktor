@@ -38,12 +38,62 @@ export class ScratchEngine {
     // COPY the PCM — do NOT hold getChannelData() views. When the playback engine
     // plays this same AudioBuffer, the browser (Firefox) "acquires the content"
     // and detaches those views to zero-length, which would silence the scratch.
+    this.stems = []
+    this.build++
     this.channels = []
     for (let c = 0; c < buffer.numberOfChannels; c++) {
       this.channels.push(new Float32Array(buffer.getChannelData(c)))
     }
     this.length = buffer.length
     this.sr = buffer.sampleRate
+  }
+
+  // ---- stems: scratch what you hear -----------------------------------------
+  private stems: AudioBuffer[] = []
+  private build = 0 // generation: a newer mute change abandons an older rebuild
+
+  /** Load a stem track: ONE summed copy of the stems at `levels` (the deck's
+   *  mute/solo) — not four, which would quadruple the memory. copyFromChannel
+   *  rather than getChannelData, for the same detaching reason as `load`. */
+  loadStems(buffers: AudioBuffer[], levels: number[]): void {
+    this.stems = buffers
+    const first = buffers[0]
+    this.length = first.length
+    this.sr = first.sampleRate
+    this.channels = []
+    for (let c = 0; c < first.numberOfChannels; c++) this.channels.push(new Float32Array(first.length))
+    this.setLevels(levels)
+  }
+
+  /** Re-sum for new mute/solo levels. In slices over a few frames, so a toggle
+   *  never stalls the page (a 6-minute track is tens of millions of samples);
+   *  until it finishes, a scratch hears the previous mix. */
+  setLevels(levels: number[]): void {
+    if (!this.stems.length) return
+    const gen = ++this.build
+    const n = this.length
+    const next = this.channels.map(() => new Float32Array(n))
+    const tmp = new Float32Array(1 << 18)
+    let at = 0
+    const step = () => {
+      if (gen !== this.build) return
+      const end = Math.min(n, at + tmp.length)
+      const len = end - at
+      const view: Float32Array<ArrayBuffer> = len === tmp.length ? tmp : tmp.subarray(0, len)
+      this.stems.forEach((buf, s) => {
+        const g = levels[s] ?? 1
+        if (!g) return
+        for (let c = 0; c < next.length; c++) {
+          buf.copyFromChannel(view, Math.min(c, buf.numberOfChannels - 1), at)
+          const dst = next[c]
+          for (let i = 0; i < len; i++) dst[at + i] += view[i] * g
+        }
+      })
+      at = end
+      if (at < n) setTimeout(step, 0)
+      else this.channels = next
+    }
+    step()
   }
 
   get loaded(): boolean {

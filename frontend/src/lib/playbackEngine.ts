@@ -6,12 +6,20 @@
 // the AudioContext clock (high-resolution, so the playhead is smooth without any
 // wall-clock interpolation). Loop bounds can be changed on the live node, so
 // enabling a loop mid-playback is seamless.
+//
+// A STEM track loads four buffers instead of one. Each gets its own source and
+// gain, and every source is started at the SAME scheduled context time, so the
+// stems stay sample-locked through play, seek and loops — the deck plays their
+// sum, as Traktor's stem deck does. Muting is a gain change (ramped over a few
+// ms so it does not click), never a restart.
 
 export class PlaybackEngine {
   private ctx: AudioContext | null = null
-  private buffer: AudioBuffer | null = null
+  private buffers: AudioBuffer[] = []
   private gain: GainNode | null = null
-  private source: AudioBufferSourceNode | null = null
+  /** One per buffer; a plain track has one of each. */
+  private gains: GainNode[] = []
+  private sources: AudioBufferSourceNode[] = []
   private startedAt = 0 // ctx time when the current source started
   private startOffset = 0 // buffer position (s) at that moment / paused position
   private _playing = false
@@ -20,14 +28,21 @@ export class PlaybackEngine {
   private loopEnd = 0
   private onEnded: (() => void) | null = null
 
-  load(ctx: AudioContext, buffer: AudioBuffer): void {
+  /** One buffer (a plain track) or several played in lockstep (the stems). */
+  load(ctx: AudioContext, buffer: AudioBuffer | AudioBuffer[]): void {
     this.ctx = ctx
-    this.buffer = buffer
+    this.stopSource()
+    this.buffers = Array.isArray(buffer) ? buffer : [buffer]
     if (!this.gain) {
       this.gain = ctx.createGain()
       this.gain.connect(ctx.destination)
     }
-    this.stopSource()
+    for (const g of this.gains) g.disconnect()
+    this.gains = this.buffers.map(() => {
+      const g = ctx.createGain()
+      g.connect(this.gain!)
+      return g
+    })
     this._playing = false
     this.startOffset = 0
     this.loopOn = false
@@ -37,8 +52,22 @@ export class PlaybackEngine {
     this.onEnded = cb
   }
 
+  private get buffer(): AudioBuffer | null {
+    return this.buffers[0] ?? null
+  }
+
   get ready(): boolean {
     return !!this.buffer
+  }
+
+  /** Per-buffer levels (0 = muted) — the stems' mute/solo. Ramped, not stepped. */
+  setGains(levels: number[]): void {
+    if (!this.ctx) return
+    const now = this.ctx.currentTime
+    this.gains.forEach((g, i) => {
+      g.gain.cancelScheduledValues(now)
+      g.gain.setTargetAtTime(levels[i] ?? 1, now, 0.004)
+    })
   }
   get playing(): boolean {
     return this._playing
@@ -52,7 +81,8 @@ export class PlaybackEngine {
 
   getPosition(): number {
     if (!this.buffer || !this.ctx || !this._playing) return this.startOffset
-    let pos = this.startOffset + (this.ctx.currentTime - this.startedAt)
+    // max(0, …): a scheduled start is a few ms in the future.
+    let pos = this.startOffset + Math.max(0, this.ctx.currentTime - this.startedAt)
     if (this.loopOn && this.loopEnd > this.loopStart && pos >= this.loopEnd) {
       const len = this.loopEnd - this.loopStart
       pos = this.loopStart + ((pos - this.loopStart) % len)
@@ -62,41 +92,48 @@ export class PlaybackEngine {
 
   private startSource(offset: number): void {
     if (!this.ctx || !this.buffer || !this.gain) return
-    const src = this.ctx.createBufferSource()
-    src.buffer = this.buffer
-    if (this.loopOn && this.loopEnd > this.loopStart) {
-      src.loop = true
-      src.loopStart = this.loopStart
-      src.loopEnd = this.loopEnd
-    }
-    src.connect(this.gain)
-    src.onended = () => {
-      if (this.source === src) {
+    const off = Math.max(0, Math.min(offset, this.buffer.duration - 0.001))
+    // One shared start time, a hair ahead so every source can make it: that is
+    // what keeps the stems sample-locked to each other.
+    const when = this.ctx.currentTime + (this.buffers.length > 1 ? 0.01 : 0)
+    const started = this.buffers.map((buf, i) => {
+      const src = this.ctx!.createBufferSource()
+      src.buffer = buf
+      if (this.loopOn && this.loopEnd > this.loopStart) {
+        src.loop = true
+        src.loopStart = this.loopStart
+        src.loopEnd = this.loopEnd
+      }
+      src.connect(this.gains[i] ?? this.gain!)
+      src.start(when, off)
+      return src
+    })
+    const first = started[0]
+    first.onended = () => {
+      if (this.sources[0] === first) {
         // Natural end (our own stops null out onended first).
         this._playing = false
-        this.source = null
+        this.stopSource()
         this.onEnded?.()
       }
     }
-    const off = Math.max(0, Math.min(offset, this.buffer.duration - 0.001))
-    src.start(0, off)
-    this.source = src
-    this.startedAt = this.ctx.currentTime
+    this.sources = started
+    this.startedAt = when
     this.startOffset = offset
     this._playing = true
   }
 
   private stopSource(): void {
-    if (this.source) {
-      this.source.onended = null
+    for (const src of this.sources) {
+      src.onended = null
       try {
-        this.source.stop()
+        src.stop()
       } catch {
         /* already stopped */
       }
-      this.source.disconnect()
-      this.source = null
+      src.disconnect()
     }
+    this.sources = []
   }
 
   play(): void {
@@ -141,13 +178,13 @@ export class PlaybackEngine {
     this.loopStart = start
     this.loopEnd = end
     this.loopOn = enabled
-    if (this.source) {
+    for (const src of this.sources) {
       if (enabled && end > start) {
-        this.source.loop = true
-        this.source.loopStart = start
-        this.source.loopEnd = end
+        src.loop = true
+        src.loopStart = start
+        src.loopEnd = end
       } else {
-        this.source.loop = false
+        src.loop = false
       }
     }
     // If the playhead is already at/past the loop end, jump into it (the live

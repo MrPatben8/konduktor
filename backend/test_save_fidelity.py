@@ -515,6 +515,164 @@ with tempfile.TemporaryDirectory() as d:
     check("H2: old playlist PRIMARYKEY gone", old_key not in all_pl_keys)
     check("H2: new playlist PRIMARYKEY present", new_key in all_pl_keys)
 
+# H3: a remap re-keys the entry index, so the track is still reachable by its
+# NEW id before any save — and a tag edit made BEFORE the remap still reaches
+# the file on save (it was silently dropped when the index kept the old key).
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+
+    store = TraktorStore(work)
+    target = next(e for e in store._nml.collection.entry if e.location and e.location.file)
+    old_key = _key(target.location)
+    from_prefix = str(resolve_path(target.location.volume, target.location.dir, target.location.file))
+    to_prefix = "/Volumes/KONDUKTOR_TEST_H3/remapped__rekey__one.mp3"
+    new_key = "".join(os_path_to_location(Path(to_prefix)))
+
+    store.set_track_metadata(old_key, {"genre": "H3 before remap"})
+    store.set_track_art(old_key, b"\xff\xd8H3", "image/jpeg")
+    moved = store.remap_locations(PathMapping.make(from_prefix, to_prefix))
+    check("H3: the remap reports the new id", moved.get(old_key) == new_key, str(moved))
+    check("H3: the index finds the ENTRY by its new id", store._entry_by_key.get(new_key) is target)
+    check("H3: …and no longer by its old one", old_key not in store._entry_by_key)
+    check("H3: staged cover art follows the track", new_key in store._track_art and old_key not in store._track_art)
+
+    try:
+        store.set_track_metadata(new_key, {"label": "H3 after remap"})
+        check("H3: an edit by the new id works before saving", target.info.label == "H3 after remap")
+    except PlaylistError as exc:
+        check("H3: an edit by the new id works before saving", False, str(exc))
+
+    # The tag sync must visit the moved track with BOTH edits. Stub the file
+    # side: this is about which tracks it reaches, not about mutagen.
+    import konduktor.core.audio_tags as _tags  # noqa: E402
+
+    written = []
+    real_write_tags, real_write_cover = _tags.write_tags, _tags.write_cover
+    ok = SimpleNamespace(ok=True, status="ok", detail=None)
+    _tags.write_tags = lambda path, meta, **k: (written.append(("tags", meta)), ok)[1]
+    _tags.write_cover = lambda path, data, mime: (written.append(("cover", data)), ok)[1]
+    store._resolve = lambda loc: Path(to_prefix)
+    try:
+        results = store._sync_file_tags()
+    finally:
+        _tags.write_tags, _tags.write_cover = real_write_tags, real_write_cover
+    tag_meta = next((m for kind, m in written if kind == "tags"), {})
+    check("H3: the file-tag sync reaches the remapped track",
+          [r.track_id for r in results] == [new_key, new_key], str([r.track_id for r in results]))
+    check("H3: …with the edit made before the remap AND the one after",
+          tag_meta.get("genre") == "H3 before remap" and tag_meta.get("label") == "H3 after remap",
+          str(tag_meta))
+    check("H3: …and the staged cover art", ("cover", b"\xff\xd8H3") in written)
+
+# H4: a remap that would give two ENTRYs one primary key is refused with nothing
+# changed; the preview says so first. A chain (one track onto another's OLD
+# path while that one moves on) is not a clash, and each track's staged art and
+# edits must follow IT, not the path.
+from konduktor.core.adapter import InvalidCommand  # noqa: E402
+from konduktor.adapters.traktor.adapter import TraktorAdapter  # noqa: E402
+
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    store = TraktorStore(work)
+    entries = [e for e in store._nml.collection.entry if e.location and e.location.file]
+    e1, e2, e3 = entries[0], entries[1], entries[2]
+
+    def put(e, path):
+        e.location.volume, e.location.dir, e.location.file = os_path_to_location(Path(path))
+
+    def rekey(st):
+        st._entry_by_key = {st._key_of(e): e for e in st._nml.collection.entry if e.location}
+
+    # (a) onto a path a STAYING track already has — the realistic case: a folder
+    # copied to a new drive and both copies in the collection.
+    put(e1, "/Volumes/H4OLD/Music/same.mp3")
+    put(e2, "/Volumes/H4NEW/Music/same.mp3")
+    rekey(store)
+    before = store._render()
+    mapping = PathMapping.make("/Volumes/H4OLD/Music", "/Volumes/H4NEW/Music")
+    preview = store.remap_preview(mapping)
+    check("H4: the preview reports the clash before anything is done",
+          preview["collisions"] == 1 and len(preview["collision_samples"]) == 1
+          and preview["collision_samples"][0].endswith("H4NEW/Music/same.mp3"), str(preview))
+    try:
+        store.remap_locations(mapping)
+        check("H4: a remap onto a staying track's path is refused", False, "it ran")
+    except PlaylistError as exc:
+        check("H4: a remap onto a staying track's path is refused", "nothing was changed" in str(exc), str(exc))
+    check("H4: …and nothing changed", store._render() == before and not store.dirty)
+
+    # (b) two DIFFERENTLY-keyed entries for one file — the boot disk spelt
+    # "Macintosh HD" and blank, both resolving to /Users/… — that the mapping
+    # sends to the same place.
+    put(e1, "/Users/h4/one.mp3")
+    e3.location.volume, e3.location.dir, e3.location.file = "", e1.location.dir, e1.location.file
+    put(e2, "/Volumes/H4OTHER/two.mp3")
+    rekey(store)
+    check("H4: (setup) two keys, one file",
+          store._key_of(e1) != store._key_of(e3)
+          and resolve_path(e1.location.volume, e1.location.dir, e1.location.file)
+          == resolve_path(e3.location.volume, e3.location.dir, e3.location.file))
+    mapping = PathMapping.make("/Users/h4", "/Volumes/H4DEST")
+    check("H4: two entries with different keys landing on one path clash",
+          store.remap_preview(mapping)["collisions"] == 1, str(store.remap_preview(mapping)))
+    before = store._render()
+    try:
+        store.remap_locations(mapping)
+        check("H4: …and that remap is refused", False, "it ran")
+    except PlaylistError:
+        check("H4: …and that remap is refused, unchanged", store._render() == before)
+    put(e3, "/Volumes/H4OTHER/unrelated.mp3")
+
+    # (c) a duplicate the collection ALREADY had moves as it was — refusing it
+    # would make a library with one duplicate impossible to move at all.
+    put(e1, "/Volumes/H4OLD/Music/same.mp3")
+    put(e2, "/Volumes/H4OLD/Music/same.mp3")  # e1 and e2 now share a key
+    rekey(store)
+    mapping = PathMapping.make("/Volumes/H4OLD/Music", "/Volumes/H4MOVED/Music")
+    check("H4: an existing duplicate is not a new clash", store.remap_preview(mapping)["collisions"] == 0)
+    moved = store.remap_locations(mapping)
+    check("H4: …and the pair moves together", len(moved) == 1 and store._key_of(e1) == store._key_of(e2))
+
+    # (d) a chain from a nested prefix: x/f -> x/sub/f while x/sub/f -> x/sub/sub/f.
+    put(e1, "/Volumes/H4C/x/f.mp3")
+    put(e2, "/Volumes/H4C/x/sub/f.mp3")
+    rekey(store)
+    k1, k2 = store._key_of(e1), store._key_of(e2)
+    store.set_track_metadata(k1, {"genre": "chain one"})
+    store.set_track_metadata(k2, {"genre": "chain two"})
+    store.set_track_art(k1, b"art-one", "image/jpeg")
+    store.set_track_art(k2, b"art-two", "image/jpeg")
+    mapping = PathMapping.make("/Volumes/H4C/x", "/Volumes/H4C/x/sub")
+    check("H4: a chain is not a clash", store.remap_preview(mapping)["collisions"] == 0)
+    moved = store.remap_locations(mapping)
+    n1, n2 = store._key_of(e1), store._key_of(e2)
+    check("H4: the first track takes the second's old path", n1 == k2 and moved[k1] == n1, f"{moved}")
+    check("H4: the index finds each track at its new id",
+          store._entry_by_key.get(n1) is e1 and store._entry_by_key.get(n2) is e2)
+    check("H4: each track's staged art follows the TRACK",
+          store._track_art.get(n1, (b"",))[0] == b"art-one" and store._track_art.get(n2, (b"",))[0] == b"art-two",
+          str({k: v[0] for k, v in store._track_art.items()}))
+    check("H4: …and so do its edits",
+          store._journal.fields_for(n1) == {"genre"} and store._journal.fields_for(n2) == {"genre"}
+          and store._entry_field_value(store._entry_by_key[n1], "genre") == "chain one")
+    j1 = [c for c in store._journal.changes if c.target == n1 and c.scope == "track"]
+    check("H4: …exactly one edit each, not both on one track", len(j1) == 1, str(j1))
+
+    # Through the adapter the refusal is the generic InvalidCommand (-> HTTP 400).
+    shutil.copy2(REAL, work)
+    ad = TraktorAdapter(work)
+    a1, a2 = [e for e in ad.store._nml.collection.entry if e.location and e.location.file][:2]
+    put(a1, "/Volumes/H4OLD/Music/same.mp3")
+    put(a2, "/Volumes/H4NEW/Music/same.mp3")
+    rekey(ad.store)
+    try:
+        ad.remap_locations(PathMapping.make("/Volumes/H4OLD/Music", "/Volumes/H4NEW/Music"))
+        check("H4: the adapter refuses with InvalidCommand", False, "it ran")
+    except InvalidCommand:
+        check("H4: the adapter refuses with InvalidCommand", True)
+
 
 # ---- Invariant I: flexible (multi-marker) beatgrids round-trip ---------
 print("== I. flexible beatgrid: add/move/delete markers, localized + reversible ==")
@@ -734,6 +892,52 @@ with tempfile.TemporaryDirectory() as d:
     check("L: …and from every playlist", all(key not in re._entry_keys_of(n.playlist) for n in pl_nodes(re)))
     check("L: every playlist's ENTRIES count matches",
           all((n.playlist.entries or 0) == len(n.playlist.entry or []) for n in pl_nodes(re)))
+
+
+# ---- Invariant M: dates cross in Traktor's own form -----------------------
+# The projection turns Traktor's "YYYY/M/D" into ISO; everything that writes a
+# date back must turn it round again, or the NML ends up holding a notation
+# Traktor never writes.
+print("== M. dates are written as Traktor's YYYY/M/D, tags get ISO ==")
+from konduktor.adapters.traktor.projection import iso_date, traktor_date  # noqa: E402
+
+for given, want in [
+    ("2021-03-04", "2021/3/4"), ("2021-12-25", "2021/12/25"), ("2021", "2021/1/1"),
+    ("2021-07", "2021/7/1"), ("2021-03-04T10:20:30", "2021/3/4"), ("2021/03/04", "2021/3/4"),
+    ("2021/3/4", "2021/3/4"), ("sometime", "sometime"), ("", None), (None, None),
+]:
+    check(f"M: traktor_date({given!r}) == {want!r}", traktor_date(given) == want, repr(traktor_date(given)))
+check("M: every date in the collection round-trips through ISO",
+      all(traktor_date(iso_date(v)) == v
+          for e in TraktorCollection(path=REAL).nml.collection.entry if e.info
+          for v in (e.info.release_date, e.info.import_date, e.info.last_played) if v))
+
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    store = TraktorStore(work)
+    target = next(e for e in store._nml.collection.entry
+                  if e.location and e.info and e.info.release_date)
+    key = store._key_of(target)
+    original = store._render()
+    store.set_track_metadata(key, {"release_date": "2019-06-07"})
+    check("M: an ISO edit is stored as Traktor's form", target.info.release_date == "2019/6/7",
+          target.info.release_date)
+    check("M: …and the file tag is given ISO",
+          store._entry_field_value(target, "release_date") == "2019-06-07")
+    changed = [dl for dl in difflib.unified_diff(tag_lines(original), tag_lines(store._render()), n=0)
+               if dl[:1] in "+-" and dl[:3] not in ("+++", "---")]
+    check("M: only that ENTRY's INFO line changes", len(changed) == 2 and "RELEASE_DATE=\"2019/6/7\"" in changed[1],
+          "\n".join(changed[:4]))
+
+    new_id = store.add_entry(
+        SimpleNamespace(title="M dates", release_date="2020", import_date="2026-09-30"),
+        Path("/Volumes/KONDUKTOR_TEST_M/dates.mp3"),
+    )
+    info = store._entry_by_key[new_id].info
+    check("M: an added track's dates are Traktor's form",
+          (info.release_date, info.import_date) == ("2020/1/1", "2026/9/30"),
+          f"{info.release_date!r} {info.import_date!r}")
 
 
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")

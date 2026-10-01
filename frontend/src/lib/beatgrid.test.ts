@@ -29,12 +29,20 @@ describe('buildBeatGrid', () => {
     expect(buildBeatGrid([{ start: Infinity, bpm: 120 }])).toBeNull()
   })
 
-  it('sorts unsorted input and clamps negative starts', () => {
+  it('sorts unsorted input and keeps negative starts', () => {
     const g = grid([
       { start: 10, bpm: 60 },
       { start: -5, bpm: 120 },
     ])
-    expect(g.markers.map((m) => m.start)).toEqual([0, 10])
+    expect(g.markers.map((m) => m.start)).toEqual([-5, 10])
+  })
+
+  it('a marker before the audio starts keeps its phase', () => {
+    // A Traktor MP3 grid anchored inside the header frame: 30 ms before the
+    // decoded audio. Clamping it to 0 would put every beat 30 ms late.
+    const g = grid([{ start: -0.03, bpm: 120 }])
+    expect(g.snapToBeat(0.5)).toBeCloseTo(0.47, 9)
+    expect(g.timeOfBeat(1)).toBeCloseTo(0.47, 9)
   })
 
   it('collapses markers at the same instant', () => {

@@ -146,9 +146,47 @@ class SetCueType(BaseModel):
     type: CueType
 
 
+class SetCueColor(BaseModel):
+    track_id: str
+    slot: int
+    color: str | None = None  # a capabilities.cues.palette entry; None = uncoloured
+
+
+class StemEngineInstall(BaseModel):
+    # None = this computer's default engine; "windows-x64-cuda" to take the GPU one.
+    target: str | None = None
+    # Also fetch the model weights (the engine is useless without them).
+    weights: bool = True
+
+
+class StemSideLoad(BaseModel):
+    path: str
+    kind: Literal["engine", "weights"]
+
+
+class StemConvert(BaseModel):
+    track_ids: list[str]
+    # "replace": the stem file supersedes the original where it lives (the
+    # original is parked until Save deletes it); "destination": a chosen folder,
+    # originals never touched.
+    mode: Literal["replace", "destination"]
+    destination: str | None = None
+    # "repoint": the entry now names the stem file; "add": a new entry beside it
+    # (destination mode only).
+    collection: Literal["repoint", "add"] = "repoint"
+    playlist_id: str | None = None  # add mode: into this existing playlist…
+    new_playlist: str | None = None  # …or a new one with this name
+
+
 class EditState(BaseModel):
     dirty: bool  # unsaved in-memory changes exist
     library: LibraryInfo
+    # Converted tracks awaiting Save/Discard: {tracks, parked, bytes}.
+    pending_stems: dict | None = None
+    # A running stem conversion's job id, so a reloaded page finds it again.
+    stem_job: str | None = None
+    # What this open's crash recovery did about an interrupted conversion.
+    stem_recovery: dict | None = None
 
 
 # ---- collection selection ----
@@ -196,7 +234,7 @@ class CollectionOptions(BaseModel):
 class ExportSetOut(BaseModel):
     id: str
     name: str
-    target: str          # platform id of the export TARGET
+    targets: list[str]   # platform ids of the export TARGETS, never empty
     destination: str
     playlist_ids: list[str] = []
     track_ids: list[str] = []   # loose tracks only
@@ -206,13 +244,13 @@ class ExportSetOut(BaseModel):
 
 class CreateExportSet(BaseModel):
     name: str
-    target: str = "traktor"
+    targets: list[str] = ["traktor"]
     destination: str
 
 
 class UpdateExportSet(BaseModel):
     name: str | None = None
-    target: str | None = None
+    targets: list[str] | None = None
     destination: str | None = None
 
 
@@ -258,6 +296,9 @@ class ExportPreview(BaseModel):
     blocked: str | None = None
     #: The destination already holds a Konduktor export, which will be replaced.
     replacing: bool = False
+    #: Targets whose library is only found at a drive's root, when the
+    #: destination is not one. A warning — the export can still run.
+    not_drive_root: list[str] = []
 
 
 class FsPlace(BaseModel):
@@ -299,6 +340,16 @@ class PathMappingInfo(BaseModel):
     to: str = ""
 
 
+class RelocationApply(BaseModel):
+    """The user's answer to the open-time missing-files check. Empty = "Not now".
+
+    Each mapping must be one the check proposed: this route applies an answer,
+    it is not a second way to set an arbitrary mapping.
+    """
+
+    mappings: list[PathMappingInfo] = []
+
+
 class RemapResult(BaseModel):
     rewritten: int  # tracks whose LOCATION was rewritten
     commit: str | None = None  # sha of the version-history commit for the rewrite
@@ -318,6 +369,10 @@ from .core.model import (  # noqa: E402,F401
     PlaylistNode,
     PrefixGroup,
     PrefixSuggestions,
+    Relocation,
+    RelocationApplied,
+    RelocationCandidate,
+    RelocationVolume,
     RemapPreview,
     RemapSample,
     Stats,
@@ -429,7 +484,14 @@ class JobStatus(BaseModel):
     state: str  # running | done | failed | cancelled
     total: int
     done: int
+    # What done/total count ("bytes" / "tracks"; "" when unspecified). Declared
+    # here or the response model silently drops the one field the status bar
+    # needs to tell a byte count from a track count.
+    unit: str = ""
     message: str
+    # The current item's own progress (0..1) and what it is doing — see jobs.Job.
+    fraction: float = 0.0
+    status: str = ""
     result: dict | None = None
     error: str | None = None
     started_at: float

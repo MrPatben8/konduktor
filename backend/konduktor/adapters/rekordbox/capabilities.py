@@ -30,6 +30,7 @@ from ...core.capabilities import (
     SaveCapabilities,
     TrackCapabilities,
 )
+from . import palette
 from .cue_types import WRITABLE_CUE_TYPES
 
 # Rekordbox's addressable hot cue bank. The pads are labelled A-H; the stored
@@ -68,8 +69,10 @@ def capabilities_for(
             max_memory_cues=None,  # unlimited
             # Both cue types write; Rekordbox has no fade/load types.
             types=WRITABLE_CUE_TYPES,
+            # A hot cue's colour is one of rekordbox's 16 swatches (all
+            # measured, see `palette`), offered in rekordbox's own order.
             color="palette",
-            palette=[],  # TODO milestone 2: the built-in cue colour table
+            palette=[palette.hex_for(code) for code in palette.SWATCHES],
             named=True,  # djmdCue.Comment
             loops="cue_type",
         ),
@@ -83,7 +86,11 @@ def capabilities_for(
             # column (its Composer is a different field), so they are absent
             # rather than mapped onto something approximate.
             editable_fields=sorted(editable_fields or []),
-            media_kinds=["audio"],
+            # A stem file is held (and played by Rekordbox as its mix);
+            # Konduktor's deck plays its stems.
+            media_kinds=["audio", "stem"],
+            removable=True,
+            addable=True,
             artwork=False,
             artwork_note=None,
         ),

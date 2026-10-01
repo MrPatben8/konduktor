@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnSizingState, SortingState, VisibilityState } from '@tanstack/react-table'
 import { CapabilitiesContext, slotLabeller } from './lib/capabilities'
-import { writeHint } from './lib/platformCopy'
-import { api, type CueBatchResult, type GridBatchResult, type AutoCueSlot, type PlaylistNode, type Track, type TrackOrigin } from './api'
+import { removalNote, writeHint } from './lib/platformCopy'
+import { invalidateTrackLists } from './lib/trackQueries'
+import { api, type CueBatchResult, type GridBatchResult, type AutoCueSlot, type PlaylistNode, type StemBatchResult, type Track, type TrackOrigin } from './api'
+import { confirmDiscardUnsaved } from './lib/unsaved'
 import {
   COLUMN_MENU,
   DEFAULT_COLUMN_ORDER,
@@ -21,10 +23,13 @@ import { AnalyzeGridDialog } from './components/AnalyzeGridDialog'
 import { AutoCueDialog } from './components/AutoCueDialog'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { PathMappingDialog } from './components/PathMappingDialog'
+import { RelocateDialog } from './components/RelocateDialog'
 import { HistoryPanel } from './components/HistoryPanel'
 import { PrepStrip } from './components/PrepStrip'
 import { ImportDialog } from './components/ImportDialog'
 import { AddFilesDialog, type AddTarget } from './components/AddFilesDialog'
+import { ConvertStemsDialog } from './components/ConvertStemsDialog'
+import { StemReportDialog } from './components/StemReportDialog'
 import { Icon } from './lib/icons'
 
 function applyFilters(tracks: Track[], f: Filters): Track[] {
@@ -64,6 +69,7 @@ export default function App() {
   const [showPaths, setShowPaths] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [prepTrack, setPrepTrack] = useState<Track | null>(null)
+  const [deckPlaying, setDeckPlaying] = useState(false)
   // Which library the DECK's track came from — not the view's. Browsing to a
   // playlist while a device or folder track is loaded must not switch the deck
   // to endpoints that do not know that track.
@@ -82,7 +88,12 @@ export default function App() {
     { ids: string[]; existing: number; locked: number } | null
   >(null)
   const [cueBatch, setCueBatch] = useState<{ ids: string[]; withoutGrid: number } | null>(null)
-  const [batchJob, setBatchJob] = useState<{ id: string; kind: 'grid' | 'cues' } | null>(null)
+  const [batchJob, setBatchJob] = useState<{ id: string; kind: 'grid' | 'cues' | 'stems' } | null>(null)
+  // Convert to Stems: the dialog's selection, a finished run's Details, and a
+  // running engine download (which outlives the dialog — decided).
+  const [stemDialog, setStemDialog] = useState<string[] | null>(null)
+  const [stemReport, setStemReport] = useState<StemBatchResult | null>(null)
+  const [engineJob, setEngineJob] = useState<string | null>(null)
   const [batchCancelling, setBatchCancelling] = useState(false)
   const [cuesRefresh, setCuesRefresh] = useState(0) // bump → deck re-reads its cues
   // Every Remove ▸ action (and the playlist Delete key) confirms first.
@@ -166,12 +177,22 @@ export default function App() {
     staleTime: Infinity,
   })
   const save = capabilities.data?.save
+  // The open-time missing-files check. The backend searches as the library
+  // opens and holds the result until it is answered, then serves nothing — so
+  // "ask once per open" is the backend's fact, and refetching cannot re-ask.
+  const relocation = useQuery({
+    queryKey: ['relocation'],
+    queryFn: api.relocation,
+    enabled: loaded,
+    refetchInterval: (q) => (q.state.data?.scanning ? 1500 : false),
+    refetchOnWindowFocus: false,
+  })
   // From the adapter, not a path split: a Serato library is a directory.
   const libraryName = collection.data?.library?.display_name ?? null
   const writeHintText = save ? writeHint(save) : 'save to write it to disk'
 
-  const notify = useCallback((kind: ToastMsg['kind'], text: string) => {
-    setToast({ id: Date.now(), kind, text })
+  const notify = useCallback((kind: ToastMsg['kind'], text: string, action?: ToastMsg['action']) => {
+    setToast({ id: Date.now(), kind, text, action })
   }, [])
   const onError = useCallback((msg: string) => notify('error', msg), [notify])
 
@@ -185,9 +206,7 @@ export default function App() {
       api
         .editTrack(track.id, { [field]: value })
         .then(() => {
-          qc.invalidateQueries({ queryKey: ['tracks'] })
-          qc.invalidateQueries({ queryKey: ['playlist'] })
-          qc.invalidateQueries({ queryKey: ['state'] })
+          invalidateTrackLists(qc)
           qc.invalidateQueries({ queryKey: ['facets'] })
           notify('success', `Updated ${String(field)} — ${writeHintText}`)
         })
@@ -501,18 +520,17 @@ export default function App() {
     const kind = batchJob.kind
     setBatchJob(null)
     setBatchCancelling(false)
+    if (kind === 'stems') {
+      finishStemBatch(job.state, job.result as unknown as StemBatchResult | null, job.error)
+      return
+    }
     if (job.state === 'failed') {
       const what = kind === 'grid' ? 'Grid analysis' : 'Auto Hotcues'
       onError(`${what} failed: ${job.error ?? 'unknown error'}`)
       return
     }
     if (!job.result) return
-    qc.invalidateQueries({ queryKey: ['state'] })
-    qc.invalidateQueries({ queryKey: ['tracks'] })
-    qc.invalidateQueries({ queryKey: ['playlist'] })
-    qc.invalidateQueries({ queryKey: ['export-tracks'] })
-    qc.invalidateQueries({ queryKey: ['export-playlist-tracks'] })
-    qc.invalidateQueries({ queryKey: ['export-loose'] })
+    invalidateTrackLists(qc)
     qc.invalidateQueries({ queryKey: ['facets'] })
     const cancelled = job.state === 'cancelled'
     const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
@@ -560,6 +578,93 @@ export default function App() {
     qc.invalidateQueries() // refetch everything for the newly-opened collection
   }
 
+  // "Open for editing…" on a device: the drive becomes THE library — one library,
+  // one dirty state, one SaveBar (decided 2026-10-01). Unsaved edits to the
+  // current library are confirmed first, as switching library always is, and the
+  // browsing copy is closed so the drive is not open twice.
+  const openForEditing = async (path: string) => {
+    if (!(await confirmDiscardUnsaved())) return
+    try {
+      await api.closeSource()
+      await api.openCollection(path)
+      handleOpened()
+    } catch (e) {
+      onError((e as Error).message)
+    }
+  }
+
+  // ---- Convert to Stems ------------------------------------------------------
+  const canStems = canEdit && !viewForeign && !!capabilities.data?.tracks.stem_convertible
+  const finishStemBatch = (state: string, r: StemBatchResult | null, error: string | null) => {
+    qc.invalidateQueries({ queryKey: ['state'] })
+    if (state === 'failed' || !r) {
+      onError(`Converting to stems failed: ${error ?? 'unknown error'}`)
+      return
+    }
+    if (r.cancelled) {
+      notify('warning', 'Conversion cancelled — nothing was changed')
+      return
+    }
+    invalidateTrackLists(qc)
+    qc.invalidateQueries({ queryKey: ['playlists'] })
+    qc.invalidateQueries({ queryKey: ['export-contents'] })
+    qc.invalidateQueries({ queryKey: ['facets'] })
+    // A repointed track's id IS its location, so it changed: follow it with the
+    // deck and the selection instead of leaving them on an id that is gone.
+    const renamed = r.renamed
+    if (prepTrack && renamed[prepTrack.id]) {
+      setPrepTrack({ ...prepTrack, id: renamed[prepTrack.id], media_kind: 'stem' })
+      setCuesRefresh((n) => n + 1)
+    }
+    setSelected((sel) => new Set([...sel].map((id) => renamed[id] ?? id)))
+    const n = r.converted.length
+    const parts = [
+      `${n} converted to stems`,
+      r.skipped.length ? `${r.skipped.length} skipped` : '',
+      r.failed.length ? `${r.failed.length} failed` : '',
+    ].filter(Boolean)
+    const text = parts.join(' · ') + (n ? ' — Save to keep them' : '')
+    const details = r.skipped.length || r.failed.length ? { label: 'Details', onClick: () => setStemReport(r) } : undefined
+    notify(n ? 'success' : 'error', text, details)
+  }
+  // A conversion keeps running if the page reloads; find it again.
+  const editState = useQuery({ queryKey: ['state'], queryFn: api.state, enabled: loaded, retry: false })
+  useEffect(() => {
+    const id = editState.data?.stem_job
+    if (id && !batchJob) setBatchJob({ id, kind: 'stems' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editState.data?.stem_job])
+  // Tell the user once what crash recovery did about an interrupted conversion.
+  const recovery = editState.data?.stem_recovery
+  const recoveryShown = useRef<unknown>(null)
+  useEffect(() => {
+    if (!recovery || recoveryShown.current === recovery) return
+    recoveryShown.current = recovery
+    const bits = [
+      recovery.restored ? `${recovery.restored} original${recovery.restored === 1 ? '' : 's'} put back` : '',
+      recovery.committed ? `${recovery.committed} saved conversion${recovery.committed === 1 ? '' : 's'} finished` : '',
+      recovery.kept ? `${recovery.kept} converted file${recovery.kept === 1 ? '' : 's'} kept for next time` : '',
+    ].filter(Boolean)
+    if (bits.length) notify('warning', `An interrupted stem conversion was tidied up: ${bits.join(' · ')}`)
+  }, [recovery, notify])
+  const engineJobStatus = useQuery({
+    queryKey: ['job', engineJob],
+    queryFn: () => api.job(engineJob!),
+    enabled: !!engineJob,
+    refetchInterval: (q) => (q.state.data && q.state.data.state !== 'running' ? false : 500),
+  })
+  useEffect(() => {
+    const job = engineJobStatus.data
+    if (!job || job.state === 'running' || job.id !== engineJob) return
+    setEngineJob(null)
+    qc.invalidateQueries({ queryKey: ['stem-engine'] })
+    if (job.state === 'done') notify('success', 'The stem engine is installed')
+    else if (job.state === 'failed') onError(job.error || 'The stem engine download failed')
+  }, [engineJobStatus.data, engineJob, qc, notify, onError])
+
+  // Hooks must all run BEFORE the early returns below (picker / loading),
+  // or the first render with a library has more hooks than the last one and
+  // React throws — the whole window goes blank.
   if (collection.isLoading || (loaded && !capabilities.data)) {
     return (
       <div className="flex h-screen w-screen items-center justify-center text-muted">
@@ -634,6 +739,7 @@ export default function App() {
   }
   const canAutoCue = canEdit && !viewForeign && (capabilities.data?.cues.hotcue_slots ?? 0) > 0
 
+
   // ---- Remove ▸ -----------------------------------------------------------
   const nTracks = (n: number) => `${n} track${n === 1 ? '' : 's'}`
   const trackNoun = (ids: string[]) => {
@@ -644,13 +750,8 @@ export default function App() {
   // Refetch whatever a track list or the deck could be showing. Throws on
   // failure (after reporting), so the confirm dialog stays open for a retry.
   const afterBulk = (ids: string[], cuesChanged: boolean) => {
-    qc.invalidateQueries({ queryKey: ['state'] })
-    qc.invalidateQueries({ queryKey: ['tracks'] })
-    qc.invalidateQueries({ queryKey: ['playlist'] })
+    invalidateTrackLists(qc)
     qc.invalidateQueries({ queryKey: ['playlists'] })
-    qc.invalidateQueries({ queryKey: ['export-tracks'] })
-    qc.invalidateQueries({ queryKey: ['export-playlist-tracks'] })
-    qc.invalidateQueries({ queryKey: ['export-loose'] })
     qc.invalidateQueries({ queryKey: ['export-contents'] })
     qc.invalidateQueries({ queryKey: ['facets'] })
     if (cuesChanged && prepTrack && ids.includes(prepTrack.id)) setCuesRefresh((n) => n + 1)
@@ -755,10 +856,7 @@ export default function App() {
           <p>
             Remove {trackNoun(ids)} from the collection and from every playlist?
           </p>
-          <p className="text-faint">
-            The audio {ids.length === 1 ? 'file stays' : 'files stay'} on disk. Nothing is written until you
-            save, and a save can be rolled back from version history.
-          </p>
+          {capabilities.data && <p className="text-faint">{removalNote(capabilities.data, ids.length)}</p>}
         </>
       ),
       confirmLabel: `Remove ${nTracks(ids.length)}`,
@@ -775,6 +873,9 @@ export default function App() {
   const canClearGrids = canEdit && !viewForeign && !!capabilities.data?.grid.editable
   const canClearCues = canAutoCue
   const canRemoveTracks = canEdit && !viewForeign && !!capabilities.data?.tracks.removable
+  // The COLLECTION's capabilities, deliberately: adding happens while a folder
+  // or device is on screen, whose own capabilities are read-only.
+  const canAddTracks = canEdit && !!capabilities.data?.tracks.addable
   const exportRootId =
     source.kind === 'export' ? source.id : source.kind === 'export-other' ? source.exportId : null
   const removeItems = (ids: string[]): MenuItem[] => [
@@ -883,15 +984,41 @@ export default function App() {
                   },
                 ]
               : []),
+            // Shown disabled WITH a reason where the platform cannot play stem
+            // files as stems, rather than hidden: a missing item reads as a bug.
+            ...(canEdit && !viewForeign
+              ? [
+                  canStems
+                    ? {
+                        label: 'Convert to Stems…',
+                        hint: batchJob ? 'busy' : menu.ids.length > 1 ? String(menu.ids.length) : undefined,
+                        disabled: !!batchJob,
+                        onClick: () => setStemDialog(menu.ids),
+                      }
+                    : {
+                        label: 'Convert to Stems…',
+                        disabled: true,
+                        title: 'This library\'s DJ app does not play native-instruments stem files as stems',
+                        onClick: () => {},
+                      },
+                ]
+              : []),
             // A device's track ids belong to the stick, not the collection, so
             // there is nothing they could be added to. A folder's files CAN be
             // added — through the add dialog, which puts them in the
             // collection first.
             ...(viewingFolder
-              ? [
-                  { label: 'Add to Collection…', onClick: () => setAdding({ ids: menu.ids, target: null }) },
-                  { label: 'Add to', submenu: folderAddToItems(menu.ids) },
-                ]
+              ? canAddTracks
+                ? [
+                    { label: 'Add to Collection…', onClick: () => setAdding({ ids: menu.ids, target: null }) },
+                    { label: 'Add to', submenu: folderAddToItems(menu.ids) },
+                  ]
+                : [{
+                    label: 'Add to Collection…',
+                    disabled: true,
+                    title: 'Tracks cannot be added to this library',
+                    onClick: () => {},
+                  }]
               : viewingDevice
                 ? []
                 : [{ label: 'Add to', submenu: addToItems(menu.ids) }]),
@@ -923,6 +1050,19 @@ export default function App() {
           onClose={() => setHeaderMenu(null)}
         />
       )}
+      {stemDialog && (
+        <ConvertStemsDialog
+          trackIds={stemDialog}
+          onClose={() => setStemDialog(null)}
+          onStarted={(job) => {
+            setBatchCancelling(false)
+            setBatchJob({ id: job.id, kind: 'stems' })
+          }}
+          onDownloading={(job) => setEngineJob(job.id)}
+          onError={onError}
+        />
+      )}
+      {stemReport && <StemReportDialog result={stemReport} onClose={() => setStemReport(null)} />}
       {editing && (
         <EditTagsDialog
           track={editing}
@@ -949,6 +1089,24 @@ export default function App() {
           locked={gridConfirm.locked}
           onChoose={(replace) => runGridAnalysis(gridConfirm.ids, replace)}
           onClose={() => setGridConfirm(null)}
+        />
+      )}
+      {!!relocation.data?.volumes.length && (
+        <RelocateDialog
+          volumes={relocation.data.volumes}
+          onAnswered={(applied) => {
+            qc.setQueryData(['relocation'], { scanning: false, volumes: [] })
+            if (!applied) return
+            // Every file-backed answer can change: audio, art, the Files
+            // tree's "already in the collection" marks.
+            qc.invalidateQueries()
+            notify(
+              'success',
+              `Found ${applied.tracks.toLocaleString()} track${applied.tracks === 1 ? '' : 's'} — remapped for this session`,
+            )
+          }}
+          onOpenManual={() => setShowPaths(true)}
+          onError={onError}
         />
       )}
       {showPaths && (
@@ -1001,6 +1159,7 @@ export default function App() {
           onNotify={notify}
           origin={prepOrigin}
           cuesRefresh={cuesRefresh}
+          onPlayingChange={setDeckPlaying}
         />
       </CapabilitiesContext.Provider>
 
@@ -1012,8 +1171,10 @@ export default function App() {
           onOpenHistory={() => setShowHistory(true)}
           onImport={() => setImporting(true)}
           onSwitchLibrary={() => setForcePicker(true)}
+          onOpenLibrary={(path) => void openForEditing(path)}
           onDone={(msg) => notify('success', msg)}
           onOpenPathMapping={() => setShowPaths(true)}
+          onDiscarded={() => afterBulk(prepTrack ? [prepTrack.id] : [], true)}
         />
 
         <CapabilitiesContext.Provider value={viewCaps}>
@@ -1057,7 +1218,7 @@ export default function App() {
                   <span className="rounded-full bg-gold/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gold shadow-[inset_0_0_0_1px_rgb(255_200_97/0.3)]">
                     Not in collection
                   </span>
-                  {tracks.length > 0 && (
+                  {tracks.length > 0 && canAddTracks && (
                     <button
                       onClick={() =>
                         setAdding({
@@ -1106,12 +1267,12 @@ export default function App() {
                   <span className="rounded-full bg-gold/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gold shadow-[inset_0_0_0_1px_rgb(255_200_97/0.3)]">
                     Device · read-only
                   </span>
-                  <button
+                  {canAddTracks && <button
                     onClick={() => setImporting(true)}
                     className="btn-primary rounded-full px-3 py-1 text-xs font-semibold"
                   >
                     Import{source.kind === 'device-playlist' ? ' this playlist' : ' everything'}…
-                  </button>
+                  </button>}
                 </span>
               </>
             ) : (
@@ -1159,6 +1320,7 @@ export default function App() {
                 onPlay={playTrack}
                 onEditField={canEdit ? editField : undefined}
                 activeTrackId={prepTrack?.id ?? null}
+                activePlaying={deckPlaying}
                 columnVisibility={columnVisibility}
                 columnOrder={columnOrder}
                 columnSizing={columnSizing}
@@ -1197,6 +1359,7 @@ export default function App() {
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
                 activeTrackId={prepTrack?.id ?? null}
+                activePlaying={deckPlaying}
                 columnVisibility={columnVisibility}
                 columnOrder={columnOrder}
                 columnSizing={columnSizing}
@@ -1230,6 +1393,7 @@ export default function App() {
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
                 activeTrackId={prepTrack?.id ?? null}
+                activePlaying={deckPlaying}
                 columnVisibility={columnVisibility}
                 columnOrder={columnOrder}
                 columnSizing={columnSizing}
@@ -1254,6 +1418,7 @@ export default function App() {
                 onPlay={playTrack}
                 onEditField={canEdit ? editField : undefined}
                 activeTrackId={prepTrack?.id ?? null}
+                activePlaying={deckPlaying}
                 columnVisibility={columnVisibility}
                 columnOrder={columnOrder}
                 columnSizing={columnSizing}
@@ -1291,6 +1456,7 @@ export default function App() {
               onPlay={playTrack}
               onEditField={canEdit ? editField : undefined}
               activeTrackId={prepTrack?.id ?? null}
+                activePlaying={deckPlaying}
               columnVisibility={columnVisibility}
               columnOrder={columnOrder}
               columnSizing={columnSizing}
@@ -1314,21 +1480,38 @@ export default function App() {
         job={
           batchJob
             ? {
-                label: batchJob.kind === 'grid' ? 'Analyzing grids' : 'Placing hotcues',
+                label: batchJob.kind === 'grid' ? 'Analyzing grids' : batchJob.kind === 'stems' ? 'Converting to stems' : 'Placing hotcues',
                 done: batchJobStatus.data?.done ?? 0,
                 total: batchJobStatus.data?.total ?? 0,
                 detail: batchJobStatus.data?.message,
+                fraction: batchJobStatus.data?.fraction,
+                status: batchJobStatus.data?.status,
                 cancelling: batchCancelling,
                 onCancel: () => {
                   setBatchCancelling(true)
                   api.cancelJob(batchJob.id).catch((e) => onError((e as Error).message))
                 },
               }
-            : null
+            : engineJob
+              ? {
+                  label: 'Downloading the stem engine',
+                  unit: 'bytes',
+                  done: engineJobStatus.data?.done ?? 0,
+                  total: engineJobStatus.data?.total ?? 0,
+                  detail: engineJobStatus.data?.message,
+                  onCancel: () => {
+                    api.cancelJob(engineJob).catch((e) => onError((e as Error).message))
+                  },
+                }
+              : null
         }
         loading={loading}
         collectionName={capabilities.data ? libraryName : null}
-        onChangeCollection={() => setForcePicker(true)}
+        onChangeCollection={() => {
+          // The same question the sidebar header asks: this button used to
+          // switch library without it, silently dropping unsaved edits.
+          void confirmDiscardUnsaved().then((ok) => ok && setForcePicker(true))
+        }}
       />
     </div>
     </CapabilitiesContext.Provider>

@@ -54,7 +54,7 @@ def _bpm(row) -> float | None:
     return round(int(raw) / 100.0, 2)
 
 
-def to_track(row, drive_path: str | None = None) -> Track:
+def to_track(row, drive_path: str | None = None, *, stem: bool = False) -> Track:
     """Project one ``Content`` row.
 
     **The three count fields are approximations here**, and deliberately so. Cues
@@ -93,7 +93,8 @@ def to_track(row, drive_path: str | None = None) -> Track:
         rating=max(0, min(5, int(getattr(row, "rating", 0) or 0))),
         playcount=getattr(row, "djPlayCount", None),
         length=getattr(row, "length", None),
-        bitrate=getattr(row, "bitrate", None),
+        # kbps here; the generic model (and the table) carry bits per second.
+        bitrate=(getattr(row, "bitrate", None) or 0) * 1000 or None,
         import_date=_iso_date(getattr(row, "dateAdded", None)),
         last_played=None,  # the drive records history as playlists, not per track
         release_date=_iso_date(getattr(row, "releaseDate", None))
@@ -103,7 +104,8 @@ def to_track(row, drive_path: str | None = None) -> Track:
         hotcue_count=0,
         grid_marker_count=1 if (bpm and has_analysis) else 0,
         grid_locked=False,  # OneLibrary has no grid lock
-        media_kind="audio",
+        # What the FILE is, as the deck plays it — see the Rekordbox projection.
+        media_kind="stem" if stem else "audio",
     )
 
 

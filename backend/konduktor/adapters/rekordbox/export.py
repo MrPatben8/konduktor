@@ -57,11 +57,14 @@ from pathlib import Path
 from sqlalchemy import text
 
 from ...core.export import ExportPayload, ExportTrack, WrittenLibrary
-from . import anlz_writer as W
+from ...core.cue_colors import effective_color
+from . import new_content, palette
+from . import timebase
 from .beatgrid import beats_from_markers
 from .capabilities import capabilities_for
 from .cue_types import kind_for
 from .projection import render_key
+from .store import rekordbox_probe_suppressed
 
 log = logging.getLogger(__name__)
 
@@ -77,12 +80,35 @@ SEED = _FIXTURES / "seed.sql"
 
 #: Rekordbox counts cue positions in frames at 150 fps, not milliseconds.
 FRAMES_PER_SECOND = 150
+
+#: `djmdContent.ContentLink` — see `new_content`, where its bits are measured.
+CONTENT_LINK = new_content.CONTENT_LINK
+
+#: Rekordbox's playlist side file, beside master.db. It lists every playlist
+#: node with a `Timestamp` matching the row's `updated_at` (ms); a playlist the
+#: file does not vouch for is not shown. The skeleton is a real Rekordbox 7
+#: file's, minus its nodes — pyrekordbox adds ours as it creates them.
+PLAYLISTS_XML = "masterPlaylists6.xml"
+PLAYLISTS_XML_SKELETON = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n\n'
+    '<MASTER_PLAYLIST Version="3.0.0" AutomaticSync="0">\n'
+    '  <PRODUCT Name="rekordbox" Version="7.2.18" Company="Pioneer DJ"/>\n'
+    '  <PLAYLISTS>\n  </PLAYLISTS>\n'
+    '</MASTER_PLAYLIST>\n'
+)
 OTHER_PLAYLIST = "Other"
 
 
 class RekordboxExporter:
     platform = "rekordbox"
+    menu_order = 40
+    #: A COMPUTER library (master.db), which Rekordbox never reads from a stick —
+    #: named so, beside "Rekordbox Export" (the stick's Device Library).
+    display_name = "Rekordbox Library"
+    #: Rekordbox opens a master.db only from its own library folder.
+    computer_only = True
     library_filename = "master.db"
+    drive_root = False
 
     def capabilities(self):
         """What a Rekordbox library can hold, with no library to read.
@@ -124,20 +150,35 @@ class RekordboxExporter:
         finally:
             con.close()
 
+        # BEFORE the database is opened: pyrekordbox keeps masterPlaylists6.xml
+        # in step with every playlist it creates — but only if the file exists
+        # at open time. Without it Rekordbox opened the library, generated its
+        # own file listing our playlists with Timestamp 0, and showed NONE of
+        # them (measured by swapping an export into a real Rekordbox 7).
+        playlists_xml = root / PLAYLISTS_XML
+        playlists_xml.write_text(PLAYLISTS_XML_SKELETON, encoding="utf-8")
+
         db = MasterDatabase(path=str(library), key=key)
-        extra: list[Path] = []
+        extra: list[Path] = [playlists_xml]
         ids: dict[str, str] = {}
         try:
             self._seed_registry(db, models)
             self._seed_device(db, payload)
             rows = {}
-            for item in payload.tracks:
+            total = len(payload.tracks)
+            for n, item in enumerate(payload.tracks, start=1):
+                # Each track is decoded for its waveform: the slow part.
+                payload.checkpoint(f"Analysing {item.track.title or item.destination.name} ({n}/{total})", step=n, of=total)
                 content = self._add_track(db, item)
                 rows[item.source_id] = content
                 ids[item.source_id] = str(content.ID)
                 extra += self._write_anlz(item, content, root, db)
+                extra += self._write_art(item, content, root)
             self._write_playlists(db, payload, rows)
-            db.commit()
+            # A brand-new file: a running Rekordbox cannot have it open, so its
+            # process-wide veto protects nothing here.
+            with rekordbox_probe_suppressed():
+                db.commit()
         finally:
             db.close()
 
@@ -146,7 +187,7 @@ class RekordboxExporter:
 
     @staticmethod
     def _replay_cues(library: Path, payload: ExportPayload, ids: dict) -> None:
-        """Write the cues through the ORDINARY adapter, not by hand.
+        """Write the cues through the ORDINARY cue-row code, not by hand.
 
         Same reason the Traktor exporter replays commands: `set_cue` already
         owns every convention a cue row needs — the sparse `Kind` bank, frames
@@ -158,24 +199,33 @@ class RekordboxExporter:
         from .adapter import RekordboxAdapter
 
         adapter = RekordboxAdapter(library)
+        # The store, not the adapter's commands: the adapter refuses memory cues
+        # (editing them in a user's library is off-limits) and takes no colour.
+        # Building a NEW library is neither an edit nor lossy by choice, so the
+        # exporter writes both — through the same `_write_cue` every edit uses.
+        store = adapter._store
         try:
             for item in payload.tracks:
                 track_id = ids.get(item.source_id)
                 if track_id is None or not item.cues:
                     continue
                 for cue in item.cues.cues:
-                    # Memory cues are a Rekordbox-only concept the generic model
-                    # preserves but never writes; a cue with no slot has no pad
-                    # to land on.
-                    if cue.role != "hotcue" or cue.slot is None:
+                    if cue.role == "memory" or cue.slot is None:
+                        # rekordbox's own "unset" for a memory cue with no colour.
+                        code, _rgb = palette.code_for(cue.color)
+                        store.add_memory_cue(
+                            track_id, start_sec=cue.start, cue_type=cue.type,
+                            length_sec=cue.length, name=cue.name, color_code=code or None,
+                        )
                         continue
-                    adapter.set_cue(
-                        track_id,
-                        slot=cue.slot,
-                        start_sec=cue.start,
-                        cue_type=cue.type,
-                        length_sec=cue.length,
-                        name=cue.name,
+                    # What Konduktor SHOWS — stored colour, else the type's (blue
+                    # cue, green loop) — as a palette code, which is what
+                    # rekordbox draws from. White (a grid companion) has no swatch:
+                    # code 0, i.e. uncoloured.
+                    code, _rgb = palette.code_for(effective_color(cue))
+                    store.set_cue(
+                        track_id, slot=cue.slot, start_sec=cue.start, cue_type=cue.type,
+                        length_sec=cue.length, name=cue.name, color_code=code or None,
                     )
             adapter.save()
         finally:
@@ -255,32 +305,13 @@ class RekordboxExporter:
         # NOT `track.key`: that is the SOURCE platform's notation, so a Traktor
         # export would put "10m" where Rekordbox shows "Cm".
         content.KeyID = self._lookup(db, "key", render_key(track.key_wheel, track.key_mode))
+        content.ContentLink = CONTENT_LINK
         db.flush()
         return content
 
     @staticmethod
     def _lookup(db, kind: str, name: str | None):
-        """Find-or-create a lookup row, returning its id.
-
-        `djmdKey` is the odd one out twice over: its name column is `ScaleName`,
-        not `Name`, and pyrekordbox has no `add_key`. So keys are inserted
-        directly, with a `Seq` that keeps them in wheel order in Rekordbox's UI.
-        """
-        if not name:
-            return None
-        if kind == "key":
-            found = db.get_key(ScaleName=name).first()
-            if found is not None:
-                return found.ID
-            return _insert_key(db, name)
-        found = {"artist": db.get_artist, "album": db.get_album,
-                 "genre": db.get_genre, "label": db.get_label}[kind](Name=name).first()
-        if found is not None:
-            return found.ID
-        created = {"artist": db.add_artist, "album": db.add_album,
-                   "genre": db.add_genre, "label": db.add_label}[kind](name)
-        db.flush()
-        return created.ID
+        return new_content.lookup(db, kind, name)
 
     # ---- analysis ---------------------------------------------------------------
 
@@ -291,26 +322,63 @@ class RekordboxExporter:
         and the file on disk have to agree — so the same derivation is used here
         rather than a path of our own choosing.
         """
-        track_uuid = str(content.UUID)
-        # Rekordbox derives these two levels from the track's UUID, and the
-        # column and the file have to agree — so the same derivation is used.
-        rel = f"/PIONEER/USBANLZ/{track_uuid[:3]}/{track_uuid[3:]}/ANLZ0000.DAT"
+        rel = new_content.anlz_rel(str(content.UUID))
         content.AnalysisDataPath = rel
         content.Analysed = 105        # what a rekordbox-analysed track carries
         content.AnalysisUpdated = 1
         db.flush()
 
-        tags = [W.path_tag(str(item.destination))]
+        off = timebase.offset(item.destination)
+        measured = item.waveform(lead=off)
+        beats = None
         markers = item.cues.grid_markers if item.cues else []
         if markers:
-            duration = float(item.track.length or 0) or (markers[-1].start + 60.0)
+            duration = ((measured.duration if measured else 0.0)
+                        or float(item.track.length or 0) or (markers[-1].start + 60.0))
             nums, bpms, times = beats_from_markers(markers, duration)
             if nums:
-                tags.append(W.beatgrid_tag(list(zip(nums, bpms, times))))
+                # Onto rekordbox's clock (~25 ms behind on MP3/AAC — `timebase`).
+                # The cues need no such line: they are replayed through
+                # `set_cue`, which applies the same offset itself.
+                beats = [(n, bpm, timebase.to_pioneer(t, off))
+                         for n, bpm, t in zip(nums, bpms, times)]
         # AnalysisDataPath is rooted at a `share` directory BESIDE master.db,
         # not at the library root — the read path joins it that way, and writing
         # it anywhere else produces a track whose grid silently reads as empty.
-        return [W.write_anlz(root / "share" / rel.lstrip("/"), tags)]
+        dat = root / "share" / rel.lstrip("/")
+        written = []
+        for suffix, data in new_content.anlz_files(item.destination, measured, beats).items():
+            target = dat.with_suffix(suffix)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            written.append(target)
+        return written
+
+    # ---- artwork ------------------------------------------------------------------
+
+    @staticmethod
+    def _write_art(item: ExportTrack, content, root: Path) -> list[Path]:
+        """The cover, as a rekordbox-managed track carries it.
+
+        Three JPEGs under `share/PIONEER/Artwork/<uuid[:3]>/<uuid[3:]>/` — the
+        same UUID split as the analysis folder — named `artwork.jpg` (the cover,
+        fit to 800 px), `artwork_m.jpg` (240) and `artwork_s.jpg` (80), the last
+        two letterboxed square. `djmdContent.ImagePath` names `artwork.jpg`,
+        rooted at `share/` like `AnalysisDataPath`. All measured on a real
+        Rekordbox 7 library.
+        """
+        files = new_content.artwork_files(item.art[0] if item.art else None)
+        if files is None:
+            return []
+        rel = new_content.artwork_rel(str(content.UUID))
+        folder = root / "share" / rel.lstrip("/")
+        folder.mkdir(parents=True, exist_ok=True)
+        written = []
+        for name, data in files.items():
+            (folder / name).write_bytes(data)
+            written.append(folder / name)
+        content.ImagePath = f"{rel}/artwork.jpg"
+        return written
 
     # ---- playlists ---------------------------------------------------------------
 
@@ -346,20 +414,3 @@ class RekordboxExporter:
                 db.add_to_playlist(playlist, content)
         db.flush()
 
-
-def _insert_key(db, name: str) -> str:
-    """A `djmdKey` row. Raw SQL for the same reason the registry row is: the
-    ORM's DateTime binder raises on the NULLs a real row carries."""
-    from pyrekordbox.masterdb import models
-
-    now = datetime.now().isoformat(sep=" ", timespec="milliseconds")
-    seq = (db.query(models.DjmdKey).count() or 0) + 1
-    key_id = str(uuidlib.uuid4().int % 2_147_483_647)
-    db.session.execute(
-        text('INSERT INTO "djmdKey" (ID, ScaleName, Seq, UUID, created_at, '
-             "updated_at) VALUES (:id, :name, :seq, :uuid, :now, :now)"),
-        {"id": key_id, "name": name, "seq": seq,
-         "uuid": str(uuidlib.uuid4()), "now": now},
-    )
-    db.flush()
-    return key_id

@@ -25,6 +25,22 @@ from typing import Protocol, runtime_checkable
 from .capabilities import Capabilities
 from .model import Facets, PlaylistNode, Stats, Track, TrackCues, TrackPage
 from .pathmap import PathMapping
+from .relocate import PathGroup
+
+
+@dataclass
+class FileTagResult:
+    """One audio-file tag write a save made — the `SaveOutcome.tag_results` item.
+
+    Promoted from the Traktor store when OneLibrary became the second platform
+    that writes edited fields into the audio files themselves.
+    """
+
+    track_id: str
+    file: str
+    ok: bool
+    status: str  # "written" | "file-not-found" | "unsupported-format" | "error"
+    detail: str = ""
 
 
 @dataclass
@@ -72,6 +88,49 @@ class NewTrack:
     track: Track
     audio_path: Path
     cues: TrackCues | None = None
+    # The cover as the SOURCE library shows it — `(bytes, mime)` from its
+    # `cover_art` — since a library's art is not always embedded in the file.
+    # For a platform that keeps its own copy of the art (Rekordbox); one that
+    # reads the file's tags (Traktor) ignores it.
+    art: tuple[bytes, str] | None = None
+
+
+@dataclass(frozen=True)
+class StemSwap:
+    """Put a converted stem file into the library in place of — or beside — a track.
+
+    The conversion itself (separation, encoding, file moves) is not the
+    adapter's business; this is only the library side, and it arrives once the
+    file is finished and verified.
+
+      * `mode` "repoint": the track's entry now names the stem file and keeps
+        its playlists, prep and history — its id changes with its location.
+        "add": a NEW entry for the stem file, copying the track's prep and
+        metadata; the original entry stays.
+      * `original_audio` is where the original's audio bytes are RIGHT NOW. In
+        Replace mode that is its parked name, not its old one — a platform whose
+        clock depends on the file (an MP3's header) must read it there, and
+        must not look at the old path, which no longer holds it.
+      * `bit_rate` (bps per stream), `duration` (seconds) and `size` (bytes)
+        describe the stem file, for the library's own fields.
+    """
+
+    track_id: str
+    stem_path: Path
+    mode: str  # "repoint" | "add"
+    original_audio: Path | None
+    bit_rate: int
+    duration: float
+    size: int
+
+
+@dataclass
+class StemSwapResult:
+    #: Old track id -> the id of the entry that now names the stem file.
+    renamed: dict[str, str] = field(default_factory=dict)
+    #: New id -> hotcue slots whose position fell before the stem file's start
+    #: and were moved to 0 (a platform time-base shift can push one there).
+    clamped: dict[str, list[int]] = field(default_factory=dict)
 
 
 class AdapterError(Exception):
@@ -134,13 +193,33 @@ class LibraryAdapter(Protocol):
     # fidelity guarantee hold. A new entry has no parsed original, so the rule
     # becomes "an added entry must not perturb any existing one" — which is
     # what `test_save_fidelity.py` checks rather than taking on trust.
-    def add_tracks(self, items: list["NewTrack"]) -> list[str]: ...
+    #
+    # `checkpoint(message, step, of)` is called before each slow step (a
+    # platform that must ANALYSE what it adds, like Rekordbox, decodes every
+    # file) and may raise to cancel; it is only ever called before the library
+    # is touched, so a cancel leaves it as it was. Gated on
+    # `capabilities().tracks.addable`.
+    def add_tracks(self, items: list["NewTrack"], *, checkpoint=None) -> list[str]: ...
+    # OPTIONAL, where `capabilities().tracks.places_audio`: the library decides
+    # where added audio goes. `place_audio(source, track)` returns the path the
+    # importer must COPY `source` to (which becomes `NewTrack.audio_path`), or
+    # None when the file is already where the library can use it in place;
+    # `audio_home()` is where that audio lands, for the free-space check.
+    # (A protocol member would make every adapter implement them.)
 
     # Remove tracks from the library — and so from every playlist, since an
     # entry naming a track the library no longer has is a dangling reference.
-    # Never touches audio files. Returns how many were removed; gated on
-    # `capabilities().tracks.removable`.
+    # Never touches audio files, except where `tracks.places_audio` (a stick's
+    # audio belongs to its library): there the file goes too, at Save. Returns
+    # how many were removed; gated on `capabilities().tracks.removable`.
     def remove_tracks(self, track_ids: list[str]) -> int: ...
+
+    # Swap converted stem files into the library (see `StemSwap`), all at once:
+    # every swap is validated before any is applied, so a clash leaves the
+    # library untouched. Gated on `capabilities().tracks.stem_convertible`.
+    # `add_to_playlist` receives the entries "add" mode creates, in order.
+    def apply_stem_swaps(self, swaps: list["StemSwap"], *,
+                         add_to_playlist: str | None = None) -> "StemSwapResult": ...
 
     # ---- commands: track metadata / art ---------------------------------
     def set_track_metadata(self, track_id: str, fields: dict) -> Track | None: ...
@@ -160,6 +239,9 @@ class LibraryAdapter(Protocol):
         name: str | None = None,
     ) -> TrackCues: ...
     def set_cue_type(self, track_id: str, slot: int, cue_type: str) -> TrackCues: ...
+    # `color` is "#RRGGBB" from `capabilities().cues.palette`, or None for the
+    # platform's uncoloured cue. Any other cue command keeps a slot's colour.
+    def set_cue_color(self, track_id: str, slot: int, color: str | None) -> TrackCues: ...
     def delete_cue(self, track_id: str, slot: int) -> TrackCues: ...
     def place_cues(self, track_id: str, cues: list, *, overwrite: bool = False) -> TrackCues: ...
 
@@ -176,6 +258,12 @@ class LibraryAdapter(Protocol):
     # ---- audio / paths ---------------------------------------------------
     def audio_path(self, track_id: str) -> Path | None: ...
     def set_path_mapping(self, mapping: PathMapping) -> None: ...
+    # The open-time missing-files check (`core/relocate.py`): the stored volumes
+    # in which NO track resolves, and the mappings the user confirmed for them —
+    # session-only, applied beneath the saved mapping. An adapter that does not
+    # take part returns no groups, so its library is never checked.
+    def unresolved_path_groups(self) -> list[PathGroup]: ...
+    def set_session_mappings(self, mappings: list[PathMapping]) -> None: ...
     def path_prefix_suggestions(self) -> dict: ...
     def remap_preview(self, mapping: PathMapping) -> dict: ...
     # {old track id: new track id}; ids may change because a Traktor id IS its path.
@@ -208,7 +296,11 @@ class LibraryDriver(Protocol):
     selects: str
 
     def can_open(self, path: Path) -> bool: ...
-    def open(self, path: Path) -> LibraryAdapter: ...
+    # `read_only` opens a library only to READ it, alongside the loaded one (the
+    # sidebar's Devices). An adapter that honours it reports `writable=False`
+    # with cause `browsing`; one that ignores it still reports writable, and the
+    # caller — `AppState.open_source` — refuses it, so ignoring is safe.
+    def open(self, path: Path, *, read_only: bool = False) -> LibraryAdapter: ...
     # OPTIONAL. What to call an opened library on screen. Only the adapter can
     # answer for a platform where one library has more than one valid path —
     # the filename is otherwise assumed, and that assumption is wrong for a

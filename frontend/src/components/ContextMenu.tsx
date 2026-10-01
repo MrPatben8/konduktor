@@ -5,11 +5,21 @@ import { Icon } from '../lib/icons'
 
 /** One row of a menu: an action, a submenu (`label ▸`), or a section heading. */
 export type MenuItem =
-  | { label: string; onClick: () => void; danger?: boolean; hint?: string; icon?: ReactNode; disabled?: boolean }
+  // `title` explains a disabled item (shown on hover). Such an item is NOT a
+  // disabled <button>, because browsers show no tooltip on one.
+  | { label: string; onClick: () => void; danger?: boolean; hint?: string; icon?: ReactNode; disabled?: boolean; title?: string }
   | { label: string; submenu: MenuItem[] }
   // Toggles in place and leaves the menu open, so several can be flipped in one go.
   | { label: string; checked: boolean; onToggle: () => void }
   | { heading: string; empty?: string }
+  // A grid of colour swatches plus an uncoloured choice (`selected` null).
+  // Picking one closes the menu, like a plain item.
+  | {
+      swatches: string[]
+      selected: string | null
+      onPick: (color: string | null) => void
+      disabled?: boolean
+    }
   | { separator: true }
 
 interface Props {
@@ -143,6 +153,16 @@ function MenuPanel({
               </button>
             )
           }
+          if ('swatches' in item) {
+            return (
+              <SwatchGrid
+                key={i}
+                item={item}
+                onEnter={() => setOpen(null)}
+                onPicked={onClose}
+              />
+            )
+          }
           if ('heading' in item) {
             return (
               <div key={i}>
@@ -171,9 +191,12 @@ function MenuPanel({
           return (
             <button
               key={i}
-              disabled={item.disabled}
+              disabled={item.disabled && !item.title}
+              aria-disabled={item.disabled || undefined}
+              title={item.title}
               onMouseEnter={() => setOpen(null)}
               onClick={() => {
+                if (item.disabled) return
                 item.onClick()
                 onClose()
               }}
@@ -199,5 +222,61 @@ function MenuPanel({
         <MenuPanel items={openItem.submenu} onClose={onClose} style={open.style} />
       )}
     </>
+  )
+}
+
+function SwatchGrid({
+  item,
+  onEnter,
+  onPicked,
+}: {
+  item: Extract<MenuItem, { swatches: string[] }>
+  onEnter: () => void
+  onPicked: () => void
+}) {
+  const selected = item.selected?.toUpperCase() ?? null
+  const pick = (color: string | null) => {
+    item.onPick(color)
+    onPicked()
+  }
+  // An outline, not a ring: a ring is a box-shadow, which the swatch's glow overrides.
+  const ring = (on: boolean) =>
+    on ? 'outline outline-2 outline-offset-2 outline-white' : 'enabled:hover:scale-110'
+  return (
+    <div className="px-3 pb-2 pt-1" onMouseEnter={onEnter}>
+      <div className="grid w-max grid-cols-8 gap-1.5">
+        {item.swatches.map((color) => (
+          <button
+            key={color}
+            role="menuitemradio"
+            aria-checked={selected === color.toUpperCase()}
+            aria-label={color}
+            title={color}
+            disabled={item.disabled}
+            onClick={() => pick(color)}
+            className={`h-4 w-4 rounded-full transition-transform disabled:cursor-default disabled:opacity-40 ${ring(
+              selected === color.toUpperCase(),
+            )}`}
+            style={{ background: color, boxShadow: `0 0 6px ${color}` }}
+          />
+        ))}
+      </div>
+      <button
+        role="menuitemradio"
+        aria-checked={selected === null}
+        disabled={item.disabled}
+        onClick={() => pick(null)}
+        className={`mt-2 flex items-center gap-2 rounded-[8px] text-xs disabled:cursor-default disabled:text-faint ${
+          selected === null ? 'text-text' : 'text-muted hover:text-text'
+        }`}
+      >
+        <span
+          className={`block h-3 w-3 rounded-full border border-ink-600 ${
+            selected === null ? 'outline outline-2 outline-offset-1 outline-white' : ''
+          }`}
+        />
+        Default
+      </button>
+    </div>
   )
 }

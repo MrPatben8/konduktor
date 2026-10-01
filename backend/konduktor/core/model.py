@@ -41,6 +41,10 @@ class Track(BaseModel):
     producer: str | None = None
     mix: str | None = None
     comment: str | None = None
+    # A second free-text comment. Traktor's "Comment 2", which it keeps only in
+    # the collection (`INFO@RATING` — not the star rating, that is RANKING) and
+    # never writes into the audio file.
+    comment2: str | None = None
     bpm: float | None = None
     # The platform's own display string, shown verbatim ("10m", "8A", "Am").
     key: str | None = None
@@ -51,7 +55,7 @@ class Track(BaseModel):
     rating: int = 0  # 0-5 stars (derived from RANKING/51)
     playcount: int | None = None
     length: int | None = None  # seconds
-    bitrate: int | None = None
+    bitrate: int | None = None  # bits per second (Pioneer libraries store kbps)
     # ISO-8601 "YYYY-MM-DD", normalised by the adapter.
     import_date: str | None = None
     last_played: str | None = None
@@ -210,6 +214,11 @@ class PlatformOption(BaseModel):
     found: int = 0
     #: The library lives on a plugged-in drive, so `found` changes between calls.
     removable: bool = False
+    #: As an export TARGET: its library is only found at a drive's root.
+    drive_root: bool = False
+    #: As an export TARGET: its library is only ever read on a computer, never
+    #: from a drive — so it does nothing beside a stick format.
+    computer_only: bool = False
 
 
 class RemapSample(BaseModel):
@@ -224,6 +233,10 @@ class RemapPreview(BaseModel):
     matched: int  # how many match the `from` prefix
     existing: int  # of matched, how many exist at the `to` target
     samples: list[RemapSample] = []
+    # Target paths more than one track would land on. Non-zero means the remap
+    # would be refused: two entries sharing a path corrupt the library.
+    collisions: int = 0
+    collision_samples: list[str] = []
 
 
 class PrefixGroup(BaseModel):
@@ -234,3 +247,43 @@ class PrefixGroup(BaseModel):
 class PrefixSuggestions(BaseModel):
     primary: str  # best guess for the `from` prefix (largest group)
     groups: list[PrefixGroup] = []  # alternatives, ranked by count
+
+
+class RelocationCandidate(BaseModel):
+    """One place a volume's tracks were found, as a mapping the user can pick."""
+
+    model_config = ConfigDict(populate_by_name=True)
+    from_: str = Field(alias="from")
+    to: str
+    found: int  # of the volume's tracks, how many exist under this mapping
+
+
+class RelocationVolume(BaseModel):
+    """A stored volume in which NO track resolves, and where its tracks are now.
+
+    `ambiguous` means more than one candidate resolves most of the volume (a
+    drive and its backup clone): the user chooses, nothing is preselected.
+    """
+
+    label: str  # how the library names the place, e.g. Traktor's "X:"
+    root: str  # the stored OS-path prefix
+    total: int
+    status: Literal["found", "ambiguous", "not_found"]
+    candidates: list[RelocationCandidate] = []
+
+
+class Relocation(BaseModel):
+    """The open-time missing-files check, pending until the user answers it.
+
+    `scanning` while the search is still running; afterwards `volumes` is empty
+    when there is nothing to ask — every volume resolves, the platform does not
+    take part, or the user has already answered for this open.
+    """
+
+    scanning: bool = False
+    volumes: list[RelocationVolume] = []
+
+
+class RelocationApplied(BaseModel):
+    mappings: int
+    tracks: int  # how many tracks the applied mappings resolve

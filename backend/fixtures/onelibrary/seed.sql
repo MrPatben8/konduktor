@@ -1,0 +1,81 @@
+-- rekordbox's own scaffolding rows for a OneLibrary drive: the browse menu
+-- items, the categories and sort columns a player offers, and the colour
+-- palette. Extracted verbatim from fixtures/onelibrary/PIONEER/rekordbox/
+-- exportLibrary.db (a real rekordbox 7.2.18 export). No user data, no
+-- machine identity. rekordbox writes these on every export, so a drive without
+-- them is not a shape any player has been tested against.
+
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (1, 128, '￺GENRE￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (2, 129, '￺ARTIST￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (3, 130, '￺ALBUM￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (4, 131, '￺TRACK￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (5, 133, '￺BPM￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (6, 134, '￺RATING￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (7, 135, '￺YEAR￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (8, 136, '￺REMIXER￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (9, 137, '￺LABEL￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (10, 138, '￺ORIGINAL ARTIST￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (11, 139, '￺KEY￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (12, 141, '￺CUE￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (13, 142, '￺COLOR￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (14, 146, '￺TIME￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (15, 147, '￺BITRATE￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (16, 148, '￺FILE NAME￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (17, 132, '￺PLAYLIST￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (18, 152, '￺HOT CUE BANK￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (19, 149, '￺HISTORY￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (20, 145, '￺SEARCH￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (21, 150, '￺COMMENTS￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (22, 140, '￺DATE ADDED￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (23, 151, '￺DJ PLAY COUNT￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (24, 144, '￺FOLDER￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (25, 161, '￺DEFAULT￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (26, 162, '￺ALPHABET￻');
+INSERT INTO "menuItem" ("menuItem_id", "kind", "name") VALUES (27, 170, '￺MATCHING￻');
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (1, 1, 0, 0);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (2, 2, 1, 1);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (3, 3, 2, 1);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (4, 4, 3, 1);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (5, 17, 5, 1);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (6, 5, 0, 0);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (7, 6, 0, 0);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (8, 7, 0, 0);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (9, 8, 0, 0);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (10, 9, 0, 0);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (11, 10, 0, 0);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (12, 11, 4, 1);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (15, 13, 0, 0);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (17, 24, 9, 1);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (18, 20, 7, 1);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (19, 14, 0, 0);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (20, 15, 0, 0);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (21, 16, 0, 0);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (22, 19, 6, 1);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (23, 18, 0, 0);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (26, 27, 8, 1);
+INSERT INTO "category" ("category_id", "menuItem_id", "sequenceNo", "isVisible") VALUES (27, 22, 10, 1);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (0, 25, 1, 1, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (1, 26, 2, 1, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (2, 2, 3, 1, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (3, 3, 4, 1, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (4, 5, 5, 1, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (5, 6, 6, 1, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (6, 1, 0, 0, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (7, 21, 0, 0, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (8, 14, 0, 0, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (9, 8, 0, 0, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (10, 9, 0, 0, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (11, 10, 0, 0, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (12, 11, 7, 1, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (13, 15, 0, 0, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (15, 13, 0, 0, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (16, 23, 0, 0, 0);
+INSERT INTO "sort" ("sort_id", "menuItem_id", "sequenceNo", "isVisible", "isSelectedAsSubColumn") VALUES (17, 22, 0, 0, 0);
+INSERT INTO "color" ("color_id", "name") VALUES (1, 'Pink');
+INSERT INTO "color" ("color_id", "name") VALUES (2, 'Red');
+INSERT INTO "color" ("color_id", "name") VALUES (3, 'Orange');
+INSERT INTO "color" ("color_id", "name") VALUES (4, 'Yellow');
+INSERT INTO "color" ("color_id", "name") VALUES (5, 'Green');
+INSERT INTO "color" ("color_id", "name") VALUES (6, 'Aqua');
+INSERT INTO "color" ("color_id", "name") VALUES (7, 'Blue');
+INSERT INTO "color" ("color_id", "name") VALUES (8, 'Purple');

@@ -6,6 +6,7 @@ import { formatBpm, formatDuration } from '../lib/format'
 import { useCaps } from '../lib/capabilities'
 import { RatingStars } from './RatingStars'
 import { writeHint } from '../lib/platformCopy'
+import { invalidateTrackLists } from '../lib/trackQueries'
 
 interface Props {
   track: Track
@@ -26,6 +27,7 @@ const TEXT_FIELDS: { key: keyof Track; label: string; textarea?: boolean }[] = [
   { key: 'mix', label: 'Mix' },
   { key: 'release_date', label: 'Release date' },
   { key: 'comment', label: 'Comment', textarea: true },
+  { key: 'comment2', label: 'Comment 2', textarea: true },
 ]
 
 export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
@@ -68,9 +70,7 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
       if (Object.keys(changed).length > 0) await api.editTrack(track.id, changed)
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['tracks'] })
-      qc.invalidateQueries({ queryKey: ['playlist'] })
-      qc.invalidateQueries({ queryKey: ['state'] })
+      invalidateTrackLists(qc)
       qc.invalidateQueries({ queryKey: ['facets'] })
       qc.invalidateQueries({ queryKey: ['stats'] })
       onApplied(

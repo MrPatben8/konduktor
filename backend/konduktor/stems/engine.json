@@ -1,0 +1,7 @@
+{
+  "comment": "The stem engine THIS app build needs. Engines are released on their own channel (engine-v<version>, .github/workflows/engine.yml); the manifest lists each target's archive parts and hashes. `cuda` is the CUDA engine's floor, used to decide whether to OFFER it; the engine's own `info` confirms the card once installed.",
+  "version": "1.0.0",
+  "manifest_url": "https://github.com/MrPatben8/konduktor/releases/download/engine-v{version}/engine-manifest.json",
+  "asset_url": "https://github.com/MrPatben8/konduktor/releases/download/engine-v{version}/{name}",
+  "cuda": {"min_driver": 580, "min_capability": 7.5}
+}
