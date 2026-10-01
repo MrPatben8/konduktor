@@ -145,6 +145,7 @@ class OneLibraryStore(ReplaceGridCommands):
         self._db = None
         self._work: Path | None = None
         self._opened_as: tuple | None = None
+        self._pdb_seen: tuple | None = None
         self._journal = EditJournal()
         # Parsed ANLZ, keyed by track id. Two caches because the two files cost
         # an order of magnitude apart: a grid read must not drag in the .EXT.
@@ -171,6 +172,7 @@ class OneLibraryStore(ReplaceGridCommands):
         work = Path(tempfile.mkdtemp(prefix="drive-", dir=_work_root()))
         try:
             self._opened_as = _fingerprint(self.path)
+            self._pdb_seen = _fingerprint_file(self.device_library) if self.device_library.is_file() else None
             working = work / self.path.name
             shutil.copyfile(self.path, working)
             for suffix in _SIDECARS[:1]:  # the WAL carries data; -shm is rebuilt
@@ -212,6 +214,12 @@ class OneLibraryStore(ReplaceGridCommands):
         """Drop every unsaved edit: a fresh copy of the drive's database."""
         self.close()
         self._load()
+
+    @property
+    def device_library(self) -> Path:
+        """The legacy `export.pdb` beside the OneLibrary database — on most
+        rekordbox sticks; rebuilt at Save when present (`device_library.py`)."""
+        return self.path.with_name("export.pdb")
 
     def _require_db(self):
         if self._db is None:
@@ -890,13 +898,15 @@ class OneLibraryStore(ReplaceGridCommands):
         In this order, each step a precondition for the next:
 
           1. the drive is still there, and NOTHING else has written its database
-             (or an analysis file this save rewrites) since Konduktor read it —
+             (or an analysis file, or `export.pdb`) since Konduktor read it —
              otherwise this would silently undo that;
           2. the drive's current database and those analysis files are backed
              up to app-data;
           3. each edited analysis file is written beside itself and renamed over
              it — BEFORE the database, as the Rekordbox store writes files before
-             committing, so a failure here leaves the database untouched;
+             committing, so a failure here leaves the database untouched — and
+             then, where the stick has one, the legacy `export.pdb`, edited to
+             match (`device_library.rebuild`; untouched if it already does);
           4. the working copy is committed and closed, which folds its WAL in, so
              the copy is one self-contained file;
           5. the copy is written beside the drive's database under a temporary
@@ -920,7 +930,8 @@ class OneLibraryStore(ReplaceGridCommands):
         for path, (edited, seen) in self._pending_anlz.items():
             if not path.is_file() or _fingerprint_file(path) != seen:
                 changed_anlz.append(path)
-        if _fingerprint(self.path) != self._opened_as or changed_anlz:
+        pdb_now = _fingerprint_file(self.device_library) if self.device_library.is_file() else None
+        if _fingerprint(self.path) != self._opened_as or changed_anlz or pdb_now != self._pdb_seen:
             raise InvalidCommand(
                 f"Another app has changed {self.layout.root.name} since Konduktor "
                 "opened it, and saving would undo that. Discard your changes and "
@@ -933,8 +944,17 @@ class OneLibraryStore(ReplaceGridCommands):
         # command that failed after reading, leaves nothing to write.
         anlz_writes = [(path, data) for path, (edited, _seen) in self._pending_anlz.items()
                        if (data := edited.to_bytes()) != path.read_bytes()]
+        # The legacy Device Library, edited to match (None: already does). Read
+        # inside the transaction, which sees every edit.
+        pdb_bytes = None
+        if self.device_library.is_file():
+            from . import device_library
 
-        self._backup([path for path, _ in anlz_writes])
+            db.flush()
+            pdb_bytes = device_library.rebuild(self.device_library.read_bytes(), db.session)
+
+        self._backup([path for path, _ in anlz_writes]
+                     + ([self.device_library] if pdb_bytes is not None else []))
         for path, data in anlz_writes:
             partial = path.with_name(f".{path.name}.konduktor-partial")
             partial.write_bytes(data)
@@ -942,6 +962,11 @@ class OneLibraryStore(ReplaceGridCommands):
             # Ours now: a retry after a later failure must not mistake this
             # write for another app's.
             self._pending_anlz[path] = (self._pending_anlz[path][0], _fingerprint_file(path))
+        if pdb_bytes is not None:
+            partial = self.device_library.with_name(".export.pdb.konduktor-partial")
+            partial.write_bytes(pdb_bytes)
+            os.replace(partial, self.device_library)
+            self._pdb_seen = _fingerprint_file(self.device_library)
 
         db.session.commit()
         work, working = self._work, self._work / self.path.name

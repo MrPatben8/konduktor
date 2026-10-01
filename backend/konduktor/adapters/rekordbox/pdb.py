@@ -430,3 +430,166 @@ __all__ = [
     "album_row", "artist_row", "dsql", "id_string_row", "key_row", "playlist_entry_row",
     "playlist_tree_row", "read", "read_dsql", "template", "track_row",
 ]
+
+
+# ---- editing an existing library -----------------------------------------------
+#
+# Editing a stick rekordbox wrote, rather than writing one from the template:
+# only the tables whose rows change are rewritten, and inside them a row that
+# does not change keeps rekordbox's own bytes. Every other table — history,
+# colours, menus, artwork — stays byte-identical, and so does exportExt.pdb.
+
+
+def _chain(buf: bytes, first: int, last: int) -> list[int]:
+    """A table's page chain, header page first."""
+    pages, p = [first], first
+    while p != last and len(pages) < 100000:
+        p = struct.unpack_from("<I", buf, p * PAGE + 12)[0]
+        pages.append(p)
+    return pages
+
+
+def table_rows(buf: bytes, table: int) -> list[bytes]:
+    """Every present row of `table`, in page order, as its own bytes (padding
+    included) — a row's extent is up to the next row's heap offset, or the end
+    of the page's used heap."""
+    n_tables = struct.unpack_from("<I", buf, 8)[0]
+    for i in range(n_tables):
+        t, _empty, first, last = struct.unpack_from("<4I", buf, 28 + 16 * i)
+        if t != table:
+            continue
+        out = []
+        for p in _chain(buf, first, last)[1:]:
+            o = p * PAGE
+            if buf[o + 0x1B] & _HEADER_PAGE:
+                continue
+            n = (buf[o + 0x19] >> 5) | (buf[o + 0x1A] << 3)
+            used = struct.unpack_from("<H", buf, o + 0x1E)[0]
+            offs, present = [], []
+            # As `_rows` reads them: every bit of every group, since a page
+            # rekordbox has edited holds more row slots than its small count.
+            for g in range((n + 15) // 16):
+                base = o + PAGE - g * _GROUP
+                mask = struct.unpack_from("<H", buf, base - 4)[0]
+                for r in range(16):
+                    if mask & (1 << r):
+                        offs.append(struct.unpack_from("<H", buf, base - 6 - 2 * r)[0])
+                        present.append(True)
+            ends = sorted(set(offs)) + [used]
+            for off, ok in zip(offs, present):
+                if ok:
+                    end = next(e for e in ends if e > off)
+                    row = bytes(buf[o + _HEADER + off:o + _HEADER + end])
+                    if table == TRACKS:
+                        row = row[:track_extent(row)]
+                    out.append(row)
+        return out
+    return []
+
+
+def _dsql_len(buf: bytes, off: int) -> int:
+    head = buf[off]
+    return (head >> 1) if head & 1 else struct.unpack_from("<H", buf, off + 1)[0]
+
+
+def track_extent(row: bytes) -> int:
+    """Where a track row really ends: past its last string, 4-aligned.
+
+    NOT the next row's offset: rekordbox reuses its heap, and the bytes between
+    a row and the next can be a stale tail of an older, longer string (seen on
+    Goober: `...mp3` followed by `ing.stem.m4a`)."""
+    offs = struct.unpack_from(f"<{len(TRACK_STRINGS)}H", row, _TRACK_FIXED)
+    end = max(o + _dsql_len(row, o) for o in offs)
+    return end + (-end % 4)
+
+
+def track_fields(row: bytes) -> tuple[dict, dict]:
+    """A raw track row as (`fields`, `strings`) — what `track_row` takes back."""
+    fields = dict(zip([n for n, _ in _TRACK_FIELDS], struct.unpack_from(_TRACK_FMT, row, 0)))
+    offs = struct.unpack_from(f"<{len(TRACK_STRINGS)}H", row, _TRACK_FIXED)
+    return fields, {name: read_dsql(row, o) for name, o in zip(TRACK_STRINGS, offs)}
+
+
+def row_id(table: int, row: bytes) -> int | tuple:
+    """A row's identity within its table (the triple, for playlist entries)."""
+    if table == TRACKS:
+        return track_fields(row)[0]["id"]
+    if table == ARTISTS:
+        return struct.unpack_from("<I", row, 4)[0]
+    if table == ALBUMS:
+        return struct.unpack_from("<I", row, 12)[0]
+    if table == PLAYLIST_TREE:
+        return struct.unpack_from("<I", row, 12)[0]
+    if table == PLAYLIST_ENTRIES:
+        return struct.unpack_from("<3I", row, 0)
+    return struct.unpack_from("<I", row, 0)[0]
+
+
+class PdbEditor(PdbWriter):
+    """`PdbWriter` over an EXISTING library: `refill` replaces one table's rows.
+
+    The table keeps its pages — overwritten in place, more taken from the
+    next-unused counter if needed, any left over unlinked and blanked (a blank
+    reserved page inside the file is a state rekordbox's own template has) —
+    and keeps its empty candidate. `render` leaves the header's
+    pages-with-room field as it was: rekordbox did not touch it when it edited
+    Goober, and it is the least understood field in the file.
+    """
+
+    def __init__(self, existing: bytes):
+        super().__init__(existing)
+        self._room_field = struct.unpack_from("<I", self.buf, 16)[0]
+        self._blank: set[int] = set()
+
+    def refill(self, table: int, rows: list[bytes]) -> None:
+        slot, candidate, first, last = self.tables[table]
+        old = _chain(bytes(self.buf), first, last)[1:]
+        if candidate in old:
+            old.remove(candidate)
+        chunks = _chunk(rows) if rows else []
+        indices = old[:len(chunks)] + [self._alloc() for _ in chunks[len(old):]]
+        for p in old[len(chunks):]:
+            self._blank.add(p)
+        shift_at = _INDEX_SHIFT_AT if table in (TRACKS, ARTISTS, ALBUMS) else None
+        indexed = table in _INDEXED
+        for i, chunk in enumerate(chunks):
+            nxt = indices[i + 1] if i + 1 < len(indices) else candidate
+            fill = None
+            if indexed:
+                fill = (len(chunk) + 1, 0) if i + 1 == len(chunks) else (_NONE, _NONE)
+            self.sequence += 1
+            self.pages[indices[i]] = _data_page(indices[i], table, nxt, chunk, self.sequence,
+                                                shift_at=shift_at, fill=fill)
+        self._reindex(first, indices, indexed=indexed)
+        self.tables[table] = [slot, candidate, first, indices[-1] if indices else first]
+        if not indices:
+            # No rows: the header page points straight at the candidate again.
+            struct.pack_into("<I", self.buf, first * PAGE + 12, candidate)
+
+    def _reindex(self, header_page: int, data_pages: list[int], *, indexed: bool) -> None:
+        o = header_page * PAGE
+        struct.pack_into("<I", self.buf, o + 12, data_pages[0] if data_pages else
+                         struct.unpack_from("<I", self.buf, o + 12)[0])
+        if indexed:
+            # Clear the old entries first: a table that shrank must not keep
+            # listing pages it no longer has.
+            count = struct.unpack_from("<H", self.buf, o + _HEADER + 16)[0]
+            for k in range(max(count, len(data_pages))):
+                struct.pack_into("<I", self.buf, o + _HEADER + 20 + 4 * k, 0x1FFFFFF8)
+        if data_pages:
+            pages_with_room = self.pages_with_room
+            self._index(header_page, data_pages, indexed=indexed)
+            self.pages_with_room = pages_with_room
+        else:
+            struct.pack_into("<I", self.buf, o + _HEADER + 4, 0x03FFFFFF)
+            if indexed:
+                struct.pack_into("<HH", self.buf, o + _HEADER + 16, 0, 0x1FFF)
+                struct.pack_into("<HH", self.buf, o + 0x20, _NONE, _NONE)
+                struct.pack_into("<H", self.buf, o + 0x26, 0)
+
+    def render(self) -> bytes:
+        out = bytearray(super().render())
+        struct.pack_into("<I", out, 16, self._room_field)
+        for p in self._blank - set(self.pages):
+            out[p * PAGE:(p + 1) * PAGE] = bytes(PAGE)
+        return bytes(out)
