@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api'
 import { useCaps } from '../lib/capabilities'
@@ -37,6 +38,7 @@ export function Toolbar({
 }: Props) {
   const caps = useCaps()
   const { data: facets } = useQuery({ queryKey: ['facets'], queryFn: api.facets })
+  const searchRef = useRef<HTMLInputElement>(null)
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch })
   const active =
     filters.search ||
@@ -56,9 +58,24 @@ export function Toolbar({
         <input
           value={filters.search}
           onChange={(e) => set({ search: e.target.value })}
+          ref={searchRef}
           placeholder="Search artist, title, album…"
-          className="well w-72 rounded-full py-1.5 pl-9 pr-3 text-sm text-text outline-none placeholder:text-faint focus:ring-1 focus:ring-accent"
+          className="well w-72 rounded-full py-1.5 pl-9 pr-8 text-sm text-text outline-none placeholder:text-faint focus:ring-1 focus:ring-accent"
         />
+        {filters.search && (
+          <button
+            type="button"
+            onClick={() => {
+              set({ search: '' })
+              searchRef.current?.focus()
+            }}
+            title="Clear search"
+            aria-label="Clear search"
+            className="absolute right-2 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full text-faint hover:bg-ink-700 hover:text-text"
+          >
+            <Icon name="close" size={12} />
+          </button>
+        )}
       </div>
 
       <select
