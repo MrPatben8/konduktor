@@ -1875,8 +1875,15 @@ def folder_track_stems(track_id: str) -> dict:
     return _stem_layout_of(_folder_track(track_id).audio_path(track_id))
 
 
+def _require_addable(dest) -> None:
+    caps = dest.capabilities()
+    if not (caps.writable and caps.tracks.addable):
+        raise HTTPException(422, "Tracks cannot be added to this library")
+
+
 def _folder_add_plan(body: FolderAddRequest):
     dest = require_adapter()
+    _require_addable(dest)
     tracks = []
     for track_id in body.track_ids:
         track = _folder_track(track_id).track(track_id)
@@ -1957,6 +1964,7 @@ def folder_add(body: FolderAddRequest) -> JobStatus:
 
 def _import_plan(body: ImportRequest):
     source, dest = require_source(), require_adapter()
+    _require_addable(dest)
     destination = Path(body.destination).expanduser()
     return source, dest, destination, importer.plan(
         source,

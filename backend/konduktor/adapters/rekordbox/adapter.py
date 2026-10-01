@@ -27,7 +27,7 @@ from ...core.model import GridMarker, PlaylistNode, Track, TrackCues
 from ...core.pathmap import PathMapping, common_dir_prefix
 from ...core.query import TrackIndex
 from . import capabilities as caps
-from . import palette, projection
+from . import palette, projection, timebase
 from .store import RekordboxStore
 
 
@@ -412,13 +412,84 @@ class RekordboxAdapter:
         if self._cloud_synced:
             raise Unsupported(self._readonly_reason(what))
 
-    def add_tracks(self, items: list) -> list[str]:
-        # Not a refusal in principle — Rekordbox could receive imported
-        # tracks — but adding one means a djmdContent row, its lookup-table
-        # foreign keys, a USN, and an ANLZ file built from scratch, which
-        # is unexplored (see the export handoff). Traktor is the only
-        # import target for now.
-        self._refuse("Adding tracks")
+    def add_tracks(self, items: list, *, checkpoint=None) -> list[str]:
+        """Add tracks that came from somewhere else, with their prep.
+
+        Rekordbox keeps the beatgrid AND the waveforms in per-track analysis
+        files, and shows neither grid nor cues for a track without them — so
+        unlike Traktor, which re-analyses on load, every file is decoded here.
+        A file that brings no grid gets one from Konduktor's own detector
+        (decided 2026-10-01: a track should arrive ready to prep).
+
+        Two phases, and the split is the point. FIRST every file is decoded and
+        analysed, which is slow and may be cancelled through `checkpoint` —
+        before the library is touched, so a cancel leaves it as it was. THEN
+        each row is added and its grid and cues replayed through the ordinary
+        store commands (`replace_grid`, `set_cue`), so an added track inherits
+        their conventions and tests rather than growing a second copy.
+
+        Nothing is lost on the way in: Rekordbox has memory cues and coloured
+        cues, so both cross as themselves. A hot cue whose pad is out of the
+        bank or already taken becomes a memory cue at the same position rather
+        than being dropped.
+        """
+        from ...core import audio_tags, grid_detect, waveform
+
+        self._require_writable("Adding tracks")
+        held = set(self._store.all_audio_paths())
+        prepared = []
+        total = len(items)
+        for n, item in enumerate(items, start=1):
+            audio = Path(item.audio_path)
+            if checkpoint is not None:
+                checkpoint(f"Analysing {item.track.title or audio.name} ({n}/{total})",
+                           step=n, of=total)
+            if not audio.is_file():
+                raise InvalidCommand(f"No audio file at {audio}")
+            if str(audio) in held:
+                raise InvalidCommand(f"The library already holds {audio}")
+            held.add(str(audio))
+            samples = waveform.decode(audio)
+            measured = waveform.analyse_samples(samples, lead=timebase.offset(audio))
+            markers = list(item.cues.grid_markers) if item.cues else []
+            if not markers and samples is not None:
+                try:
+                    found = grid_detect.detect_grid(str(audio), y=samples, sr=waveform.SR)
+                    markers = [GridMarker(start=found.anchor, bpm=found.bpm)]
+                except ValueError:
+                    pass  # no pulse to fit (a one-shot, silence): no grid
+            art = item.art or audio_tags.read_cover(audio)
+            prepared.append((item, audio, measured, markers, art[0] if art else None))
+
+        added: list[str] = []
+        for item, audio, measured, markers, art in prepared:
+            track_id = self._store.add_track(
+                audio, item.track, measured=measured, with_grid=bool(markers), art=art)
+            self._index.add(projection.to_track(self._store.content(track_id), ()))
+            if markers:
+                self._store.replace_grid(track_id, markers)
+            if item.cues is not None:
+                self._place_imported_cues(track_id, item.cues)
+            self._refresh(track_id)
+            added.append(track_id)
+        return added
+
+    def _place_imported_cues(self, track_id: str, cues) -> None:
+        """Hot cues on their own pads; memory cues — and a hot cue with no
+        free pad — as memory cues. Colour as the nearest palette swatch."""
+        taken: set[int] = set()
+        for cue in sorted(cues.cues or [], key=lambda c: c.start):
+            cue_type = "loop" if getattr(cue, "length", 0) else "cue"
+            code, _rgb = palette.code_for(cue.color)
+            common = dict(start_sec=cue.start, cue_type=cue_type,
+                          length_sec=getattr(cue, "length", 0.0) or 0.0,
+                          name=getattr(cue, "name", None), color_code=code or None)
+            slot = cue.slot if cue.role == "hotcue" else None
+            if slot is not None and 0 <= slot < caps.HOTCUE_SLOTS and slot not in taken:
+                self._store.set_cue(track_id, slot=slot, **common)
+                taken.add(slot)
+            else:
+                self._store.add_memory_cue(track_id, **common)
 
     def remove_tracks(self, track_ids: list[str]) -> int:
         # What goes with a track was measured in Rekordbox 7 — see the store.

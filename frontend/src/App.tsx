@@ -863,6 +863,9 @@ export default function App() {
   const canClearGrids = canEdit && !viewForeign && !!capabilities.data?.grid.editable
   const canClearCues = canAutoCue
   const canRemoveTracks = canEdit && !viewForeign && !!capabilities.data?.tracks.removable
+  // The COLLECTION's capabilities, deliberately: adding happens while a folder
+  // or device is on screen, whose own capabilities are read-only.
+  const canAddTracks = canEdit && !!capabilities.data?.tracks.addable
   const exportRootId =
     source.kind === 'export' ? source.id : source.kind === 'export-other' ? source.exportId : null
   const removeItems = (ids: string[]): MenuItem[] => [
@@ -995,10 +998,17 @@ export default function App() {
             // added — through the add dialog, which puts them in the
             // collection first.
             ...(viewingFolder
-              ? [
-                  { label: 'Add to Collection…', onClick: () => setAdding({ ids: menu.ids, target: null }) },
-                  { label: 'Add to', submenu: folderAddToItems(menu.ids) },
-                ]
+              ? canAddTracks
+                ? [
+                    { label: 'Add to Collection…', onClick: () => setAdding({ ids: menu.ids, target: null }) },
+                    { label: 'Add to', submenu: folderAddToItems(menu.ids) },
+                  ]
+                : [{
+                    label: 'Add to Collection…',
+                    disabled: true,
+                    title: 'Tracks cannot be added to this library',
+                    onClick: () => {},
+                  }]
               : viewingDevice
                 ? []
                 : [{ label: 'Add to', submenu: addToItems(menu.ids) }]),
@@ -1197,7 +1207,7 @@ export default function App() {
                   <span className="rounded-full bg-gold/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gold shadow-[inset_0_0_0_1px_rgb(255_200_97/0.3)]">
                     Not in collection
                   </span>
-                  {tracks.length > 0 && (
+                  {tracks.length > 0 && canAddTracks && (
                     <button
                       onClick={() =>
                         setAdding({
@@ -1246,12 +1256,12 @@ export default function App() {
                   <span className="rounded-full bg-gold/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gold shadow-[inset_0_0_0_1px_rgb(255_200_97/0.3)]">
                     Device · read-only
                   </span>
-                  <button
+                  {canAddTracks && <button
                     onClick={() => setImporting(true)}
                     className="btn-primary rounded-full px-3 py-1 text-xs font-semibold"
                   >
                     Import{source.kind === 'device-playlist' ? ' this playlist' : ' everything'}…
-                  </button>
+                  </button>}
                 </span>
               </>
             ) : (

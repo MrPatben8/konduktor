@@ -73,6 +73,11 @@ class NewTrack:
     track: Track
     audio_path: Path
     cues: TrackCues | None = None
+    # The cover as the SOURCE library shows it — `(bytes, mime)` from its
+    # `cover_art` — since a library's art is not always embedded in the file.
+    # For a platform that keeps its own copy of the art (Rekordbox); one that
+    # reads the file's tags (Traktor) ignores it.
+    art: tuple[bytes, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -173,7 +178,13 @@ class LibraryAdapter(Protocol):
     # fidelity guarantee hold. A new entry has no parsed original, so the rule
     # becomes "an added entry must not perturb any existing one" — which is
     # what `test_save_fidelity.py` checks rather than taking on trust.
-    def add_tracks(self, items: list["NewTrack"]) -> list[str]: ...
+    #
+    # `checkpoint(message, step, of)` is called before each slow step (a
+    # platform that must ANALYSE what it adds, like Rekordbox, decodes every
+    # file) and may raise to cancel; it is only ever called before the library
+    # is touched, so a cancel leaves it as it was. Gated on
+    # `capabilities().tracks.addable`.
+    def add_tracks(self, items: list["NewTrack"], *, checkpoint=None) -> list[str]: ...
 
     # Remove tracks from the library — and so from every playlist, since an
     # entry naming a track the library no longer has is a dangling reference.

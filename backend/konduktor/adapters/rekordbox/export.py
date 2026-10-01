@@ -58,8 +58,7 @@ from sqlalchemy import text
 
 from ...core.export import ExportPayload, ExportTrack, WrittenLibrary
 from ...core.cue_colors import effective_color
-from . import anlz_writer as W
-from . import artwork, palette
+from . import new_content, palette
 from . import timebase
 from .beatgrid import beats_from_markers
 from .capabilities import capabilities_for
@@ -82,15 +81,8 @@ SEED = _FIXTURES / "seed.sql"
 #: Rekordbox counts cue positions in frames at 150 fps, not milliseconds.
 FRAMES_PER_SECOND = 150
 
-#: `djmdContent.ContentLink` — NOT optional, and a bit field. Measured by giving
-#: five tracks of a Konduktor-written library different values and loading it
-#: in Rekordbox 7: with it NULL the song-list preview is plain blue with a "?"
-#: beside CUE; any value colours the preview; the 0x200000 bit (0x2C060E here,
-#: 0x0C060E without it) clears the "?"; and 0x3D060E — what the real library's
-#: MP3/M4A tracks carry — adds two more bits that draw an extra badge, most
-#: likely claiming phrase/vocal analysis this exporter does not write. So the
-#: value that claims only what is written: 0x2C060E.
-CONTENT_LINK = 2885134
+#: `djmdContent.ContentLink` — see `new_content`, where its bits are measured.
+CONTENT_LINK = new_content.CONTENT_LINK
 
 #: Rekordbox's playlist side file, beside master.db. It lists every playlist
 #: node with a `Timestamp` matching the row's `updated_at` (ms); a playlist the
@@ -319,27 +311,7 @@ class RekordboxExporter:
 
     @staticmethod
     def _lookup(db, kind: str, name: str | None):
-        """Find-or-create a lookup row, returning its id.
-
-        `djmdKey` is the odd one out twice over: its name column is `ScaleName`,
-        not `Name`, and pyrekordbox has no `add_key`. So keys are inserted
-        directly, with a `Seq` that keeps them in wheel order in Rekordbox's UI.
-        """
-        if not name:
-            return None
-        if kind == "key":
-            found = db.get_key(ScaleName=name).first()
-            if found is not None:
-                return found.ID
-            return _insert_key(db, name)
-        found = {"artist": db.get_artist, "album": db.get_album,
-                 "genre": db.get_genre, "label": db.get_label}[kind](Name=name).first()
-        if found is not None:
-            return found.ID
-        created = {"artist": db.add_artist, "album": db.add_album,
-                   "genre": db.add_genre, "label": db.add_label}[kind](name)
-        db.flush()
-        return created.ID
+        return new_content.lookup(db, kind, name)
 
     # ---- analysis ---------------------------------------------------------------
 
@@ -350,24 +322,15 @@ class RekordboxExporter:
         and the file on disk have to agree — so the same derivation is used here
         rather than a path of our own choosing.
         """
-        track_uuid = str(content.UUID)
-        # Rekordbox derives these two levels from the track's UUID, and the
-        # column and the file have to agree — so the same derivation is used.
-        rel = f"/PIONEER/USBANLZ/{track_uuid[:3]}/{track_uuid[3:]}/ANLZ0000.DAT"
+        rel = new_content.anlz_rel(str(content.UUID))
         content.AnalysisDataPath = rel
         content.Analysed = 105        # what a rekordbox-analysed track carries
         content.AnalysisUpdated = 1
         db.flush()
 
-        # The same three files as a rekordbox-analysed track. The `.DAT` needs
-        # PVBR and the preview waveforms before rekordbox shows a grid at all
-        # (measured on a OneLibrary stick; the same Pioneer file here); the
-        # `.EXT`/`.2EX` carry the drawn waveforms. Cue lists are present but
-        # EMPTY — master.db keeps cues in djmdCue.
         off = timebase.offset(item.destination)
         measured = item.waveform(lead=off)
-        path = str(item.destination)
-        tags = [W.path_tag(path), W.vbr_tag(W.mp3_samples(item.destination))]
+        beats = None
         markers = item.cues.grid_markers if item.cues else []
         if markers:
             duration = ((measured.duration if measured else 0.0)
@@ -377,26 +340,18 @@ class RekordboxExporter:
                 # Onto rekordbox's clock (~25 ms behind on MP3/AAC — `timebase`).
                 # The cues need no such line: they are replayed through
                 # `set_cue`, which applies the same offset itself.
-                tags.append(W.beatgrid_tag(
-                    [(n, bpm, timebase.to_pioneer(t, off)) for n, bpm, t in zip(nums, bpms, times)]))
-        if measured:
-            tags += W.preview_tags(measured.columns.rms, measured.columns.brightness)
-            ext_waves, two_ex = W.waveform_tags(measured.frames.bands)
-        else:
-            tags += W.flat_preview_tags()
-            ext_waves, two_ex = [], []
-        tags += W.cue_tags([], extended=False)
+                beats = [(n, bpm, timebase.to_pioneer(t, off))
+                         for n, bpm, t in zip(nums, bpms, times)]
         # AnalysisDataPath is rooted at a `share` directory BESIDE master.db,
         # not at the library root — the read path joins it that way, and writing
         # it anywhere else produces a track whose grid silently reads as empty.
         dat = root / "share" / rel.lstrip("/")
-        written = [
-            W.write_anlz(dat, tags),
-            W.write_anlz(dat.with_suffix(".EXT"), [W.path_tag(path), *ext_waves[:1],
-                                                   *W.cue_tags([], extended=True), *ext_waves[1:]]),
-        ]
-        if two_ex:
-            written.append(W.write_anlz(dat.with_suffix(".2EX"), [W.path_tag(path), *two_ex]))
+        written = []
+        for suffix, data in new_content.anlz_files(item.destination, measured, beats).items():
+            target = dat.with_suffix(suffix)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            written.append(target)
         return written
 
     # ---- artwork ------------------------------------------------------------------
@@ -412,17 +367,14 @@ class RekordboxExporter:
         rooted at `share/` like `AnalysisDataPath`. All measured on a real
         Rekordbox 7 library.
         """
-        if not item.art:
+        files = new_content.artwork_files(item.art[0] if item.art else None)
+        if files is None:
             return []
-        jpegs = artwork.library_jpegs(item.art[0])
-        if jpegs is None:
-            return []
-        track_uuid = str(content.UUID)
-        rel = f"/PIONEER/Artwork/{track_uuid[:3]}/{track_uuid[3:]}"
+        rel = new_content.artwork_rel(str(content.UUID))
         folder = root / "share" / rel.lstrip("/")
         folder.mkdir(parents=True, exist_ok=True)
         written = []
-        for name, data in zip(("artwork.jpg", "artwork_m.jpg", "artwork_s.jpg"), jpegs):
+        for name, data in files.items():
             (folder / name).write_bytes(data)
             written.append(folder / name)
         content.ImagePath = f"{rel}/artwork.jpg"
@@ -462,20 +414,3 @@ class RekordboxExporter:
                 db.add_to_playlist(playlist, content)
         db.flush()
 
-
-def _insert_key(db, name: str) -> str:
-    """A `djmdKey` row. Raw SQL for the same reason the registry row is: the
-    ORM's DateTime binder raises on the NULLs a real row carries."""
-    from pyrekordbox.masterdb import models
-
-    now = datetime.now().isoformat(sep=" ", timespec="milliseconds")
-    seq = (db.query(models.DjmdKey).count() or 0) + 1
-    key_id = str(uuidlib.uuid4().int % 2_147_483_647)
-    db.session.execute(
-        text('INSERT INTO "djmdKey" (ID, ScaleName, Seq, UUID, created_at, '
-             "updated_at) VALUES (:id, :name, :seq, :uuid, :now, :now)"),
-        {"id": key_id, "name": name, "seq": seq,
-         "uuid": str(uuidlib.uuid4()), "now": now},
-    )
-    db.flush()
-    return key_id

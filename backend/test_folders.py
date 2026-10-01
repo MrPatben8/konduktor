@@ -193,6 +193,50 @@ with TestClient(main.app, raise_server_exceptions=False) as c:
           c.post("/api/folder/add/preview",
                  json={"track_ids": ["/etc/passwd"], "mode": "reference"}).status_code == 404)
 
+    print("== Rekordbox: the same route adds to a master.db ==")
+    from konduktor.adapters.rekordbox import discovery as rb_discovery
+
+    found = rb_discovery.detect_libraries()
+    if not found:
+        print("  (skipped: no Rekordbox library on this machine)")
+    else:
+        rb_src = Path(found[0]["path"]).parent
+        rb_dir = Path(tempfile.mkdtemp()) / "rekordbox"
+        rb_dir.mkdir()
+        for name in ("master.db", "masterPlaylists6.xml"):
+            if (rb_src / name).exists():
+                shutil.copy2(rb_src / name, rb_dir / name)
+        if (rb_src / "share").is_dir():
+            shutil.copytree(rb_src / "share", rb_dir / "share")
+        r = c.post("/api/library/open", json={"path": str(rb_dir / "master.db")})
+        check("a Rekordbox copy opens", r.status_code == 200, r.text[:300])
+        caps = c.get("/api/capabilities").json()
+        check("it advertises adding", caps["tracks"]["addable"] is True)
+        rb = main.require_adapter()
+        n_before = len(rb.tracks)
+        req = {"track_ids": [str(two)], "mode": "reference"}
+        job = wait(c, c.post("/api/folder/add", json=req).json())
+        check("the job finishes", job["state"] == "done", str(job))
+        new_ids = (job.get("result") or {}).get("track_ids") or []
+        check("one track was added", len(rb.tracks) == n_before + 1 and len(new_ids) == 1)
+        if new_ids:
+            check("it points at the original file", rb.audio_path(new_ids[0]) == two)
+            row = rb._store.content(new_ids[0])
+            dat = rb_dir / "share" / row.AnalysisDataPath.lstrip("/")
+            check("its analysis file was written", dat.is_file(), str(dat))
+            check("and saved, not left pending", not rb.dirty)
+        rb.close()
+
+    print("== a library that cannot take tracks refuses the route ==")
+    fixture = Path(__file__).resolve().parent / "fixtures" / "onelibrary"
+    r = c.post("/api/library/open", json={"path": str(fixture)})
+    if r.status_code == 200:
+        check("the add preview is refused (422)",
+              c.post("/api/folder/add/preview",
+                     json={"track_ids": [str(two)], "mode": "reference"}).status_code == 422)
+    else:
+        print(f"  (skipped: fixture did not open — {r.status_code})")
+
     print("== hidden entries ==")
     check("AppleDouble twins are hidden", places.is_hidden(music / "._one.flac"))
     check("OS housekeeping is hidden", places.is_hidden(music / ".Trashes"))

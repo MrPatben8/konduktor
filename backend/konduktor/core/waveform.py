@@ -173,7 +173,18 @@ def _frames(y: np.ndarray, lead: float) -> Frames:
 
 def analyse(path: Path, *, n_columns: int = 400, lead: float = 0.0) -> Analysis | None:
     """Decode `path` once and measure both resolutions; None if undecodable."""
-    y = _decode(path)
+    return analyse_samples(decode(path), n_columns=n_columns, lead=lead)
+
+
+def decode(path: Path) -> np.ndarray | None:
+    """Mono float32 at `SR` — the same samples `analyse` measures, for a caller
+    that needs them for something else too (grid detection runs at `SR`)."""
+    return _decode(path)
+
+
+def analyse_samples(y: np.ndarray | None, *, n_columns: int = 400,
+                    lead: float = 0.0) -> Analysis | None:
+    """`analyse` on samples already decoded by `decode`."""
     if y is None or len(y) < max(n_columns, N_FFT):
         return None
     return Analysis(columns=_columns(y, n_columns), frames=_frames(y, lead))

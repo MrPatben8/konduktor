@@ -340,9 +340,23 @@ def run(
                 cues = source.track_cues(planned.track_id)
             except Exception:  # noqa: BLE001 — prep is a bonus, not a blocker
                 log.debug("could not read cues for %s", planned.track_id, exc_info=True)
-            items.append(NewTrack(track=track, audio_path=target, cues=cues))
+            art = None
+            cover_art = getattr(source, "cover_art", None)
+            if cover_art is not None:
+                try:
+                    art = cover_art(planned.track_id)
+                except Exception:  # noqa: BLE001 — art is a bonus too
+                    log.debug("could not read art for %s", planned.track_id, exc_info=True)
+            items.append(NewTrack(track=track, audio_path=target, cues=cues, art=art))
 
-        new_ids = dest.add_tracks(items)
+        def checkpoint(message: str, *, step: int, of: int) -> None:
+            # A platform that analyses what it adds (Rekordbox) is slow here,
+            # and calls this before touching the library — so a cancel still
+            # leaves it untouched and the copies are cleaned up below.
+            handle.raise_if_cancelled()
+            handle.progress(done=step - 1, total=of, message=message)
+
+        new_ids = dest.add_tracks(items, checkpoint=checkpoint)
         by_source = {
             planned.track_id: new_id
             for (planned, _), new_id in zip(copied, new_ids)

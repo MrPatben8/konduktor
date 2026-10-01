@@ -202,6 +202,52 @@ with tempfile.TemporaryDirectory() as d:
     changes = diff(before, dump(work))
     check("an unsaved edit has written nothing to disk", not changes, describe(changes))
 
+    # ---- D2: the same for a playlist that already has entries -------------
+    # pyrekordbox's `remove_from_playlist` COMMITS, so replacing a non-empty
+    # list once wrote to disk at once — and raised while Rekordbox was running.
+    print("== D2: replacing a playlist's entries is held until save too ==")
+    from pyrekordbox.masterdb import database as rb_database  # noqa: E402
+
+    clean_copy(REAL, work, closing=[adapter])
+    before = dump(work)
+    adapter = RekordboxAdapter(work)
+    filled = next((p for p in adapter.playlist_tree()
+                   if p.kind == "playlist" and len(adapter.playlist_entries(p.id) or []) > 1),
+                  None)
+    if filled is None:
+        print("  (skipped: no playlist with two entries)")
+    else:
+        original = adapter.playlist_entries(filled.id)
+        edited = list(reversed(original))[:-1]  # reorder AND drop one
+        adapter.set_playlist_entries(filled.id, edited)
+        check("the projection shows the new order",
+              adapter.playlist_entries(filled.id) == edited)
+        changes = diff(before, dump(work))
+        check("nothing is on disk before save", not changes, describe(changes))
+        adapter.reload()
+        check("discarding restores the original entries",
+              adapter.playlist_entries(filled.id) == original)
+        real_probe = rb_database.get_rekordbox_pid
+        rb_database.get_rekordbox_pid = lambda: 4242  # "Rekordbox is running"
+        try:
+            adapter.set_playlist_entries(filled.id, edited)
+            check("an edit while Rekordbox runs does not fail", True)
+        except Exception as ex:  # noqa: BLE001
+            check("an edit while Rekordbox runs does not fail", False, repr(ex))
+        finally:
+            rb_database.get_rekordbox_pid = real_probe
+        adapter.reload()
+        adapter.set_playlist_entries(filled.id, edited)
+        adapter.save()
+        adapter.close()
+        adapter = RekordboxAdapter(work)
+        check("after save the new entries are on disk",
+              adapter.playlist_entries(filled.id) == edited)
+        changes = diff(before, dump(work))
+        check("and nothing outside the playlist's rows and the counter changed",
+              {t for t, _, _, _ in changes} <= {"djmdSongPlaylist", "agentRegistry"},
+              describe(changes))
+
     # ---- E: playlist edits -----------------------------------------------
     print("== E: a playlist round-trips ==")
     clean_copy(REAL, work, closing=[adapter])
@@ -507,6 +553,188 @@ with tempfile.TemporaryDirectory() as d:
         check("and the whole batch changed nothing",
               adapter.dirty is False and adapter.track(target) is not None)
         adapter.close()
+
+    # ---- J: adding tracks writes what Rekordbox 7 itself writes ------------
+    # Measured 2026-10-01 by dragging two files into Rekordbox and diffing: a
+    # djmdContent row filled from the FILE, analysis files + artwork under
+    # share/, and one contentFile row per file whose Hash is its MD5. A plain
+    # file gets Konduktor's own grid (decided 2026-10-01); one that brings a
+    # grid keeps it, and its cues cross as themselves.
+    print("== J: adding tracks writes rows and files the way Rekordbox does ==")
+    import hashlib  # noqa: E402
+
+    import av  # noqa: E402
+    import numpy as np  # noqa: E402
+    from konduktor.core.adapter import InvalidCommand, NewTrack  # noqa: E402
+    from konduktor.core.model import CuePoint, GridMarker, Track, TrackCues  # noqa: E402
+
+    BPM, FIRST, SR = 128.0, 0.5, 44100
+
+    def kick_mp3(path: Path, seconds: float = 30.0) -> Path:
+        """A kick every beat at BPM from FIRST — a grid with a known answer."""
+        n = int(seconds * SR)
+        y = np.zeros(n, dtype=np.float32)
+        t = np.arange(int(0.12 * SR)) / SR
+        kick = (np.sin(2 * np.pi * 55 * t) * np.exp(-t * 30)).astype(np.float32)
+        beat = FIRST
+        while beat < seconds - 0.2:
+            i = int(beat * SR)
+            y[i:i + len(kick)] += kick[: n - i]
+            beat += 60.0 / BPM
+        x = np.vstack([y, y]) * 0.8
+        with av.open(str(path), "w", format="mp3") as c:
+            s = c.add_stream("libmp3lame", rate=SR, layout="stereo")
+            s.bit_rate = 320_000
+            step = s.codec_context.frame_size or 1152
+            for i in range(0, n, step):
+                f = av.AudioFrame.from_ndarray(np.ascontiguousarray(x[:, i:i + step]),
+                                               format="fltp", layout="stereo")
+                f.sample_rate, f.pts = SR, i
+                for p in s.encode(f):
+                    c.mux(p)
+            for p in s.encode(None):
+                c.mux(p)
+        return path
+
+    def jpeg() -> bytes:
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (300, 200), (200, 40, 90)).save(buf, "JPEG")
+        return buf.getvalue()
+
+    audio_dir = Path(d) / "added"
+    audio_dir.mkdir()
+    plain = kick_mp3(audio_dir / "plain.mp3")
+    prepped = kick_mp3(audio_dir / "prepped.mp3")
+    from mutagen.id3 import APIC, ID3  # noqa: E402
+    tags = ID3()
+    tags.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="", data=jpeg()))
+    tags.save(str(plain))   # embedded art: read off the file
+
+    cues = TrackCues(
+        grid_markers=[GridMarker(start=0.75, bpm=125.0)],  # the source's own grid
+        cues=[
+            CuePoint(role="hotcue", slot=0, start=2.0, length=0.0, color="#FF0000"),
+            CuePoint(role="hotcue", slot=2, start=6.0, length=4.0, name="Loop"),
+            CuePoint(role="memory", slot=None, start=9.0, length=0.0),
+        ],
+    )
+    items = [
+        NewTrack(track=Track(id="src:1", title="Konduktor Add Plain",
+                             artist="Konduktor Add Artist", release_date="2021-03-04"),
+                 audio_path=plain),
+        NewTrack(track=Track(id="src:2", title="Konduktor Add Prepped",
+                             key_wheel=10, key_mode="minor"),
+                 audio_path=prepped, cues=cues, art=(jpeg(), "image/jpeg")),
+    ]
+
+    clean_copy(REAL, work)
+    before = dump(work)
+    share_before = {p for p in (Path(d) / "share").rglob("*") if p.is_file()}
+
+    adapter = RekordboxAdapter(work)
+    calls = []
+
+    def cancel(message, *, step, of):
+        calls.append((step, of))
+        if step == 2:
+            raise RuntimeError("cancelled")
+
+    try:
+        adapter.add_tracks(items, checkpoint=cancel)
+        check("a raising checkpoint cancels", False)
+    except RuntimeError:
+        check("a raising checkpoint cancels", True)
+    check("before touching the library", adapter.dirty is False
+          and len(adapter.tracks) == len(before["djmdContent"]), str(calls))
+
+    steps = []
+    ids = adapter.add_tracks(items, checkpoint=lambda m, *, step, of: steps.append((step, of)))
+    check("each file is a checkpoint", steps == [(1, 2), (2, 2)], str(steps))
+    check("two ids come back, in order", len(ids) == 2 and all(adapter.track(i) for i in ids))
+    check("the projection has them at once",
+          [adapter.track(i).title for i in ids] == ["Konduktor Add Plain", "Konduktor Add Prepped"])
+    check("nothing is on disk before save", not diff(before, dump(work)))
+    check("no file is written before save",
+          {p for p in (Path(d) / "share").rglob("*") if p.is_file()} == share_before)
+    try:
+        adapter.add_tracks([items[0]])
+        check("adding a file the library holds is refused", False)
+    except InvalidCommand:
+        check("adding a file the library holds is refused", True)
+    adapter.save()
+
+    changes = diff(before, dump(work))
+    new_rows = {t for t, _, kind, _ in changes if kind == "INSERT"}
+    check("only new rows, plus the counter",
+          {(t, kind) for t, _, kind, _ in changes} - {(t, "INSERT") for t in new_rows}
+          == {("agentRegistry", "UPDATE")}, describe(changes))
+    check("into the tables Rekordbox writes for a new track",
+          new_rows <= {"djmdContent", "djmdCue", "contentCue", "contentFile",
+                       "djmdArtist", "djmdKey"}, str(sorted(new_rows)))
+    after = dump(work)
+    rows = {i: after["djmdContent"][i] for i in ids}
+    plain_row, prepped_row = rows[ids[0]], rows[ids[1]]
+    check("the row is filled from the file",
+          plain_row["SampleRate"] == SR and plain_row["BitRate"] == 320
+          and plain_row["Length"] == 30 and plain_row["FileSize"] == plain.stat().st_size,
+          str({k: plain_row[k] for k in ("SampleRate", "BitRate", "Length", "FileSize")}))
+    check("stamped with this library's device",
+          plain_row["DeviceID"] == next(iter(before["djmdContent"].values()))["DeviceID"])
+    check("the release year is kept", plain_row["ReleaseYear"] == 2021)
+    check("the key is rendered, not copied", prepped_row["KeyID"] is not None)
+    files: dict[str, list] = {}
+    for r in after["contentFile"].values():
+        files.setdefault(str(r["ContentID"]), []).append(r)
+    for tid, label in ((ids[0], "plain"), (ids[1], "prepped")):
+        listed = files.get(tid, [])
+        paths = sorted(Path(r["Path"]).name for r in listed)
+        check(f"{label}: contentFile lists its analysis and artwork",
+              paths == ["ANLZ0000.2EX", "ANLZ0000.DAT", "ANLZ0000.EXT", "artwork.jpg"], str(paths))
+        on_disk = [Path(d) / "share" / r["Path"].lstrip("/") for r in listed]
+        check(f"{label}: each Hash is the file's MD5 and Size its size",
+              all(p.is_file() and r["Hash"] == hashlib.md5(p.read_bytes()).hexdigest()
+                  and r["Size"] == p.stat().st_size for p, r in zip(on_disk, listed)))
+        art_dir = (Path(d) / "share" / rows[tid]["ImagePath"].lstrip("/")).parent
+        check(f"{label}: artwork in three sizes",
+              sorted(p.name for p in art_dir.iterdir())
+              == ["artwork.jpg", "artwork_m.jpg", "artwork_s.jpg"])
+    adapter.close()
+
+    reopened = RekordboxAdapter(work)
+    plain_cues = reopened.track_cues(ids[0])
+    markers = plain_cues.grid_markers if plain_cues else []
+    check("a plain file gets Konduktor's grid", len(markers) == 1
+          and abs(markers[0].bpm - BPM) < 0.05, str(markers))
+    if markers:
+        period = 60.0 / BPM
+        off = (markers[0].start - FIRST) % period
+        check("on the kick, in the decoded time base",
+              min(off, period - off) < 0.015, f"{markers[0].start:.4f}")
+    check("and its BPM column", rows[ids[0]]["BPM"] == 12800, str(rows[ids[0]]["BPM"]))
+    got = reopened.track_cues(ids[1])
+    check("a source's grid is kept as it was",
+          got and [(round(m.start, 3), m.bpm) for m in got.grid_markers] == [(0.75, 125.0)],
+          str(got.grid_markers if got else None))
+    by_role = {(c.role, c.slot): c for c in (got.cues if got else [])}
+    hot = by_role.get(("hotcue", 0))
+    check("a hot cue keeps its pad and position",
+          hot is not None and abs(hot.start - 2.0) < 0.002, str(hot))
+    check("and its colour, as a palette swatch", hot is not None and hot.color is not None)
+    loop = by_role.get(("hotcue", 2))
+    check("a loop stays a loop on its pad",
+          loop is not None and loop.type == "loop" and abs(loop.length - 4.0) < 0.002, str(loop))
+    memory = [c for c in (got.cues if got else []) if c.role == "memory"]
+    check("a memory cue stays a memory cue",
+          len(memory) == 1 and abs(memory[0].start - 9.0) < 0.002, str(memory))
+
+    # Removing an added track takes its analysis files with it.
+    dat = Path(d) / "share" / rows[ids[0]]["AnalysisDataPath"].lstrip("/")
+    reopened.remove_tracks([ids[0]])
+    reopened.save()
+    check("removing it again deletes its analysis files", not dat.exists())
+    reopened.close()
 
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

@@ -63,6 +63,9 @@ class TrackCapabilities(BaseModel):
     # Tracks can be removed from the library (and so from its playlists). The
     # audio file is never touched either way.
     removable: bool = False
+    # Tracks can be added to the library (`add_tracks`): an import from a
+    # device, or browsed files added to the collection.
+    addable: bool = False
     # Tracks can be converted to native-instruments STEM files, which this
     # platform plays as stems (`apply_stem_swaps`).
     stem_convertible: bool = False

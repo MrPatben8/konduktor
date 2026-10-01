@@ -404,13 +404,18 @@ def cue_tags(cues: list[dict], *, extended: bool) -> list[bytes]:
 _FILE_HEADER_LEN = 28
 
 
-def write_anlz(path: Path, tags: list[bytes]) -> Path:
-    """Assemble and write an ANLZ file from built tag bytes."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+def anlz_bytes(tags: list[bytes]) -> bytes:
+    """Assemble an ANLZ file from built tag bytes."""
     body = b"".join(tags)
     header = struct.pack(
         ">4sIIIIII", b"PMAI", _FILE_HEADER_LEN, _FILE_HEADER_LEN + len(body),
         FILE_HEADER_U1, FILE_HEADER_U2, FILE_HEADER_U3, 0,
     )
-    path.write_bytes(header + body)
+    return header + body
+
+
+def write_anlz(path: Path, tags: list[bytes]) -> Path:
+    """Assemble and write an ANLZ file from built tag bytes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(anlz_bytes(tags))
     return path

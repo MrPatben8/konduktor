@@ -51,6 +51,33 @@ from .cue_types import beat_loop_size, kind_for, role_and_slot
 
 log = logging.getLogger(__name__)
 
+
+def _file_facts(audio: Path) -> dict:
+    """What Rekordbox reads off the file itself for a new track's row."""
+    from datetime import date
+
+    out: dict = {}
+    try:
+        st = audio.stat()
+        born = getattr(st, "st_birthtime", None) or st.st_mtime
+        out["created"] = date.fromtimestamp(born)
+    except OSError:
+        pass
+    try:
+        import mutagen
+
+        info = mutagen.File(str(audio)).info
+        out["length"] = int(round(info.length)) if info.length else None
+        if getattr(info, "bitrate", None):
+            out["bitrate"] = int(round(info.bitrate / 1000))   # kbps, as Rekordbox stores it
+        if getattr(info, "sample_rate", None):
+            out["sample_rate"] = int(info.sample_rate)
+        if getattr(info, "bits_per_sample", None):
+            out["bit_depth"] = int(info.bits_per_sample)
+    except Exception:  # noqa: BLE001 — facts are a nicety; the row stands without them
+        log.debug("could not read %s", audio, exc_info=True)
+    return out
+
 # Where a track's analysis files live, as `contentFile.Path` spells it.
 _ANLZ_ROOT = "/PIONEER/USBANLZ/"
 
@@ -97,6 +124,9 @@ class RekordboxStore:
         # Analysis/artwork files of removed tracks, `share`-relative, deleted
         # by save() AFTER the commit — a failed commit must leave them in place.
         self._pending_file_removals: set[str] = set()
+        # Files of ADDED tracks, `share`-relative path -> bytes, written by
+        # save() BEFORE the commit (and removed again if it fails).
+        self._pending_new_files: dict[str, bytes] = {}
         self._load()
 
     # ---- open ------------------------------------------------------------
@@ -130,6 +160,7 @@ class RekordboxStore:
         self._journal = EditJournal()
         self._pending_grids.clear()
         self._pending_file_removals.clear()
+        self._pending_new_files.clear()
         self._load()
 
     def close(self) -> None:
@@ -532,12 +563,139 @@ class RekordboxStore:
             .filter(t.DjmdSongPlaylist.PlaylistID == str(node_id))
             .all()
         )
+        # NOT `remove_from_playlist`: it commits, which wrote an unsaved edit
+        # to disk (beyond Discard's reach) and raised while Rekordbox ran.
+        # The list is rebuilt from 1 below, so no renumbering is needed.
         for song in existing:
-            self._db.remove_from_playlist(playlist, song)
+            self._db.delete(song)
+        self._db.flush()
         for n, track_id in enumerate(track_ids, start=1):
             self._db.add_to_playlist(playlist, str(track_id), track_no=n)
         self._journal.record("playlist", "entries", playlist.Name, after=len(track_ids))
         return len(track_ids)
+
+    # ---- writes: adding tracks ---------------------------------------------
+    #
+    # MEASURED, by dragging two files into Rekordbox 7.2's collection and
+    # diffing (2026-10-01): see `new_content`. Rekordbox fills the row from the
+    # FILE (size, sample rate, bit rate, and `DateCreated` from the file's
+    # creation date), stamps it with this library's device, and lists every
+    # file it writes for the track in `contentFile` with the file's MD5.
+    def add_track(self, audio: Path, track, *, measured, with_grid: bool,
+                  art: bytes | None) -> str:
+        """Add one track's row, return its id. Its analysis files and artwork
+        are held until save(); its grid and cues are the caller's to replay
+        through the ordinary commands. `with_grid` reserves an empty `PQTZ`
+        in the `.DAT` for `replace_grid` to fill."""
+        from . import new_content
+        from .projection import render_key
+
+        audio = Path(audio)
+        if not audio.is_file():
+            raise InvalidCommand(f"No audio file at {audio}")
+        t = self._tables
+        if self._db.session.query(t.DjmdContent).filter_by(FolderPath=str(audio)).count():
+            raise InvalidCommand(f"The library already holds {audio}")
+        facts = _file_facts(audio)
+        content = self._db.add_content(
+            str(audio),
+            Title=track.title or audio.stem,
+            Length=facts.get("length") or track.length,
+            BitRate=facts.get("bitrate") or (int(track.bitrate / 1000) if track.bitrate else None),
+            SampleRate=facts.get("sample_rate"),
+            BitDepth=facts.get("bit_depth", 16),
+            Rating=track.rating or 0,
+            Commnt=track.comment or "",
+            ReleaseDate=track.release_date or "",
+        )
+        year = str(track.release_date or "")[:4]
+        if year.isdigit():
+            content.ReleaseYear = int(year)
+        if facts.get("created"):
+            content.DateCreated = facts["created"]
+        content.ArtistID = new_content.lookup(self._db, "artist", track.artist)
+        content.AlbumID = new_content.lookup(self._db, "album", track.album)
+        content.GenreID = new_content.lookup(self._db, "genre", track.genre)
+        content.LabelID = new_content.lookup(self._db, "label", track.label)
+        # Rendered from the wheel, never copied: the source's notation is not
+        # Rekordbox's ("10m" is "Cm" here).
+        content.KeyID = new_content.lookup(
+            self._db, "key", render_key(track.key_wheel, track.key_mode))
+        content.ContentLink = new_content.CONTENT_LINK
+
+        track_uuid = str(content.UUID)
+        rel = new_content.anlz_rel(track_uuid)
+        content.AnalysisDataPath = rel
+        content.Analysed = 105        # what a rekordbox-analysed track carries
+        content.AnalysisUpdated = 1
+        files = new_content.anlz_files(audio, measured, [] if with_grid else None)
+        for suffix, data in files.items():
+            self._pending_new_files[str(Path(rel).with_suffix(suffix))] = data
+        art_files = new_content.artwork_files(art)
+        if art_files:
+            folder = new_content.artwork_rel(track_uuid)
+            for name, data in art_files.items():
+                self._pending_new_files[f"{folder}/{name}"] = data
+            content.ImagePath = f"{folder}/artwork.jpg"
+        self._db.flush()
+
+        track_id = str(content.ID)
+        if self._content_cache is not None and self._by_id is not None:
+            self._content_cache.append(content)
+            self._by_id[track_id] = content
+        self._grid_cache.pop(track_id, None)
+        self._journal.record("track", "add", track_id)
+        return track_id
+
+    def _write_new_files(self) -> list[Path]:
+        """Write added tracks' files; return what was written."""
+        share = self.path.parent / "share"
+        written: list[Path] = []
+        try:
+            for rel, data in self._pending_new_files.items():
+                path = share / rel.lstrip("/")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                written.append(path)  # before the write: a partial file is cleaned too
+                path.write_bytes(data)
+        except BaseException:
+            for path in written:
+                path.unlink(missing_ok=True)
+            raise
+        return written
+
+    def _add_content_files(self, written: list[Path]) -> None:
+        """One `contentFile` row per file an added track carries, as Rekordbox
+        writes them: `Hash` is the file's MD5, and its `_m`/`_s` artwork sizes
+        are not listed."""
+        import hashlib
+        from urllib.parse import quote
+
+        t = self._tables
+        share = self.path.parent / "share"
+        by_folder = {}
+        for row in self.iter_content():
+            for rel in (row.AnalysisDataPath, row.ImagePath):
+                if rel:
+                    by_folder[str(Path(rel).parent)] = row
+        for path in written:
+            if path.name in ("artwork_m.jpg", "artwork_s.jpg"):
+                continue
+            rel = "/" + path.relative_to(share).as_posix()
+            row = by_folder.get(str(Path(rel).parent))
+            if row is None:
+                continue
+            self._db.add(t.ContentFile(
+                ID=f"{row.UUID}_{quote(rel, safe='')}",
+                ContentID=str(row.ID),
+                Path=rel,
+                Hash=hashlib.md5(path.read_bytes()).hexdigest(),
+                Size=path.stat().st_size,
+                rb_local_path=str(path),
+                UUID=str(uuid.uuid4()),
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
+            ))
+        self._db.flush()
 
     # ---- writes: removing tracks -------------------------------------------
     #
@@ -695,9 +853,19 @@ class RekordboxStore:
         """
         summary = self._journal.summary()
         # Files first: if an analysis file cannot be written, nothing should have
-        # been committed to the database either.
-        self._flush_grids()
-        self._commit()
+        # been committed to the database either. An added track's files go
+        # before the grids, which write into them, and their `contentFile`
+        # rows after, which hash what was finally written.
+        written = self._write_new_files()
+        try:
+            self._flush_grids()
+            self._add_content_files(written)
+            self._commit()
+        except BaseException:
+            for path in written:
+                path.unlink(missing_ok=True)
+            raise
+        self._pending_new_files.clear()
         self._delete_removed_files()
         self._journal.clear()
         # Reads go through the same session, so nothing needs re-projecting from

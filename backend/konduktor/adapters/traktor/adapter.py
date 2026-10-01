@@ -173,7 +173,7 @@ class TraktorAdapter:
         return result
 
     # ---- adding tracks ----------------------------------------------------
-    def add_tracks(self, items: list) -> list[str]:
+    def add_tracks(self, items: list, *, checkpoint=None) -> list[str]:
         """Add tracks that came from somewhere else, with their prep.
 
         Two steps, and the split is the point. The store creates a bare ENTRY —
@@ -195,6 +195,7 @@ class TraktorAdapter:
             type, so a free RGB value has nowhere to go.
 
         Returns the new track ids, in the order the items were given.
+        `checkpoint` is unused: nothing here is slow (Traktor analyses on load).
         """
         added: list[str] = []
         for item in items:

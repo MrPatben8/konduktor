@@ -877,7 +877,16 @@ serialization path.** It enforces:
   entries renumbered) plus, after the commit, its ANLZ files and their emptied
   folder. Artwork is left (unmeasured: `_m`/`_s` sizes are not in
   `contentFile`), and a track in a table that was empty when measured (Sampler,
-  History, Tag List, My Tag, …) is refused with nothing changed.
+  History, Tag List, My Tag, …) is refused with nothing changed. And **adding
+  tracks** (J) on generated kick-track MP3s: a raising `checkpoint` cancels
+  before the library is touched; nothing reaches disk before save; afterwards
+  only INSERTs (plus the counter) into the tables Rekordbox writes for a new
+  track, the row filled from the file and stamped with the library's device,
+  one `contentFile` per analysis file + `artwork.jpg` whose Hash is the MD5;
+  a plain file gets Konduktor's grid ON the kick, a source's grid, hot cue
+  (pad, colour), loop and memory cue cross as themselves; and removing it
+  deletes its analysis files. `test_folders.py` drives the same through
+  `/api/folder/add` on a Rekordbox copy, and a non-addable library 422s.
 - `test_onelibrary_adapter.py` — the third adapter against the same contract.
   Unlike the Rekordbox tests it needs **nothing installed and nothing plugged
   in**: it runs against `fixtures/onelibrary/`, a real rekordbox 7 export trimmed
@@ -1217,6 +1226,26 @@ that number and nothing else — everything derives from it:
     `AUDIO_ID` and `LOUDNESS` are left empty — they are Traktor's own analysis
     outputs and cannot be computed; **verified that Traktor loads and plays such
     entries** and re-analyses them.
+    **Rekordbox implements it too** (2026-10-01; gated on `tracks.addable`,
+    which the folder menu, the folder header and the device Import button read
+    from the COLLECTION's capabilities). Unlike Traktor it must ANALYSE: a
+    Rekordbox grid and waveform live in the ANLZ files, without which Rekordbox
+    shows neither grid nor cues. So `add_tracks` decodes each file once
+    (`waveform.decode` → `analyse_samples` + `grid_detect`), in a first phase
+    that may be cancelled through `checkpoint` before the library is touched;
+    a file with no grid of its own gets Konduktor's (decided: arrive ready to
+    prep). Then `RekordboxStore.add_track` writes the row the way Rekordbox's
+    own add was MEASURED to (file facts, `DateCreated` from the file's birth
+    time, this library's device) and the grid/cues replay through
+    `replace_grid`/`set_cue`/`add_memory_cue` — memory cues and colours cross
+    as themselves, a hot cue with no free pad becomes a memory cue. Its ANLZ
+    files and artwork (`NewTrack.art`, else the file's embedded cover) are
+    held until save and written BEFORE the grids and commit, then
+    `contentFile` rows hash what was written (`_m`/`_s` unlisted, as
+    Rekordbox does); a failed save removes them. Key, mixer gain and phrases
+    are Rekordbox's own analysis and are not written. The row and file
+    builders live in `adapters/rekordbox/new_content.py`, shared with the
+    Rekordbox Library exporter.
   - **`jobs.py` + `importer.py`** — the app's first long-running operation.
     Thread per job, polling, cooperative cancel; deliberately not asyncio or SSE.
     **Ordering is the safety property**: audio copies first and the library is
