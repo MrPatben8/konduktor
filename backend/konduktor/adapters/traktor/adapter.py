@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
-from ...core.adapter import InvalidCommand, NotFound, Unsupported
+from ...core.adapter import InvalidCommand, NotFound, Unsupported, local_audio_facts
 from ...core.capabilities import Capabilities
 from ...core.model import PlaylistNode, Track, TrackCues
 from ...core.pathmap import PathMapping
@@ -377,11 +377,21 @@ class TraktorAdapter:
     def audio_path(self, track_id: str):
         return self._store.audio_path(track_id)
 
+    def audio_facts(self, track_ids: list[str]):
+        return local_audio_facts(self, track_ids)
+
     def set_path_mapping(self, mapping: PathMapping) -> None:
         self._store.set_path_mapping(mapping)
 
     def set_session_mappings(self, mappings: list[PathMapping]) -> None:
         self._store.set_session_mappings(mappings)
+
+    def set_write_stored_paths(self, enabled: bool) -> None:
+        """OPTIONAL: write a file added through the path mapping in the
+        library's STORED form (see `pathmap.stored_form`). A Konduktor server
+        holding a collection made on another computer turns this on, so a
+        track uploaded there is stored as that computer would have stored it."""
+        self._store.set_write_stored_paths(enabled)
 
     def unresolved_path_groups(self) -> list[PathGroup]:
         return self._store.unresolved_path_groups()
@@ -404,6 +414,12 @@ class TraktorAdapter:
     @property
     def dirty(self) -> bool:
         return self._store.dirty
+
+    def edit_summary(self) -> str:
+        """OPTIONAL: this session's unsaved edits in one line ("edited 3
+        tracks; added 6 hotcues") — what a server tells the next computer to
+        open the library about the edits it is inheriting."""
+        return self._store._edit_summary()
 
     def save(self):
         outcome = self._store.save()

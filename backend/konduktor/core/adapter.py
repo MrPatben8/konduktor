@@ -65,6 +65,58 @@ class SaveOutcome:
     tag_results: list = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class AudioFacts:
+    """One track's audio file as its library's host sees it — WITHOUT reading it.
+
+    `key` is the file's path on the machine that holds it (a string, because on
+    a remote library that is not this machine), `size` and `mtime_ns` its stat.
+    Together they name one version of one file: what an export's manifest
+    records, what the analysis cache keys on, and how a downloaded copy is
+    recognised. Callers that only need a file's IDENTITY ask for these rather
+    than `audio_path`, which on a remote library means downloading it.
+    """
+
+    key: str
+    size: int
+    mtime_ns: int
+
+
+def local_audio_facts(adapter, track_ids) -> dict[str, AudioFacts]:
+    """`audio_facts` for a library whose files are on this machine: stat each
+    `audio_path`. A track whose file is missing is left out."""
+    out: dict[str, AudioFacts] = {}
+    for track_id in track_ids:
+        try:
+            path = adapter.audio_path(track_id)
+            if path is None:
+                continue
+            st = Path(path).stat()
+        except (OSError, AdapterError):
+            continue
+        if not Path(path).is_file():
+            continue
+        out[track_id] = AudioFacts(key=str(path), size=st.st_size, mtime_ns=st.st_mtime_ns)
+    return out
+
+
+@dataclass
+class PreparedAnalysis:
+    """What adding a track would otherwise decode the file to learn.
+
+    A platform that must ANALYSE what it adds (Rekordbox: the waveform and grid
+    live in its ANLZ files) decodes each file in `add_tracks`. When the library
+    lives on a server that never decodes audio, the client does that work on
+    its own copy and the result travels with the track. `measured` is a
+    `core.waveform.Analysis` measured with the file's own time-base lead, and
+    `markers` the detected grid (empty: none found). Absent, the adapter
+    decodes as before.
+    """
+
+    measured: object
+    markers: list = field(default_factory=list)
+
+
 @dataclass
 class NewTrack:
     """A track to ADD to a library, described generically.
@@ -93,6 +145,9 @@ class NewTrack:
     # For a platform that keeps its own copy of the art (Rekordbox); one that
     # reads the file's tags (Traktor) ignores it.
     art: tuple[bytes, str] | None = None
+    # Precomputed analysis for a platform that would otherwise decode the file
+    # (see `PreparedAnalysis`); ignored by one that does not analyse.
+    analysis: PreparedAnalysis | None = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +208,11 @@ class Unsupported(AdapterError):
     """The platform cannot represent this edit at all."""
 
 
+class Unavailable(AdapterError):
+    """The library's host cannot be reached, or no longer lets this computer
+    write (a library held by a server, taken over by another computer)."""
+
+
 @runtime_checkable
 class LibraryAdapter(Protocol):
     """One open library. Stateful; exactly one is loaded at a time."""
@@ -172,6 +232,7 @@ class LibraryAdapter(Protocol):
     def facets(self) -> Facets: ...
     def stats(self, playlist_count: int) -> Stats: ...
     def playlist_tree(self) -> list[PlaylistNode]: ...
+    def playlist_count(self) -> int: ...
     def playlist_entries(self, node_id: str) -> list[str] | None: ...
     def playlist_tracks(self, node_id: str) -> list[Track] | None: ...
     def track_cues(self, track_id: str) -> TrackCues | None: ...
@@ -256,7 +317,12 @@ class LibraryAdapter(Protocol):
     def set_grid_lock(self, track_id: str, locked: bool) -> TrackCues: ...
 
     # ---- audio / paths ---------------------------------------------------
+    # A READABLE file on this machine — which, for a library held by a server,
+    # means downloading it. Anything that only needs to know WHICH file a track
+    # is (an export plan, "is this already in the library?") asks `audio_facts`
+    # instead, which never reads the file and never downloads.
     def audio_path(self, track_id: str) -> Path | None: ...
+    def audio_facts(self, track_ids: list[str]) -> dict[str, AudioFacts]: ...
     def set_path_mapping(self, mapping: PathMapping) -> None: ...
     # The open-time missing-files check (`core/relocate.py`): the stored volumes
     # in which NO track resolves, and the mappings the user confirmed for them —

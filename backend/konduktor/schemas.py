@@ -187,6 +187,8 @@ class EditState(BaseModel):
     stem_job: str | None = None
     # What this open's crash recovery did about an interrupted conversion.
     stem_recovery: dict | None = None
+    # A remote library's connection: {state, via, machine}. None when local.
+    remote: dict | None = None
 
 
 # ---- collection selection ----
@@ -200,10 +202,32 @@ class CollectionStatus(BaseModel):
     # Identity of the loaded library, so the UI can name it without parsing the
     # path (a Serato library is a directory, not a file).
     library: LibraryInfo | None = None
+    # Opening a remote library: the unsaved edits another computer left there,
+    # {machine, summary} — the user chooses to save or discard them.
+    pending_edits: dict | None = None
 
 
 class OpenCollection(BaseModel):
     path: str
+
+
+class RemoteIn(BaseModel):
+    """A remote's settings as the picker's form sends them. `password` may be
+    omitted on an edit, which keeps the saved one."""
+
+    name: str
+    host: str
+    port: int | None = None
+    fallback_host: str | None = None
+    fallback_port: int | None = None
+    username: str
+    password: str | None = None
+
+
+class OpenRemote(BaseModel):
+    remote_id: str
+    # Take the session from the computer holding it (the user confirmed).
+    takeover: bool = False
 
 
 class CollectionCandidate(BaseModel):

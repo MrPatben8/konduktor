@@ -1,6 +1,6 @@
 import { createPortal } from 'react-dom'
 import { useState } from 'react'
-import { FileBrowser, useFsListing } from './FileBrowser'
+import { FileBrowser, useFsListing, type Listing } from './FileBrowser'
 
 /**
  * Pick a FOLDER, by browsing.
@@ -15,16 +15,18 @@ interface Props {
   value: string
   onChange: (path: string) => void
   onClose: () => void
+  /** Whose folders: this computer's, or the server's holding a remote library. */
+  listing?: Listing
 }
 
-export function FolderPicker({ value, onChange, onClose }: Props) {
+export function FolderPicker({ value, onChange, onClose, listing = 'host' }: Props) {
   // `undefined` means "wherever the server thinks home is" — the picker does not
   // need to know that path to open on it.
   const [dir, setDir] = useState<string | undefined>(value || undefined)
   const [newFolder, setNewFolder] = useState('')
   // Shares FileBrowser's query, so "where am I" cannot disagree with what is
   // on screen — and the confirm row below needs it to name its target.
-  const here = useFsListing(dir).data?.path ?? ''
+  const here = useFsListing(dir, undefined, listing).data?.path ?? ''
 
   const confirm = () => {
     onChange(newFolder.trim() ? `${here}/${newFolder.trim()}` : here)
@@ -40,6 +42,7 @@ export function FolderPicker({ value, onChange, onClose }: Props) {
 
         <FileBrowser
           mode="directory"
+          listing={listing}
           path={dir}
           onNavigate={setDir}
           footer={

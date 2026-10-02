@@ -114,6 +114,50 @@ jobs:
           if-no-files-found: error
           path: installer/*
 
+  # The Konduktor SERVER image (server/Dockerfile): a remote library's half,
+  # pushed to GHCR with the same version as the desktop app, so a TrueNAS app
+  # can name the tag that matches the app it is opened from.
+  server-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push to ghcr.io
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version and image name
+        id: meta
+        run: |
+          echo "version=$(jq -r .version frontend/package.json)" >> "$GITHUB_OUTPUT"
+          # GHCR names must be lower-case; the owner may not be.
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/konduktor-server" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}-b${{ github.run_number }}
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.image }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+
   # Gather both platforms' installers and publish them as a single new Release.
   # Runs once, after both builds succeed, so the two matrix jobs never race to
   # create the same tag/release.

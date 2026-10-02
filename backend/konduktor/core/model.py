@@ -194,6 +194,9 @@ class LibraryInfo(BaseModel):
     path: str
     display_name: str  # short label for the status bar
     version: str | None = None
+    # Set when the library is held by a server: {id, name, via} of the saved
+    # remote it was opened through. None for a library on this computer.
+    remote: dict | None = None
 
 
 class PlatformOption(BaseModel):
@@ -208,7 +211,7 @@ class PlatformOption(BaseModel):
     platform: str
     name: str
     library_label: str
-    selects: Literal["file", "directory"] = "file"
+    selects: Literal["file", "directory", "remote"] = "file"
     installed: bool = False
     #: How many libraries this platform has right now; `installed` is `found > 0`.
     found: int = 0

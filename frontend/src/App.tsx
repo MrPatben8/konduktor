@@ -621,7 +621,44 @@ export default function App() {
     notify(n ? 'success' : 'error', text, details)
   }
   // A conversion keeps running if the page reloads; find it again.
-  const editState = useQuery({ queryKey: ['state'], queryFn: api.state, enabled: loaded, retry: false })
+  const isRemote = !!collection.data?.library?.remote
+  const editState = useQuery({
+    queryKey: ['state'],
+    queryFn: api.state,
+    enabled: loaded,
+    retry: false,
+    // A remote library's connection changes on its own (another computer
+    // takes over, the server drops off the network), so it is polled; a local
+    // library's state changes only when this app changes it.
+    refetchInterval: isRemote ? 5000 : false,
+  })
+  const remoteState = editState.data?.remote?.state ?? null
+  const remoteShown = useRef<string | null>(null)
+  useEffect(() => {
+    const previous = remoteShown.current
+    remoteShown.current = remoteState
+    if (!remoteState || previous === remoteState || previous === null) return
+    // What the library will accept changed with it: re-read, so the UI gates
+    // itself (read-only while taken over or offline) — never offers an edit.
+    qc.invalidateQueries({ queryKey: ['capabilities'] })
+    const who = editState.data?.remote?.machine
+    if (remoteState === 'taken_over')
+      notify('warning', `${who || 'Another computer'} took over this library — it is read-only here now`)
+    else if (remoteState === 'offline') notify('warning', 'The server cannot be reached — read-only until it is back')
+    else if (remoteState === 'connected' && previous !== 'reconnecting') notify('success', 'Reconnected to the server')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remoteState])
+  const remoteNotices = editState.data?.remote?.notices ?? 0
+  const noticesShown = useRef(0)
+  useEffect(() => {
+    if (remoteNotices <= noticesShown.current) return
+    noticesShown.current = remoteNotices
+    const text = editState.data?.remote?.notice
+    if (text) notify('warning', text)
+    // Re-read: the server's library is what it is now, not what this tab holds.
+    qc.invalidateQueries()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remoteNotices])
   useEffect(() => {
     const id = editState.data?.stem_job
     if (id && !batchJob) setBatchJob({ id, kind: 'stems' })
@@ -1499,6 +1536,7 @@ export default function App() {
               : null
         }
         loading={loading}
+        connection={editState.data?.remote ?? null}
         collectionName={capabilities.data ? libraryName : null}
         onChangeCollection={() => {
           // The same question the sidebar header asks: this button used to

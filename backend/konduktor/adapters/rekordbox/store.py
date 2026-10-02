@@ -46,7 +46,7 @@ from ...core.adapter import (
 )
 from ...core.edit_journal import EditJournal
 from ...core.grid_edit import ReplaceGridCommands
-from ...core.pathmap import PathMapping
+from ...core.pathmap import PathMapping, stored_form
 from . import timebase
 from .cue_types import beat_loop_size, kind_for, role_and_slot
 
@@ -117,6 +117,8 @@ class RekordboxStore(ReplaceGridCommands):
     def __init__(self, path: Path):
         self.path = Path(path)
         self._mapping = PathMapping()
+        # Write an added file in the library's STORED form (`pathmap.stored_form`).
+        self._write_stored_paths = False
         self._grid_cache: dict[str, tuple[list[float], list[float], list[int]] | None] = {}
         self._journal = EditJournal()
         # Grid edits buffered until save(): ANLZ files are written to disk, so
@@ -375,6 +377,14 @@ class RekordboxStore(ReplaceGridCommands):
     def set_path_mapping(self, mapping: PathMapping) -> None:
         self._mapping = mapping or PathMapping()
 
+    def set_write_stored_paths(self, enabled: bool) -> None:
+        self._write_stored_paths = bool(enabled)
+
+    def _stored(self, audio: Path) -> Path:
+        if not self._write_stored_paths:
+            return Path(audio)
+        return stored_form(Path(audio), [self._mapping])
+
     def is_stem(self, track_id: str) -> bool:
         """Whether the track's FILE is a native-instruments stem file — read
         from its contents (only `.m4a`/`.mp4` are opened, ~0.7 ms each), and
@@ -610,8 +620,10 @@ class RekordboxStore(ReplaceGridCommands):
         if not audio.is_file():
             raise InvalidCommand(f"No audio file at {audio}")
         t = self._tables
-        if self._db.session.query(t.DjmdContent).filter_by(FolderPath=str(audio)).count():
-            raise InvalidCommand(f"The library already holds {audio}")
+        stored = self._stored(audio)
+        for form in {str(audio), str(stored)}:
+            if self._db.session.query(t.DjmdContent).filter_by(FolderPath=form).count():
+                raise InvalidCommand(f"The library already holds {audio}")
         facts = _file_facts(audio)
         content = self._db.add_content(
             str(audio),
@@ -638,6 +650,10 @@ class RekordboxStore(ReplaceGridCommands):
         content.KeyID = new_content.lookup(
             self._db, "key", render_key(track.key_wheel, track.key_mode))
         content.ContentLink = new_content.CONTENT_LINK
+        if stored != audio:
+            # pyrekordbox reads the file where it IS; the row names it as the
+            # library stores every other path (the server's mapping, inverted).
+            content.FolderPath = str(stored)
 
         track_uuid = str(content.UUID)
         rel = new_content.anlz_rel(track_uuid)

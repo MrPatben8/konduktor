@@ -150,6 +150,11 @@ class FolderSource:
     def audio_path(self, track_id: str) -> Path | None:
         return Path(track_id) if track_id in self._by_id else None
 
+    def audio_facts(self, track_ids: list[str]):
+        from .adapter import local_audio_facts
+
+        return local_audio_facts(self, track_ids)
+
     def playlist_tree(self) -> list[PlaylistNode]:
         return []
 

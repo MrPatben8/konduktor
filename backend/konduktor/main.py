@@ -14,7 +14,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import __version__, exporter, exports, history, prefs
+from . import __version__, exporter, exports, prefs
 from .app_state import STATE
 from .core import auto_hotcues as ah
 from .core import grid_detect, structure
@@ -28,6 +28,7 @@ from .core.adapter import (
     LibraryAdapter,
     LibraryNotSupported,
     NotFound,
+    Unavailable,
     Unsupported,
 )
 from .core.capabilities import Capabilities
@@ -77,7 +78,9 @@ from .schemas import (
     ImportRequest,
     JobStatus,
     OpenCollection,
+    OpenRemote,
     OpenSource,
+    RemoteIn,
     PathMappingInfo,
     PlaylistNode,
     PrefixSuggestions,
@@ -137,7 +140,7 @@ def _adapter_error(_request, exc: AdapterError):
         InvalidCommand: 400,
         Unsupported: 422,
         LibraryNotSupported: 400,
-    }.get(type(exc), 400)
+    }.get(type(exc), 503 if isinstance(exc, Unavailable) else 400)
     return JSONResponse(status_code=status, content={"detail": str(exc)})
 
 
@@ -201,6 +204,171 @@ def collection_options(platform: str | None = None) -> CollectionOptions:
         detected=candidates,
         recent=recent,
     )
+
+
+# ---- remote libraries ----------------------------------------------------------
+# A library held by a Konduktor server (a container on the user's NAS), opened
+# from the picker's "Remote" step. The saved remotes are this computer's; the
+# password is in the OS keychain (`adapters/remote/config.py`).
+
+
+def _remote_out(remote) -> dict:
+    out = remote.public()
+    out["has_password"] = bool(remote_cfg().password(remote.id))
+    return out
+
+
+def remote_cfg():
+    from .adapters.remote import config
+
+    return config
+
+
+def _checked_remote(body: RemoteIn, remote_id: str | None):
+    """Build the remote from the form and handshake every address. Refuses —
+    nothing saved — when an address answers but refuses (wrong password, a
+    version that cannot talk), or when none answers at all; an unreachable
+    FALLBACK alone is fine (a VPN address is often unreachable at home)."""
+    from .adapters import remote as remote_lib
+
+    config = remote_cfg()
+    host, port = config.split_host(body.host)
+    fallback, fallback_port = config.split_host(body.fallback_host or "")
+    previous = config.get(remote_id) if remote_id else None
+    password = body.password if body.password else (config.password(remote_id) if remote_id else None)
+    if not body.name.strip() or not host or not body.username.strip():
+        raise HTTPException(400, "A name, an address and a username are all needed")
+    if not password:
+        raise HTTPException(400, "Enter the server's password")
+    remote = config.Remote(
+        id=previous.id if previous else config.new_id(), name=body.name.strip(), host=host,
+        port=body.port or port, fallback_host=fallback or None,
+        fallback_port=(body.fallback_port or fallback_port) if fallback else None,
+        username=body.username.strip(),
+    )
+    results = remote_lib.handshake(remote, password)
+    refused = [r for r in results if r["kind"] in ("auth", "version", "other")]
+    if refused:
+        raise HTTPException(400, {"message": refused[0]["error"], "results": results})
+    if not any(r["ok"] for r in results):
+        raise HTTPException(400, {"message": results[0]["error"], "results": results})
+    return remote, password, results
+
+
+@app.get("/api/remotes")
+def list_remotes() -> list[dict]:
+    return [_remote_out(r) for r in remote_cfg().remotes()]
+
+
+@app.post("/api/remotes")
+def add_remote(body: RemoteIn) -> dict:
+    remote, password, results = _checked_remote(body, None)
+    config = remote_cfg()
+    config.set_password(remote.id, password)
+    config.save(remote)
+    return {"remote": _remote_out(remote), "results": results}
+
+
+@app.patch("/api/remotes/{remote_id}")
+def edit_remote(remote_id: str, body: RemoteIn) -> dict:
+    config = remote_cfg()
+    if config.get(remote_id) is None:
+        raise HTTPException(404, "No such remote")
+    remote, password, results = _checked_remote(body, remote_id)
+    config.set_password(remote.id, password)
+    config.save(remote)
+    return {"remote": _remote_out(remote), "results": results}
+
+
+@app.delete("/api/remotes/{remote_id}")
+def delete_remote(remote_id: str) -> dict:
+    if STATE.remote_config is not None and STATE.remote_config.id == remote_id:
+        raise HTTPException(409, "That remote is open — open another library first")
+    if not remote_cfg().delete(remote_id):
+        raise HTTPException(404, "No such remote")
+    return {"status": "deleted"}
+
+
+def _running_batch() -> str | None:
+    """The kind of batch running here, for the heartbeat: another computer
+    asking to take over is told what it would cancel."""
+    for kind in BATCH_JOBS + ("import", "export"):
+        if JOBS.active(kind):
+            return kind
+    return None
+
+
+def _on_remote_change(state: str) -> None:
+    # Taken over: whatever batch is running here is now writing into a library
+    # this computer no longer holds — cancel it, as Cancel does (finished
+    # tracks stay as the edits the new holder inherits).
+    if state == "taken_over":
+        import threading
+
+        threading.Thread(target=_stop_batches, name="konduktor-takeover-stop", daemon=True).start()
+
+
+@app.post("/api/library/open-remote", response_model=CollectionStatus)
+def open_remote(body: OpenRemote) -> CollectionStatus:
+    """Connect to a saved remote and make its library THE library.
+
+    409 `{code: "in_use", machine, since, batch}` when another computer holds
+    it — the picker asks, and retries with `takeover`. On success, the edits
+    another computer left unsaved are reported (`pending_edits`) for the user
+    to save or discard.
+    """
+    from .adapters import remote as remote_lib
+
+    remote = remote_cfg().get(body.remote_id)
+    if remote is None:
+        raise HTTPException(404, "No such remote")
+    _stop_batches()
+    try:
+        opened = remote_lib.open_remote(remote, takeover=body.takeover, batch_probe=_running_batch)
+    except remote_lib.InUse as ex:
+        raise HTTPException(409, {"code": "in_use", **ex.holder})
+    except AdapterError as ex:
+        raise HTTPException(400, str(ex))
+    STATE.open_remote(opened)
+    opened.session.on_change(_on_remote_change)
+    status = collection_status()
+    status.pending_edits = opened.pending_edits
+    return status
+
+
+def _require_remote():
+    adapter = require_adapter()
+    if STATE.remote is None:
+        raise HTTPException(409, "The open library is not a remote one")
+    return adapter
+
+
+@app.get("/api/library/fs/list", response_model=FsListing)
+def library_fs_list(path: str | None = None) -> FsListing:
+    """Folders on the machine that HOLDS the library — where an import into a
+    remote library lands (`tracks.audio_destination == "library"`). Confined by
+    the server to its content folder; `home` is that folder."""
+    adapter = _require_remote()
+    listing = adapter.client.fs_list(path)
+    return FsListing(
+        path=listing["path"], parent=listing["parent"], home=listing["root"],
+        dirs=[FsEntry(name=e["name"], path=e["path"]) for e in listing["entries"] if e["is_dir"]],
+        files=[],
+    )
+
+
+@app.get("/api/remote-cache")
+def remote_cache_status() -> dict:
+    from .adapters.remote import cache
+
+    return cache.shared().usage()
+
+
+@app.delete("/api/remote-cache")
+def clear_remote_cache() -> dict:
+    from .adapters.remote import cache
+
+    return {"freed": cache.shared().clear()}
 
 
 @app.get("/api/library/path-mapping", response_model=PathMappingInfo)
@@ -683,9 +851,15 @@ def _library_info() -> LibraryInfo:
     driver = next((d for d in registry.drivers() if d.platform == caps.platform), None)
     namer = getattr(driver, "display_name_for", None)
     try:
-        display_name = namer(path) if namer else path.name
+        display_name = namer(path) if namer and STATE.remote_config is None else path.name
     except OSError:
         display_name = path.name
+    remote = None
+    if STATE.remote_config is not None:
+        # A remote is called what the user called it, not its file's name.
+        display_name = STATE.remote_config.name
+        remote = {"id": STATE.remote_config.id, "name": STATE.remote_config.name,
+                  "via": STATE.remote.client.via if STATE.remote else None}
     return LibraryInfo(
         platform=caps.platform,
         name=caps.save.app_name,
@@ -693,6 +867,7 @@ def _library_info() -> LibraryInfo:
         path=str(STATE.path),
         display_name=display_name,
         version=caps.version,
+        remote=remote,
     )
 
 
@@ -723,6 +898,14 @@ def platforms() -> list[PlatformOption]:
     # that keep a library in a known place come before the ones that are a
     # plugged-in drive, which is the real distinction a chooser is making.
     out.sort(key=lambda o: (o.removable, o.name.lower()))
+    # A library held by a Konduktor server — not a platform of its own (the
+    # server says which it holds), but a way to reach one, so it is offered
+    # last, after every platform on this computer.
+    from .adapters.remote import config as remote_config
+
+    saved = len(remote_config.remotes())
+    out.append(PlatformOption(platform="remote", name="Remote", library_label="remote library",
+                              selects="remote", installed=saved > 0, found=saved))
     return out
 
 
@@ -739,7 +922,8 @@ def state() -> EditState:
     return EditState(dirty=require_adapter().dirty, library=_library_info(),
                      pending_stems=pending if pending and pending["tracks"] else None,
                      stem_job=stem_job[0].id if stem_job else None,
-                     stem_recovery=STATE.recovery)
+                     stem_recovery=STATE.recovery,
+                     remote=STATE.remote.describe() if STATE.remote is not None else None)
 
 
 # ---- stem engine (download / side-load / remove) --------------------------
@@ -818,24 +1002,44 @@ def _require_no_pending_stems(what: str) -> None:
 def _stem_options(body):
     from .stems import convert
 
+    # A remote library's destination is a folder ON THE SERVER: not expanded
+    # here, where `~` is this computer's home.
+    remote = STATE.remote is not None
+    destination = None
+    if body.destination:
+        destination = Path(body.destination) if remote else Path(body.destination).expanduser()
     return convert.Options(
-        mode=body.mode, destination=Path(body.destination).expanduser() if body.destination else None,
+        mode=body.mode, destination=destination,
         collection=body.collection, playlist_id=body.playlist_id, new_playlist=body.new_playlist,
         device=prefs.load_prefs().get("stemDevice", "auto"),
     )
 
 
 def _stem_plan(body):
-    from .stems import convert
+    from .stems import convert, remote_convert
 
     adapter = require_adapter()
     caps = adapter.capabilities()
     if not (caps.writable and caps.tracks.stem_convertible):
         raise HTTPException(422, "This library cannot hold stem files")
     try:
+        if _remote_stems(adapter):
+            return adapter, remote_convert.plan(adapter, body.track_ids, _stem_options(body))
         return adapter, convert.plan(adapter, body.track_ids, _stem_options(body), STATE.pending)
     except convert.ConvertError as ex:
         raise HTTPException(400, str(ex))
+
+
+def _remote_stems(adapter) -> bool:
+    """A library held by a server: it plans and swaps, this computer separates
+    (`stems/remote_convert.py`)."""
+    return hasattr(adapter, "publish_stems")
+
+
+def _needs_engine(planned) -> bool:
+    if hasattr(planned, "server"):
+        return any(i.get("reuse") is None for i in planned.items)
+    return any(p.reuse is None for p in planned.items)
 
 
 @app.post("/api/tracks/stems/preview")
@@ -859,11 +1063,16 @@ def convert_to_stems(body: StemConvert) -> JobStatus:
         raise HTTPException(409, planned.blocked)
     if not planned.items:
         raise HTTPException(400, "None of these tracks can be converted")
-    if any(p.reuse is None for p in planned.items) and not em.default_manager().ready():
+    if _needs_engine(planned) and not em.default_manager().ready():
         raise HTTPException(409, "The stem engine is not installed")
     opts = _stem_options(body)
 
     def run(handle):
+        if _remote_stems(adapter):
+            from .stems import remote_convert
+
+            return remote_convert.run(handle, adapter, planned, opts,
+                                      still_current=lambda: STATE.adapter is adapter)
         return convert.run(handle, adapter, planned, opts, STATE.pending, mutation=STATE.mutation,
                            still_current=lambda: STATE.adapter is adapter)
 
@@ -926,8 +1135,23 @@ def reload_collection() -> dict:
     _require_no_pending_stems("Reloading")
     if not STATE.loaded:
         raise HTTPException(409, "No collection loaded")
-    STATE.open(STATE.path)  # re-parse current file from disk
+    if STATE.remote is not None:
+        STATE.adapter.refresh()  # a remote library is re-read from its server
+    else:
+        STATE.open(STATE.path)  # re-parse current file from disk
     return {"status": "reloaded", "tracks": len(require_adapter().tracks)}
+
+
+@app.on_event("shutdown")
+def _release_remote_session() -> None:
+    """A graceful stop hands a remote library's session back (see sidecar.py
+    for the abrupt one)."""
+    if STATE.remote is not None:
+        try:
+            STATE.remote.stop()
+            STATE.remote.client.release(timeout=2.0)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ---- read: stats / facets / tracks ------------------------------------
@@ -1561,7 +1785,7 @@ def save() -> SaveResult:
 def get_history() -> list[HistoryEntry]:
     """All saved versions of the current collection, newest first."""
     require_adapter()
-    return [HistoryEntry(**e.__dict__) for e in history.list_history(STATE.path)]
+    return [HistoryEntry(**e.__dict__) for e in STATE.services.history()]
 
 
 @app.post("/api/history/{commit_id}/restore", response_model=CollectionStatus)
@@ -1571,14 +1795,8 @@ def restore_version(commit_id: str) -> CollectionStatus:
     reloads. The user should close Traktor first (it overwrites on exit)."""
     _require_no_pending_stems("Restoring a version")
     require_adapter()
-    data = history.read_version(STATE.path, commit_id)
-    if data is None:
+    if not STATE.restore_version(commit_id):
         raise HTTPException(404, f"Version not found: {commit_id}")
-    path = STATE.path
-    # The adapter's driver owns writing its own format back, even for a restore.
-    registry.driver_for(path).restore(path, data)
-    history.commit(path, data, f"Restored version {commit_id[:8]}", __version__)
-    STATE.open(path)  # rebuild read + edit models from the restored file
     return collection_status()
 
 
@@ -1586,7 +1804,7 @@ def restore_version(commit_id: str) -> CollectionStatus:
 def clear_history() -> dict:
     """Permanently delete ALL version history for the current collection."""
     require_adapter()
-    history.clear_history(STATE.path)
+    STATE.services.clear_history()
     return {"status": "cleared"}
 
 
@@ -1914,7 +2132,7 @@ def _folder_add_plan(body: FolderAddRequest):
 @app.post("/api/folder/add/preview")
 def folder_add_preview(body: FolderAddRequest) -> dict:
     _source, dest, destination, plan = _folder_add_plan(body)
-    out = plan.as_dict(free_bytes=importer.free_bytes(destination) if destination else None)
+    out = plan.as_dict(free_bytes=importer.free_bytes(destination, dest) if destination else None)
     if importer.places_audio(dest):
         _placed_space(out, dest, plan, destination)
     elif body.mode == "reference":
@@ -1933,7 +2151,7 @@ def folder_add(body: FolderAddRequest) -> JobStatus:
     if not plan.importable and not plan.existing:
         raise HTTPException(400, "Nothing to add (none of those files exist)")
     if body.mode == "copy" or importer.places_audio(dest):
-        free = importer.free_bytes(destination)
+        free = importer.free_bytes(destination, dest)
         needed = importer.placed_bytes(dest, plan) if importer.places_audio(dest) else plan.total_bytes
         if free is not None and free < needed + importer.SPACE_HEADROOM:
             raise HTTPException(
@@ -2002,7 +2220,7 @@ def import_preview(body: ImportRequest) -> dict:
     between the preview and the import, and a stale preview is worse than none.
     """
     _source, dest, destination, plan = _import_plan(body)
-    out = plan.as_dict(free_bytes=importer.free_bytes(destination))
+    out = plan.as_dict(free_bytes=importer.free_bytes(destination, dest))
     if importer.places_audio(dest):
         _placed_space(out, dest, plan, destination)
     return out
@@ -2015,7 +2233,7 @@ def start_import(body: ImportRequest) -> JobStatus:
     source, dest, destination, plan = _import_plan(body)
     if not plan.importable:
         raise HTTPException(400, "Nothing to import (no tracks, or none of their files exist)")
-    free = importer.free_bytes(destination)
+    free = importer.free_bytes(destination, dest)
     needed = importer.placed_bytes(dest, plan) if importer.places_audio(dest) else plan.total_bytes
     if free is not None and free < needed + importer.SPACE_HEADROOM:
         raise HTTPException(

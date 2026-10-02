@@ -28,11 +28,12 @@ import os
 import threading
 from pathlib import Path
 
-from . import __version__, adapters, history, library_id, prefs  # noqa: F401 — registers adapters
+from . import adapters, library_id, prefs  # noqa: F401 — registers adapters
 from .core import registry
 from .core.adapter import LibraryAdapter
 from .core.pathmap import PathMapping
 from .relocation import RelocationCheck
+from .services import LibraryServices, LocalServices
 
 
 class AppState:
@@ -61,6 +62,18 @@ class AppState:
         # and what the last open's crash recovery did about any left over.
         self.pending = None
         self.recovery: dict | None = None
+        # Where this library's history (and, for a remote, its export sets and
+        # ledger) are kept — see `services.py`.
+        self.services: LibraryServices | None = None
+        # The open remote's connection (`adapters/remote/session.py`), or None
+        # for a library on this computer.
+        self.remote = None
+        # …and the saved remote it was opened through (`adapters/remote/config.py`).
+        self.remote_config = None
+        # Called with the adapter at the end of every open (and so after a
+        # restore, which reopens): how a Konduktor SERVER re-applies the path
+        # mapping its configuration names, which lives in no prefs file.
+        self.open_hooks: list = []
 
     @property
     def loaded(self) -> bool:
@@ -120,16 +133,7 @@ class AppState:
         # write-ahead log beside a file another process replaces is how a SQLite
         # library gets corrupted. Only close once the new one has parsed, so a
         # failed open leaves the current library intact.
-        previous = self.adapter
-        # Leaving a library discards its unsaved edits (the UI has confirmed), so
-        # a stem conversion's parked originals go back under their own names.
-        if self.pending is not None and self.pending.items:
-            self.pending.restore()
-        if previous is not None and hasattr(previous, "close"):
-            try:
-                previous.close()
-            except Exception:  # noqa: BLE001 — a failed close must not block the open
-                pass
+        self._release_previous()
         # Apply this library's saved OS-path remapping (per-machine, keyed by the
         # library's local path) so runtime translation is live on open.
         saved = prefs.get_path_mapping(str(path))
@@ -161,9 +165,55 @@ class AppState:
         # Started after the saved mapping is applied, so a volume that mapping
         # already fixes is not asked about.
         self.relocation = RelocationCheck(adapter)
-        # Version history: record an "as I found it" baseline (deduped, so
-        # re-opening an unchanged library is a no-op). Best-effort.
-        history.ensure_baseline(path)
+        self.services = LocalServices(path)
+        self.services.baseline()
+        for hook in self.open_hooks:
+            hook(adapter)
+
+    def _release_previous(self) -> None:
+        previous = self.adapter
+        # Leaving a library discards its unsaved edits (the UI has confirmed), so
+        # a stem conversion's parked originals go back under their own names.
+        if self.pending is not None and self.pending.items:
+            self.pending.restore()
+        if previous is not None and hasattr(previous, "close"):
+            try:
+                previous.close()
+            except Exception:  # noqa: BLE001 — a failed close must not block the open
+                pass
+        if self.remote is not None and self.library_id:
+            # A remote library's export sets were the server's; stop asking it.
+            from . import exports
+
+            exports.use_store(self.library_id, None)
+        self.adapter = None
+        self.remote = None
+        self.remote_config = None
+
+    def open_remote(self, opened) -> None:
+        """Make an already-connected remote library THE library.
+
+        `opened` is what `adapters.remote.open_remote` returns: the adapter, its
+        services and session, and the server's identity for the library. The
+        connection (handshake, version check, session) is made BEFORE this, so
+        a refusal leaves the current library intact, as a failed parse does.
+        """
+        with self.mutation:
+            self._release_previous()
+            self.path = opened.path
+            self.adapter = opened.adapter
+            self.services = opened.services
+            self.remote = opened.session
+            self.remote_config = opened.remote
+            # The server's id for the library: export sets are keyed by it, and
+            # they live on the server too, so every computer sees the same ones.
+            self.library_id = opened.library_id
+            # The server keeps its own ledger of converted tracks; nothing of a
+            # remote library's lives in this computer's.
+            self.pending = opened.pending
+            self.recovery = None
+            # A remote library's files are not on this computer's drives.
+            self.relocation = None
 
     def save(self):
         """Write the library, then record the saved bytes in version history.
@@ -178,15 +228,7 @@ class AppState:
 
     def _save(self):
         outcome = self.adapter.save()
-        # Not every platform is versioned. A library that is more than one file
-        # has no single blob that IS the library, and it says so through its
-        # capabilities rather than this module knowing which platforms those are.
-        versioned = self.adapter.capabilities().save.history
-        commit = None
-        if versioned and outcome.snapshot is not None:
-            commit = history.commit(
-                self.path, outcome.snapshot, outcome.summary, __version__
-            )
+        commit = self.services.commit_save(self.adapter, outcome)
         # The swap is now on disk: what it replaced can go. After the library
         # write, so a failed save deletes nothing; here rather than in the save
         # route, because import and path remap save too.
@@ -209,7 +251,24 @@ class AppState:
         with self.mutation:
             if self.pending is not None and self.pending.items:
                 self.pending.restore()
+            if self.services is not None and self.services.remote:
+                # The server holds the edits; it is what drops them.
+                self.services.discard()
             self.adapter.reload()
+
+    def restore_version(self, commit_id: str) -> bool:
+        """Write a past version back as a new save and re-read the library.
+        False when the version is unknown."""
+        assert self.adapter is not None and self.services is not None
+        with self.mutation:
+            if not self.services.restore(commit_id):
+                return False
+            if self.services.remote:
+                # The server reopened its own library; follow it.
+                self.adapter.reload()
+            else:
+                self._open(self.path)  # rebuild read + edit models from the restored file
+            return True
 
 
 STATE = AppState()

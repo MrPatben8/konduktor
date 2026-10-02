@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ...core.adapter import InvalidCommand, Unsupported
+from ...core.adapter import InvalidCommand, Unsupported, local_audio_facts
 from ...core.capabilities import Capabilities
 from ...core.model import GridMarker, HotcueChip, PlaylistNode, Track, TrackCues
 from ...core.pathmap import PathMapping, common_dir_prefix
@@ -222,6 +222,9 @@ class OneLibraryAdapter:
     # ---- audio / paths ----------------------------------------------------
     def audio_path(self, track_id: str):
         return self._store.audio_path(track_id)
+
+    def audio_facts(self, track_ids: list[str]):
+        return local_audio_facts(self, track_ids)
 
     def set_path_mapping(self, mapping: PathMapping) -> None:
         """Ignored: a drive's paths are relative to wherever it is mounted.

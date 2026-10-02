@@ -43,6 +43,13 @@ const PATHS = {
     </>
   ),
   export: <path d="M12 3v12M7 8l5-5 5 5M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" />,
+  server: (
+    <>
+      <rect x="3" y="4" width="18" height="7" rx="2" />
+      <rect x="3" y="13" width="18" height="7" rx="2" />
+      <path d="M7 7.5h.01M7 16.5h.01M11 7.5h6M11 16.5h6" />
+    </>
+  ),
   download: <path d="M12 3v12M7 10l5 5 5-5M5 19h14" />,
   settings: (
     <>

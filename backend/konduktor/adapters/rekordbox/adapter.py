@@ -21,13 +21,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ...core.adapter import InvalidCommand, Unsupported
+from ...core.adapter import InvalidCommand, Unsupported, local_audio_facts
 from ...core.capabilities import Capabilities
 from ...core.model import GridMarker, PlaylistNode, Track, TrackCues
 from ...core.pathmap import PathMapping, common_dir_prefix
 from ...core.query import TrackIndex
 from . import capabilities as caps
 from . import palette, projection, timebase
+from ...core import add_analysis
 from .store import RekordboxStore
 
 
@@ -202,6 +203,9 @@ class RekordboxAdapter:
     def audio_path(self, track_id: str):
         return self._store.audio_path(track_id)
 
+    def audio_facts(self, track_ids: list[str]):
+        return local_audio_facts(self, track_ids)
+
     def set_path_mapping(self, mapping: PathMapping) -> None:
         self._store.set_path_mapping(mapping)
         # The FILE decides a track's media kind, and the mapping moves files.
@@ -214,6 +218,10 @@ class RekordboxAdapter:
 
     def set_session_mappings(self, mappings: list[PathMapping]) -> None:
         return None
+
+    def set_write_stored_paths(self, enabled: bool) -> None:
+        """OPTIONAL: see `TraktorAdapter.set_write_stored_paths`."""
+        self._store.set_write_stored_paths(enabled)
 
     def path_prefix_suggestions(self) -> dict:
         paths = self._store.all_audio_paths()
@@ -382,6 +390,12 @@ class RekordboxAdapter:
     def dirty(self) -> bool:
         return self._store.dirty
 
+    def edit_summary(self) -> str:
+        """OPTIONAL: this session's unsaved edits in one line ("edited 3
+        tracks; added 6 hotcues") — what a server tells the next computer to
+        open the library about the edits it is inheriting."""
+        return self._store._journal.summary()
+
     def save(self):
         self._require_writable("Saving")
         return self._store.save()
@@ -416,6 +430,14 @@ class RekordboxAdapter:
         if self._cloud_synced:
             raise Unsupported(self._readonly_reason(what))
 
+    def analysis_lead(self, audio: Path) -> float:
+        """The time-base lead `add_tracks` measures a file's waveform with —
+        rekordbox's clock against the decoded audio, read from the file's
+        header (`timebase.py`). OPTIONAL on the protocol: a platform that does
+        not analyse what it adds has none, and whoever prepares an analysis
+        for this one (a client of a server-held library) asks for it."""
+        return timebase.offset(Path(audio))
+
     def add_tracks(self, items: list, *, checkpoint=None) -> list[str]:
         """Add tracks that came from somewhere else, with their prep.
 
@@ -437,7 +459,7 @@ class RekordboxAdapter:
         bank or already taken becomes a memory cue at the same position rather
         than being dropped.
         """
-        from ...core import audio_tags, grid_detect, waveform
+        from ...core import audio_tags
 
         self._require_writable("Adding tracks")
         held = set(self._store.all_audio_paths())
@@ -453,15 +475,18 @@ class RekordboxAdapter:
             if str(audio) in held:
                 raise InvalidCommand(f"The library already holds {audio}")
             held.add(str(audio))
-            samples = waveform.decode(audio)
-            measured = waveform.analyse_samples(samples, lead=timebase.offset(audio))
             markers = list(item.cues.grid_markers) if item.cues else []
-            if not markers and samples is not None:
-                try:
-                    found = grid_detect.detect_grid(str(audio), y=samples, sr=waveform.SR)
-                    markers = [GridMarker(start=found.anchor, bpm=found.bpm)]
-                except ValueError:
-                    pass  # no pulse to fit (a one-shot, silence): no grid
+            if item.analysis is not None:
+                # Measured by whoever added it — a library held by a server is
+                # never asked to decode audio (see `PreparedAnalysis`).
+                measured = item.analysis.measured
+                if not markers:
+                    markers = list(item.analysis.markers)
+            else:
+                analysed = add_analysis.prepare(audio, lead=self.analysis_lead(audio),
+                                                detect=not markers)
+                measured = analysed.measured
+                markers = markers or list(analysed.markers)
             art = item.art or audio_tags.read_cover(audio)
             prepared.append((item, audio, measured, markers, art[0] if art else None))
 

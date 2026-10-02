@@ -34,7 +34,22 @@ def _watch_parent_and_exit() -> None:
             pass
     except Exception:
         pass
+    _release_remote()
     os._exit(0)
+
+
+def _release_remote() -> None:
+    """Hand back a remote library's session on the way out, so the next
+    computer opens it at once instead of waiting out the lease (or being asked
+    to take over a laptop that has already quit). Best-effort and brief."""
+    try:
+        from konduktor.app_state import STATE
+
+        if STATE.remote is not None:
+            STATE.remote.stop()
+            STATE.remote.client.release(timeout=2.0)
+    except Exception:
+        pass
 
 
 def _free_port() -> int:

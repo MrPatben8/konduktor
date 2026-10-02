@@ -227,7 +227,10 @@ export interface SaveCapabilities {
 }
 
 /** Why a library cannot be edited. A fact — lib/platformCopy.ts words it. */
-export type ReadonlyCause = 'platform_incomplete' | 'cloud_synced' | 'not_in_library' | 'browsing'
+export type ReadonlyCause =
+  | 'platform_incomplete' | 'cloud_synced' | 'not_in_library' | 'browsing'
+  /** A library held by a server: another computer took it over / the server is unreachable. */
+  | 'taken_over' | 'offline'
 
 export interface Capabilities {
   platform: Platform
@@ -259,8 +262,15 @@ export interface Capabilities {
     audio_formats: string[]
     artwork: boolean
     artwork_note: string | null
+    /** Whose filesystem an import destination is on: this computer's ('host'),
+     *  or the machine holding the library ('library' — audio is uploaded). */
+    audio_destination: 'host' | 'library'
+    /** Added files can be left where they are rather than copied. */
+    reference: boolean
   }
   playlists: { folders: boolean; smart: 'none' | 'read_only'; reorder: boolean }
+  /** Path mapping / rewriting / the missing-files check apply to this library. */
+  paths: { remappable: boolean }
   save: SaveCapabilities
 }
 
@@ -271,6 +281,8 @@ export interface LibraryInfo {
   path: string
   display_name: string
   version: string | null
+  /** Set when the library is held by a server (a saved remote). */
+  remote: { id: string; name: string; via: string | null } | null
 }
 
 export interface PlatformOption {
@@ -278,7 +290,7 @@ export interface PlatformOption {
   name: string
   library_label: string
   /** Whether picking this platform's library means picking a file or a folder. */
-  selects: 'file' | 'directory'
+  selects: 'file' | 'directory' | 'remote'
   installed: boolean
   /** How many libraries this platform has right now; `installed` is `found > 0`. */
   found: number
@@ -300,6 +312,22 @@ export interface EditState {
   stem_job: string | null
   /** What this open's crash recovery did about an interrupted conversion. */
   stem_recovery: { committed: number; restored: number; kept: number } | null
+  /** A remote library's connection, null for a local one. */
+  remote: RemoteConnection | null
+}
+
+/** How this computer stands with a remote library's server. `taken_over`:
+ *  another computer holds the session, so this one is read-only. */
+export interface RemoteConnection {
+  state: 'connected' | 'reconnecting' | 'offline' | 'taken_over'
+  /** The address in use ('primary' / 'fallback'), when connected. */
+  via: 'primary' | 'fallback' | null
+  /** Who took it over, when `taken_over`. */
+  machine: string | null
+  /** Something to tell the user once ("the server restarted"), with a counter
+   *  that changes each time there is a new one. */
+  notice: string | null
+  notices: number
 }
 
 export interface CollectionStatus {
@@ -308,6 +336,61 @@ export interface CollectionStatus {
   library: LibraryInfo | null
   tracks: number | null
   playlists: number | null
+  /** Opening a remote: the unsaved edits another computer left there. */
+  pending_edits?: PendingEdits | null
+}
+
+/** Unsaved edits a remote library holds that another computer made. */
+export interface PendingEdits {
+  machine: string | null
+  summary: string
+}
+
+/** A saved remote — a Konduktor server this computer knows how to reach. The
+ *  password is in the OS keychain, never here. */
+export interface RemoteSettings {
+  id: string
+  name: string
+  host: string
+  port: number | null
+  fallback_host: string | null
+  fallback_port: number | null
+  username: string
+  has_password: boolean
+}
+
+export interface RemoteForm {
+  name: string
+  /** `host` or `host:port`. */
+  host: string
+  fallback_host?: string | null
+  username: string
+  /** Omitted on an edit: keep the saved one. */
+  password?: string
+}
+
+/** One address's answer to a handshake. */
+export interface HandshakeResult {
+  address: 'primary' | 'fallback'
+  url: string
+  ok: boolean
+  error: string | null
+  kind: 'ok' | 'unreachable' | 'auth' | 'version' | 'other'
+}
+
+/** Someone else holds a remote's session (409 from open-remote). */
+export interface RemoteInUse {
+  code: 'in_use'
+  machine: string
+  since: string
+  batch: string | null
+}
+
+export interface RemoteCacheUsage {
+  bytes: number
+  files: number
+  cap: number
+  free: number
 }
 
 export interface CollectionCandidate {
@@ -483,6 +566,9 @@ export interface StemPlan {
   bytes: number
   /** The originals' size — what Save deletes in Replace mode. */
   original_bytes: number
+  /** A remote library: what must cross the network (bytes; `speed` in
+   *  bytes/s, `measured` false while it is still a default). */
+  transfer?: { download: number; upload: number; speed: number; measured: boolean }
 }
 
 /** A stem conversion job's `result`. */
@@ -711,6 +797,19 @@ async function getJSON<T>(url: string): Promise<T> {
   return res.json() as Promise<T>
 }
 
+/** A refusal from the backend. `message` is always a sentence; `detail` keeps
+ *  a structured answer (e.g. `{code: 'in_use', machine, since}`) for the few
+ *  callers that act on it rather than just showing it. */
+export class ApiError extends Error {
+  status: number
+  detail: unknown
+  constructor(status: number, message: string, detail: unknown) {
+    super(message)
+    this.status = status
+    this.detail = detail
+  }
+}
+
 async function send<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(API_BASE + url, {
     method,
@@ -718,14 +817,19 @@ async function send<T>(method: string, url: string, body?: unknown): Promise<T> 
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) {
-    let detail = `${res.status} ${res.statusText}`
+    let message = `${res.status} ${res.statusText}`
+    let detail: unknown = null
     try {
       const j = await res.json()
-      if (j.detail) detail = j.detail
+      if (j.detail) {
+        detail = j.detail
+        if (typeof j.detail === 'string') message = j.detail
+        else if (typeof j.detail?.message === 'string') message = j.detail.message
+      }
     } catch {
       /* ignore */
     }
-    throw new Error(detail)
+    throw new ApiError(res.status, message, detail)
   }
   return res.json() as Promise<T>
 }
@@ -750,6 +854,21 @@ export const api = {
     getJSON<CollectionOptions>(`/api/library/options${qs({ platform })}`),
   listDir: (path?: string, platform?: string) =>
     getJSON<FsListing>(`/api/fs/list${qs({ path, platform })}`),
+  /** Folders on the machine that HOLDS the library (a remote's server),
+   *  confined to its content folder — `home` is that folder. */
+  libraryListDir: (path?: string) => getJSON<FsListing>(`/api/library/fs/list${qs({ path })}`),
+
+  // ---- remote libraries ----
+  remotes: () => getJSON<RemoteSettings[]>('/api/remotes'),
+  addRemote: (form: RemoteForm) =>
+    send<{ remote: RemoteSettings; results: HandshakeResult[] }>('POST', '/api/remotes', form),
+  editRemote: (id: string, form: RemoteForm) =>
+    send<{ remote: RemoteSettings; results: HandshakeResult[] }>('PATCH', `/api/remotes/${id}`, form),
+  deleteRemote: (id: string) => send<{ status: string }>('DELETE', `/api/remotes/${id}`),
+  openRemote: (id: string, takeover = false) =>
+    send<CollectionStatus>('POST', '/api/library/open-remote', { remote_id: id, takeover }),
+  remoteCache: () => getJSON<RemoteCacheUsage>('/api/remote-cache'),
+  clearRemoteCache: () => send<{ freed: number }>('DELETE', '/api/remote-cache'),
   // Re-asked rather than cached: drives come and go while a dialog is open.
   places: (platform?: string) => getJSON<FsPlace[]>(`/api/fs/places${qs({ platform })}`),
 

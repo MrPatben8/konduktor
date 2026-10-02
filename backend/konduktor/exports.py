@@ -123,8 +123,39 @@ def _store_path(library_id: str) -> Path:
     return paths.app_data_dir() / "exports" / f"{library_id}.json"
 
 
+# A library whose sets are kept somewhere other than this computer's app-data —
+# a library held by a server keeps them beside itself, so every computer that
+# opens it sees the same sets. Each store reads and writes the WHOLE document
+# (`{"library_id", "sets"}`); everything else here is unchanged by where it is.
+_STORES: dict[str, object] = {}
+
+
+def use_store(library_id: str, store) -> None:
+    """Keep `library_id`'s sets in `store` (`read() -> dict`, `write(dict)`);
+    None returns them to this computer's app-data."""
+    if store is None:
+        _STORES.pop(library_id, None)
+    else:
+        _STORES[library_id] = store
+
+
+def _read_doc(library_id: str) -> dict:
+    store = _STORES.get(library_id)
+    if store is not None:
+        return store.read()
+    return paths.read_json(_store_path(library_id), {})
+
+
+def _write_doc(library_id: str, doc: dict) -> None:
+    store = _STORES.get(library_id)
+    if store is not None:
+        store.write(doc)
+    else:
+        paths.write_json(_store_path(library_id), doc)
+
+
 def _load(library_id: str) -> dict[str, ExportSet]:
-    data = paths.read_json(_store_path(library_id), {})
+    data = _read_doc(library_id)
     raw = data.get("sets") if isinstance(data, dict) else None
     out: dict[str, ExportSet] = {}
     if isinstance(raw, dict):
@@ -158,8 +189,8 @@ def _targets(values: dict) -> list[str]:
 
 
 def _save(library_id: str, sets: dict[str, ExportSet]) -> None:
-    paths.write_json(
-        _store_path(library_id),
+    _write_doc(
+        library_id,
         {"library_id": library_id, "sets": {k: v.as_dict() for k, v in sets.items()}},
     )
 

@@ -487,6 +487,104 @@ Two independent apps that talk over HTTP:
     open / save / discard (and, next, a stem batch's swap step).
     History is app-level: the adapter returns the bytes it wrote plus a summary,
     and `AppState.save()` versions them. Every write path must go through it.
+    **Where** it is versioned is the open library's `services` (`services.py`):
+    `LocalServices` is the history repo in this computer's app-data, keyed by
+    path (what it always was); a remote library's live on its server. Routes
+    reach history through `STATE.services` / `STATE.restore_version`, never the
+    `history` module with `STATE.path`. `open_hooks` run at the end of every
+    open (and restore) — how the server re-applies its configured path mapping.
+  - **Remote libraries** (decided 2026-10-01/02 —
+    [the discussion](.claude/discussions/discuss-remote-library-2026-10-01.md)):
+    the whole library on the user's NAS, a Konduktor SERVER in a container
+    holding it, the desktop app opening it as "Remote". Three pieces:
+    - `remote_protocol.py` — the wire contract BOTH sides import: the
+      `LibraryAdapter` protocol itself as RPC (`RPC` table, `MUTATING` flag,
+      `EXCLUDED` with a reason for every member that does not travel —
+      `test_remote_protocol.py` fails on a protocol member that is neither),
+      args/results (de)serialised by pydantic `TypeAdapter`s built from the
+      protocol's own hints (a misspelt argument is refused, not defaulted),
+      `API_VERSION` (same major, server minor ≥ client's), the lease
+      (`LEASE_SECONDS` 120 / `HEARTBEAT_SECONDS` 15), `WireNewTrack` and the
+      prepared-analysis `.npz` packing. Bytes never travel as JSON.
+    - `server/` — `python -m konduktor.server` (the container's command;
+      `server/Dockerfile`, `compose.yaml`, `.env.example`). NOT `main.py`
+      behind a password. `config.py` reads the env (`KONDUKTOR_PLATFORM`
+      checked against the file, `_LIBRARY`, `_CONTENT`, `_USERNAME`,
+      `_PASSWORD`, `_PATH_MAP` "stored => here; …") and fails fast with one
+      line. `app.py`: HTTP Basic on every route; `/v1/hello`, `session/*`,
+      `rpc/{method}` (every answer carries `rev` plus the tracks it `changed`
+      / `removed`), `audio` (Range), `art`, `upload` (into a folder CONFINED
+      to the content folder — resolve then `is_relative_to`, so neither `..`
+      nor a symlink escapes — never overwriting, `-2` suffixes, per-session
+      so a cancel deletes only its own), `fs/list|space`, `save`, `discard`,
+      `history`, `export-sets`, and the stems routes below. Capabilities are
+      the adapter's plus `tracks.audio_destination="library"`,
+      `reference=False`, `paths.remappable=False`, `overwrite_risk="none"`.
+      `session.py`: ONE holder; a 409 names who holds it (machine, since,
+      running batch) and `takeover` replaces it; the old token is 423 from
+      then on; a lapsed lease is renewed silently for the SAME client if
+      nobody took it. Unsaved edits are the native model's, not the
+      session's: the next holder inherits them and `pending_edits`
+      (`last_editor` + the adapter's optional `edit_summary()`) asks them to
+      save or discard. A container restart loses them — accepted.
+      **Lightweight by decision: the server never decodes audio** — its
+      image ships `requirements-server.txt` without librosa / scikit-learn /
+      PyAV, and `test_layering.py` checks importing it pulls none in
+      (`stem_file._audio_stream_count` counts `soun` traks when PyAV is
+      absent). With a path mapping configured the server calls the
+      adapter's optional `set_write_stored_paths(True)`: a file added (or a
+      stem file swapped in) through the mapping is written in the library's
+      STORED form (`pathmap.stored_form`), so the collection keeps one
+      convention and still opens where it was made.
+    - `adapters/remote/` — the client, imports no platform adapter.
+      `RemoteAdapter` IS a `LibraryAdapter`: the frontend, export, import and
+      batches never learn a library is remote. It mirrors the projection in a
+      local `TrackIndex` (same query code), folds each command's `changed`
+      into it, and re-fetches on any `rev` gap. **`audio_path` downloads**
+      into the shared `cache.py` (keyed by the server's `AudioFacts` — path,
+      size, mtime — partial-then-rename, LRU under `remoteCacheBytes`, the
+      recently used never evicted); anything that needs only a file's
+      IDENTITY asks the new protocol member **`audio_facts`**, which never
+      downloads (`exporter.plan`, `importer._existing_files`). `client.py`
+      tries the address that last worked, then the others (primary →
+      fallback) on CONNECT failures only, and maps status codes back onto the
+      adapter error classes (423 → `SessionLost`, unreachable → `Unavailable`,
+      503 in `main.py`). `session.py` heartbeats (reporting the running batch)
+      and moves `connected / reconnecting / offline / taken_over`; anything
+      but connected/reconnecting makes `capabilities()` read-only with cause
+      `taken_over` / `offline`, and a 423 on any command flips it at once;
+      taken over cancels this computer's batches (`_on_remote_change`).
+      `config.py`: saved remotes in prefs (`remotes`, plus a stable
+      `remoteClientId`), passwords in the OS keychain via `keyring`
+      (`use_password_store` is the test seam). `services.py`: history, export
+      sets (`exports.use_store`, keyed by `remote:<server id>` so nothing on
+      this computer is mistaken for the server's) and the stems ledger
+      (`RemotePending`) all on the server. Imports UPLOAD
+      (`importer.uploads_audio` → `upload_audio`, cleaned up on failure; free
+      space from the server) into a folder the user picks on the server;
+      Rekordbox's add analysis is computed HERE (`core/add_analysis.prepare`
+      with the lead the upload reports, sent as `NewTrack.analysis`).
+      **Convert to Stems** (`stems/remote_convert.py`): the server plans
+      (`/v1/stems/plan`, its `convert.plan`), this computer downloads,
+      separates and encodes, uploads each verified file (`/v1/stems/stage`,
+      sha-256 checked, kept on the server as a LEFTOVER), and the server runs
+      the ordinary `convert._end_step` under its mutation lock with its own
+      ledger (`/v1/stems/publish`). Cancel abandons this run's uploads; a
+      takeover cannot, so they stay and the next run reuses them. The preview
+      adds `transfer` (download / upload / measured speed) and space lines for
+      both machines.
+    UI: the picker's platform list ends with **Remote** (`selects:
+    "remote"`) → `RemotePicker` (saved remotes; the form saves only after
+    `handshake` — a wrong password or version refuses, an unreachable
+    fallback alone does not; the in-use → Take over and the leftover-edits
+    Save / Discard / Decide-later prompts happen before the library shows).
+    `App` polls `['state']` every 5 s for a remote (`remote` in `EditState`),
+    re-reads capabilities on a change and toasts it; `StatusBar` shows the
+    connection. `FileBrowser`/`FolderPicker` take `listing="library"` for the
+    server's folders; Import / Add Files / Convert to Stems use it when
+    `tracks.audio_destination === 'library'` (folders remembered per remote:
+    `remoteImportFolders`, `remoteStemFolders`). Settings → Remote audio is
+    the cache. Path remapping hides on `paths.remappable === false`.
   - `library_id.py` — a **stable identity for a library that survives it being
     moved**. Everything else keys off the OS path (`history` hashes it, `prefs`
     stores it), which is fine for things a user shrugs at losing and NOT fine for
@@ -864,6 +962,13 @@ cd backend && source .venv/bin/activate
 uvicorn konduktor.main:app --reload --port 8000
 # point at another file: KONDUKTOR_NML=/path/to/collection.nml uvicorn ...
 
+# A Konduktor SERVER (a remote library) from source — configured by env, see
+# server/.env.example; the container runs the same command:
+KONDUKTOR_PLATFORM=traktor KONDUKTOR_LIBRARY=/path/collection.nml \
+  KONDUKTOR_CONTENT=/path/music KONDUKTOR_USERNAME=dj KONDUKTOR_PASSWORD=pw \
+  python -m konduktor.server            # listens on :8765
+docker build -f server/Dockerfile -t konduktor-server .   # from the repo root
+
 # Frontend
 cd frontend
 npm run dev          # dev server (proxies /api -> :8000)
@@ -1138,11 +1243,35 @@ serialization path.** It enforces:
   reopen), and a running batch has stopped by the time discard returns; on
   Rekordbox (temp copy, skipped when absent) the library is clean afterwards and
   a later save writes nothing that was thrown away; read-only libraries 409.
+- `test_remote_protocol.py` — pure: every `LibraryAdapter` member is an RPC or
+  excluded with a reason, every command is `MUTATING`, args/results survive
+  JSON by the protocol's types (tuples, dataclasses, `None`), a misspelt or
+  missing argument is refused, a prepared analysis crosses intact, the
+  version rule.
+- `test_remote_server.py` — the server's own routes on a temp copy of the
+  collection with a FAKE clock: config refusals, 401s, one computer at a time
+  (423 without the token, 409 naming the holder and its batch, takeover kills
+  the old token, an expired lease frees it, the same client renews), leftover
+  edits named, save + history on the server, discard, confinement (`..`,
+  symlinks), uploads never overwrite and delete only their own, Range audio.
+- `test_remote_adapter.py` — END TO END: a real server in a thread, the app's
+  routes opening it. Handshake refusals, fallback, the mirror, Save touching
+  only the edited `<ENTRY>` THROUGH the trip, one download per file, Analyze
+  on the cached copy, export (and a re-export copying nothing), an upload
+  stored in the mapping's stored form, takeover → read-only at once,
+  reopening names the holder and the edits left, leaving releases.
+- `test_remote_stems.py` — Convert to Stems on a remote with the FAKE engine:
+  the plan's transfer and two-machine space, Replace parks and swaps ON THE
+  SERVER (saved file untouched until Save, which deletes the parked
+  original), Discard restores, Cancel deletes only this run's uploads, a
+  takeover's uploads are reused without the engine.
 - `test_layering.py` — `core/` imports nothing platform-specific, and no adapter
   imports another platform's library (checked on real imports via AST, so merely
   naming a platform in a comment is fine). Rekordbox and OneLibrary deliberately
   **share** `pyrekordbox`: the rule is "no adapter reaches for a rival vendor's
-  library", and a shared dependency is not a breach.
+  library", and a shared dependency is not a breach. Also: `adapters/remote`
+  imports no platform adapter, and importing `konduktor.server` pulls in no
+  librosa / scikit-learn / torch / numba / PyAV.
 
 Also validate the backend interactively at `http://localhost:8000/docs` and the
 frontend at `http://localhost:5173`.
@@ -1666,6 +1795,13 @@ that number and nothing else — everything derives from it:
   yet**, since nothing can be written. Note the OneLibrary work already demonstrated
   creating an `exportLibrary.db` from nothing, and `fixtures/onelibrary/schema.sql`
   is the DDL to do it with.
+- ✅ **Remote libraries** (2026-10-02) — a Konduktor server in a container
+  (TrueNAS) holds a Traktor or Rekordbox library; the app opens it as
+  "Remote": browse, prep, edit, Save (versioned on the server), export sticks,
+  import by upload, Convert to Stems — all with analysis and separation on the
+  laptop. One computer at a time, with takeover. See "Remote libraries" under
+  Architecture. Not yet: verified on a real TrueNAS (the image is published by
+  CI's `server-image` job), a web UI served by the server (decided: not now).
 - ⬜ Serato adapter
 - ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 
