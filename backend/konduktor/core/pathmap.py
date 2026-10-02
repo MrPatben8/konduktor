@@ -54,6 +54,10 @@ class PathMapping:
             return True
         return s.startswith(self.from_prefix + os.sep) or s.startswith(self.from_prefix + "/")
 
+    def inverted(self) -> "PathMapping":
+        """The mapping back: a path HERE → the form the library stores."""
+        return PathMapping(self.to_prefix, self.from_prefix)
+
     def apply(self, os_path: Path) -> Path:
         """Rebase ``os_path`` from ``from_prefix`` onto ``to_prefix``. Returns the
         path unchanged when it doesn't match (non-matching tracks untouched)."""
@@ -81,3 +85,21 @@ def common_dir_prefix(paths: list[str]) -> str:
         else:
             break
     return "/".join(common)
+
+
+def stored_form(os_path: Path, mappings) -> Path:
+    """`os_path` as the library STORES its paths, when it sits under where one
+    of `mappings` points (the first that does).
+
+    A library opened through a mapping (a server holding a collection made on
+    another computer) stores every path in the other computer's form. A file
+    added through that mapping is written in the same form, so the library
+    keeps ONE convention — and still opens, mapping and all, where it was made.
+    """
+    for mapping in mappings:
+        if mapping is None or mapping.empty:
+            continue
+        back = mapping.inverted()
+        if back.matches(os_path):
+            return back.apply(os_path)
+    return os_path

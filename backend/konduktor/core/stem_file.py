@@ -356,22 +356,52 @@ def stem_layout(path: Path | str) -> list[dict] | None:
     MP3 entries in the real collection carry that element."""
     import json
 
-    import av
-
     path = Path(path)
     try:
         raw = read_stem_box(path)
         if raw is None:
-            return None
+            return None  # not a stem file: nothing to count, no decoder needed
         stems = json.loads(raw).get("stems") or []
-        with av.open(str(path), metadata_errors="ignore") as c:
-            streams = len(c.streams.audio)
-    except (OSError, ValueError, av.FFmpegError):
+        streams = _audio_stream_count(path)
+    except (OSError, ValueError):
         return None
     if not stems or streams < 1 + len(stems):
         return None
     return [{"name": str(s.get("name") or f"Stem {i + 1}"), "color": str(s.get("color") or "#FFFFFF")}
             for i, s in enumerate(stems)]
+
+
+def _audio_stream_count(path: Path) -> int:
+    """How many audio streams an MP4 holds. Through PyAV where it is installed;
+    otherwise (the Konduktor SERVER ships without it — it never decodes) by
+    counting the `trak`s whose handler is `soun`, which is what PyAV counts."""
+    try:
+        import av
+    except ImportError:
+        av = None
+    if av is not None:
+        try:
+            with av.open(str(path), metadata_errors="ignore") as c:
+                return len(c.streams.audio)
+        except av.FFmpegError as ex:
+            raise ValueError(str(ex))
+    size = path.stat().st_size
+    count = 0
+    with open(path, "rb") as f:
+        moov = _find(f, 0, size, b"moov")
+        if moov is None:
+            return 0
+        for kind, body, end in mp4_edit._boxes(f, moov[1], moov[2]):
+            if kind != b"trak":
+                continue
+            mdia = _find(f, body, end, b"mdia")
+            hdlr = _find(f, mdia[1], mdia[2], b"hdlr") if mdia else None
+            if hdlr is None:
+                continue
+            f.seek(hdlr[1] + 8)  # version/flags (4) + pre_defined (4), then the type
+            if f.read(4) == b"soun":
+                count += 1
+    return count
 
 
 def _traktor_json(v) -> str:

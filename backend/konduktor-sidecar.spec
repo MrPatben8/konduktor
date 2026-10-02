@@ -10,7 +10,7 @@
 #  - python-multipart is imported as `multipart` by starlette → hidden import
 #  - dulwich (version-history backups) imports git backends dynamically →
 #    collect_submodules('dulwich')
-from PyInstaller.utils.hooks import collect_submodules, collect_all
+from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
 hiddenimports = []
 datas = []
@@ -30,6 +30,12 @@ for pkg in ("uvloop", "httptools", "websockets", "av"):
 
 # Imported by name, not statically discoverable.
 hiddenimports += ["multipart", "anyio"]
+
+# A remote library's password lives in the OS keychain through `keyring`, which
+# finds its backends (macOS Keychain, Windows Credential Manager) by entry point
+# — so both the modules AND the package metadata that names them must ship.
+hiddenimports += collect_submodules("keyring")
+datas += copy_metadata("keyring")
 
 # Bundle the canonical version file so konduktor.__version__ can read it at
 # runtime from sys._MEIPASS (frontend/package.json is the single source of the

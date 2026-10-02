@@ -10,6 +10,8 @@ import {
   type StemTarget,
 } from '../api'
 import { FolderPicker } from './FolderPicker'
+import { useServerFolder } from './AddFilesDialog'
+import { useCaps } from '../lib/capabilities'
 
 /**
  * Convert to Stems — one dialog (decided, see the stem-conversion discussion
@@ -89,6 +91,12 @@ export function ConvertStemsDialog({ trackIds, onClose, onStarted, onDownloading
   const [showSkipped, setShowSkipped] = useState(false)
   const [starting, setStarting] = useState(false)
   const [target, setTarget] = useState<StemTarget | null>(null)
+  // A remote library: its stem files are written ON THE SERVER, so the
+  // destination is one of its folders (remembered per remote), never the
+  // local one `stemConvert` remembers for this computer's libraries.
+  const remote = useCaps().tracks.audio_destination === 'library'
+  const server = useServerFolder(remote, 'remoteStemFolders', 'Stems')
+  const [serverDest, setServerDest] = useState<string | null>(null)
 
   useEffect(() => {
     if (opts || !prefs.isSuccess) return
@@ -114,9 +122,10 @@ export function ConvertStemsDialog({ trackIds, onClose, onStarted, onDownloading
   const playlists = useQuery({ queryKey: ['playlists'], queryFn: api.playlists })
   const choices = useMemo(() => flatten(playlists.data ?? []), [playlists.data])
 
+  const destination = remote ? (serverDest ?? server.folder) : (opts?.destination ?? '')
   const body: StemConvertOptions | null = opts && {
     mode: opts.mode,
-    destination: opts.mode === 'destination' ? opts.destination : null,
+    destination: opts.mode === 'destination' ? destination : null,
     collection: opts.mode === 'replace' ? 'repoint' : opts.collection,
     playlist_id:
       opts.mode === 'destination' && opts.collection === 'add' && opts.playlist === 'existing'
@@ -218,7 +227,17 @@ export function ConvertStemsDialog({ trackIds, onClose, onStarted, onDownloading
   return createPortal(
     <>
       {browsing && opts && (
-        <FolderPicker value={opts.destination} onChange={(path) => set({ destination: path })} onClose={() => setBrowsing(false)} />
+        <FolderPicker
+          value={destination}
+          listing={remote ? 'library' : 'host'}
+          onChange={(path) => {
+            if (remote) {
+              setServerDest(path)
+              server.remember(path)
+            } else set({ destination: path })
+          }}
+          onClose={() => setBrowsing(false)}
+        />
       )}
       <div
         aria-modal="true"
@@ -260,8 +279,8 @@ export function ConvertStemsDialog({ trackIds, onClose, onStarted, onDownloading
                   () => set({ mode: 'destination' }),
                   'Save to a folder',
                   <span className="flex items-center gap-2">
-                    <span className="min-w-0 truncate font-mono" dir="rtl" title={opts.destination}>
-                      {`‎${opts.destination}‎`}
+                    <span className="min-w-0 truncate font-mono" dir="rtl" title={destination}>
+                      {`‎${destination}‎`}
                     </span>
                     <button
                       onClick={(e) => {
@@ -413,6 +432,26 @@ export function ConvertStemsDialog({ trackIds, onClose, onStarted, onDownloading
                       {plan.seconds === 0 && allReused ? 'Already converted earlier — nothing to separate · ' : ''}
                       {size(plan.bytes)} of stem files
                     </div>
+                  )}
+                  {/* A remote library: the sources come down and the stem
+                      files go up — said, with the time it adds. */}
+                  {n > 0 && plan.transfer && plan.transfer.download + plan.transfer.upload > 0 && (
+                    <div className="text-faint">
+                      {size(plan.transfer.download)} to download and {size(plan.transfer.upload)} to upload
+                      {' · about '}
+                      {duration((plan.transfer.download + plan.transfer.upload) / plan.transfer.speed)}
+                      {plan.transfer.measured ? '' : ' (estimated)'} more
+                    </div>
+                  )}
+                  {n > 0 && plan.transfer && (
+                    <ul className="space-y-0.5 text-faint">
+                      {plan.space.map((sp) => (
+                        <li key={`${sp.volume}-${sp.folder}`}>
+                          {sp.volume}: {size(sp.bytes)} needed
+                          {sp.free != null ? `, ${size(sp.free)} free` : ''}
+                        </li>
+                      ))}
+                    </ul>
                   )}
                   {plan.blocked && <div className="text-pink">{plan.blocked}</div>}
                 </section>

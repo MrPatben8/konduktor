@@ -95,5 +95,40 @@ for platform, module in NATIVE.items():
     ]
     check(f"the {platform} adapter does import {module} somewhere", bool(own), "nowhere")
 
+print("== remote libraries ==")
+# The remote adapter speaks a PROTOCOL; which platform the server holds is the
+# server's business. Importing a platform's adapter (or its library) here would
+# make a remote library quietly platform-shaped again.
+remote_pkg = CORE.parent / "adapters" / "remote"
+strays = []
+for src in sorted(remote_pkg.rglob("*.py")):
+    tree = ast.parse(src.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if node.level and any(mod == p or mod.startswith(p + ".") for p in NATIVE):
+                strays.append(f"{src.name}: ..{mod}")
+            if not node.level and any(mod.startswith(m) for m in set(NATIVE.values())):
+                strays.append(f"{src.name}: {mod}")
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if any(a.name.startswith(m) for m in set(NATIVE.values())):
+                    strays.append(f"{src.name}: {a.name}")
+check("the remote adapter imports no platform adapter or library", not strays, "; ".join(strays))
+
+# The server is lightweight by decision: it never decodes audio, so importing
+# it must not pull in the analysis stack (and its image ships without it).
+import subprocess
+
+probe = subprocess.run(
+    [sys.executable, "-c",
+     "import sys, konduktor.server.app; "
+     "print(','.join(m for m in ('librosa', 'sklearn', 'torch', 'numba', 'av') if m in sys.modules))"],
+    capture_output=True, text=True, cwd=str(CORE.parents[1]),
+)
+heavy = probe.stdout.strip()
+check("the server imports no audio-analysis library", probe.returncode == 0 and not heavy,
+      heavy or probe.stderr[-300:])
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

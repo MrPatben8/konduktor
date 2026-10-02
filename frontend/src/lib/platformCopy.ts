@@ -57,6 +57,10 @@ export function readOnlyNotice(caps: Capabilities): string | null {
       return 'This file is not in your collection yet — add it to edit its tags, cues or beatgrid.'
     case 'browsing':
       return `This ${caps.save.app_name} drive is open for browsing. Open it for editing to change it.`
+    case 'taken_over':
+      return 'Another computer has taken over this remote library, so it is read-only here. Open it again to take it back.'
+    case 'offline':
+      return 'The server holding this library cannot be reached. It is read-only until the connection comes back.'
     case 'platform_incomplete':
     default:
       return `Konduktor can read ${caps.save.app_name} libraries but cannot save changes to them yet.`
@@ -67,6 +71,8 @@ export function readOnlyNotice(caps: Capabilities): string | null {
 export function readOnlyShort(caps: Capabilities): string | null {
   if (caps.writable) return null
   if (caps.readonly_cause === 'not_in_library') return 'Not in collection'
+  if (caps.readonly_cause === 'taken_over') return 'Read-only · taken over'
+  if (caps.readonly_cause === 'offline') return 'Read-only · offline'
   return caps.readonly_cause === 'cloud_synced' ? 'Read-only · cloud-synced' : 'Read-only'
 }
 
@@ -85,6 +91,11 @@ export function readOnlyShort(caps: Capabilities): string | null {
  * Someone told "not found" about OneLibrary would go hunting for a missing app.
  */
 export function platformAvailability(p: PlatformOption): string {
+  // A remote is reached, not found: `found` counts the saved ones.
+  if (p.selects === 'remote') {
+    if (p.found > 1) return `${p.found} saved servers`
+    return p.found === 1 ? '1 saved server' : 'A library on a Konduktor server'
+  }
   if (p.found > 1) return p.removable ? `${p.found} drives connected` : `${p.found} found`
   if (p.found === 1) return p.removable ? '1 drive connected' : `${p.library_label} found`
   return p.removable ? 'No drive connected' : `No ${p.library_label} in the usual place`
@@ -126,4 +137,21 @@ export function removalNote(caps: Capabilities, count: number): string {
   return `${stay} on disk. Nothing is written until you save${caps.save.history
     ? ', and a save can be rolled back from version history.'
     : ', and that save cannot be undone.'}`
+}
+
+// ---- a remote library -----------------------------------------------------------
+
+/** "Studio iMac (since 14:02) — a stem conversion is running there". */
+export function remoteHolder(machine: string | null, since: string | null, batch: string | null): string {
+  const who = machine || 'another computer'
+  const when = since ? new Date(since).toLocaleString(undefined, { timeStyle: 'short', dateStyle: 'medium' }) : null
+  const what: Record<string, string> = {
+    'grid-analysis': 'a beatgrid analysis',
+    'auto-hotcues': 'an Auto Hotcues run',
+    'stem-conversion': 'a stem conversion',
+    import: 'an import',
+    export: 'an export',
+  }
+  const running = batch ? ` — ${what[batch] ?? 'a batch'} is running there, and taking over cancels it` : ''
+  return `${who}${when ? ` has had it open since ${when}` : ' has it open'}${running}.`
 }

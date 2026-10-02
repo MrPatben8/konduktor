@@ -341,11 +341,15 @@ def plan(adapter, export_set) -> ExportPlan:
     resolved = exports.resolve(adapter, export_set)
     tracks = [t for t in (adapter.track(i) for i in resolved.track_ids) if t is not None]
 
-    # The source is the adapter's `audio_path`, never `Track.filepath`: that is
-    # a DISPLAY path, which on Traktor omits the volume and ignores the active
+    # The source is the adapter's file, never `Track.filepath`: that is a
+    # DISPLAY path, which on Traktor omits the volume and ignores the active
     # path mapping — so every track off the boot volume (or on a remapped
-    # Windows drive) read as missing and the export was "empty".
-    sources = {t.id: adapter.audio_path(t.id) for t in tracks}
+    # Windows drive) read as missing and the export was "empty". Its FACTS,
+    # not `audio_path`: planning must not read a file, and on a library held
+    # by a server reading one means downloading it. `run` fetches each file
+    # only when it copies it.
+    facts = adapter.audio_facts([t.id for t in tracks])
+    sources = {tid: Path(f.key) for tid, f in facts.items()}
 
     # Mirror relative to the deepest shared folder, so the export carries the
     # user's structure without carrying their home directory.
@@ -355,16 +359,10 @@ def plan(adapter, export_set) -> ExportPlan:
     previous = _previous_copies(destination)
     claimed: set[Path] = set()
     for track in tracks:
-        source = sources[track.id]
-        exists = False
-        size = mtime_ns = 0
-        try:
-            exists = bool(source and source.is_file())
-            if exists:
-                st = source.stat()
-                size, mtime_ns = st.st_size, st.st_mtime_ns
-        except OSError:
-            exists = False
+        source = sources.get(track.id)
+        fact = facts.get(track.id)
+        exists = fact is not None
+        size, mtime_ns = (fact.size, fact.mtime_ns) if fact else (0, 0)
         planned = PlannedTrack(
             track_id=track.id,
             title=track.title or (source.name if source else track.id),
@@ -519,7 +517,10 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle) -> dict:
                     done += n
                     handle.progress(done=done)
 
-                copy_file(planned.source_path, partial, handle, advance)
+                # The file to READ: on this machine that is the source itself;
+                # on a library held by a server, a downloaded copy of it.
+                local = adapter.audio_path(planned.track_id) or planned.source_path
+                copy_file(local, partial, handle, advance)
                 os.replace(partial, target)
             payload_tracks.append(
                 ExportTrack(

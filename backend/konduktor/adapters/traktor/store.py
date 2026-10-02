@@ -49,7 +49,7 @@ from xsdata.formats.dataclass.serializers import XmlSerializer
 from ...core.adapter import FileTagResult, InvalidCommand, SaveOutcome, StemSwapResult
 from ...core.edit_journal import EditJournal
 from ...core.pathmap import common_dir_prefix
-from ...core.pathmap import PathMapping
+from ...core.pathmap import PathMapping, stored_form
 from ...core.relocate import PathGroup
 from ...core.stem_file import NML_STEMS_JSON, nml_stems_for
 from ...schemas import PlaylistNode
@@ -79,6 +79,9 @@ class TraktorStore:
         self.dirty = False
         # Active OS-path prefix remapping (empty = identity). Survives _load().
         self._path_mapping = PathMapping()
+        # Write a file added through a mapping in the library's STORED form
+        # (`pathmap.stored_form`) — a Konduktor server sets this.
+        self._write_stored_paths = False
         # Mappings the user confirmed in the open-time missing-files check.
         # Session-only: never saved, re-derived on every open.
         self._session_mappings: list[PathMapping] = []
@@ -494,7 +497,7 @@ class TraktorStore:
         # Read before the lock: it opens the file.
         stems = nml_stems_for(audio_path)
         with self._lock:
-            volume, dir_, file = os_path_to_location(Path(audio_path))
+            volume, dir_, file = os_path_to_location(self._stored(Path(audio_path)))
             key = f"{volume}{dir_}{file}"
             if key in self._entry_by_key:
                 raise PlaylistError(
@@ -1060,6 +1063,15 @@ class TraktorStore:
         with self._lock:
             self._path_mapping = mapping
 
+    def set_write_stored_paths(self, enabled: bool) -> None:
+        self._write_stored_paths = bool(enabled)
+
+    def _stored(self, os_path: Path) -> Path:
+        """Where a NEW entry points, as the collection stores paths."""
+        if not self._write_stored_paths:
+            return Path(os_path)
+        return stored_form(Path(os_path), [self._path_mapping, *self._session_mappings])
+
     def set_session_mappings(self, mappings: list[PathMapping]) -> None:
         """Set the mappings confirmed for this session (applied at resolve time)."""
         with self._lock:
@@ -1355,7 +1367,7 @@ class TraktorStore:
                 if swap.mode not in ("repoint", "add"):
                     raise PlaylistError(f"Unknown stem swap mode: {swap.mode}")
                 seen_ids.add(swap.track_id)
-                loc = os_path_to_location(Path(swap.stem_path))
+                loc = os_path_to_location(self._stored(Path(swap.stem_path)))
                 new_key = "".join(x or "" for x in loc)
                 if new_key in self._entry_by_key or new_key in new_keys:
                     raise PlaylistError(

@@ -1,10 +1,12 @@
-import { useState, type ReactNode } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api, type CollectionCandidate, type CollectionStatus, type PlatformOption } from '../api'
 import { FileBrowser, useFsListing } from './FileBrowser'
 import { browsePrompt, platformAvailability } from '../lib/platformCopy'
 import { Icon } from '../lib/icons'
 import { PlatformIcon } from '../lib/platformIcons'
+import { OptionCard } from './OptionCard'
+import { RemotePicker } from './RemotePicker'
 
 /**
  * Choose a library to open, in two steps: WHICH PLATFORM, then which library.
@@ -35,50 +37,6 @@ function formatWhen(sec: number | null): string {
   })
 }
 
-function OptionCard({
-  icon,
-  lit,
-  title,
-  subtitle,
-  disabled,
-  busy,
-  onClick,
-}: {
-  icon: ReactNode
-  /** A small lit dot on the icon tile: "something is here". */
-  lit?: boolean
-  title: string
-  subtitle: string
-  disabled?: boolean
-  busy?: boolean
-  onClick: () => void
-}) {
-  return (
-    <button
-      disabled={disabled || busy}
-      onClick={onClick}
-      className="btn-glass group flex w-full items-center gap-3.5 rounded-2xl px-3 py-3 text-left disabled:cursor-not-allowed disabled:opacity-40"
-    >
-      <span className="well relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-text">
-        {icon}
-        {lit && (
-          <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-mint shadow-[0_0_8px_var(--color-mint)] ring-2 ring-[rgb(12_14_24)]" />
-        )}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-semibold text-text">{title}</div>
-        <div className="truncate text-xs text-faint">{subtitle}</div>
-      </div>
-      <Icon
-        name="chevronRight"
-        size={14}
-        strokeWidth={2.2}
-        className="text-faint transition-colors group-hover:text-text"
-      />
-    </button>
-  )
-}
-
 export function CollectionPicker({ onOpened, onCancel }: Props) {
   const [step, setStep] = useState<'platform' | 'library' | 'browse'>('platform')
   const [platform, setPlatform] = useState<PlatformOption | null>(null)
@@ -89,10 +47,12 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
   // /api/platforms is the pre-load equivalent, and it is the whole of step one.
   const platforms = useQuery({ queryKey: ['platforms'], queryFn: api.platforms })
 
+  // A remote is not found on this computer; its step lists saved servers.
+  const remote = platform?.selects === 'remote'
   const options = useQuery({
     queryKey: ['collectionOptions', platform?.platform],
     queryFn: () => api.collectionOptions(platform!.platform),
-    enabled: !!platform,
+    enabled: !!platform && !remote,
   })
 
   // Shares FileBrowser's query, so the confirm row below cannot disagree with
@@ -126,7 +86,9 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
   const subtitle =
     step === 'platform'
       ? 'Konduktor opens libraries from each of these.'
-      : step === 'library'
+      : step === 'library' && remote
+        ? 'A library held by a Konduktor server, played and prepared from here.'
+        : step === 'library'
         ? 'Open automatically, resume your last one, or browse.'
         : platform
           ? browsePrompt(platform)
@@ -146,7 +108,11 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
           )}
           <div className="min-w-0 flex-1">
             <div className="text-[15px] font-semibold tracking-tight">
-              {platform ? `Select your ${platform.name} library` : 'Select your DJ platform'}
+              {remote
+                ? 'Open a remote library'
+                : platform
+                  ? `Select your ${platform.name} library`
+                  : 'Select your DJ platform'}
             </div>
             <div className="truncate text-xs text-muted">{subtitle}</div>
           </div>
@@ -199,6 +165,9 @@ export function CollectionPicker({ onOpened, onCancel }: Props) {
               />
             ))}
           </div>
+        ) : step === 'library' && remote ? (
+          /* ---- Step 2, remote: which server ---- */
+          <RemotePicker onOpened={onOpened} />
         ) : step === 'library' ? (
           /* ---- Step 2: which library of that platform ---- */
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-5">

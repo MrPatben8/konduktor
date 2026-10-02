@@ -25,7 +25,12 @@ from pydantic import BaseModel
 # `browsing` is an editable library opened only to READ alongside the loaded one
 # (a OneLibrary stick in the sidebar's Devices): the way to edit it is to open it
 # as THE library, which one SaveBar and one dirty state can then follow.
-ReadonlyCause = Literal["platform_incomplete", "cloud_synced", "not_in_library", "browsing"]
+# `taken_over` is a library held by a server that another computer has taken
+# over; `offline` one whose server cannot be reached. Both are temporary, and
+# both mean "nothing you do here can be saved" until the session is back.
+ReadonlyCause = Literal[
+    "platform_incomplete", "cloud_synced", "not_in_library", "browsing", "taken_over", "offline",
+]
 
 CueType = Literal["cue", "fade_in", "fade_out", "load", "loop"]
 CueRole = Literal["hotcue", "memory"]
@@ -87,12 +92,27 @@ class TrackCapabilities(BaseModel):
     audio_formats: list[str] = [".mp3", ".wav", ".aif", ".aiff", ".flac", ".m4a"]
     artwork: bool = False
     artwork_note: str | None = None
+    # Whose filesystem an import destination is on. "host": this computer's,
+    # browsed with the ordinary file browser. "library": the machine that holds
+    # the library (a server), whose folders are listed through the library —
+    # added audio is UPLOADED there.
+    audio_destination: Literal["host", "library"] = "host"
+    # Whether added files can be left where they are ("reference") rather than
+    # copied. False where the library cannot see this computer's files at all.
+    reference: bool = True
 
 
 class PlaylistCapabilities(BaseModel):
     folders: bool = False
     smart: Literal["none", "read_only"] = "none"
     reorder: bool = False
+
+
+class PathCapabilities(BaseModel):
+    # Path mapping, path rewriting and the open-time missing-files check apply.
+    # False for a library held by a server: its mapping is the server's own
+    # configuration, and this computer's drives are not where its files are.
+    remappable: bool = True
 
 
 class SaveCapabilities(BaseModel):
@@ -129,4 +149,5 @@ class Capabilities(BaseModel):
     grid: GridCapabilities = GridCapabilities()
     tracks: TrackCapabilities = TrackCapabilities()
     playlists: PlaylistCapabilities = PlaylistCapabilities()
+    paths: PathCapabilities = PathCapabilities()
     save: SaveCapabilities

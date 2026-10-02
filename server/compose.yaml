@@ -1,0 +1,18 @@
+# Konduktor server — e.g. as a TrueNAS SCALE custom app (Apps → Discover Apps →
+# ⋮ → Install via YAML), or `docker compose up -d` anywhere with Docker.
+#
+# Mount your datasets on the left-hand side; the right-hand paths are what
+# .env refers to.
+services:
+  konduktor:
+    image: ghcr.io/mrpatben8/konduktor-server:latest
+    env_file: .env
+    ports:
+      - "8765:8765"
+    volumes:
+      - /mnt/tank/music:/music                    # the audio (KONDUKTOR_CONTENT)
+      - /mnt/tank/konduktor/library:/library      # collection.nml / master.db
+      - /mnt/tank/konduktor/data:/data            # history, export sets, ledger
+    # TrueNAS's "apps" user, so files written on the datasets keep its ownership.
+    user: "568:568"
+    restart: unless-stopped

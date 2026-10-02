@@ -1,4 +1,5 @@
 import { Icon } from '../lib/icons'
+import type { RemoteConnection } from '../api'
 /** A background job's progress, shown at the right of the bar. */
 export interface StatusJob {
   label: string
@@ -29,6 +30,8 @@ interface Props {
   loading?: boolean
   collectionName?: string | null
   onChangeCollection?: () => void
+  /** A remote library's connection; null for a library on this computer. */
+  connection?: RemoteConnection | null
 }
 
 export function StatusBar({
@@ -40,6 +43,7 @@ export function StatusBar({
   loading,
   collectionName,
   onChangeCollection,
+  connection,
 }: Props) {
   return (
     <div className="glass flex h-7 shrink-0 items-center gap-3 !rounded-full px-4 text-[11px] text-muted">
@@ -145,10 +149,11 @@ export function StatusBar({
           </button>
         </div>
       )}
+      {connection && <ConnectionDot connection={connection} pushRight={!job} />}
       {collectionName && (
         <button
           onClick={onChangeCollection}
-          className={`${job ? '' : 'ml-auto '}flex items-center gap-1.5 rounded px-2 py-0.5 text-faint hover:bg-ink-800 hover:text-text`}
+          className={`${job || connection ? '' : 'ml-auto '}flex items-center gap-1.5 rounded px-2 py-0.5 text-faint hover:bg-ink-800 hover:text-text`}
           title="Change collection"
         >
           <Icon name="link" size={12} />
@@ -156,5 +161,30 @@ export function StatusBar({
         </button>
       )}
     </div>
+  )
+}
+
+/** How this computer stands with a remote library's server, in a word. */
+function ConnectionDot({ connection, pushRight }: { connection: RemoteConnection; pushRight: boolean }) {
+  const { state, via, machine } = connection
+  const look = {
+    connected: { dot: 'bg-mint shadow-[0_0_6px_var(--color-mint)]', text: via === 'fallback' ? 'Connected · fallback' : 'Connected' },
+    reconnecting: { dot: 'bg-gold animate-pulse', text: 'Reconnecting…' },
+    offline: { dot: 'bg-pink', text: 'Offline' },
+    taken_over: { dot: 'bg-pink', text: `Taken over${machine ? ` by ${machine}` : ''}` },
+  }[state]
+  const title =
+    state === 'connected'
+      ? `Connected to the server through its ${via === 'fallback' ? 'fallback' : 'main'} address`
+      : state === 'taken_over'
+        ? 'Another computer holds this library; it is read-only here'
+        : state === 'offline'
+          ? 'The server cannot be reached; the library is read-only until it is back'
+          : 'Trying to reach the server again'
+  return (
+    <span className={`${pushRight ? 'ml-auto ' : ''}flex shrink-0 items-center gap-1.5 text-faint`} title={title}>
+      <span className={`h-1.5 w-1.5 rounded-full ${look.dot}`} />
+      <span>{look.text}</span>
+    </span>
   )
 }

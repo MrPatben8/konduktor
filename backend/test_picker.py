@@ -36,13 +36,19 @@ def check(label, cond, detail=""):
         failed = True
 
 
-opts = platforms()
+everything = platforms()
+# A remote library is offered LAST, after every platform on this computer: it is
+# a way to reach a library (held by a Konduktor server), not a driver here.
+opts = [p for p in everything if p.platform != "remote"]
 by_name = {p.platform: p for p in opts}
 
 print("== /api/platforms reports the facts the platform step needs ==")
 check("every registered driver is offered", len(opts) == len(registry.drivers()),
       f"{len(opts)} of {len(registry.drivers())}")
 check("all three platforms present", {"traktor", "rekordbox", "onelibrary"} <= set(by_name))
+check("Remote is offered once, after them, as a remote",
+      [p.platform for p in everything].count("remote") == 1 and everything[-1].platform == "remote"
+      and everything[-1].selects == "remote")
 check("selects is per-platform, not assumed",
       by_name["traktor"].selects == "file"
       and by_name["rekordbox"].selects == "file"
@@ -61,7 +67,7 @@ check("ordered fixed-location first, then by name",
       [p.platform for p in opts] == [p.platform for p in
                                      sorted(opts, key=lambda o: (o.removable, o.name.lower()))],
       [p.platform for p in opts])
-check("a second call gives the same order", [p.platform for p in platforms()] == [p.platform for p in opts])
+check("a second call gives the same order", [p.platform for p in platforms()] == [p.platform for p in everything])
 
 print("== /api/library/options is scoped to ONE platform ==")
 for plat in ("traktor", "rekordbox", "onelibrary"):
