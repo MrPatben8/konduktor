@@ -121,6 +121,24 @@ back = rp.unpack_analysis(rp.pack_analysis(PreparedAnalysis(measured=measured, k
 check("…and the detected key", back.key == key, back.key)
 check("no analysis is None", rp.pack_analysis(None) is None and rp.unpack_analysis(None) is None)
 
+print("== remote addresses ==")
+from konduktor.adapters.remote.config import Remote
+
+r = Remote(id="r", name="NAS", host="192.168.1.20", port=8765, fallback_host="konduktor.example.net")
+check("each address is built from its own parts",
+      r.addresses() == [("primary", "http://192.168.1.20:8765"), ("fallback", "http://konduktor.example.net:8765")],
+      r.addresses())
+r = Remote(id="r", name="NAS", host="192.168.1.20", port=9000, fallback_host="konduktor.example.net")
+check("…so a bare fallback gets the default port, not the primary's 9000",
+      r.addresses()[1] == ("fallback", "http://konduktor.example.net:8765"), r.addresses())
+r = Remote(id="r", name="NAS", host="192.168.1.20", port=9000, fallback_host="https://konduktor.example.net/")
+check("a full URL is used exactly as typed (a reverse proxy's port)",
+      r.addresses()[1] == ("fallback", "https://konduktor.example.net"), r.addresses())
+r = Remote(id="r", name="NAS", host="http://nas.lan:8080")
+check("…a URL with its own port keeps it", r.addresses() == [("primary", "http://nas.lan:8080")])
+check("host:port typed inline is split", Remote(id="r", name="N", host="nas.local:9001").addresses()[0][1]
+      == "http://nas.local:9001")
+
 print("== versions ==")
 check("same version talks", rp.compatible((1, 0), (1, 0)) is None)
 check("a newer server minor talks", rp.compatible((1, 0), (1, 3)) is None)
