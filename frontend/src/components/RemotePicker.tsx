@@ -241,12 +241,12 @@ function RemoteFormView({
         {field(
           'Address',
           <input className={`${input} font-mono`} value={host} onChange={(e) => setHost(e.target.value)} placeholder="192.168.1.20 or nas.local:8765" />,
-          'The server’s address on your network. Add :port if it is not 8765.',
+          'The server’s address on your network. Add :port if it is not 8765, or enter a full https://… address if it sits behind a reverse proxy.',
         )}
         {field(
           'Fallback address',
-          <input className={`${input} font-mono`} value={fallback} onChange={(e) => setFallback(e.target.value)} placeholder="Optional — e.g. its Tailscale address" />,
-          'Tried when the first one does not answer — away from home, for instance.',
+          <input className={`${input} font-mono`} value={fallback} onChange={(e) => setFallback(e.target.value)} placeholder="Optional — e.g. https://konduktor.example.net" />,
+          'Tried when the first one does not answer — away from home, for instance. Same rules: host[:port] for the server itself (8765 if no port), or a full https://… address used exactly as typed.',
         )}
         {field('Username', <input className={input} value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />)}
         {field(

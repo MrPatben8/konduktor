@@ -36,10 +36,15 @@ class Remote:
     username: str = ""
 
     def addresses(self) -> list[tuple[str, str]]:
-        """`(label, base url)`, primary first — the order every connect tries."""
+        """`(label, base url)`, primary first — the order every connect tries.
+
+        Each address keeps its OWN port. The fallback once borrowed the
+        primary's, so a reverse-proxied fallback (`konduktor.example.net`,
+        served on 443) was tried at `:8765` because the LAN address named it.
+        """
         out = [("primary", _base(self.host, self.port))]
         if self.fallback_host:
-            out.append(("fallback", _base(self.fallback_host, self.fallback_port or self.port)))
+            out.append(("fallback", _base(self.fallback_host, self.fallback_port)))
         return out
 
     def public(self) -> dict:
@@ -47,9 +52,11 @@ class Remote:
 
 
 def _base(host: str, port: int | None) -> str:
+    """An address as typed → a base URL. A full URL (`https://…`, the way to
+    reach a server behind the user's own reverse proxy) is taken exactly as
+    given, port and all; anything else is plain HTTP on its port, else 8765."""
     host = host.strip()
     if host.startswith("http://") or host.startswith("https://"):
-        # A full URL (behind the user's own reverse proxy): taken as given.
         return host.rstrip("/")
     bare, inline = split_host(host)
     if inline is not None:
