@@ -533,7 +533,13 @@ Two independent apps that talk over HTTP:
     "Map by hand…" link to `PathMappingDialog`; no backdrop-click dismiss.
   - `prefs.py` — persisted user prefs (`userprefs.json` in the per-OS app-data
     dir). Last-opened collection (global AND per-platform), library column
-    layout, prep-deck zoom, import destination. Best-effort.
+    layout, prep-deck zoom, import destination. Best-effort, but **every
+    read-modify-write holds `_LOCK` and every write is atomic**
+    (`paths.write_json`): the UI sends several PATCHes at once on launch, and
+    unlocked, with a truncating write, a reader caught the file empty and wrote
+    back only its own key — wiping every pref, the column layout included. A
+    file that will not parse is moved to `userprefs.json.corrupt`, never
+    silently overwritten. New helpers that read then write must take the lock.
   - `schemas.py` — HTTP request bodies + envelopes; re-exports `core.model`.
   - `main.py` — thin FastAPI routes (all under `/api`), talking only to the
     adapter. Starts **unloaded**; the library is chosen at runtime via
@@ -842,7 +848,11 @@ Two independent apps that talk over HTTP:
     via `GET`/`PATCH /api/prefs` (debounced; hydrated on launch, merged against
     defaults so newly-added columns still appear). The prep deck's main-waveform
     zoom persists the same way (`mainZoomSec`, hydrated in `PrepStrip` from the
-    shared `['prefs']` query).
+    shared `['prefs']` query). Continuously-changing prefs (columns, zoom,
+    `beatSize`) are written through ONE debounced writer, `lib/prefs.ts`
+    (`usePrefsWriter` / `queuePrefs`): changes merge into one PATCH, sent in
+    order, and the queue outlives unmounts; `QuitGuard` calls `flushPrefs()`
+    before quitting. Do not give a new pref its own timer.
 
 ## Commands
 
@@ -1071,6 +1081,11 @@ serialization path.** It enforces:
   as a drive, and that the adapter and the browser share ONE mount scanner. Needs nothing installed: every assertion is about the SHAPE of the
   answer, and prefs are redirected to a temp file so a test can never rewrite
   the user's last-opened library.
+- `test_prefs.py` — `userprefs.json` under concurrent writes: 200 bursts of
+  simultaneous patches (plus a reader) keep every key and every patch; the
+  last-collection and path-mapping helpers lose nothing either; an unreadable
+  file is moved aside, not overwritten. Against the old unlocked code it fails
+  on the first trial.
 - `test_exports.py` — export sets against a temp copy of the real collection.
   Pins the things that would fail SILENTLY: a live reference picks up a playlist
   edited AFTER curation; contents dedupe across playlists and loose tracks; a

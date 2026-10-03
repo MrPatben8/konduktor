@@ -2,6 +2,7 @@ import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api'
+import { flushPrefs } from '../lib/prefs'
 
 /**
  * Ask before quitting with unsaved changes: Save · Discard · Cancel.
@@ -46,6 +47,7 @@ export function QuitGuard() {
           .then((s) => s.dirty)
           .catch(() => false) // no library loaded: nothing to lose
         if (!unsaved) {
+          await flushPrefs(1000)
           await invoke('quit_now')
           return
         }
@@ -73,6 +75,7 @@ export function QuitGuard() {
   }, [dirty])
 
   const quit = async () => {
+    await flushPrefs(1000) // a layout change made just before quitting still lands
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('quit_now')
   }

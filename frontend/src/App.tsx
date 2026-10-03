@@ -31,6 +31,7 @@ import { AddFilesDialog, type AddTarget } from './components/AddFilesDialog'
 import { ConvertStemsDialog } from './components/ConvertStemsDialog'
 import { StemReportDialog } from './components/StemReportDialog'
 import { Icon } from './lib/icons'
+import { usePrefsWriter } from './lib/prefs'
 
 function applyFilters(tracks: Track[], f: Filters): Track[] {
   const q = f.search.trim().toLowerCase()
@@ -117,7 +118,7 @@ export default function App() {
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({})
   const prefsQuery = useQuery({ queryKey: ['prefs'], queryFn: api.getPrefs })
   const hydratedRef = useRef(false)
-  const saveTimer = useRef<number | null>(null)
+  const writePrefs = usePrefsWriter()
 
   const resetColumns = useCallback(() => {
     setColumnVisibility(DEFAULT_COLUMN_VISIBILITY)
@@ -148,22 +149,14 @@ export default function App() {
     }
   }, [prefsQuery.data])
 
-  // Persist layout changes (debounced), but not before hydration so we never
-  // clobber saved prefs with the initial defaults.
+  // Persist layout changes (debounced, via the shared prefs writer), but not
+  // before hydration so we never clobber saved prefs with the initial defaults.
   useEffect(() => {
     if (!hydratedRef.current) return
-    if (saveTimer.current) window.clearTimeout(saveTimer.current)
-    saveTimer.current = window.setTimeout(() => {
-      api
-        .patchPrefs({
-          columns: { visibility: columnVisibility, order: columnOrder, sizing: columnSizing },
-        })
-        .catch(() => {})
-    }, 500)
-    return () => {
-      if (saveTimer.current) window.clearTimeout(saveTimer.current)
-    }
-  }, [columnVisibility, columnOrder, columnSizing])
+    writePrefs({
+      columns: { visibility: columnVisibility, order: columnOrder, sizing: columnSizing },
+    })
+  }, [columnVisibility, columnOrder, columnSizing, writePrefs])
 
   const collection = useQuery({ queryKey: ['collection'], queryFn: api.collection })
   const loaded = collection.data?.loaded ?? false
