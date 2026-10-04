@@ -239,6 +239,63 @@ with tempfile.TemporaryDirectory() as d:
         jid = main.JOBS.submit("unit-probe", lambda h: h.progress(done=1, total=2, unit="bytes")).id
         check("a job's unit reaches the client", wait(c, jid).get("unit") == "bytes")
 
+print("== BPM alone / Grid alone write through the hand-edit commands ==")
+with tempfile.TemporaryDirectory() as d:
+    from konduktor.adapters.traktor.adapter import TraktorAdapter
+    from konduktor.core.grid_plan import GridStep
+
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    a = TraktorAdapter(work)
+    a.audio_path = lambda tid: Path(__file__)
+    asked: list[dict] = []
+
+    def fake_detect(path, *args, **k):
+        asked.append({key: k.get(key) for key in ("bpm", "anchor")})
+        return SimpleNamespace(anchor=k.get("anchor") or 0.777, bpm=k.get("bpm") or 131.0)
+
+    main.grid_detect.detect_grid = fake_detect
+
+    def single_with_companion():
+        for t in a.tracks:
+            cues = a.track_cues(t.id)
+            if t.grid_locked or not cues or len(cues.grid_markers) != 1:
+                continue
+            m = cues.grid_markers[0]
+            comp = [c for c in cues.cues if c.slot is not None and abs(c.start - m.start) < 0.002]
+            if comp:
+                yield t.id, m, comp[0]
+
+    picks = single_with_companion()
+    tid, m, comp = next(picks)
+    out = main._analyse_grid(a, tid, GridStep("bpm", hold_anchor=m.start))
+    g = out.grid_markers
+    check("BPM alone asks the detector to hold the anchor", asked[-1] == {"bpm": None, "anchor": m.start}, str(asked[-1]))
+    check("…and retempos the marker in place",
+          len(g) == 1 and abs(g[0].bpm - 131.0) < 1e-6 and abs(g[0].start - m.start) < 1e-6, str(g))
+    check("…leaving its beat-1 cue where it was",
+          any(c.slot == comp.slot and abs(c.start - comp.start) < 1e-6 for c in out.cues))
+    check("the track's BPM follows", abs(a.track(tid).bpm - 131.0) < 0.01, str(a.track(tid).bpm))
+
+    tid, m, comp = next(picks)
+    out = main._analyse_grid(a, tid, GridStep("phase", hold_bpm=m.bpm))
+    g = out.grid_markers
+    check("Grid alone asks the detector to hold the BPM", asked[-1] == {"bpm": m.bpm, "anchor": None}, str(asked[-1]))
+    check("…and moves the marker, keeping its tempo",
+          len(g) == 1 and abs(g[0].start - 0.777) < 0.002 and abs(g[0].bpm - m.bpm) < 1e-6, str(g))
+    check("…dragging its beat-1 cue along",
+          any(c.slot == comp.slot and abs(c.start - 0.777) < 0.002 for c in out.cues))
+
+    bare = next(t for t in a.tracks if t.grid_marker_count == 0 and not t.grid_locked)
+    out = main._analyse_grid(a, bare.id, GridStep("phase", hold_bpm=128.0))
+    check("Grid alone with a BPM but no grid creates one marker at that BPM",
+          [(round(x.start, 3), x.bpm) for x in out.grid_markers] == [(0.777, 128.0)], str(out.grid_markers))
+    try:
+        main._analyse_grid(a, bare.id, GridStep("skip", "locked"))
+        check("a skip step is never written", False)
+    except ValueError:
+        check("a skip step is never written", True)
+
 print()
 print("FAILED" if failed else "RESULT: ALL PASSED")
 raise SystemExit(1 if failed else 0)

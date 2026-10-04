@@ -6,6 +6,8 @@ compare rather than a pass/fail. Every open is read-only — nothing is saved.
     python bench_grid_detect.py                      # the local Rekordbox library
     python bench_grid_detect.py path/to/collection.nml path/to/master.db
     python bench_grid_detect.py --legacy             # score the old librosa beat_track
+    python bench_grid_detect.py --hold bpm           # Grid alone: phase, given the right BPM
+    python bench_grid_detect.py --hold anchor        # BPM alone: tempo, given the right anchor
 
 The reference is each track's own grid, and only single-marker grids are used:
 a multi-marker grid is either a real tempo change (which a constant-tempo
@@ -102,6 +104,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("libraries", nargs="*", type=Path)
     ap.add_argument("--legacy", action="store_true", help="score the old librosa beat_track detector")
+    ap.add_argument("--hold", choices=("bpm", "anchor"),
+                    help="score one half alone: hold the REFERENCE's BPM (the Analyze dialog's "
+                         "'Grid' tick — phase is all that is scored) or its anchor ('BPM')")
     args = ap.parse_args()
 
     libs = args.libraries or [Path.home() / "Library/Pioneer/rekordbox/master.db"]
@@ -119,7 +124,8 @@ def main() -> int:
     for name, audio, r0, rb in refs:
         t0 = time.perf_counter()
         try:
-            res = detect(str(audio))
+            hold = {"bpm": {"bpm": rb}, "anchor": {"anchor": r0}}.get(args.hold, {})
+            res = detect(str(audio), **hold)
         except Exception as ex:  # a failure is a data point, not a crash
             print(f"  FAIL  {name[:48]:48}  {ex}")
             rows.append(None)

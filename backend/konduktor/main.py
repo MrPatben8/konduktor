@@ -18,6 +18,7 @@ from . import __version__, exporter, exports, history, prefs
 from .app_state import STATE
 from .core import auto_hotcues as ah
 from .core import grid_detect, structure
+from .core.grid_plan import GridStep
 from . import importer
 from .core import export as core_export
 from .core import places, registry
@@ -1285,16 +1286,44 @@ def _submit_batch(kind: str, run) -> "Job":
         raise HTTPException(409, "A batch analysis is already running")
 
 
-def _analyse_grid(a, track_id: str) -> TrackCues:
+def _analyse_grid(a, track_id: str, step: GridStep = GridStep("full"), *,
+                  y=None, sr: int | None = None) -> TrackCues:
     """Detect and write one track's grid — shared by the deck's Analyze and the
-    batch job, so the two cannot come to mean different things."""
-    path = a.audio_path(track_id)
-    if path is None or not path.exists():
-        raise _AnalysisError("Audio file not found (is the drive mounted?)")
+    batch job, so the two cannot come to mean different things.
+
+    `step` is `core/grid_plan`'s decision. Each kind is written through the
+    command a hand edit of the same thing uses, so it inherits that command's
+    handling (Traktor's beat-1 companion cue, the time base, the BPM column):
+      - "full":  `set_analysed_grid` — one marker, written as the platform's
+                 own analyser would (on Traktor also hotcue 1 on the first beat);
+      - "bpm":   `set_grid_marker_bpm` on the first marker — the anchor, the
+                 marker's name and its companion stay exactly where they are;
+      - "phase": `move_grid_marker` on the first marker (dragging its
+                 companion), or a fresh marker at the kept BPM when there was
+                 only a TEMPO and no grid.
+    `y`/`sr` let a caller that already decoded the file share it."""
+    if step.action in ("none", "skip"):
+        raise ValueError(f"nothing to write for a {step.action!r} step")
+    if y is None:
+        path = a.audio_path(track_id)
+        if path is None or not path.exists():
+            raise _AnalysisError("Audio file not found (is the drive mounted?)")
     try:
-        found = grid_detect.detect_grid(str(path))
+        kw = {"y": y, "sr": sr} if y is not None else {}
+        found = grid_detect.detect_grid(
+            "" if y is not None else str(path),
+            bpm=step.hold_bpm if step.action == "phase" else None,
+            anchor=step.hold_anchor if step.action == "bpm" else None,
+            **kw,
+        )
     except Exception as ex:  # analysis is best-effort; never 500 the UI
         raise _AnalysisError(f"Analysis failed: {ex}") from ex
+    if step.action == "bpm":
+        return a.set_grid_marker_bpm(track_id, 0, found.bpm)
+    if step.action == "phase":
+        cues = a.track_cues(track_id)
+        if cues is not None and cues.grid_markers:
+            return a.move_grid_marker(track_id, 0, found.anchor)
     # "Analysed", not "replace": each platform writes an analysis result in its
     # own shape (Traktor pairs the first marker with a beat-1 cue).
     return a.set_analysed_grid(track_id, [(found.anchor, found.bpm)])

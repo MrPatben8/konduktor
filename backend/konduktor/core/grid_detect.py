@@ -213,12 +213,27 @@ def detect_grid(
     *,
     y: np.ndarray | None = None,
     sr: int = _SR,
+    bpm: float | None = None,
+    anchor: float | None = None,
 ) -> GridResult:
     """Detect a track's constant tempo and first beat.
 
     ``y``/``sr`` let a caller (or a test) pass decoded mono audio directly.
     Raises ``ValueError`` when there is no pulse to fit (silence, a one-shot).
+
+    Either half can be held fixed — the Analyze dialog's BPM and Grid ticks:
+      - ``bpm`` given ("Grid" alone): that tempo is KEPT — no search, no
+        round-BPM snap — and only where its beats fall is found. For a BPM the
+        user trusts (typed, or a store's) and a grid that sits off the beat.
+      - ``anchor`` given ("BPM" alone): the tempo is detected and the anchor
+        returned as given, so the grid's downbeat stays where the user put it.
+        ``drift_ms`` is then measured against THAT anchor: large means the kept
+        anchor does not sit on the detected beat.
     """
+    if bpm is not None and anchor is not None:
+        raise ValueError("Hold the BPM or the anchor, not both — there would be nothing to detect")
+    if bpm is not None and not (20.0 <= bpm <= 400.0):
+        raise ValueError(f"Not a usable BPM: {bpm}")
     if y is None:
         import librosa
         y, sr = librosa.load(audio_path, sr=sr, mono=True)
@@ -227,10 +242,42 @@ def detect_grid(
     if duration < 1.5:
         raise ValueError("Track is too short to detect a tempo")
 
-    lo, hi = bpm_range
     low = _onset(_band_env(y, sr, 30.0, 150.0))
-    mid = _onset(_band_env(y, sr, 150.0, 4000.0, smooth_ms=3))
     attack = _onset(_band_env(y, sr, _ATTACK_LO_HZ, _ATTACK_HI_HZ, smooth_ms=3))
+
+    if bpm is not None:
+        period = 60.0 / bpm
+        if not np.isfinite(attack).all() or attack.max() <= 0:
+            raise ValueError("No onsets found")
+        phase = _phase(low, attack, period)
+        return GridResult(
+            bpm=float(bpm),
+            anchor=round(_first_beat(low + attack, phase, period), 4),
+            duration=duration,
+            drift_ms=round(_drift(attack, bpm, phase) * 1000.0, 1),
+        )
+
+    found_bpm, phase, drift = _detect_tempo(y, sr, low, attack, bpm_range, duration)
+    period = 60.0 / found_bpm
+    if anchor is not None:
+        return GridResult(
+            bpm=round(found_bpm, 4),
+            anchor=float(anchor),
+            duration=duration,
+            drift_ms=round(_drift(attack, found_bpm, float(anchor) % period) * 1000.0, 1),
+        )
+    return GridResult(
+        bpm=round(found_bpm, 4),
+        anchor=round(_first_beat(low + attack, phase, period), 4),
+        duration=duration,
+        drift_ms=round(drift * 1000.0, 1),
+    )
+
+
+def _detect_tempo(y, sr, low, attack, bpm_range, duration) -> tuple[float, float, float]:
+    """(bpm, phase, drift) — the tempo search, octave rule and round snap."""
+    lo, hi = bpm_range
+    mid = _onset(_band_env(y, sr, 150.0, 4000.0, smooth_ms=3))
     full = _onset(_band_env(y, sr, None, None, smooth_ms=3))
     o_tempo = low + mid + 0.5 * full
     if not np.isfinite(o_tempo).all() or o_tempo.max() <= 0:
@@ -260,15 +307,7 @@ def detect_grid(
     bpm, _ = _refine(o_t, bpm, 0.02, 0.001)
     phase = _phase(low, attack, 60.0 / bpm)
     drift = _drift(attack, bpm, phase)
-    bpm, phase, drift = _snap_round(low, attack, bpm, phase, drift, duration)
-
-    period = 60.0 / bpm
-    return GridResult(
-        bpm=round(bpm, 4),
-        anchor=round(_first_beat(low + attack, phase, period), 4),
-        duration=duration,
-        drift_ms=round(drift * 1000.0, 1),
-    )
+    return _snap_round(low, attack, bpm, phase, drift, duration)
 
 
 def _peaks(f: np.ndarray, k: int, min_sep: int) -> list[int]:

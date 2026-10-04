@@ -114,6 +114,23 @@ Two independent apps that talk over HTTP:
       `backend/bench_grid_detect.py` scores it against any library's
       single-marker grids and reports that constant separately from detection
       error (29 Rekordbox references: old 1/29 BPMs, new 27/29).
+      Either half can be HELD — the Analyze dialog's BPM / Grid ticks:
+      `bpm=` keeps that tempo (no search, no round snap, no re-octave) and
+      finds only the phase; `anchor=` detects the tempo and returns the anchor
+      untouched, `drift_ms` then measuring how well the kept anchor fits.
+      `bench_grid_detect.py --hold bpm|anchor` scores each alone (2026-10-04,
+      15 local refs: phase given the right BPM 15/15; tempo given the right
+      anchor 14/15, the same miss as full analysis).
+    - `grid_plan.py` — **what an analysis does to one track's grid**, as one
+      pure function (`plan_grid` → `GridStep`) so the batch, the dialog's
+      counts and the tests agree. BPM+Grid = full, an existing grid replaced
+      only with Replace ticked; BPM alone keeps the first marker's anchor; Grid
+      alone keeps its BPM (else the track's TEMPO). With ONE tick, Replace does
+      not apply (adjusting is the point) and a track with nothing to keep is
+      analysed in full; a flexible grid is skipped, never flattened; locked is
+      always skipped. `main._analyse_grid` writes each through the hand-edit
+      command for the same thing — `set_grid_marker_bpm(0)` / `move_grid_marker(0)`
+      — so companions, marker names and time bases behave as for a hand edit.
     - `key_detect.py` + `key_model.npz` — **musical key detection**: a small
       CNN (Korzeniowski & Widmer 2017 — five 5x5 convs, a per-frame dense layer
       over the WHOLE pitch axis, since a key is not pitch-invariant, logits
@@ -1067,7 +1084,11 @@ serialization path.** It enforces:
   tempo and first beat are known rather than borrowed from another analyser:
   exact integer and non-integer BPMs, the 125 BPM the old detector could not
   return, octave choice, and the loud off-beat hat and syncopated bassline that
-  each fooled one band on real music. Accuracy on REAL music is
+  each fooled one band on real music. Holding either half: a held BPM comes
+  back untouched (never snapped or re-octaved, a wrong one reports drift) with
+  the phase still found through the hat/bass traps; a held anchor comes back
+  untouched with the tempo detected, an off-beat one reported as drift. And
+  `plan_grid`'s every rule. Accuracy on REAL music is
   `bench_grid_detect.py`'s job (not in `run_tests.sh`: it needs audio).
 - `test_key_detect.py` — key detection on SYNTHETIC cadences in all 24 keys
   (I-IV-V-I / i-iv-V-i — a pop I-V-vi-IV is fairly called minor by an EDM
@@ -1093,6 +1114,10 @@ serialization path.** It enforces:
   returns its result; opening another library cancels the run. Each shares its
   helper (`_analyse_grid`, `_place_auto_cues`) with the deck's single-track
   button.
+  Also BPM alone / Grid alone through `_analyse_grid` on a real Traktor copy:
+  the detector is asked to hold the right half, BPM alone retempos the marker
+  in place with its beat-1 cue untouched, Grid alone moves it (cue dragged
+  along) at the same tempo, and a TEMPO-only track gets one marker at it.
 - `test_bulk_remove.py` — the context menu's **Remove ▸** routes
   (`/api/tracks/grid/clear`, `/api/tracks/cue/clear`, `/api/tracks/remove`):
   locked grids are kept, clearing hotcues empties the whole bank (loops and the

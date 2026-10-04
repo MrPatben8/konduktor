@@ -136,6 +136,38 @@ print("== a wandering tempo is reported, not hidden ==")
 r = detect(track(124, tempo_b=124.15))
 check("drift is reported when one grid cannot fit", r.drift_ms is not None and r.drift_ms >= 12, f"{r.drift_ms}")
 
+print("== Grid alone: the BPM is held, only the phase is found ==")
+r = detect(track(124, first=0.3), bpm=124.0)
+check("the given BPM comes back untouched", r.bpm == 124.0, f"got {r.bpm}")
+check("the anchor is found on the first kick (±3 ms)", abs(r.anchor - 0.3) <= 0.003, f"got {r.anchor}")
+r = detect(track(123.37, first=0.2), bpm=123.37)
+check("a non-round held BPM is not snapped to 123", r.bpm == 123.37, f"got {r.bpm}")
+check("…and its grid is on the beat at the end (±5 ms)", abs(beat_error_ms(r, 123.37, 0.2, 175)) <= 5)
+r = detect(track(124, first=0.4, hat=1.5, bass=1.2), bpm=124.0)
+check("the phase traps still hold with a held BPM",
+      abs(beat_error_ms(r, 124, 0.4, 60)) <= 3, f"{beat_error_ms(r, 124, 0.4, 60):+.1f} ms")
+r = detect(track(87, first=0.3), bpm=174.0)
+check("a held double-time BPM is kept (the octave is the user's call)",
+      r.bpm == 174.0 and abs(beat_error_ms(r, 87, 0.3, 60)) <= 3, f"{r.bpm} {beat_error_ms(r, 87, 0.3, 60):+.1f}")
+r = detect(track(124, first=0.3), bpm=124.2)
+check("a WRONG held BPM is kept, and its drift reported", r.bpm == 124.2 and r.drift_ms >= 20, f"{r.drift_ms}")
+
+print("== BPM alone: the tempo is found, the anchor is held ==")
+r = detect(track(125, first=0.3), anchor=0.3 + 2 * 60 / 125)   # a downbeat two beats in
+check("the tempo is detected", r.bpm == 125.0, f"got {r.bpm}")
+check("the given anchor comes back untouched", r.anchor == 0.3 + 2 * 60 / 125, f"got {r.anchor}")
+check("an anchor on the beat reports little drift", r.drift_ms <= 5, f"{r.drift_ms}")
+r = detect(track(125, first=0.3), anchor=0.33)
+check("an anchor 30 ms off the beat is kept, and the drift says so",
+      r.anchor == 0.33 and 25 <= r.drift_ms <= 35, f"{r.anchor} {r.drift_ms}")
+
+print("== holding both is refused ==")
+try:
+    detect(track(124), bpm=124.0, anchor=0.3)
+    check("bpm + anchor raises ValueError", False)
+except ValueError:
+    check("bpm + anchor raises ValueError", True)
+
 print("== nothing to fit ==")
 for label, y in (("silence", np.zeros(SR * 20, dtype=np.float32)), ("too short", np.zeros(SR, dtype=np.float32))):
     try:
@@ -143,6 +175,39 @@ for label, y in (("silence", np.zeros(SR * 20, dtype=np.float32)), ("too short",
         check(f"{label} raises ValueError", False, "returned a grid")
     except ValueError:
         check(f"{label} raises ValueError", True)
+
+print("== the BPM / Grid plan (core/grid_plan) ==")
+from types import SimpleNamespace as M  # noqa: E402
+
+from konduktor.core.grid_plan import plan_grid  # noqa: E402
+
+one = [M(start=0.5, bpm=124.0)]
+two = [M(start=60.0, bpm=126.0), M(start=0.5, bpm=124.0)]   # unsorted on purpose
+
+
+def plan(bpm, grid, markers=(), track_bpm=None, locked=False, replace=False):
+    return plan_grid(bpm=bpm, grid=grid, markers=list(markers), track_bpm=track_bpm,
+                     locked=locked, replace_existing=replace)
+
+
+check("nothing ticked does nothing", plan(False, False, one).action == "none")
+check("locked is skipped whatever is ticked",
+      all(plan(b, g, one, locked=True).reason == "locked" for b, g in ((1, 1), (1, 0), (0, 1))))
+check("BPM+Grid on an ungridded track: full", plan(True, True).action == "full")
+check("BPM+Grid on a gridded track, no Replace: skipped as existing",
+      plan(True, True, one).reason == "existing")
+check("BPM+Grid with Replace replaces even a flexible grid", plan(True, True, two, replace=True).action == "full")
+s_ = plan(True, False, one)
+check("BPM alone keeps the anchor", s_.action == "bpm" and s_.hold_anchor == 0.5)
+check("BPM alone ignores Replace (adjusting IS the point)", plan(True, False, one, replace=False).action == "bpm")
+check("BPM alone, no grid: analysed in full", plan(True, False, track_bpm=124).action == "full")
+s_ = plan(False, True, one, track_bpm=999)
+check("Grid alone keeps the MARKER's BPM", s_.action == "phase" and s_.hold_bpm == 124.0)
+s_ = plan(False, True, track_bpm=128.0)
+check("Grid alone, no grid but a BPM: keeps that BPM", s_.action == "phase" and s_.hold_bpm == 128.0)
+check("Grid alone, no BPM at all: analysed in full", plan(False, True).action == "full")
+check("one tick on a flexible grid: skipped, never flattened",
+      plan(True, False, two).reason == "flexible" and plan(False, True, two).reason == "flexible")
 
 print()
 print("FAILED" if failed else "OK")
