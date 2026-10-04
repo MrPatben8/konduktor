@@ -54,6 +54,8 @@ datas += [
     ("konduktor/stems/engine.json", "konduktor/stems"),
     ("konduktor/stems/weights.json", "konduktor/stems"),
 ]
+# The key-detection network's weights (konduktor/core/key_detect.py).
+datas += [("konduktor/core/key_model.npz", "konduktor/core")]
 
 a = Analysis(
     ["sidecar.py"],
