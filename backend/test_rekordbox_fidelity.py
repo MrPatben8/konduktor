@@ -736,5 +736,53 @@ with tempfile.TemporaryDirectory() as d:
     check("removing it again deletes its analysis files", not dat.exists())
     reopened.close()
 
+    # ---- K: setting the key ------------------------------------------------
+    # Rekordbox fills djmdKey lazily, one row per key it has met, named "Abm" —
+    # and an imported tag can add "12A". So the key is found by MEANING, a row
+    # is only ever added for a key the library lacks, and that row looks like
+    # rekordbox's own: Seq NULL, its own USN.
+    print("== K: set_key reuses the library's key rows and creates missing ones as rekordbox does ==")
+    from konduktor.adapters.rekordbox.projection import parse_key as rb_parse_key, render_key
+
+    clean_copy(REAL, work)
+    before = dump(work)
+    by_meaning = {rb_parse_key(r["ScaleName"]): pk for pk, r in before["djmdKey"].items()}
+    adapter = RekordboxAdapter(work)
+    have = next(((w, m) for (w, m) in by_meaning if w), None)
+    lack = next(((w, m) for w in range(1, 13) for m in ("major", "minor") if (w, m) not in by_meaning))
+    t1, t2 = adapter.tracks[0], adapter.tracks[1]
+    if have is None:
+        print("  (skipped the reuse half: this library has no key rows)")
+    else:
+        got = adapter.set_key(t1.id, *have)
+        check("the projection updates immediately", (got.key_wheel, got.key_mode) == have, str(got))
+        adapter.save()
+        changes = diff(before, dump(work))
+        check("an existing key: exactly the track row and the counter change",
+              {t for t, _, _, _ in changes} == {"djmdContent", "agentRegistry"} and len(changes) == 2,
+              describe(changes))
+        content = [c for c in changes if c[0] == "djmdContent"]
+        check("…pointing at the library's own row for that key",
+              content and content[0][3].get("KeyID", (None, None))[1] == by_meaning[have],
+              str(content and content[0][3]))
+        before = dump(work)
+    got = adapter.set_key(t2.id, *lack)
+    adapter.save()
+    after = dump(work)
+    changes = diff(before, after)
+    new_keys = [c for c in changes if c[0] == "djmdKey"]
+    check("a missing key adds exactly one key row", len(new_keys) == 1 and new_keys[0][2] == "INSERT",
+          describe(changes))
+    if new_keys:
+        row = new_keys[0][3]
+        check("named in rekordbox's spelling, Seq NULL, stamped with a USN",
+              rb_parse_key(row["ScaleName"]) == lack and row["ScaleName"] == render_key(*lack)
+              and row["Seq"] is None and row["rb_local_usn"] is not None, str(row))
+    adapter.set_key(t1.id, *lack)
+    adapter.save()
+    check("setting that key again reuses the new row",
+          len(dump(work)["djmdKey"]) == len(after["djmdKey"]))
+    adapter.close()
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

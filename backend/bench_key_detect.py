@@ -31,9 +31,7 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
-from konduktor.adapters.rekordbox.projection import parse_key as parse_named  # noqa: E402
-from konduktor.adapters.traktor.projection import parse_key as parse_wheel  # noqa: E402
-from konduktor.core import key_detect  # noqa: E402
+from konduktor.core import key_detect, musical_key  # noqa: E402
 
 WEIGHT = {"exact": 1.0, "fifth": 0.5, "relative": 0.3, "parallel": 0.2, "other": 0.0}
 AUDIO = {".mp3", ".m4a", ".mp4", ".flac", ".aif", ".aiff", ".wav", ".ogg"}
@@ -57,13 +55,7 @@ def relation(det: tuple[int, str], ref: tuple[int, str]) -> str:
 
 def parse_any(text: str) -> tuple[int, str] | None:
     """Open Key, Camelot or a named key ("Abm", "F# minor", "Gmin")."""
-    s = text.strip()
-    w, m = parse_wheel(s)
-    if w:
-        return w, m
-    s = re.sub(r"\s*(minor|min)$", "m", s, flags=re.I)
-    s = re.sub(r"\s*(major|maj)$", "", s, flags=re.I)
-    w, m = parse_named(s)
+    w, m = musical_key.parse(text)
     return (w, m) if w else None
 
 
@@ -121,12 +113,10 @@ def folder_refs(roots: list[Path]) -> list[tuple[Path, tuple[int, str], str]]:
 def giantsteps_refs(gs: Path) -> list[tuple[Path, tuple[int, str], str]]:
     out = []
     for f in sorted((gs / "annotations/key").glob("*.key")):
-        name, mode = f.read_text().split()
-        pc = key_detect.PITCH_NAMES.index({"C#": "C#", "Db": "C#", "D#": "Eb", "Gb": "F#",
-                                           "G#": "Ab", "A#": "Bb"}.get(name, name))
         audio = gs / "audio" / f"{f.stem}.mp3"
-        if audio.exists():
-            out.append((audio, (key_detect.camelot_wheel(pc, mode), mode), f.stem))
+        ref = parse_any(f.read_text())     # "C minor"
+        if audio.exists() and ref:
+            out.append((audio, ref, f.stem))
     return out
 
 

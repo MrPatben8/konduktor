@@ -114,6 +114,26 @@ Two independent apps that talk over HTTP:
       `backend/bench_grid_detect.py` scores it against any library's
       single-marker grids and reports that constant separately from detection
       error (29 Rekordbox references: old 1/29 BPMs, new 27/29).
+    - `key_detect.py` + `key_model.npz` — **musical key detection**: a small
+      CNN (Korzeniowski & Widmer 2017 — five 5x5 convs, a per-frame dense layer
+      over the WHOLE pitch axis, since a key is not pitch-invariant, logits
+      averaged over time), an ensemble of three, run in NUMPY — torch only
+      trains it (`backend/train_key_model.py`, engine venv), the backend never
+      imports it. Input is a 7-octave CQT at 36 bins/octave (C1–C8); the net
+      sees C2–C7, the spare octaves are for pitch-shift augmentation. Trained
+      on GiantSteps MTG, scored on the separate GiantSteps key set
+      (`bench_key_detect.py`): **69.4% exact, 83.4% harmonically mixable**;
+      key templates (Krumhansl/Temperley/KeyFinder/EDM) topped out at 49.5% on
+      the same features. ~0.6 s per track beside the decode. Always returns a
+      key for music (confidence tracks accuracy, but even the lowest band is
+      ~10x chance); None only for silence / under 5 s. The datasets are NOT on
+      the machine by default — fetch steps are in the training script.
+    - `musical_key.py` — the generic key (Camelot wheel 1-12 + mode) and the
+      three notations libraries STORE: `camelot` (8A), `open_key` (1m — Traktor's
+      default, Open Key n = Camelot n+7) and `musical` (Am, spelt as rekordbox
+      spells its own rows: flats for Db/Eb/Ab/Bb, F#). `parse` accepts all
+      three (and "Amin", "F# minor"), because a library holds what imported
+      tags said: a rekordbox stick's key table had "12A" beside "Abm".
     - `stem_file.py` + `tag_copy.py` — **writing a native-instruments STEM
       file** (Convert to Stems). An `ipod` MP4 with five AAC stereo 44.1 kHz
       streams (mix, drums, bass, synths, vox), streams 1-4 `disposition` 0,
@@ -891,7 +911,12 @@ serialization path.** It enforces:
   — onto a staying track's path, or two differently-keyed entries for one file
   — which the preview reports first, while a chain (A onto B's old path, B
   onward) and a pre-existing duplicate are allowed, each track's staged art
-  and edits following the TRACK (H4).
+  and edits following the TRACK (H4). And **`set_key`** (N): on a keyed
+  entry only its INFO and MUSICAL_KEY lines change; an unkeyed one gains the
+  KEY attribute and one `<MUSICAL_KEY>` between LOUDNESS and CUE_V2 in
+  Traktor's layout; the encoding matches the real collection; a Camelot
+  collection gets Camelot; an ADDED Pioneer key ("Abm") lands as "6m"; and the
+  key tag reaches TKEY / `initialkey` in MP3, FLAC and M4A.
   The guard that catches serialization regressions like the lxml reformatting bug.
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched.
@@ -980,6 +1005,11 @@ serialization path.** It enforces:
   (pad, colour), loop and memory cue cross as themselves; and removing it
   deletes its analysis files. `test_folders.py` drives the same through
   `/api/folder/add` on a Rekordbox copy, and a non-addable library 422s.
+  And **`set_key`** (K): a key the library has changes exactly the track row
+  and the counter, pointing at its OWN row (found by meaning, not name); a
+  missing key adds one `djmdKey` row as rekordbox creates its own — its
+  spelling, `Seq` NULL, its own USN (so through the ORM; a raw insert is
+  left unstamped) — which the next `set_key` reuses.
 - `test_onelibrary_adapter.py` — the third adapter against the same contract.
   Unlike the Rekordbox tests it needs **nothing installed and nothing plugged
   in**: it runs against `fixtures/onelibrary/`, a real rekordbox 7 export trimmed
@@ -998,7 +1028,10 @@ serialization path.** It enforces:
   `nameForSearch` NULL, a new playlist on top with siblings shifted, entries
   from 1; and the stick hazards — another app's write refused, an unplugged
   drive keeps the edits, stale `-shm` deleted, the backup holds the old rows,
-  the drive never held open, file tags written (title yes, rating no).
+  the drive never held open, file tags written (title yes, rating no). And
+  `set_key`: an existing key changes only `content.key_id` and reaches TKEY as
+  the stick names it; a missing one adds a key row in rekordbox's spelling;
+  on Goober, "12A" projects a key and setting 12A reuses that row.
 - `test_onelibrary_anlz.py` — cue and grid edits in the ANLZ files. First
   against **rekordbox's own edit** of the same thing
   (`fixtures/onelibrary-goober/after/`): a recolour's `PCO2` and a grid edit's
@@ -1036,6 +1069,11 @@ serialization path.** It enforces:
   return, octave choice, and the loud off-beat hat and syncopated bassline that
   each fooled one band on real music. Accuracy on REAL music is
   `bench_grid_detect.py`'s job (not in `run_tests.sh`: it needs audio).
+- `test_key_detect.py` — key detection on SYNTHETIC cadences in all 24 keys
+  (I-IV-V-I / i-iv-V-i — a pop I-V-vi-IV is fairly called minor by an EDM
+  model), loudness / sample-rate invariance, None for silence, and the numpy
+  convolution against a direct implementation. Accuracy on real music is
+  `bench_key_detect.py`'s job (GiantSteps + any folder of key-tagged files).
 - `test_auto_hotcues.py` — Auto Hotcues in three layers: `structure.analyse`
   on SYNTHETIC audio with known sections (the intro with a kick is not a drop;
   no breakdown after the last drop), `plan`'s outcomes and beat-counted offsets
@@ -1175,7 +1213,15 @@ frontend at `http://localhost:5173`.
   e.g. `Macintosh HD/:Music/:one.mp3`. This is how playlist entries
   (`PRIMARYKEY.KEY`) join to collection tracks. `Track.id` uses this.
 - **Rating** = `RANKING / 51`, giving 0–5 stars (`_rating_stars`).
-- **Key** is Traktor's display key string, e.g. `"10m"` (Open Key notation).
+- **Key** = two fields. `INFO@KEY` is the display text Traktor shows and tags
+  files with, in the user's notation (Open Key `"10m"` in the real
+  collection); `<MUSICAL_KEY VALUE>` is the analysed key, pitch class + 12 for
+  minor (`12` = C minor = `10m`; 6,628 of 6,641 entries carrying both agree).
+  1,354 entries have ONLY `MUSICAL_KEY` — analysed, never given text — so
+  `projection.entry_key` falls back to it (rendered Open Key). `set_key` and
+  `add_entry` write BOTH, the text in the collection's majority notation
+  (`TraktorStore.key_notation()`; an empty collection — an export — takes a
+  Traktor-native source's own, so Traktor→Traktor keeps the user's).
 - **Beatgrid = an ORDERED LIST of markers**, never a single BPM + anchor.
   Traktor stores each as a `CUE_V2 TYPE="4"` with its own `<GRID BPM>` child
   (flexible beatgrids, 3.4+); `<TEMPO BPM>` mirrors the **first marker by
@@ -1600,7 +1646,12 @@ that number and nothing else — everything derives from it:
   **Key notation crosses via the wheel**, never by copying the string:
   `projection.render_key()` is the inverse of `parse_key`, shared by both Pioneer
   targets, so Traktor's `"10m"` becomes `"Cm"` rather than a literal `"10m"` in a
-  Pioneer library. **Caveat**: `djmdContent.FolderPath` is an ABSOLUTE host path,
+  Pioneer library. Both are now `core/musical_key`; until 2026-10-04
+  `render_key` spelt with SHARPS ("G#m", "D#", "C#m") where rekordbox's own rows
+  say "Abm", "Eb", "Dbm" — measured from the key rows rekordbox 7 created in
+  the local library. In-place writes (`set_key`, adds) find a key row by
+  MEANING, so a library's existing "12A" or "G#m" row is reused, never
+  duplicated. **Caveat**: `djmdContent.FolderPath` is an ABSOLUTE host path,
   so unlike Traktor and OneLibrary a Rekordbox export is not portable by copying
   the folder. Still unwritten and documented as unknown: OneLibrary's waveform
   tags and the `cue` table's MPEG seek columns.

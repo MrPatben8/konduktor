@@ -349,6 +349,61 @@ check("a missing audio file is reported, not fatal",
       and dump(db_of(drive))["content"]["2"]["title"] == "Missing", str(outcome.tag_results))
 a.close()
 
+# ---- the key: found by meaning, created in rekordbox's spelling, tagged -------
+print("== set_key ==")
+from konduktor.adapters.rekordbox.projection import parse_key, render_key  # noqa: E402
+
+drive = fresh_drive()
+audio = drive / TRACK_1.lstrip("/")
+make_mp3(audio)
+before = dump(db_of(drive))
+keys = {parse_key(r["name"]): pk for pk, r in before["key"].items()}
+a = OneLibraryAdapter(drive)
+check("the key can be written on an editable stick", a.capabilities().tracks.key_writable is True)
+have = next(iter(keys))
+t = a.set_key(TRACK_1, *have)
+check("the projection shows it at once", (t.key_wheel, t.key_mode) == have, str(t))
+a.save()
+changes = diff(before, dump(db_of(drive)))
+check("an existing key: exactly content.key_id changes, pointing at the stick's own row",
+      len(changes) == 1 and set(changes[0][3]) == {"key_id"}
+      and str(changes[0][3]["key_id"][1]) == keys[have], str(changes))
+check("and reaches the file's TKEY as the stick names it",
+      str(mutagen.File(str(audio)).tags.get("TKEY")) == before["key"][keys[have]]["name"],
+      str(mutagen.File(str(audio)).tags.get("TKEY")))
+before = dump(db_of(drive))
+lack = next((w, m) for w in range(1, 13) for m in ("major", "minor") if (w, m) not in keys)
+a.set_key(TRACK_2, *lack)
+a.save()
+changes = diff(before, dump(db_of(drive)))
+added = [c for c in changes if c[0] == "key"]
+check("a missing key adds one key row, in rekordbox's spelling",
+      len(added) == 1 and added[0][2] == "INSERT" and added[0][3]["name"] == render_key(*lack),
+      describe(changes))
+check("a read-only stick may not", OneLibraryAdapter(drive, read_only=True).capabilities().tracks.key_writable is False)
+a.close()
+
+print("== imported key names (a rekordbox stick holds '12A' beside 'Abm') ==")
+goober = Path(tempfile.mkdtemp(prefix="konduktor-olfid-goober-")) / "Goober"
+shutil.copytree(FIXTURE.parent / "onelibrary-goober", goober, ignore=shutil.ignore_patterns("after"))
+before = dump(db_of(goober))
+names = {r["name"]: pk for pk, r in before["key"].items()}
+g = OneLibraryAdapter(goober)
+camelot_keyed = [t for t in g.tracks if t.key in ("12A", "11A", "10A")]
+check("a track keyed '12A' projects its wheel (it read as no key before)",
+      camelot_keyed and all(t.key_wheel is not None for t in camelot_keyed),
+      str([(t.key, t.key_wheel) for t in camelot_keyed]))
+target = next(t for t in g.tracks if t.key != "12A")
+g.set_key(target.id, 12, "minor")
+g.save()
+after = dump(db_of(goober))
+check("setting 12A reuses the stick's '12A' row instead of adding 'Dbm'",
+      len(after["key"]) == len(before["key"])
+      and str(next(r for r in after["content"].values()
+                   if r["content_id"] == next(r2["content_id"] for r2 in before["content"].values()
+                                              if r2["title"] == target.title))["key_id"]) == names["12A"])
+g.close()
+
 print()
 print("RESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

@@ -133,8 +133,8 @@ class OneLibraryStore(ReplaceGridCommands):
     EDITABLE_FIELDS = set(_DIRECT_FIELDS) | set(_LOOKUP_FIELDS) | {"rating", "release_date"}
     # Written into the audio file's own tags at Save, as rekordbox does when it
     # edits a stick (measured: the title reached the MP3's TIT2, the rating did
-    # not). Everything editable except the rating.
-    FILE_TAG_FIELDS = EDITABLE_FIELDS - {"rating"}
+    # not). Everything editable except the rating, plus the key `set_key` sets.
+    FILE_TAG_FIELDS = (EDITABLE_FIELDS - {"rating"}) | {"key"}
 
     def __init__(self, path: Path, *, read_only: bool = False):
         layout = DriveLayout.locate(Path(path))
@@ -489,6 +489,34 @@ class OneLibraryStore(ReplaceGridCommands):
             except ValueError:
                 pass
         raise InvalidCommand(f"Release date must be a year or YYYY-MM-DD, got {text!r}")
+
+    def _key_id(self, wheel: int | None, mode: str | None) -> int | None:
+        """The `key` row for a key, found by what it MEANS: a stick's table holds
+        rekordbox's names ("Abm") beside imported tag text ("12A" — the goober
+        fixture has both), so a rendered-name match would duplicate a key the
+        stick already has. A new key gets rekordbox's own spelling."""
+        if wheel is None or mode is None:
+            return None
+        from pyrekordbox.devicelib_plus import models
+
+        from ..rekordbox.projection import parse_key, render_key
+
+        for k in self._require_db().query(models.Key).all():
+            if parse_key(k.name) == (wheel, mode):
+                return int(k.key_id)
+        return self._lookup_id("Key", render_key(wheel, mode))
+
+    def set_key(self, track_id: str, wheel: int, mode: str) -> None:
+        if not (isinstance(wheel, int) and 1 <= wheel <= 12) or mode not in ("major", "minor"):
+            raise InvalidCommand(f"Not a key: wheel {wheel!r}, mode {mode!r}")
+        db = self._require_db()
+        row = self.content(track_id)
+        before = row.key_id
+        row.key_id = self._key_id(wheel, mode)
+        self._journal.record("track", "set", track_id, "key", before, row.key_id)
+        # A foreign key: flush + expire, or re-projecting reads the old name.
+        db.flush()
+        db.session.expire(row)
 
     def set_track_metadata(self, track_id: str, fields: dict) -> None:
         from sqlalchemy import text
@@ -1026,7 +1054,6 @@ class OneLibraryStore(ReplaceGridCommands):
         """
         from sqlalchemy import text
 
-        from ..rekordbox.projection import render_key
         from .export import ANALYSED_BITS, CONTENT_LINK, _audio_format, _file_type, _kbps, art_files
 
         if rel in (self._by_id or {}) or any(self.track_id(r) == rel for r in self.iter_content()):
@@ -1070,7 +1097,7 @@ class OneLibraryStore(ReplaceGridCommands):
                 "album": lookup("Album", track.album), "genre": lookup("Genre", track.genre),
                 "label": lookup("Label", track.label),
                 # Rendered from the parsed wheel: a source's "10m" means nothing here.
-                "key": lookup("Key", render_key(track.key_wheel, track.key_mode)),
+                "key": self._key_id(track.key_wheel, track.key_mode),
                 "image": image_id, "comment": track.comment or "",
                 "rating": max(0, min(5, int(track.rating or 0))), "year": year, "released": released,
                 "added": datetime.now().strftime("%Y-%m-%d"), "created": created, "path": rel,
@@ -1375,7 +1402,7 @@ class OneLibraryStore(ReplaceGridCommands):
         t = projection.to_track(self.content(track_id))
         return {"title": t.title, "artist": t.artist, "album": t.album, "genre": t.genre,
                 "label": t.label, "remixer": t.remixer, "comment": t.comment,
-                "release_date": t.release_date}
+                "release_date": t.release_date, "key": t.key}
 
 
 def _prune_empty(folder: Path, *, stop: Path) -> None:

@@ -245,6 +245,12 @@ class RekordboxAdapter:
         self._refresh(track_id)
         return self._index.get(track_id)
 
+    def set_key(self, track_id: str, wheel: int, mode: str) -> Track | None:
+        self._require_writable("Setting the key")
+        self._store.set_key(track_id, wheel, mode)
+        self._refresh(track_id)
+        return self._index.get(track_id)
+
     # ---- commands: playlists ----------------------------------------------
     def create_playlist(self, name: str, parent_id: str | None = None) -> str:
         self._require_writable("Creating playlists")

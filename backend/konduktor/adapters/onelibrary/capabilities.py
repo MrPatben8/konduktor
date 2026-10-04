@@ -84,6 +84,7 @@ def capabilities_for(
             # with it, at Save — so the library, not the user, places the audio.
             addable=not read_only,
             removable=not read_only,
+            key_writable=not read_only,
             places_audio=True,
             # `artwork` gates EDITING, which Rekordbox does not do yet either
             # (parity). Reading works: `store.cover_art` follows

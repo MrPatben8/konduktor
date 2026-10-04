@@ -91,6 +91,7 @@ def capabilities_for(
             media_kinds=["audio", "stem"],
             removable=True,
             addable=True,
+            key_writable=True,
             artwork=False,
             artwork_note=None,
         ),

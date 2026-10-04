@@ -22,7 +22,10 @@ DEFAULT_POPM_EMAIL = "no@email"
 # The safe, editable metadata we sync to files (the adapter's editable field set).
 # rating is 0–5 stars.
 TagMeta = dict  # keys: title, artist, album, genre, label, remixer, producer,
-#                        comment, mix, release_date, rating
+#                        comment, mix, release_date, rating, key
+# `key` is written as the library holds it ("9m", "Abm") into the frame DJ
+# software reads: ID3 TKEY, MP4/FLAC `initialkey` — where Traktor writes its
+# own (every key-tagged file on the dev machine has it there).
 
 
 @dataclass
@@ -170,6 +173,7 @@ def _apply_id3(id3, meta: TagMeta, popm_email: str = DEFAULT_POPM_EMAIL) -> None
         TDRC,
         TIT2,
         TIT3,
+        TKEY,
         TPE1,
         TPE4,
         TPUB,
@@ -185,6 +189,7 @@ def _apply_id3(id3, meta: TagMeta, popm_email: str = DEFAULT_POPM_EMAIL) -> None
         "remixer": TPE4,
         "mix": TIT3,
         "release_date": TDRC,
+        "key": TKEY,
     }
     for field, frame in simple.items():
         if field in meta:
@@ -262,7 +267,8 @@ def _write_mp4(path: Path, meta: TagMeta) -> None:
             else:
                 t[atom] = [val]
     # No standard MP4 atoms for these — use iTunes-style freeform atoms.
-    freeform = {"label": "LABEL", "remixer": "REMIXER", "producer": "PRODUCER", "mix": "MIX"}
+    freeform = {"label": "LABEL", "remixer": "REMIXER", "producer": "PRODUCER", "mix": "MIX",
+                "key": "initialkey"}
     for field, name in freeform.items():
         if field in meta:
             key = f"----:com.apple.iTunes:{name}"
@@ -297,6 +303,7 @@ def _write_flac(path: Path, meta: TagMeta) -> None:
         "comment": "comment",
         "mix": "mixname",
         "release_date": "date",
+        "key": "initialkey",
     }
     for field, vc in mapping.items():
         if field in meta:

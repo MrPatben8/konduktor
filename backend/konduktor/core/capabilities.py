@@ -78,6 +78,9 @@ class TrackCapabilities(BaseModel):
     # Tracks can be converted to native-instruments STEM files, which this
     # platform plays as stems (`apply_stem_swaps`).
     stem_convertible: bool = False
+    # The musical key can be set (`set_key`) — what key analysis writes. Not
+    # in `editable_fields`: a key is a wheel position, not free text.
+    key_writable: bool = False
     # The audio files this library can hold, as lower-case suffixes. What a
     # browsed folder offers to add — a file the library would refuse, or that
     # the DJ app cannot play, is not worth listing as addable.

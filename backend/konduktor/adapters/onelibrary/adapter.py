@@ -392,6 +392,12 @@ class OneLibraryAdapter:
         self._refresh(track_id)
         return self._index.get(track_id)
 
+    def set_key(self, track_id: str, wheel: int, mode: str) -> Track | None:
+        self._require_writable("Setting the key")
+        self._store.set_key(track_id, wheel, mode)
+        self._refresh(track_id)
+        return self._index.get(track_id)
+
     def set_cover_art(self, track_id: str, data: bytes, mime: str) -> None:
         self._refuse("Editing cover art")
 

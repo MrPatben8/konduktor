@@ -5,65 +5,32 @@ The only place a ``pyrekordbox`` ORM object becomes a generic `Track` /
 """
 from __future__ import annotations
 
-import re
-
+from ...core import musical_key
 from ...core.model import CuePoint, GridMarker, HotcueChip, Track, TrackCues
 from . import beatgrid, palette, timebase
 from .cue_types import cue_type, role_and_slot
 
-# Rekordbox names keys musically ("Abm", "F", "Ebm") rather than in Camelot or
-# Open Key notation. Parsing that is platform knowledge and belongs here.
-_KEY_RE = re.compile(r"^([A-G])([#b]?)(m?)$", re.I)
-
-# Camelot wheel position for each pitch class, per mode.
-_CAMELOT_MINOR = {
-    "A": 8, "E": 9, "B": 10, "F#": 11, "Gb": 11, "C#": 12, "Db": 12,
-    "G#": 1, "Ab": 1, "D#": 2, "Eb": 2, "A#": 3, "Bb": 3,
-    "F": 4, "C": 5, "G": 6, "D": 7,
-}
-_CAMELOT_MAJOR = {
-    "C": 8, "G": 9, "D": 10, "A": 11, "E": 12, "B": 1, "F#": 2, "Gb": 2,
-    "C#": 3, "Db": 3, "G#": 4, "Ab": 4, "D#": 5, "Eb": 5, "A#": 6, "Bb": 6,
-    "F": 7,
-}
-
-
+# Rekordbox names keys musically ("Abm", "F", "Ebm") — but its key table also
+# holds whatever text a track's key TAG carried when it was imported, so a real
+# stick has "12A" beside "Abm". Parsing therefore accepts every notation.
 def parse_key(key: str | None) -> tuple[int | None, str | None]:
-    """(Camelot wheel position 1-12, mode) for a Rekordbox key name."""
-    if not key:
-        return None, None
-    m = _KEY_RE.match(key.strip())
-    if not m:
-        return None, None
-    letter, accidental, minor = m.group(1).upper(), m.group(2), m.group(3)
-    pitch = letter + (accidental.replace("B", "b") if accidental else "")
-    table = _CAMELOT_MINOR if minor else _CAMELOT_MAJOR
-    n = table.get(pitch)
-    return (n, "minor" if minor else "major") if n else (None, None)
+    """(Camelot wheel position 1-12, mode) for a key name in any notation."""
+    return musical_key.parse(key)
 
 
-# The inverse, for EXPORT. A track arriving from Traktor carries `key` as
+# The inverse, for writing. A track arriving from Traktor carries `key` as
 # Traktor's own display string ("10m") and `key_wheel`/`key_mode` as the parsed
 # position — so writing the string verbatim into a Pioneer library would show
-# "10m" where the deck expects "Abm". Rendering from the wheel is the only
-# correct crossing. Shared with the OneLibrary exporter: same vendor, same
-# notation, and two tables would drift.
-_MINOR_NAMES = {v: k for k, v in reversed(list(_CAMELOT_MINOR.items()))}
-_MAJOR_NAMES = {v: k for k, v in reversed(list(_CAMELOT_MAJOR.items()))}
-
-
+# "10m" where the deck expects "Cm". Rendering from the wheel is the only
+# correct crossing. Shared by the adapter and both Pioneer exporters.
 def render_key(wheel: int | None, mode: str | None) -> str | None:
-    """A Pioneer-style key name ("Abm", "F") for a Camelot position + mode.
+    """A Pioneer key name ("Abm", "F") for a Camelot position + mode, spelt as
+    rekordbox spells its own (flats; see `core/musical_key`).
 
     Returns None when the position is unknown, which is honest: a made-up key is
     worse than a blank one, and Pioneer software shows blanks without complaint.
     """
-    if not wheel or not (1 <= wheel <= 12):
-        return None
-    if mode == "minor":
-        name = _MINOR_NAMES.get(wheel)
-        return f"{name}m" if name else None
-    return _MAJOR_NAMES.get(wheel)
+    return musical_key.render(wheel, mode, "musical")
 
 
 def _iso_date(value) -> str | None:

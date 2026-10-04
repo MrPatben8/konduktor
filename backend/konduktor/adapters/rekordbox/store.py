@@ -506,6 +506,46 @@ class RekordboxStore(ReplaceGridCommands):
         self._db.flush()
         self._db.session.expire(row)
 
+    # ---- writes: musical key ---------------------------------------------
+    def _key_id(self, wheel: int | None, mode: str | None) -> str | None:
+        """The `djmdKey` row for a key, found by what it MEANS, not its text.
+
+        A library's key table holds rekordbox's own names ("Abm") and whatever
+        key tags imported ("12A"), so matching on a rendered name would add a
+        second row for a key the library already has. Only a key it has never
+        seen gets a row — created as rekordbox creates its own (measured on the
+        local library, which rekordbox fills lazily as it analyses): named in
+        its spelling, `Seq` NULL, and through the ORM so `commit()` stamps the
+        row's `rb_local_usn` like any other change. (The exporters' raw insert
+        would leave it unstamped.)"""
+        from .projection import parse_key, render_key
+
+        if wheel is None or mode is None:
+            return None
+        for k in self._db.query(self._tables.DjmdKey).all():
+            if parse_key(k.ScaleName) == (wheel, mode):
+                return str(k.ID)
+        row = self._tables.DjmdKey(
+            ID=str(uuid.uuid4().int % 2_147_483_647),
+            ScaleName=render_key(wheel, mode),
+            UUID=str(uuid.uuid4()),
+        )
+        self._db.add(row)
+        self._db.flush()
+        return str(row.ID)
+
+    def set_key(self, track_id: str, wheel: int, mode: str) -> None:
+        if not (isinstance(wheel, int) and 1 <= wheel <= 12) or mode not in ("major", "minor"):
+            raise InvalidCommand(f"Not a key: wheel {wheel!r}, mode {mode!r}")
+        row = self.content(track_id)
+        before = row.KeyID
+        row.KeyID = self._key_id(wheel, mode)
+        self._journal.record("track", "set", track_id, "key", before, row.KeyID)
+        # A foreign key, like artist: flush + expire, or the re-projection
+        # reads the old key back through the cached relationship.
+        self._db.flush()
+        self._db.session.expire(row)
+
     # ---- writes: playlists ------------------------------------------------
     def _playlist(self, node_id: str):
         t = self._tables
@@ -604,7 +644,6 @@ class RekordboxStore(ReplaceGridCommands):
         through the ordinary commands. `with_grid` reserves an empty `PQTZ`
         in the `.DAT` for `replace_grid` to fill."""
         from . import new_content
-        from .projection import render_key
 
         audio = Path(audio)
         if not audio.is_file():
@@ -633,10 +672,9 @@ class RekordboxStore(ReplaceGridCommands):
         content.AlbumID = new_content.lookup(self._db, "album", track.album)
         content.GenreID = new_content.lookup(self._db, "genre", track.genre)
         content.LabelID = new_content.lookup(self._db, "label", track.label)
-        # Rendered from the wheel, never copied: the source's notation is not
-        # Rekordbox's ("10m" is "Cm" here).
-        content.KeyID = new_content.lookup(
-            self._db, "key", render_key(track.key_wheel, track.key_mode))
+        # From the wheel, never the source's text: its notation is not
+        # Rekordbox's ("10m" is "Cm" here), and a row it already has is reused.
+        content.KeyID = self._key_id(track.key_wheel, track.key_mode)
         content.ContentLink = new_content.CONTENT_LINK
 
         track_uuid = str(content.UUID)

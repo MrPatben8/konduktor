@@ -90,6 +90,7 @@ with tempfile.TemporaryDirectory() as d:
     check("no cue colours to pick", caps.cues.color == "none" and caps.cues.palette == [])
     check("flexible beatgrids supported", caps.grid.flexible is True)
     check("grid is lockable", caps.grid.lockable is True)
+    check("the key can be written", caps.tracks.key_writable is True)
     check("save facts present for the UI to compose copy from",
           caps.save.app_name == "Traktor" and caps.save.overwrite_risk == "on_exit")
 
@@ -105,6 +106,14 @@ with tempfile.TemporaryDirectory() as d:
     adapter.set_track_metadata(tid, {"genre": "Konduktor Test Genre"})
     check("metadata edit is visible in the projection",
           adapter.track(tid).genre == "Konduktor Test Genre")
+
+    # key — the projection's wheel, mode AND display text all follow
+    t = adapter.set_key(tid, 4, "minor")      # 4A = F minor = Open Key 9m
+    check("set_key returns the refreshed track",
+          t is not None and (t.key, t.key_wheel, t.key_mode) == ("9m", 4, "minor"),
+          f"{t and (t.key, t.key_wheel, t.key_mode)}")
+    check("…and the index holds it (the key filter finds it)",
+          any(x.id == tid for x in adapter.query_tracks(key="9m", limit=20000).items))
 
     # cues — a free slot on a track with a grid, so the companion guard is clear
     tid2 = next(

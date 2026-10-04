@@ -38,6 +38,8 @@ from typing import Literal
 
 import numpy as np
 
+from . import musical_key
+
 SR = 22050
 HOP = 4096                 # ~5.4 frames/s: key is a slow property
 BINS_PER_OCTAVE = 36       # three per semitone, so a detuned track still lands in one
@@ -51,7 +53,7 @@ WINDOW = (36, 216)
 _MODEL = Path(__file__).with_name("key_model.npz")
 _TIME_CHUNK = 256          # frames per im2col block: bounds memory to tens of MB
 
-PITCH_NAMES = ("C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
+PITCH_NAMES = musical_key.SPELLING
 
 
 @dataclass(frozen=True)
@@ -68,7 +70,7 @@ class KeyResult:
 
 def camelot_wheel(pitch_class: int, mode: str) -> int:
     """Camelot position: C major = 8B, A minor = 8A; one step = a fifth."""
-    return (((7 * pitch_class) % 12 + (7 if mode == "major" else 4)) % 12) + 1
+    return musical_key.wheel_of(pitch_class, mode)
 
 
 def features(y: np.ndarray, sr: int = SR) -> np.ndarray:

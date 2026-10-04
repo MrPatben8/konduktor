@@ -255,6 +255,8 @@ export interface Capabilities {
     places_audio: boolean
     /** Tracks can be converted to native-instruments STEM files. */
     stem_convertible: boolean
+    /** The musical key can be set — what key analysis writes. */
+    key_writable: boolean
     /** Lower-case suffixes this library can hold — what a browsed folder lists. */
     audio_formats: string[]
     artwork: boolean

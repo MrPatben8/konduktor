@@ -7,15 +7,14 @@ from __future__ import annotations
 
 import re
 
+from ...core import musical_key
 from ...core.model import CuePoint, GridMarker, HotcueChip, Track, TrackCues
 from . import beatgrid, timebase
 from .cue_types import NATIVE_TO_CUE_TYPE
 
 # Traktor displays keys in Open Key ("10m" / "8d") or Camelot ("8A" / "8B"),
-# depending on a user preference — so the library can contain either. Parsing
-# notation is platform knowledge and belongs here, not in the UI.
-_OPEN_KEY = re.compile(r"^(\d{1,2})\s*([md])$", re.I)
-_CAMELOT = re.compile(r"^(\d{1,2})\s*([ab])$", re.I)
+# depending on a user preference, and INFO@KEY also holds whatever a file's key
+# tag said ("Gm", "Amin") — so every notation is parsed (`core/musical_key`).
 _DATE = re.compile(r"^(\d{4})/(\d{1,2})/(\d{1,2})$")
 # "YYYY", "YYYY-MM" or "YYYY-MM-DD", optionally followed by a time (a
 # timestamp's date part is the date).
@@ -23,23 +22,42 @@ _ISO_DATE = re.compile(r"^(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?(?:[T ].*)?$")
 
 
 def parse_key(key: str | None) -> tuple[int | None, str | None]:
-    """(Camelot wheel position 1-12, mode) for a Traktor display key.
+    """(Camelot wheel position 1-12, mode) for a Traktor key string."""
+    return musical_key.parse(key)
 
-    Open Key numbers the wheel seven semitones round from Camelot, so
-    Open Key 1 == Camelot 8 (both are C major / A minor).
-    """
-    if not key:
+
+def musical_key_value(wheel: int, mode: str) -> int:
+    """`<MUSICAL_KEY VALUE>`: the tonic's pitch class (C = 0), plus 12 for minor
+    — read off the real collection, where 12 pairs with "10m" (C minor) and 21
+    with "1m" (A minor) on every entry carrying both."""
+    return musical_key.pitch_class_of(wheel, mode) + (12 if mode == "minor" else 0)
+
+
+def _from_musical_key(value: int | None) -> tuple[int | None, str | None]:
+    if value is None or not 0 <= value <= 23:
         return None, None
-    k = key.strip()
-    if m := _CAMELOT.match(k):
-        n = int(m.group(1))
-        if 1 <= n <= 12:
-            return n, "minor" if m.group(2).lower() == "a" else "major"
-    if m := _OPEN_KEY.match(k):
-        n = int(m.group(1))
-        if 1 <= n <= 12:
-            return ((n + 6) % 12) + 1, "minor" if m.group(2).lower() == "m" else "major"
-    return None, None
+    mode = "minor" if value >= 12 else "major"
+    return musical_key.wheel_of(value % 12, mode), mode
+
+
+def entry_key(e) -> tuple[str | None, int | None, str | None]:
+    """(display string, wheel, mode) for an ENTRY.
+
+    INFO@KEY is the text Traktor shows and writes to the file's tag; the
+    analysed key itself is `<MUSICAL_KEY>`. 1,354 of the real collection's
+    8,485 entries carry only the latter — analysed, with every value 0-23
+    present, just never given a text — and Traktor shows a key for them, so
+    they fall back to it, rendered in Open Key (Traktor's own default).
+    """
+    info = e.info
+    text = info.key if info else None
+    wheel, mode = parse_key(text)
+    if wheel is None:
+        mk = e.musical_key.value_attribute if e.musical_key is not None else None
+        wheel, mode = _from_musical_key(mk)
+        if wheel is not None and not text:
+            text = musical_key.render(wheel, mode, "open_key")
+    return text, wheel, mode
 
 
 def iso_date(value: str | None) -> str | None:
@@ -122,7 +140,7 @@ def to_track(e) -> Track:
         ),
         key=lambda chip: chip.slot,
     )
-    wheel, mode = parse_key(info.key if info else None)
+    key_text, wheel, mode = entry_key(e)
     return Track(
         id=primary_key(loc) if loc else (e.title or ""),
         artist=e.artist,
@@ -137,7 +155,7 @@ def to_track(e) -> Track:
         # Traktor's "Comment 2" is stored in INFO@RATING (stars are RANKING).
         comment2=info.rating if info else None,
         bpm=beatgrid.effective_bpm(e),
-        key=info.key if info else None,
+        key=key_text,
         key_wheel=wheel,
         key_mode=mode,
         rating=_rating_stars(info.ranking if info else None),
