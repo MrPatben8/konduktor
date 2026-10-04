@@ -1118,6 +1118,16 @@ serialization path.** It enforces:
   the detector is asked to hold the right half, BPM alone retempos the marker
   in place with its beat-1 cue untouched, Grid alone moves it (cue dragged
   along) at the same tempo, and a TEMPO-only track gets one marker at it.
+  And **Analyze** (`POST /api/tracks/analyze` + `/analyze/preview`, the
+  dialog's BPM / Grid / Key; `grid/auto-batch` is now an alias of it with
+  BPM+Grid): nothing ticked 400s; Key alone sets keyless tracks, skips keyed
+  ones unless `replace_key`, never touches a grid; the preview's counts match
+  the run's (BPM alone: single grids adjusted, flexible skipped, bare in
+  full); a skipped track is never decoded and grid+key share ONE decode; a
+  grid that cannot be fitted still gets its key; the deck's Analyze writes
+  the key too and never fails on it. The decode is `main._decode_for_analysis`
+  (the seam the fakes replace); `test_key_detect.py` runs the route once with
+  the REAL decode and detectors on a generated F-minor 124 BPM WAV.
 - `test_bulk_remove.py` — the context menu's **Remove ▸** routes
   (`/api/tracks/grid/clear`, `/api/tracks/cue/clear`, `/api/tracks/remove`):
   locked grids are kept, clearing hotcues empties the whole bank (loops and the
@@ -1439,7 +1449,8 @@ that number and nothing else — everything derives from it:
     (`waveform.decode` → `analyse_samples` + `grid_detect`), in a first phase
     that may be cancelled through `checkpoint` before the library is touched;
     a file with no grid of its own gets Konduktor's (decided: arrive ready to
-    prep). Then `RekordboxStore.add_track` writes the row the way Rekordbox's
+    prep), and one with no key of its own a detected key
+    (`key_detect.with_detected_key`, from the same decode; OneLibrary too). Then `RekordboxStore.add_track` writes the row the way Rekordbox's
     own add was MEASURED to (file facts, `DateCreated` from the file's birth
     time, this library's device) and the grid/cues replay through
     `replace_grid`/`set_cue`/`add_memory_cue` — memory cues and colours cross

@@ -133,6 +133,39 @@ class AutoGridRequest(BaseModel):
     track_id: str
 
 
+class AnalyzeRequest(BaseModel):
+    """The Analyze dialog's choices. BPM and Grid are independent halves of a
+    beatgrid (`core/grid_plan`); `replace_grid` only guards a FULL re-analysis
+    (both ticked), since with one tick adjusting the grid is the point.
+    `replace_key` lets detection overwrite a key the track already has."""
+    track_ids: list[str]
+    bpm: bool = True
+    grid: bool = True
+    key: bool = False
+    replace_grid: bool = False
+    replace_key: bool = False
+
+
+class AnalyzePreview(BaseModel):
+    """What an Analyze run WOULD do, for the dialog. Counted from the
+    projection, so on a platform whose marker counts are lazy (Rekordbox,
+    OneLibrary: 1 for any track with a BPM) a flexible grid is only found when
+    the run reads the real grid — it is then skipped and reported."""
+    total: int
+    # Grid: what `plan_grid` decides per track — full / bpm / phase / skipped.
+    grid_full: int = 0
+    grid_bpm: int = 0
+    grid_phase: int = 0
+    grid_locked: int = 0
+    grid_existing: int = 0     # skipped: has a grid, Replace not ticked
+    grid_flexible: int = 0
+    with_grid: int = 0         # unlocked tracks that have a grid (the Replace tick's count)
+    # Key.
+    key_set: int = 0
+    key_existing: int = 0      # skipped: has a key, Replace not ticked
+    with_key: int = 0          # tracks that have a key (the Replace tick's count)
+
+
 class AutoGridBatchRequest(BaseModel):
     track_ids: list[str]
     # False skips tracks that already have a grid. Locked grids are skipped

@@ -113,5 +113,56 @@ check("the shipped model is an ensemble of >= 1 network", len(members) >= 1)
 spec = key_detect.features(y, SR)
 check("24 logits", key_detect.logits(spec).shape == (24,))
 
+print("end to end: the Analyze route with the REAL decode and detectors")
+# Every other route test fakes the detectors. A route can still be broken
+# around working helpers (Auto Hotcues' once 500'd for a week), so one real
+# run: a generated F minor track at 124 BPM, written to a WAV, analysed for
+# BPM + Grid + Key through `/api/tracks/analyze` on a temp copy of the collection.
+import os  # noqa: E402
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+import time  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import soundfile  # noqa: E402
+
+REAL = Path(__file__).resolve().parents[1] / "collection.nml"
+with tempfile.TemporaryDirectory() as d:
+    os.environ["KONDUKTOR_DATA_DIR"] = str(Path(d) / "appdata")
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    os.environ["KONDUKTOR_NML"] = str(work)
+    music = song(5, "minor", bars=24, bpm=124.0)
+    kick = np.zeros_like(music)
+    beat = int(round(SR * 60 / 124.0))
+    t = np.arange(int(0.12 * SR)) / SR
+    hit = (np.sin(2 * np.pi * 55 * t) * np.exp(-t / 0.05)).astype(np.float32)
+    for i in range(0, len(kick) - len(hit), beat):
+        kick[i:i + len(hit)] += hit
+    wav = Path(d) / "f-minor.wav"
+    soundfile.write(wav, 0.6 * music + 0.4 * kick, SR)
+
+    from fastapi.testclient import TestClient
+
+    import konduktor.main as main
+
+    with TestClient(main.app) as c:
+        a = main.require_adapter()
+        tid = next(t.id for t in a.tracks if t.grid_marker_count == 0 and t.key_wheel is None)
+        a.audio_path = lambda track_id: wav
+        r = c.post("/api/tracks/analyze", json={"track_ids": [tid], "bpm": True, "grid": True, "key": True})
+        job = r.json()
+        while job["state"] == "running":
+            time.sleep(0.05)
+            job = c.get(f"/api/jobs/{job['id']}").json()
+        res = job.get("result") or {}
+        check("the run finishes without failures", job["state"] == "done" and not res.get("failed"), str(job)[:300])
+        track = a.track(tid)
+        check("the key is F minor (4A), written in the collection's Open Key (9m)",
+              (track.key_wheel, track.key_mode, track.key) == (4, "minor", "9m"),
+              f"{track.key} {track.key_wheel} {track.key_mode}")
+        g = a.track_cues(tid).grid_markers
+        check("the grid is 124 BPM", len(g) == 1 and abs(g[0].bpm - 124.0) < 0.05, str(g))
+
 print("\nFAILED" if failed else "\nall key-detection tests passed")
 raise SystemExit(1 if failed else 0)

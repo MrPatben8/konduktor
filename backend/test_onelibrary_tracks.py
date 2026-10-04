@@ -237,6 +237,8 @@ target.parent.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(ONE, target)
 [pending] = a.add_tracks([NewTrack(track=Track(id="x", title="Kick"), audio_path=target)])
 check("an unsaved add plays from its incoming copy", a.track(pending).filepath == str(target))
+check("a file with no key of its own arrives with one detected", a.track(pending).key_wheel is not None,
+      str(a.track(pending).key))
 a.reload()
 check("Discard deletes the copy and leaves the stick as it was",
       not target.exists() and fingerprint(drive) == before and a.track(pending) is None)

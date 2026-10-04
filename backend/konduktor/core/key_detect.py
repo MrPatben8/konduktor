@@ -157,6 +157,26 @@ def detect_key_samples(y: np.ndarray, sr: int) -> KeyResult | None:
     return KeyResult(pc, mode, camelot_wheel(pc, mode), float(p[k]))
 
 
+def with_detected_key(track, y: np.ndarray | None, sr: int):
+    """`track` (a generic `Track`) with a detected key if it has none of its
+    own — for a file being ADDED, which is decoded anyway. A key the track
+    already carries (its tags, its source library) is never second-guessed,
+    and a detection failure leaves the track as it was: a missing key is not
+    worth failing an add over."""
+    if getattr(track, "key_wheel", None) is not None or y is None:
+        return track
+    try:
+        found = detect_key_samples(y, sr)
+    except Exception:  # noqa: BLE001
+        import logging
+
+        logging.getLogger(__name__).warning("key detection failed", exc_info=True)
+        return track
+    if found is None:
+        return track
+    return track.model_copy(update={"key": found.name, "key_wheel": found.wheel, "key_mode": found.mode})
+
+
 def detect_key(audio_path: str) -> KeyResult | None:
     import librosa
 

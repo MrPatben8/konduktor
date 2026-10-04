@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,8 +18,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from . import __version__, exporter, exports, history, prefs
 from .app_state import STATE
 from .core import auto_hotcues as ah
-from .core import grid_detect, structure
-from .core.grid_plan import GridStep
+from .core import grid_detect, key_detect, structure
+from .core.grid_plan import GridStep, plan_grid
 from . import importer
 from .core import export as core_export
 from .core import places, registry
@@ -40,6 +41,8 @@ from .schemas import (
     RelocationApply,
     RelocationCandidate,
     RelocationVolume,
+    AnalyzePreview,
+    AnalyzeRequest,
     AutoGridBatchRequest,
     AutoGridRequest,
     AutoCueOutcome,
@@ -1230,18 +1233,36 @@ def _place_auto_cues(a, track_id: str, cues: TrackCues, slots: list) -> AutoHotc
 
 @app.post("/api/tracks/grid/auto", response_model=TrackCues)
 def auto_grid(body: AutoGridRequest) -> TrackCues:
-    """Detect tempo + first beat and build a beatgrid (see `core/grid_detect`).
+    """The deck's one-click Analyze: BPM + grid (see `core/grid_detect`) and,
+    where the library can store one, the KEY — from one decode.
 
     One constant-tempo marker, written the way the platform's own analyser would
     (on Traktor that also sets hotcue 1 to the first beat). Octave (half/double)
-    ambiguity in halftime genres is left for the ×2 / ÷2 controls."""
+    ambiguity in halftime genres is left for the ×2 / ÷2 controls. The key
+    always follows the analysis (a click on Analyze is a request for it), and
+    a key that cannot be found never fails the grid."""
     a = require_adapter()
     if a.track(body.track_id) is None:
         raise HTTPException(404, "Track not found")
+    path = a.audio_path(body.track_id)
+    if path is None or not path.exists():
+        raise HTTPException(400, "Audio file not found (is the drive mounted?)")
     try:
-        return _analyse_grid(a, body.track_id)
+        y, sr = _decode_for_analysis(path)
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(400, f"Could not decode: {ex}")
+    try:
+        cues = _analyse_grid(a, body.track_id, y=y, sr=sr)
     except _AnalysisError as ex:
         raise HTTPException(400, str(ex))
+    if a.capabilities().tracks.key_writable:
+        try:
+            found = key_detect.detect_key_samples(y, sr)
+            if found is not None:
+                a.set_key(body.track_id, found.wheel, found.mode)
+        except Exception:  # noqa: BLE001 — the grid is written; a key is a bonus
+            log.warning("key detection failed for %s", body.track_id, exc_info=True)
+    return cues
 
 
 class _AnalysisError(Exception):
@@ -1330,9 +1351,150 @@ def _analyse_grid(a, track_id: str, step: GridStep = GridStep("full"), *,
 
 
 
-@app.post("/api/tracks/grid/auto-batch", response_model=JobStatus)
-def auto_grid_batch(body: AutoGridBatchRequest) -> JobStatus:
-    """Analyse many tracks' grids as a JOB; poll `/api/jobs/{id}`.
+# ---- Analyze (the context menu's "Analyze…": BPM / Grid / Key) -------------
+
+
+def _require_analysable(a, body: AnalyzeRequest) -> None:
+    caps = a.capabilities()
+    if not (body.bpm or body.grid or body.key):
+        raise HTTPException(400, "Nothing to analyse: tick BPM, Grid or Key")
+    if (body.bpm or body.grid) and not caps.grid.editable:
+        raise HTTPException(422, "This library's beatgrids cannot be edited")
+    if body.key and not caps.tracks.key_writable:
+        raise HTTPException(422, "This library's keys cannot be written")
+
+
+def _grid_step(a, track, body: AnalyzeRequest, *, exact: bool) -> GridStep:
+    """`plan_grid` for one track. `exact` reads the real markers (a lazy
+    platform's projected count is only "has a grid"); the preview does not,
+    so it cannot see a flexible grid there — the run does."""
+    if not (body.bpm or body.grid):
+        return GridStep("none")
+    if track.grid_marker_count and exact:
+        markers = list((a.track_cues(track.id) or TrackCues()).grid_markers)
+    else:
+        markers = [SimpleNamespace(start=0.0, bpm=track.bpm or 0.0)] * (track.grid_marker_count or 0)
+    return plan_grid(bpm=body.bpm, grid=body.grid, markers=markers, track_bpm=track.bpm,
+                     locked=bool(track.grid_locked), replace_existing=body.replace_grid)
+
+
+def _wants_key(track, body: AnalyzeRequest) -> bool:
+    return body.key and (track.key_wheel is None or body.replace_key)
+
+
+@app.post("/api/tracks/analyze/preview", response_model=AnalyzePreview)
+def analyze_preview(body: AnalyzeRequest) -> AnalyzePreview:
+    """Counts for the Analyze dialog, from the same `plan_grid` the run uses."""
+    a = require_adapter()
+    out = AnalyzePreview(total=0)
+    for tid in dict.fromkeys(body.track_ids):
+        track = a.track(tid)
+        if track is None:
+            continue
+        out.total += 1
+        if track.grid_marker_count and not track.grid_locked:
+            out.with_grid += 1
+        step = _grid_step(a, track, body, exact=False)
+        if step.action in ("full", "bpm", "phase"):
+            setattr(out, f"grid_{step.action}", getattr(out, f"grid_{step.action}") + 1)
+        elif step.action == "skip":
+            setattr(out, f"grid_{step.reason}", getattr(out, f"grid_{step.reason}") + 1)
+        if track.key_wheel is not None:
+            out.with_key += 1
+        if body.key:
+            if _wants_key(track, body):
+                out.key_set += 1
+            else:
+                out.key_existing += 1
+    return out
+
+
+def _decode_for_analysis(path: Path):
+    """Mono samples at the rate BOTH detectors work at (they share one decode)."""
+    import librosa
+
+    assert grid_detect._SR == key_detect.SR, "grid and key detection must share a sample rate"
+    return librosa.load(str(path), sr=key_detect.SR, mono=True)
+
+
+def _analyse_one(a, track_id: str, body: AnalyzeRequest, result: dict) -> None:
+    """Analyse one track as `body` asks, folding the outcome into `result`.
+
+    The file is decoded ONCE and shared by grid and key. A failing half is
+    reported and does not stop the other: a track whose grid cannot be fitted
+    (a one-shot) can still have a key, and the reverse."""
+    track = a.track(track_id)
+    title = (track.title or track_id) if track else track_id
+    if track is None:
+        result["failed"].append({"title": title, "reason": "Track not found"})
+        return
+    step = _grid_step(a, track, body, exact=True)
+    if step.action == "skip":
+        result["grid"][step.reason] += 1
+    want_key = _wants_key(track, body)
+    if body.key and not want_key:
+        result["key"]["existing"] += 1
+    if step.action not in ("full", "bpm", "phase") and not want_key:
+        return
+    path = a.audio_path(track_id)
+    if path is None or not path.exists():
+        result["failed"].append({"title": title, "reason": "Audio file not found (is the drive mounted?)"})
+        return
+    try:
+        y, sr = _decode_for_analysis(path)
+    except Exception as ex:  # noqa: BLE001 — an undecodable file is one failure
+        result["failed"].append({"title": title, "reason": f"Could not decode: {ex}"})
+        return
+    wrote = False
+    if step.action in ("full", "bpm", "phase"):
+        try:
+            _analyse_grid(a, track_id, step, y=y, sr=sr)
+            result["grid"][step.action] += 1
+            wrote = True
+        except (_AnalysisError, AdapterError) as ex:
+            result["failed"].append({"title": title, "reason": f"Grid: {ex}"})
+    if want_key:
+        try:
+            found = key_detect.detect_key_samples(y, sr)
+            if found is None:
+                result["key"]["none"] += 1
+            else:
+                a.set_key(track_id, found.wheel, found.mode)
+                result["key"]["set"] += 1
+                wrote = True
+        except (AdapterError, ValueError) as ex:
+            result["failed"].append({"title": title, "reason": f"Key: {ex}"})
+    if wrote:
+        result["analysed"].append(track_id)
+
+
+def _analyze_job(a, body: AnalyzeRequest):
+    ids = list(dict.fromkeys(body.track_ids))
+
+    def run(handle) -> dict:
+        result = {
+            "analysed": [], "failed": [],
+            "grid": {"full": 0, "bpm": 0, "phase": 0, "locked": 0, "existing": 0, "flexible": 0},
+            "key": {"set": 0, "existing": 0, "none": 0},
+        }
+        handle.progress(done=0, total=len(ids))
+        for i, track_id in enumerate(ids):
+            if handle.cancelled:
+                break  # keep what is done; return it rather than raise
+            track = a.track(track_id)
+            handle.progress(message=(track.title or track_id) if track else track_id)
+            _analyse_one(a, track_id, body, result)
+            handle.progress(done=i + 1)
+        # The names the context menu's toast read before the dialog existed.
+        result["locked"], result["existing"] = result["grid"]["locked"], result["grid"]["existing"]
+        return result
+
+    return run
+
+
+@app.post("/api/tracks/analyze", response_model=JobStatus)
+def analyze_batch(body: AnalyzeRequest) -> JobStatus:
+    """Analyse many tracks' BPM / grid / key as a JOB; poll `/api/jobs/{id}`.
 
     Each track is written as it finishes, into the in-memory model like any
     other edit — so a cancel keeps what is done (it is all unsaved until Save),
@@ -1340,37 +1502,18 @@ def auto_grid_batch(body: AutoGridBatchRequest) -> JobStatus:
     reported and skipped, never fatal: one unmounted drive must not stop 400
     other tracks."""
     a = require_adapter()
-    if not a.capabilities().grid.editable:
-        raise HTTPException(422, "This library's beatgrids cannot be edited")
+    _require_analysable(a, body)
     _require_no_batch()
-    ids = list(dict.fromkeys(body.track_ids))
-
-    def run(handle) -> dict:
-        result = {"analysed": [], "locked": 0, "existing": 0, "failed": []}
-        handle.progress(done=0, total=len(ids))
-        for i, track_id in enumerate(ids):
-            if handle.cancelled:
-                break  # keep what is done; return it rather than raise
-            track = a.track(track_id)
-            title = (track.title or track_id) if track else track_id
-            handle.progress(message=title)
-            if track is None:
-                result["failed"].append({"title": title, "reason": "Track not found"})
-            elif track.grid_locked:
-                result["locked"] += 1
-            elif track.grid_marker_count > 0 and not body.replace_existing:
-                result["existing"] += 1
-            else:
-                try:
-                    _analyse_grid(a, track_id)
-                    result["analysed"].append(track_id)
-                except (_AnalysisError, AdapterError) as ex:
-                    result["failed"].append({"title": title, "reason": str(ex)})
-            handle.progress(done=i + 1)
-        return result
-
-    job = _submit_batch(GRID_JOB, run)
+    job = _submit_batch(GRID_JOB, _analyze_job(a, body))
     return JobStatus(**job.as_dict())
+
+
+@app.post("/api/tracks/grid/auto-batch", response_model=JobStatus)
+def auto_grid_batch(body: AutoGridBatchRequest) -> JobStatus:
+    """The pre-dialog route: BPM + Grid, no key. Kept as an alias of
+    `/api/tracks/analyze` so the two cannot drift."""
+    return analyze_batch(AnalyzeRequest(track_ids=body.track_ids, bpm=True, grid=True,
+                                        key=False, replace_grid=body.replace_existing))
 
 
 @app.post("/api/tracks/cue/auto-batch", response_model=JobStatus)

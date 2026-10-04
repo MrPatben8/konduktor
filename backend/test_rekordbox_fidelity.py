@@ -684,6 +684,13 @@ with tempfile.TemporaryDirectory() as d:
           plain_row["DeviceID"] == next(iter(before["djmdContent"].values()))["DeviceID"])
     check("the release year is kept", plain_row["ReleaseYear"] == 2021)
     check("the key is rendered, not copied", prepped_row["KeyID"] is not None)
+    from konduktor.adapters.rekordbox.projection import parse_key as _pk
+    key_rows = dump(work)["djmdKey"]
+    check("a source's own key is kept, not re-detected",
+          _pk(key_rows[str(prepped_row["KeyID"])]["ScaleName"]) == (10, "minor"),
+          str(key_rows.get(str(prepped_row["KeyID"]))))
+    check("a file with no key of its own gets one detected",
+          plain_row["KeyID"] is not None and str(plain_row["KeyID"]) in key_rows, str(plain_row["KeyID"]))
     files: dict[str, list] = {}
     for r in after["contentFile"].values():
         files.setdefault(str(r["ContentID"]), []).append(r)

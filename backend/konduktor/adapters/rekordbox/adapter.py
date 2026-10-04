@@ -443,7 +443,7 @@ class RekordboxAdapter:
         bank or already taken becomes a memory cue at the same position rather
         than being dropped.
         """
-        from ...core import audio_tags, grid_detect, waveform
+        from ...core import audio_tags, grid_detect, key_detect, waveform
 
         self._require_writable("Adding tracks")
         held = set(self._store.all_audio_paths())
@@ -468,13 +468,16 @@ class RekordboxAdapter:
                     markers = [GridMarker(start=found.anchor, bpm=found.bpm)]
                 except ValueError:
                     pass  # no pulse to fit (a one-shot, silence): no grid
+            # A file with no key of its own gets one, as it gets a grid
+            # (decided: arrive ready to prep). Rekordbox's own add analyses one.
+            track = key_detect.with_detected_key(item.track, samples, waveform.SR)
             art = item.art or audio_tags.read_cover(audio)
-            prepared.append((item, audio, measured, markers, art[0] if art else None))
+            prepared.append((item, track, audio, measured, markers, art[0] if art else None))
 
         added: list[str] = []
-        for item, audio, measured, markers, art in prepared:
+        for item, track, audio, measured, markers, art in prepared:
             track_id = self._store.add_track(
-                audio, item.track, measured=measured, with_grid=bool(markers), art=art)
+                audio, track, measured=measured, with_grid=bool(markers), art=art)
             self._index.add(projection.to_track(self._store.content(track_id), (),
                                                 stem=self._store.is_stem(track_id)))
             if markers:
