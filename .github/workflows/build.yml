@@ -145,6 +145,8 @@ jobs:
 
       - name: Build and push
         uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false   # no .dockerbuild artifact in the run
         with:
           context: .
           file: server/Dockerfile
@@ -180,6 +182,9 @@ jobs:
       - name: Download installers from both builds
         uses: actions/download-artifact@v4
         with:
+          # Only the installers: the run also holds server-image's Docker build
+          # record, which is not a release asset (and once failed to download).
+          pattern: konduktor-*
           path: artifacts   # → artifacts/konduktor-macOS/…, artifacts/konduktor-Windows/…
 
       - name: Publish release
