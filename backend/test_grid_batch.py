@@ -296,6 +296,10 @@ with tempfile.TemporaryDirectory() as d:
         check("preview: BPM+Grid without Replace skips every gridded track",
               (pv["grid_existing"], pv["grid_full"], pv["with_grid"]) == (len(single) + 1, len(bare), len(single) + 1),
               str(pv))
+        pv = c.post("/api/tracks/analyze/preview",
+                    json={"track_ids": ids, "bpm": True, "grid": True, "key": True, "replace_key": True}).json()
+        check("preview: tracks_to_analyze counts a track once for grid AND key",
+              pv["tracks_to_analyze"] == len(ids), str(pv))
 
         # BPM alone, through the run.
         anchors = {t: a.track_cues(t).grid_markers[0].start for t in single}

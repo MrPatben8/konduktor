@@ -1395,6 +1395,8 @@ def analyze_preview(body: AnalyzeRequest) -> AnalyzePreview:
         if track.grid_marker_count and not track.grid_locked:
             out.with_grid += 1
         step = _grid_step(a, track, body, exact=False)
+        if step.action in ("full", "bpm", "phase") or _wants_key(track, body):
+            out.tracks_to_analyze += 1
         if step.action in ("full", "bpm", "phase"):
             setattr(out, f"grid_{step.action}", getattr(out, f"grid_{step.action}") + 1)
         elif step.action == "skip":

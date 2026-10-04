@@ -152,6 +152,7 @@ class AnalyzePreview(BaseModel):
     OneLibrary: 1 for any track with a BPM) a flexible grid is only found when
     the run reads the real grid — it is then skipped and reported."""
     total: int
+    tracks_to_analyze: int = 0  # tracks with anything to do (grid and key overlap)
     # Grid: what `plan_grid` decides per track — full / bpm / phase / skipped.
     grid_full: int = 0
     grid_bpm: int = 0

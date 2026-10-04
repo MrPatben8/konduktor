@@ -4,7 +4,7 @@ import type { ColumnSizingState, SortingState, VisibilityState } from '@tanstack
 import { CapabilitiesContext, slotLabeller } from './lib/capabilities'
 import { removalNote, writeHint } from './lib/platformCopy'
 import { invalidateTrackLists } from './lib/trackQueries'
-import { api, type CueBatchResult, type GridBatchResult, type AutoCueSlot, type PlaylistNode, type StemBatchResult, type Track, type TrackOrigin } from './api'
+import { api, type AnalyzeOptions, type AnalyzeResult, type CueBatchResult, type AutoCueSlot, type PlaylistNode, type StemBatchResult, type Track, type TrackOrigin } from './api'
 import { confirmDiscardUnsaved } from './lib/unsaved'
 import {
   COLUMN_MENU,
@@ -19,7 +19,7 @@ import { Toast, type ToastMsg } from './components/Toast'
 import { CollectionPicker } from './components/CollectionPicker'
 import { ContextMenu, type MenuItem } from './components/ContextMenu'
 import { EditTagsDialog } from './components/EditTagsDialog'
-import { AnalyzeGridDialog } from './components/AnalyzeGridDialog'
+import { AnalyzeDialog } from './components/AnalyzeDialog'
 import { AutoCueDialog } from './components/AutoCueDialog'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { PathMappingDialog } from './components/PathMappingDialog'
@@ -85,9 +85,7 @@ export default function App() {
   // job, polled into the status bar. ONE at a time across both kinds — the
   // backend refuses a second, since a grid run would move the beats a hotcue
   // run is placing cues on.
-  const [gridConfirm, setGridConfirm] = useState<
-    { ids: string[]; existing: number; locked: number } | null
-  >(null)
+  const [analyzing, setAnalyzing] = useState<string[] | null>(null) // the Analyze dialog's selection
   const [cueBatch, setCueBatch] = useState<{ ids: string[]; withoutGrid: number } | null>(null)
   const [batchJob, setBatchJob] = useState<{ id: string; kind: 'grid' | 'cues' | 'stems' } | null>(null)
   // Convert to Stems: the dialog's selection, a finished run's Details, and a
@@ -415,6 +413,19 @@ export default function App() {
       : isAll
         ? (allTracks.data?.items ?? [])
         : (playlistTracks.data ?? [])
+  // The deck holds a SNAPSHOT of its track, taken when it was loaded. When the
+  // view it came from refetches (Analyze wrote its key, Edit Tags its title),
+  // follow the fresh copy so the deck's KEY readout and header are current.
+  // PrepStrip keys its audio on the id, so a new object for the same id
+  // reloads nothing.
+  useEffect(() => {
+    if (!prepTrack || viewOriginRef.current !== prepOrigin) return
+    const fresh = tracks.find((t) => t.id === prepTrack.id)
+    if (fresh && JSON.stringify(fresh) !== JSON.stringify(prepTrack)) setPrepTrack(fresh)
+    // Only a refetch of the list matters; prepTrack is read, not tracked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tracks])
+
   const loading = viewingFolder
     ? folderView.isLoading
     : viewingDevice
@@ -518,7 +529,7 @@ export default function App() {
       return
     }
     if (job.state === 'failed') {
-      const what = kind === 'grid' ? 'Grid analysis' : 'Auto Hotcues'
+      const what = kind === 'grid' ? 'Analysis' : 'Auto Hotcues'
       onError(`${what} failed: ${job.error ?? 'unknown error'}`)
       return
     }
@@ -531,13 +542,27 @@ export default function App() {
     let parts: string[]
     let failures: CueBatchResult['failed']
     if (kind === 'grid') {
-      const r = job.result as unknown as GridBatchResult
+      const r = job.result as unknown as AnalyzeResult
       touched = r.analysed
       failures = r.failed
+      const g = r.grid
+      const wrote = [
+        g.full ? plural(g.full, 'grid') : '',
+        g.bpm ? `${plural(g.bpm, 'BPM')} (downbeat kept)` : '',
+        g.phase ? `${plural(g.phase, 'grid')} at its BPM` : '',
+        r.key.set ? plural(r.key.set, 'key') : '',
+      ].filter(Boolean)
+      const skipped = [
+        g.existing ? `${g.existing} with a grid` : '',
+        g.locked ? `${g.locked} locked` : '',
+        g.flexible ? `${g.flexible} multi-tempo` : '',
+        r.key.existing ? `${r.key.existing} with a key` : '',
+      ].filter(Boolean)
       parts = [
-        `${cancelled ? 'Cancelled — analyzed' : 'Analyzed'} ${plural(r.analysed.length, 'track')}`,
-        r.existing ? `skipped ${r.existing} with a grid` : '',
-        r.locked ? `${r.locked} locked` : '',
+        `${cancelled ? 'Cancelled — analyzed' : 'Analyzed'} ${plural(r.analysed.length, 'track')}` +
+          (wrote.length ? `: ${wrote.join(', ')}` : ''),
+        skipped.length ? `skipped ${skipped.join(', ')}` : '',
+        r.key.none ? `no key found in ${r.key.none}` : '',
       ]
     } else {
       const r = job.result as unknown as CueBatchResult
@@ -692,32 +717,17 @@ export default function App() {
       y,
     })
 
-  const runGridAnalysis = async (ids: string[], replaceExisting: boolean) => {
-    setGridConfirm(null)
-    try {
-      const job = await api.autoGridBatch(ids, replaceExisting)
-      setBatchCancelling(false)
-      setBatchJob({ id: job.id, kind: 'grid' })
-    } catch (e) {
-      onError((e as Error).message)
-    }
+  const runAnalysis = async (ids: string[], opts: AnalyzeOptions) => {
+    const job = await api.analyze(ids, opts)
+    setAnalyzing(null)
+    setBatchCancelling(false)
+    setBatchJob({ id: job.id, kind: 'grid' })
   }
-  // Confirm only when the run would meet existing grids. Counted from the
-  // view's tracks, which is where the selection came from.
-  const startGridAnalysis = (ids: string[]) => {
-    const byId = new Map(tracks.map((t) => [t.id, t]))
-    const sel = ids.map((id) => byId.get(id)).filter((t): t is Track => !!t)
-    const locked = sel.filter((t) => t.grid_locked).length
-    const existing = sel.filter((t) => !t.grid_locked && t.grid_marker_count > 0).length
-    if (locked === ids.length) {
-      notify('error', `${locked === 1 ? 'That grid is' : `All ${locked} grids are`} locked — nothing to analyze`)
-    } else if (existing > 0) {
-      setGridConfirm({ ids, existing, locked })
-    } else {
-      void runGridAnalysis(ids, false)
-    }
-  }
-  const canAnalyzeGrid = canEdit && !viewForeign && !!capabilities.data?.grid.editable
+  // Offered where ANY of BPM / Grid / Key can be stored; the dialog disables
+  // the rest with a reason.
+  const canAnalyzeGrid = !!capabilities.data?.grid.editable
+  const canAnalyzeKey = !!capabilities.data?.tracks.key_writable
+  const canAnalyze = canEdit && !viewForeign && (canAnalyzeGrid || canAnalyzeKey)
 
   const startCueBatch = (ids: string[]) => {
     const byId = new Map(tracks.map((t) => [t.id, t]))
@@ -955,13 +965,13 @@ export default function App() {
             ...(canEdit && !viewForeign && menu.ids.length === 1
               ? [{ label: 'Edit Tags…', onClick: () => setEditing(menu.track) }]
               : []),
-            ...(canAnalyzeGrid
+            ...(canAnalyze
               ? [
                   {
-                    label: 'Analyze Grid & BPM',
+                    label: 'Analyze…',
                     hint: batchJob ? 'busy' : menu.ids.length > 1 ? String(menu.ids.length) : undefined,
                     disabled: !!batchJob,
-                    onClick: () => startGridAnalysis(menu.ids),
+                    onClick: () => setAnalyzing(menu.ids),
                   },
                 ]
               : []),
@@ -1075,13 +1085,14 @@ export default function App() {
           onError={onError}
         />
       )}
-      {gridConfirm && (
-        <AnalyzeGridDialog
-          total={gridConfirm.ids.length}
-          existing={gridConfirm.existing}
-          locked={gridConfirm.locked}
-          onChoose={(replace) => runGridAnalysis(gridConfirm.ids, replace)}
-          onClose={() => setGridConfirm(null)}
+      {analyzing && (
+        <AnalyzeDialog
+          ids={analyzing}
+          gridEditable={canAnalyzeGrid}
+          keyWritable={canAnalyzeKey}
+          onRun={(opts) => runAnalysis(analyzing, opts)}
+          onClose={() => setAnalyzing(null)}
+          onError={onError}
         />
       )}
       {!!relocation.data?.volumes.length && (
@@ -1473,7 +1484,7 @@ export default function App() {
         job={
           batchJob
             ? {
-                label: batchJob.kind === 'grid' ? 'Analyzing grids' : batchJob.kind === 'stems' ? 'Converting to stems' : 'Placing hotcues',
+                label: batchJob.kind === 'grid' ? 'Analyzing' : batchJob.kind === 'stems' ? 'Converting to stems' : 'Placing hotcues',
                 done: batchJobStatus.data?.done ?? 0,
                 total: batchJobStatus.data?.total ?? 0,
                 detail: batchJobStatus.data?.message,

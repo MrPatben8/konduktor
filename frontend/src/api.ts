@@ -436,11 +436,41 @@ export interface JobStatus {
 }
 
 /** What a batch grid analysis did, per track outcome. */
-export interface GridBatchResult {
+/** What the Analyze dialog asks for. BPM and Grid are independent halves of
+ *  a beatgrid: BPM alone keeps the downbeat, Grid alone keeps the tempo.
+ *  `replace_grid` only guards a FULL re-analysis (both ticked). */
+export interface AnalyzeOptions {
+  bpm: boolean
+  grid: boolean
+  key: boolean
+  replace_grid: boolean
+  replace_key: boolean
+}
+
+/** What an Analyze run WOULD do — the backend's `plan_grid`, per track. */
+export interface AnalyzePreview {
+  total: number
+  tracks_to_analyze: number
+  grid_full: number
+  grid_bpm: number
+  grid_phase: number
+  grid_locked: number
+  grid_existing: number
+  grid_flexible: number
+  /** Unlocked tracks with a grid — the grid Replace tick's count. */
+  with_grid: number
+  key_set: number
+  key_existing: number
+  /** Tracks with a key — the key Replace tick's count. */
+  with_key: number
+}
+
+/** What an Analyze run did. */
+export interface AnalyzeResult {
   analysed: string[]
-  locked: number
-  existing: number
   failed: { title: string; reason: string }[]
+  grid: { full: number; bpm: number; phase: number; locked: number; existing: number; flexible: number }
+  key: { set: number; existing: number; none: number }
 }
 
 /** What a batch Auto Hotcues run did. `tracks` got the template (whatever it
@@ -889,12 +919,11 @@ export const api = {
       track_id: trackId,
       slots,
     }),
-  // Backend detects tempo + first beat: sets BPM, hotcue 1, and grid anchor.
+  /** The deck's Analyze: BPM + grid (on Traktor also hotcue 1) and, where the
+   *  library stores one, the key — from one decode. Returns the cues; the key
+   *  lands on the track, so refetch the track lists. */
   autoGrid: (trackId: string) =>
     send<TrackCues>('POST', '/api/tracks/grid/auto', { track_id: trackId }),
-  /** Many tracks at once, as a job — poll `job()`. Locked grids are always
-   *  skipped; existing ones unless `replaceExisting`. The finished job's
-   *  `result` is a `GridBatchResult`. */
   /** Auto Hotcues over many tracks, one template for all, as a job. A track
    *  without a grid gets one analysed first. The finished job's `result` is a
    *  `CueBatchResult`. */
@@ -923,11 +952,11 @@ export const api = {
   stemSideload: (path: string, kind: 'engine' | 'weights') =>
     send<StemEngineStatus>('POST', '/api/stems/engine/sideload', { path, kind }),
   stemEngineRemove: () => send<StemEngineStatus>('DELETE', '/api/stems/engine'),
-  autoGridBatch: (trackIds: string[], replaceExisting: boolean) =>
-    send<JobStatus>('POST', '/api/tracks/grid/auto-batch', {
-      track_ids: trackIds,
-      replace_existing: replaceExisting,
-    }),
+  analyzePreview: (trackIds: string[], opts: AnalyzeOptions) =>
+    send<AnalyzePreview>('POST', '/api/tracks/analyze/preview', { track_ids: trackIds, ...opts }),
+  /** Starts an analysis job; its `result` is an `AnalyzeResult`. */
+  analyze: (trackIds: string[], opts: AnalyzeOptions) =>
+    send<JobStatus>('POST', '/api/tracks/analyze', { track_ids: trackIds, ...opts }),
   setCueType: (trackId: string, slot: number, type: CueType) =>
     send<TrackCues>('PATCH', '/api/tracks/cue', { track_id: trackId, slot, type }),
   /** Recolour a cue from `capabilities.cues.palette`; null = uncoloured. */

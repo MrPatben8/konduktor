@@ -1043,14 +1043,17 @@ export function PrepStrip({
       onError?.((e as Error).message)
     }
   }
-  // Analyze: backend detects BPM + first beat, sets the grid anchor and hotcue 1.
+  // Analyze: the backend detects BPM + first beat (setting the grid anchor and,
+  // on Traktor, hotcue 1) and the key where the library stores one. The key
+  // lands on the track: `applyCueEdit` refetches the lists, and App hands the
+  // deck the fresh copy.
   const runAnalyzeGrid = async () => {
     if (!track || gridBusy) return
     if (refuseGridEdit()) return
     setGridBusy(true)
     try {
       applyCueEdit(await api.autoGrid(track.id))
-      onNotify?.('success', 'Analyzed — set BPM, grid, and hotcue 1')
+      onNotify?.('success', caps.tracks.key_writable ? 'Analyzed — set BPM, grid and key' : 'Analyzed — set BPM and grid')
     } catch (e) {
       onError?.((e as Error).message)
     } finally {

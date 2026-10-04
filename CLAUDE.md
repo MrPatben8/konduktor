@@ -762,6 +762,18 @@ Two independent apps that talk over HTTP:
     original files" while conversions are pending (decided: the consequence is
     shown where Save is pressed). `Toast` takes an optional `action`;
     `StatusJob.unit: 'bytes'` shows a download in MB. Every background job's status-bar entry reads label + count · a bar SPLIT horizontally when the job reports per-item progress (top = the current item's `fraction`, 0-100 %; bottom = the whole job, (done + fraction) / total, so 99 % into the first of two tracks reads ~50 %) — a single bar otherwise; two colours in one bar was tried and read as confusing · its `status` ("separating 41 %") at its natural width · the item's name LAST (the only part that truncates; full name on hover). The section is a FIXED width (560 px; the view name on the left gives way instead) and everything BEFORE the bar is fixed (count sized for its largest value, "cancelling…" as a status, not a label), so neither a long name nor a phase change moves the bar. The status deliberately has no fixed slot: it is after the bar, and a slot left a gap before the name. `Job.fraction`/`status` come from `JobHandle.progress(fraction=, status=)` and reset whenever `done` advances; a stem conversion maps decode / separate / encode onto a track's 0-1 by measured shares.
+    `AnalyzeDialog` (the context menu's **Analyze…**, decided 2026-10-04:
+    BPM / Grid / Key ticks, remembered as `analyzeWhat`, each disabled with a
+    reason where the library cannot store it — offered when EITHER grids or
+    keys are writable; the Replace questions are inside the dialog, never a
+    second popup, and never remembered: the grid's only when BPM AND Grid are
+    ticked, since with one tick adjusting the grid is the point. Every count
+    and the "Analyze N" button come from `/api/tracks/analyze/preview`, i.e.
+    the backend's own `plan_grid`. The finished job's toast says what was
+    written and skipped, by reason. The deck's one-click Analyze writes the
+    key too, and App hands the deck the fresh copy of its track whenever the
+    view it came from refetches — the deck otherwise held a load-time
+    snapshot, so neither an analysed key nor an Edit Tags change reached it),
     `AutoCueDialog` (the Auto Hotcues slot template: event + beat offset per
     slot, a per-slot Replace tick for occupied slots — never remembered, since
     overwriting is a decision about THIS track — and the template itself
@@ -1102,7 +1114,7 @@ serialization path.** It enforces:
   collection — the previous implementation's route returned 500 on every call
   for a week while its helper's tests passed.
 - `test_grid_batch.py` — **batch analysis** from the context menu, both
-  `jobs.py` jobs shown in the status bar: Analyze Grid & BPM
+  `jobs.py` jobs shown in the status bar: Analyze… (BPM / Grid / Key)
   (`POST /api/tracks/grid/auto-batch`) and Auto Hotcues…
   (`POST /api/tracks/cue/auto-batch`, one template for every track). Pins the
   batch-only decisions: locked grids are skipped always, existing grids unless
