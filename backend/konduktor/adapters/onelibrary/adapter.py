@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ...core.adapter import InvalidCommand, Unsupported
+from ...core.adapter import InvalidCommand, Unsupported, local_audio_facts
 from ...core.capabilities import Capabilities
 from ...core.model import GridMarker, HotcueChip, PlaylistNode, Track, TrackCues
 from ...core.pathmap import PathMapping, common_dir_prefix
@@ -223,6 +223,9 @@ class OneLibraryAdapter:
     def audio_path(self, track_id: str):
         return self._store.audio_path(track_id)
 
+    def audio_facts(self, track_ids: list[str]):
+        return local_audio_facts(self, track_ids)
+
     def set_path_mapping(self, mapping: PathMapping) -> None:
         """Ignored: a drive's paths are relative to wherever it is mounted.
 
@@ -312,7 +315,7 @@ class OneLibraryAdapter:
         `audio_path` is where `place_audio` said to copy it (or the file itself,
         already on the stick); Save moves copies into place.
         """
-        from ...core import audio_tags, grid_detect, waveform
+        from ...core import audio_tags, grid_detect, key_detect, waveform
         from ...core.export import ExportTrack
         from ..rekordbox import artwork, timebase
         from .export import OneLibraryExporter
@@ -348,21 +351,23 @@ class OneLibraryAdapter:
                     taken.add(cue.slot)
                 else:
                     memory.append(cue.model_copy(update={"role": "memory", "slot": None}))
-            export_track = ExportTrack(track=item.track, destination=audio,
+            # A file with no key of its own gets one, as it gets a grid.
+            track = key_detect.with_detected_key(item.track, samples, waveform.SR)
+            export_track = ExportTrack(track=track, destination=audio,
                                        cues=TrackCues(grid_markers=markers, cues=memory))
             # Decoded once above; the writer must not decode it again.
             export_track.waveform = lambda *, lead=0.0, m=measured: m
             art = item.art or audio_tags.read_cover(audio)
             jpegs = artwork.pioneer_jpegs(art[0]) if art else None
-            length = item.track.length or (int(measured.duration) if measured else None)
-            prepared.append((item, audio, rel, exporter.anlz_files(export_track, rel), jpegs,
+            length = track.length or (int(measured.duration) if measured else None)
+            prepared.append((item, track, audio, rel, exporter.anlz_files(export_track, rel), jpegs,
                              markers, hot, length))
 
         added: list[str] = []
-        for item, audio, rel, anlz, jpegs, markers, hot, length in prepared:
+        for item, track, audio, rel, anlz, jpegs, markers, hot, length in prepared:
             track_id = self._store.add_track(
-                audio, item.track, rel=rel, anlz_rel=self._store._anlz_rel(rel), anlz=anlz,
-                jpegs=jpegs, bpm=markers[0].bpm if markers else item.track.bpm, length=length)
+                audio, track, rel=rel, anlz_rel=self._store._anlz_rel(rel), anlz=anlz,
+                jpegs=jpegs, bpm=markers[0].bpm if markers else track.bpm, length=length)
             for cue in hot:
                 self._store.set_cue(track_id, slot=cue.slot, start_sec=cue.start,
                                     cue_type="loop" if cue.length else "cue",
@@ -389,6 +394,12 @@ class OneLibraryAdapter:
     def set_track_metadata(self, track_id: str, fields: dict) -> Track | None:
         self._require_writable("Editing track metadata")
         self._store.set_track_metadata(track_id, fields)
+        self._refresh(track_id)
+        return self._index.get(track_id)
+
+    def set_key(self, track_id: str, wheel: int, mode: str) -> Track | None:
+        self._require_writable("Setting the key")
+        self._store.set_key(track_id, wheel, mode)
         self._refresh(track_id)
         return self._index.get(track_id)
 

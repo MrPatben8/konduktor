@@ -133,6 +133,40 @@ class AutoGridRequest(BaseModel):
     track_id: str
 
 
+class AnalyzeRequest(BaseModel):
+    """The Analyze dialog's choices. BPM and Grid are independent halves of a
+    beatgrid (`core/grid_plan`); `replace_grid` only guards a FULL re-analysis
+    (both ticked), since with one tick adjusting the grid is the point.
+    `replace_key` lets detection overwrite a key the track already has."""
+    track_ids: list[str]
+    bpm: bool = True
+    grid: bool = True
+    key: bool = False
+    replace_grid: bool = False
+    replace_key: bool = False
+
+
+class AnalyzePreview(BaseModel):
+    """What an Analyze run WOULD do, for the dialog. Counted from the
+    projection, so on a platform whose marker counts are lazy (Rekordbox,
+    OneLibrary: 1 for any track with a BPM) a flexible grid is only found when
+    the run reads the real grid — it is then skipped and reported."""
+    total: int
+    tracks_to_analyze: int = 0  # tracks with anything to do (grid and key overlap)
+    # Grid: what `plan_grid` decides per track — full / bpm / phase / skipped.
+    grid_full: int = 0
+    grid_bpm: int = 0
+    grid_phase: int = 0
+    grid_locked: int = 0
+    grid_existing: int = 0     # skipped: has a grid, Replace not ticked
+    grid_flexible: int = 0
+    with_grid: int = 0         # unlocked tracks that have a grid (the Replace tick's count)
+    # Key.
+    key_set: int = 0
+    key_existing: int = 0      # skipped: has a key, Replace not ticked
+    with_key: int = 0          # tracks that have a key (the Replace tick's count)
+
+
 class AutoGridBatchRequest(BaseModel):
     track_ids: list[str]
     # False skips tracks that already have a grid. Locked grids are skipped
@@ -187,6 +221,8 @@ class EditState(BaseModel):
     stem_job: str | None = None
     # What this open's crash recovery did about an interrupted conversion.
     stem_recovery: dict | None = None
+    # A remote library's connection: {state, via, machine}. None when local.
+    remote: dict | None = None
 
 
 # ---- collection selection ----
@@ -200,10 +236,32 @@ class CollectionStatus(BaseModel):
     # Identity of the loaded library, so the UI can name it without parsing the
     # path (a Serato library is a directory, not a file).
     library: LibraryInfo | None = None
+    # Opening a remote library: the unsaved edits another computer left there,
+    # {machine, summary} — the user chooses to save or discard them.
+    pending_edits: dict | None = None
 
 
 class OpenCollection(BaseModel):
     path: str
+
+
+class RemoteIn(BaseModel):
+    """A remote's settings as the picker's form sends them. `password` may be
+    omitted on an edit, which keeps the saved one."""
+
+    name: str
+    host: str
+    port: int | None = None
+    fallback_host: str | None = None
+    fallback_port: int | None = None
+    username: str
+    password: str | None = None
+
+
+class OpenRemote(BaseModel):
+    remote_id: str
+    # Take the session from the computer holding it (the user confirmed).
+    takeover: bool = False
 
 
 class CollectionCandidate(BaseModel):

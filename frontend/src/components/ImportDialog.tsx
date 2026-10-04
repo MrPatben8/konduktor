@@ -5,6 +5,7 @@ import { api, type ImportPreview, type JobStatus } from '../api'
 import { useCaps } from '../lib/capabilities'
 import { placedAudioSummary } from '../lib/platformCopy'
 import { FolderPicker } from './FolderPicker'
+import { useServerImportFolder } from './AddFilesDialog'
 
 /**
  * Import a browsed device into the loaded collection.
@@ -45,6 +46,9 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
   // One that places its own audio — a stick — needs no destination.
   const caps = useCaps()
   const places = caps.tracks.places_audio
+  // A library held by a server: the audio is uploaded into one of ITS folders.
+  const uploads = !places && caps.tracks.audio_destination === 'library'
+  const remote = useServerImportFolder(uploads)
   const [baseFolder, setBaseFolder] = useState('')
   const [useSubfolder, setUseSubfolder] = useState(true)
   const [browsing, setBrowsing] = useState(false)
@@ -59,9 +63,13 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
   useEffect(() => {
     if (!prefsLoaded || baseFolder) return
     const p = prefs.data as { importFolder?: string; importSubfolder?: boolean }
-    setBaseFolder(p?.importFolder || '~/Music/Konduktor Imports')
+    if (uploads) {
+      if (remote.folder) setBaseFolder(remote.folder)
+    } else {
+      setBaseFolder(p?.importFolder || '~/Music/Konduktor Imports')
+    }
     if (typeof p?.importSubfolder === 'boolean') setUseSubfolder(p.importSubfolder)
-  }, [prefsLoaded, prefs.data, baseFolder])
+  }, [prefsLoaded, prefs.data, baseFolder, uploads, remote.folder])
 
   const remember = (patch: Record<string, unknown>) => {
     api.patchPrefs(patch).catch(() => {
@@ -153,9 +161,11 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
     {browsing && (
       <FolderPicker
         value={baseFolder}
+        listing={uploads ? 'library' : 'host'}
         onChange={(path) => {
           setBaseFolder(path)
-          remember({ importFolder: path })
+          if (uploads) remote.remember(path)
+          else remember({ importFolder: path })
         }}
         onClose={() => setBrowsing(false)}
       />
@@ -179,7 +189,9 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
               )}
               {!places && (
               <div>
-                <span className="mb-1 block text-xs text-muted">Copy audio into</span>
+                <span className="mb-1 block text-xs text-muted">
+                  {uploads ? `Upload audio to ${remote.serverName}, into` : 'Copy audio into'}
+                </span>
                 <div className="flex items-center gap-2">
                   <span
                     title={baseFolder}

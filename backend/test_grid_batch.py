@@ -57,6 +57,9 @@ with tempfile.TemporaryDirectory() as d:
         return SimpleNamespace(anchor=0.123, bpm=127.5)
 
     main.grid_detect.detect_grid = fake_detect
+    # The batch decodes once for grid AND key; the detector above is fake, so
+    # the decode is too (audio_path points at this .py file).
+    main._decode_for_analysis = lambda path: (detected.append(str(path)) or np.zeros(22050 * 8, np.float32), 22050)
 
     with TestClient(main.app, raise_server_exceptions=False) as c:
         a = main.require_adapter()
@@ -238,6 +241,161 @@ with tempfile.TemporaryDirectory() as d:
         # response model once dropped it on every job route.
         jid = main.JOBS.submit("unit-probe", lambda h: h.progress(done=1, total=2, unit="bytes")).id
         check("a job's unit reaches the client", wait(c, jid).get("unit") == "bytes")
+
+print("== Analyze: BPM / Grid / Key through the routes ==")
+with tempfile.TemporaryDirectory() as d:
+    from konduktor.core.key_detect import KeyResult
+
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    os.environ["KONDUKTOR_NML"] = str(work)
+    decodes: list[str] = []
+    main._decode_for_analysis = lambda path: (decodes.append(str(path)) or np.ones(22050 * 8, np.float32), 22050)
+    main.grid_detect.detect_grid = lambda path, *a, **k: SimpleNamespace(
+        anchor=k.get("anchor") or 0.5, bpm=k.get("bpm") or 133.0)
+    main.key_detect.detect_key_samples = lambda y, sr: KeyResult(5, "minor", 4, 0.9)   # F minor, 4A
+
+    with TestClient(main.app, raise_server_exceptions=False) as c:
+        a = main.require_adapter()
+        a.audio_path = lambda tid: Path(__file__)
+        keyed = [t.id for t in a.tracks if t.key_wheel is not None][:3]
+        unkeyed = [t.id for t in a.tracks if t.key_wheel is None][:3]
+        single = [t.id for t in a.tracks if t.grid_marker_count == 1 and not t.grid_locked][:3]
+        # Every flexible grid in the real collection is locked: make one.
+        flexible = single.pop()
+        a.add_grid_marker(flexible, a.track_cues(flexible).grid_markers[0].start + 60.0, 126.0)
+        bare = [t.id for t in a.tracks if t.grid_marker_count == 0][:2]
+
+        def run(**body):
+            r = c.post("/api/tracks/analyze", json=body)
+            assert r.status_code == 200, r.text
+            return wait(c, r.json()["id"])["result"]
+
+        r = c.post("/api/tracks/analyze", json={"track_ids": keyed, "bpm": False, "grid": False, "key": False})
+        check("nothing ticked is refused", r.status_code == 400, r.text)
+
+        # Key alone: an existing key is skipped unless Replace; the grid untouched.
+        before_grid = {t: a.track_cues(t).grid_markers for t in keyed}
+        before_keys = {t: a.track(t).key for t in keyed}
+        res = run(track_ids=keyed + unkeyed, bpm=False, grid=False, key=True)
+        check("Key alone sets the keyless tracks' keys", res["key"]["set"] == len(unkeyed)
+              and all(a.track(t).key_wheel == 4 for t in unkeyed), str(res["key"]))
+        check("…and skips tracks that have one", res["key"]["existing"] == len(keyed)
+              and {t: a.track(t).key for t in keyed} == before_keys)
+        check("…leaving every grid alone", {t: a.track_cues(t).grid_markers for t in keyed} == before_grid)
+        res = run(track_ids=keyed, bpm=False, grid=False, key=True, replace_key=True)
+        check("Replace keys overwrites them", res["key"]["set"] == len(keyed)
+              and all(a.track(t).key_wheel == 4 for t in keyed), str(res["key"]))
+
+        # The preview counts what the run does.
+        ids = single + [flexible] + bare
+        pv = c.post("/api/tracks/analyze/preview", json={"track_ids": ids, "bpm": True, "grid": False}).json()
+        check("preview: BPM alone adjusts single grids, skips flexible, analyses bare in full",
+              (pv["grid_bpm"], pv["grid_flexible"], pv["grid_full"]) == (len(single), 1, len(bare)), str(pv))
+        pv = c.post("/api/tracks/analyze/preview", json={"track_ids": ids, "bpm": True, "grid": True}).json()
+        check("preview: BPM+Grid without Replace skips every gridded track",
+              (pv["grid_existing"], pv["grid_full"], pv["with_grid"]) == (len(single) + 1, len(bare), len(single) + 1),
+              str(pv))
+        pv = c.post("/api/tracks/analyze/preview",
+                    json={"track_ids": ids, "bpm": True, "grid": True, "key": True, "replace_key": True}).json()
+        check("preview: tracks_to_analyze counts a track once for grid AND key",
+              pv["tracks_to_analyze"] == len(ids), str(pv))
+
+        # BPM alone, through the run.
+        anchors = {t: a.track_cues(t).grid_markers[0].start for t in single}
+        flex_before = a.track_cues(flexible).grid_markers
+        decodes.clear()
+        res = run(track_ids=ids, bpm=True, grid=False, key=False)
+        check("BPM alone: the run's counts match the preview",
+              (res["grid"]["bpm"], res["grid"]["flexible"], res["grid"]["full"]) == (len(single), 1, len(bare)),
+              str(res["grid"]))
+        check("…single grids keep their anchor, take the new tempo",
+              all(abs(a.track_cues(t).grid_markers[0].start - anchors[t]) < 1e-6
+                  and a.track_cues(t).grid_markers[0].bpm == 133.0 for t in single))
+        check("…a flexible grid is untouched", a.track_cues(flexible).grid_markers == flex_before)
+        check("…and is never decoded (nothing to do)", len(decodes) == len(single) + len(bare), str(len(decodes)))
+
+        # Grid + Key together: ONE decode per track.
+        decodes.clear()
+        res = run(track_ids=bare, bpm=True, grid=True, key=True, replace_grid=True, replace_key=True)
+        check("BPM+Grid+Key decodes each track once", len(decodes) == len(bare), str(decodes))
+        check("…and writes both", res["grid"]["full"] == len(bare) and res["key"]["set"] == len(bare), str(res))
+
+        # A grid that cannot be fitted still gets its key.
+        def no_pulse(*a, **k):
+            raise ValueError("No onsets found")
+        main.grid_detect.detect_grid = no_pulse
+        res = run(track_ids=unkeyed[:1], bpm=True, grid=True, key=True, replace_grid=True, replace_key=True)
+        check("a failed grid is reported and the key still written",
+              res["key"]["set"] == 1 and any(f["reason"].startswith("Grid:") for f in res["failed"]), str(res))
+
+        # The deck's Analyze sets the key too.
+        main.grid_detect.detect_grid = lambda path, *a, **k: SimpleNamespace(anchor=0.5, bpm=133.0)
+        main.key_detect.detect_key_samples = lambda y, sr: KeyResult(9, "minor", 8, 0.9)  # A minor, 8A
+        r = c.post("/api/tracks/grid/auto", json={"track_id": bare[0]})
+        check("the deck's Analyze writes the grid AND the key",
+              r.status_code == 200 and a.track(bare[0]).key_wheel == 8, r.text[:200])
+        main.key_detect.detect_key_samples = lambda y, sr: (_ for _ in ()).throw(RuntimeError("boom"))
+        r = c.post("/api/tracks/grid/auto", json={"track_id": bare[1]})
+        check("…and a failing key never fails the grid", r.status_code == 200, r.text[:200])
+        check("nothing reached disk", work.read_bytes() == REAL.read_bytes())
+
+print("== BPM alone / Grid alone write through the hand-edit commands ==")
+with tempfile.TemporaryDirectory() as d:
+    from konduktor.adapters.traktor.adapter import TraktorAdapter
+    from konduktor.core.grid_plan import GridStep
+
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    a = TraktorAdapter(work)
+    a.audio_path = lambda tid: Path(__file__)
+    asked: list[dict] = []
+
+    def fake_detect(path, *args, **k):
+        asked.append({key: k.get(key) for key in ("bpm", "anchor")})
+        return SimpleNamespace(anchor=k.get("anchor") or 0.777, bpm=k.get("bpm") or 131.0)
+
+    main.grid_detect.detect_grid = fake_detect
+
+    def single_with_companion():
+        for t in a.tracks:
+            cues = a.track_cues(t.id)
+            if t.grid_locked or not cues or len(cues.grid_markers) != 1:
+                continue
+            m = cues.grid_markers[0]
+            comp = [c for c in cues.cues if c.slot is not None and abs(c.start - m.start) < 0.002]
+            if comp:
+                yield t.id, m, comp[0]
+
+    picks = single_with_companion()
+    tid, m, comp = next(picks)
+    out = main._analyse_grid(a, tid, GridStep("bpm", hold_anchor=m.start))
+    g = out.grid_markers
+    check("BPM alone asks the detector to hold the anchor", asked[-1] == {"bpm": None, "anchor": m.start}, str(asked[-1]))
+    check("…and retempos the marker in place",
+          len(g) == 1 and abs(g[0].bpm - 131.0) < 1e-6 and abs(g[0].start - m.start) < 1e-6, str(g))
+    check("…leaving its beat-1 cue where it was",
+          any(c.slot == comp.slot and abs(c.start - comp.start) < 1e-6 for c in out.cues))
+    check("the track's BPM follows", abs(a.track(tid).bpm - 131.0) < 0.01, str(a.track(tid).bpm))
+
+    tid, m, comp = next(picks)
+    out = main._analyse_grid(a, tid, GridStep("phase", hold_bpm=m.bpm))
+    g = out.grid_markers
+    check("Grid alone asks the detector to hold the BPM", asked[-1] == {"bpm": m.bpm, "anchor": None}, str(asked[-1]))
+    check("…and moves the marker, keeping its tempo",
+          len(g) == 1 and abs(g[0].start - 0.777) < 0.002 and abs(g[0].bpm - m.bpm) < 1e-6, str(g))
+    check("…dragging its beat-1 cue along",
+          any(c.slot == comp.slot and abs(c.start - 0.777) < 0.002 for c in out.cues))
+
+    bare = next(t for t in a.tracks if t.grid_marker_count == 0 and not t.grid_locked)
+    out = main._analyse_grid(a, bare.id, GridStep("phase", hold_bpm=128.0))
+    check("Grid alone with a BPM but no grid creates one marker at that BPM",
+          [(round(x.start, 3), x.bpm) for x in out.grid_markers] == [(0.777, 128.0)], str(out.grid_markers))
+    try:
+        main._analyse_grid(a, bare.id, GridStep("skip", "locked"))
+        check("a skip step is never written", False)
+    except ValueError:
+        check("a skip step is never written", True)
 
 print()
 print("FAILED" if failed else "RESULT: ALL PASSED")

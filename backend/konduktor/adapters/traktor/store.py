@@ -35,6 +35,7 @@ from traktor_nml_utils.models.collection import (
     Entrytype,
     GridType,
     Infotype,
+    MusicalKeytype,
     Locationtype,
     Nodetype,
     Playlisttype,
@@ -48,13 +49,14 @@ from xsdata.formats.dataclass.serializers import XmlSerializer
 from ...core.adapter import FileTagResult, InvalidCommand, SaveOutcome, StemSwapResult
 from ...core.edit_journal import EditJournal
 from ...core.pathmap import common_dir_prefix
-from ...core.pathmap import PathMapping
+from ...core.pathmap import PathMapping, stored_form
 from ...core.relocate import PathGroup
 from ...core.stem_file import NML_STEMS_JSON, nml_stems_for
 from ...schemas import PlaylistNode
 from . import beatgrid, timebase
 from .locations import os_path_to_location, resolve_path
-from .projection import iso_date, traktor_date
+from ...core import musical_key
+from .projection import iso_date, musical_key_value, traktor_date
 
 # Traktor's POPM frame owner: an ID3 rating is per-owner, so writing under
 # this email is what makes the stars show up in Traktor itself.
@@ -77,6 +79,9 @@ class TraktorStore:
         self.dirty = False
         # Active OS-path prefix remapping (empty = identity). Survives _load().
         self._path_mapping = PathMapping()
+        # Write a file added through a mapping in the library's STORED form
+        # (`pathmap.stored_form`) — a Konduktor server sets this.
+        self._write_stored_paths = False
         # Mappings the user confirmed in the open-time missing-files check.
         # Session-only: never saved, re-derived on every open.
         self._session_mappings: list[PathMapping] = []
@@ -99,6 +104,7 @@ class TraktorStore:
         self._journal = EditJournal()
         # track_id -> (image_bytes, mime) of staged replacement cover art
         self._track_art: dict[str, tuple[bytes, str]] = {}
+        self._notation: str | None = None
         self.dirty = False
 
     def _note(
@@ -399,6 +405,69 @@ class TraktorStore:
                 self._journal.record("track", "set", track_id, k)
             self.dirty = True
 
+    # ---- musical key ----------------------------------------------------
+    def _collection_notation(self) -> str | None:
+        """The notation this collection's INFO@KEY values are written in — a
+        Traktor preference (Open Key / Camelot / musical) the NML does not
+        record, so it is read off the keys themselves; the majority wins. None
+        when the collection holds no keys — never cached, since adding entries
+        to an empty collection (an export) is exactly when it changes. Once
+        known it is kept for the session: every key Konduktor writes is in it,
+        so it can only move if one could out-vote thousands."""
+        from collections import Counter
+
+        if self._notation is not None:
+            return self._notation
+        seen = Counter(
+            musical_key.notation_of(e.info.key)
+            for e in self._nml.collection.entry
+            if e.info is not None and e.info.key
+        )
+        seen.pop(None, None)
+        self._notation = seen.most_common(1)[0][0] if seen else None
+        return self._notation
+
+    def key_notation(self) -> str:
+        """`_collection_notation`, or Open Key (Traktor's default) when there
+        are no keys to go by. A key in another notation would display fine but
+        read as foreign beside its neighbours."""
+        return self._collection_notation() or "open_key"
+
+    def _added_key_text(self, track) -> str | None:
+        """INFO@KEY for an entry `add_entry` creates: rendered from the wheel in
+        this collection's notation, never copied — a Pioneer source says "Abm",
+        which reads as foreign beside "9m". A collection with no keys yet (an
+        export's fresh skeleton) takes a Traktor-native source's own notation,
+        so Traktor -> Traktor keeps the user's (the export decision). Text that
+        names no key is kept as it was: dropping it would lose information."""
+        text = getattr(track, "key", None) or None
+        wheel, mode = getattr(track, "key_wheel", None), getattr(track, "key_mode", None)
+        if not (wheel and mode):
+            return text
+        notation = self._collection_notation()
+        if notation is None:
+            own = musical_key.notation_of(text)
+            notation = own if own in ("open_key", "camelot") else "open_key"
+        return musical_key.render(wheel, mode, notation)
+
+    def set_key(self, track_id: str, wheel: int, mode: str) -> None:
+        """Set a track's key as Traktor's analysis writes one: the display
+        text in INFO@KEY (in the collection's notation; also what reaches the
+        file's tag at Save) AND the analysed value in `<MUSICAL_KEY>`."""
+        if not (isinstance(wheel, int) and 1 <= wheel <= 12) or mode not in ("major", "minor"):
+            raise InvalidCommand(f"Not a key: wheel {wheel!r}, mode {mode!r}")
+        with self._lock:
+            entry = self._entry_by_key.get(track_id)
+            if entry is None:
+                raise PlaylistError(f"Track not found: {track_id}")
+            if entry.info is None:
+                entry.info = Infotype()
+            before = entry.info.key
+            entry.info.key = musical_key.render(wheel, mode, self.key_notation())
+            entry.musical_key = MusicalKeytype(value_attribute=musical_key_value(wheel, mode))
+            self._journal.record("track", "set", track_id, "key", before, entry.info.key)
+            self.dirty = True
+
     # ---- adding tracks --------------------------------------------------
     def add_entry(self, track, audio_path: Path) -> str:
         """Append a brand-new ENTRY for `audio_path` and return its track id.
@@ -428,7 +497,7 @@ class TraktorStore:
         # Read before the lock: it opens the file.
         stems = nml_stems_for(audio_path)
         with self._lock:
-            volume, dir_, file = os_path_to_location(Path(audio_path))
+            volume, dir_, file = os_path_to_location(self._stored(Path(audio_path)))
             key = f"{volume}{dir_}{file}"
             if key in self._entry_by_key:
                 raise PlaylistError(
@@ -443,7 +512,7 @@ class TraktorStore:
                 remixer=getattr(track, "remixer", None) or None,
                 producer=getattr(track, "producer", None) or None,
                 mix=getattr(track, "mix", None) or None,
-                key=getattr(track, "key", None) or None,
+                key=self._added_key_text(track),
                 bitrate=getattr(track, "bitrate", None) or None,
                 playcount=getattr(track, "playcount", None) or None,
                 # The generic model carries ISO dates; Traktor writes "YYYY/M/D".
@@ -469,6 +538,12 @@ class TraktorStore:
                 # projected BPM so a track with no grid still shows a tempo;
                 # `replace_grid` overwrites it from the markers when they land.
                 tempo=Tempotype(bpm=float(bpm)) if bpm else None,
+                # The analysed key, as Traktor's own analysis stores it.
+                musical_key=(
+                    MusicalKeytype(value_attribute=musical_key_value(track.key_wheel, track.key_mode))
+                    if getattr(track, "key_wheel", None) and getattr(track, "key_mode", None)
+                    else None
+                ),
                 cue_v2=[],
                 stems=Stemstype(stems=stems) if stems else None,
             )
@@ -988,6 +1063,15 @@ class TraktorStore:
         with self._lock:
             self._path_mapping = mapping
 
+    def set_write_stored_paths(self, enabled: bool) -> None:
+        self._write_stored_paths = bool(enabled)
+
+    def _stored(self, os_path: Path) -> Path:
+        """Where a NEW entry points, as the collection stores paths."""
+        if not self._write_stored_paths:
+            return Path(os_path)
+        return stored_form(Path(os_path), [self._path_mapping, *self._session_mappings])
+
     def set_session_mappings(self, mappings: list[PathMapping]) -> None:
         """Set the mappings confirmed for this session (applied at resolve time)."""
         with self._lock:
@@ -1283,7 +1367,7 @@ class TraktorStore:
                 if swap.mode not in ("repoint", "add"):
                     raise PlaylistError(f"Unknown stem swap mode: {swap.mode}")
                 seen_ids.add(swap.track_id)
-                loc = os_path_to_location(Path(swap.stem_path))
+                loc = os_path_to_location(self._stored(Path(swap.stem_path)))
                 new_key = "".join(x or "" for x in loc)
                 if new_key in self._entry_by_key or new_key in new_keys:
                     raise PlaylistError(

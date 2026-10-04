@@ -1,0 +1,18 @@
+# The Konduktor SERVER (a container on the user's NAS — see server/Dockerfile).
+#
+# Deliberately NOT requirements.txt: the server never DECODES audio (analysis,
+# waveforms and stem separation run on the computer that opened the library),
+# so librosa, scikit-learn and PyAV stay out of the image. What it does is file
+# IO, the native model, tags and header reads. `test_layering.py` checks that
+# importing `konduktor.server` pulls none of them in.
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pydantic>=2.11
+mutagen>=1.47  # tags written into the audio files at Save
+numpy>=2.0  # a prepared analysis arrives as arrays (Rekordbox's ANLZ writer)
+Pillow>=11  # a Rekordbox add writes the cover's artwork files
+dulwich>=0.22  # version history, beside the library
+platformdirs>=4.0
+# From GitHub, NOT PyPI — see requirements.txt for why.
+traktor-nml-utils @ git+https://github.com/MrPatben8/traktor-nml-utils.git
+pyrekordbox @ git+https://github.com/dylanljones/pyrekordbox.git

@@ -18,6 +18,10 @@ import { FolderPicker } from './FolderPicker'
  * how the DJ keeps their music, and a remembered default would quietly apply
  * last week's answer to a different drive.
  *
+ * A library held by a server (`tracks.audio_destination === 'library'`) is the
+ * other exception: it cannot see this computer's files, so the only choice is
+ * which folder ON THE SERVER they are uploaded into.
+ *
  * A playlist or export target still needs the files in the collection first —
  * both hold collection track ids — so the dialog says so rather than doing it
  * silently. Files the collection already holds are not added again, but still
@@ -53,8 +57,11 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
   // decides copy vs in place itself, so there is nothing to ask.
   const caps = useCaps()
   const places = caps.tracks.places_audio
-  const [mode, setMode] = useState<'copy' | 'reference' | null>(null)
+  // Uploaded into a folder on the server: nothing to ask but where.
+  const uploads = !places && caps.tracks.audio_destination === 'library'
+  const [mode, setMode] = useState<'copy' | 'reference' | null>(uploads ? 'copy' : null)
   const [folder, setFolder] = useState('')
+  const remote = useServerImportFolder(uploads)
   const [browsing, setBrowsing] = useState(false)
   const [job, setJob] = useState<JobStatus | null>(null)
   const [starting, setStarting] = useState(false)
@@ -65,9 +72,13 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
   const prefsLoaded = prefs.isSuccess
   useEffect(() => {
     if (!prefsLoaded || folder) return
+    if (uploads) {
+      if (remote.folder) setFolder(remote.folder)
+      return
+    }
     const p = prefs.data as { importFolder?: string }
     setFolder(p?.importFolder || '~/Music/Konduktor Imports')
-  }, [prefsLoaded, prefs.data, folder])
+  }, [prefsLoaded, prefs.data, folder, uploads, remote.folder])
 
   const body: FolderAddRequest = {
     track_ids: trackIds,
@@ -192,9 +203,11 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
       {browsing && (
         <FolderPicker
           value={folder}
+          listing={uploads ? 'library' : 'host'}
           onChange={(path) => {
             setFolder(path)
-            api.patchPrefs({ importFolder: path }).catch(() => {})
+            if (uploads) remote.remember(path)
+            else api.patchPrefs({ importFolder: path }).catch(() => {})
           }}
           onClose={() => setBrowsing(false)}
         />
@@ -224,7 +237,21 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
                   </div>
                 )}
 
-                {!places && (
+                {uploads && (
+                  <div className="rounded well px-3 py-2 text-xs text-muted">
+                    <div>Uploaded to {remote.serverName} into</div>
+                    <div className="mt-1 flex items-center gap-2">
+                      <span className="min-w-0 truncate font-mono text-text" dir="rtl" title={folder}>
+                        {folder ? `\u200E${folder}\u200E` : 'Loading…'}
+                      </span>
+                      <button onClick={() => setBrowsing(true)} className="shrink-0 text-accent hover:underline">
+                        Change…
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {!places && !uploads && (
                 <div className="space-y-1">
                   {option(
                     'copy',
@@ -270,12 +297,12 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
                     <div className="text-text">
                       {newCount} new to {libraryName}
                       {shown !== 'reference' && p.total_bytes > 0 && (
-                        <span className="text-muted"> · {gb(p.total_bytes)} to copy</span>
+                        <span className="text-muted"> · {gb(p.total_bytes)} to {uploads ? 'upload' : 'copy'}</span>
                       )}
                     </div>
                     {shown !== 'reference' && p.free_bytes != null && (
                       <div className={p.enough_space === false ? 'text-pink' : 'text-faint'}>
-                        {gb(p.free_bytes)} free
+                        {gb(p.free_bytes)} free{uploads ? ' on the server' : ''}
                         {p.enough_space === false && ' — not enough space'}
                       </div>
                     )}
@@ -369,3 +396,33 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
     document.body,
   )
 }
+
+/**
+ * A folder ON THE SERVER of a remote library — where uploads go, or where stem
+ * files are written: the one last chosen for THIS remote (remembered per remote
+ * under `key`, since each server has its own folders), else its content folder
+ * (plus `sub`). `serverName` names it in the dialog.
+ */
+export function useServerFolder(
+  enabled: boolean,
+  key: 'remoteImportFolders' | 'remoteStemFolders' = 'remoteImportFolders',
+  sub = '',
+) {
+  const collection = useQuery({ queryKey: ['collection'], queryFn: api.collection, enabled })
+  const prefs = useQuery({ queryKey: ['prefs'], queryFn: api.getPrefs, enabled })
+  const root = useQuery({ queryKey: ['fs', 'library', '~', null], queryFn: () => api.libraryListDir(), enabled })
+  const remoteId = collection.data?.library?.remote?.id ?? null
+  const saved = (prefs.data as Record<string, Record<string, string> | undefined> | undefined)?.[key]
+  const home = root.data?.home
+  const folder = (remoteId && saved?.[remoteId]) || (home ? (sub ? `${home}/${sub}` : home) : '')
+  return {
+    folder,
+    serverName: collection.data?.library?.display_name ?? 'the server',
+    remember: (path: string) => {
+      if (!remoteId) return
+      api.patchPrefs({ [key]: { ...(saved ?? {}), [remoteId]: path } }).catch(() => {})
+    },
+  }
+}
+
+export const useServerImportFolder = (enabled: boolean) => useServerFolder(enabled)

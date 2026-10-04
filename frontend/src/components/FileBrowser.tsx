@@ -26,12 +26,16 @@ import { Icon, type IconName } from '../lib/icons'
  * the cache key. Passing it back up through a callback would mean an effect
  * firing on every navigation to tell the parent what it already asked for.
  */
-export function useFsListing(path: string | undefined, platform?: string) {
+export function useFsListing(path: string | undefined, platform?: string, listing: Listing = 'host') {
   return useQuery({
-    queryKey: ['fs', path ?? '~', platform ?? null],
-    queryFn: () => api.listDir(path, platform),
+    queryKey: ['fs', listing, path ?? '~', platform ?? null],
+    queryFn: () => (listing === 'library' ? api.libraryListDir(path) : api.listDir(path, platform)),
   })
 }
+
+/** Whose folders: this computer's (`host`), or those of the machine holding the
+ *  library — a remote's server, confined to its content folder (`library`). */
+export type Listing = 'host' | 'library'
 
 // Volumes come and go while a dialog is open, so the rail polls. Slower than
 // the sidebar's device poll: this is a shortcut list, not the thing you came for.
@@ -59,19 +63,28 @@ interface Props {
   onPickFile?: (path: string) => void
   /** The caller's confirm row, pinned under the listing. */
   footer?: ReactNode
+  /** Whose folders are browsed (see `Listing`). Default: this computer's. */
+  listing?: Listing
 }
 
-export function FileBrowser({ mode, platform, path, onNavigate, onPickFile, footer }: Props) {
-  const listing = useFsListing(path, platform)
+export function FileBrowser({ mode, platform, path, onNavigate, onPickFile, footer, listing: whose = 'host' }: Props) {
+  const listing = useFsListing(path, platform, whose)
   const places = useQuery({
     queryKey: ['fs-places', platform ?? null],
     queryFn: () => api.places(platform),
     refetchInterval: PLACES_POLL_MS,
+    // A server's folders have one place worth a shortcut: its content folder.
+    enabled: whose === 'host',
   })
 
   const data: FsListing | undefined = listing.data
   const here = data?.path ?? ''
-  const rows = places.data ?? []
+  const rows: FsPlace[] =
+    whose === 'library'
+      ? data
+        ? [{ name: 'Library folder', path: data.home, kind: 'library' } as FsPlace]
+        : []
+      : (places.data ?? [])
 
   // Volatile section LAST: a drive appearing or vanishing must not shift the
   // rows above it under a cursor that is already moving towards one.

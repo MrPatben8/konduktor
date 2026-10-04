@@ -9,15 +9,17 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import __version__, exporter, exports, history, prefs
+from . import __version__, exporter, exports, prefs
 from .app_state import STATE
 from .core import auto_hotcues as ah
-from .core import grid_detect, structure
+from .core import grid_detect, key_detect, structure
+from .core.grid_plan import GridStep, plan_grid
 from . import importer
 from .core import export as core_export
 from .core import places, registry
@@ -28,6 +30,7 @@ from .core.adapter import (
     LibraryAdapter,
     LibraryNotSupported,
     NotFound,
+    Unavailable,
     Unsupported,
 )
 from .core.capabilities import Capabilities
@@ -39,6 +42,8 @@ from .schemas import (
     RelocationApply,
     RelocationCandidate,
     RelocationVolume,
+    AnalyzePreview,
+    AnalyzeRequest,
     AutoGridBatchRequest,
     AutoGridRequest,
     AutoCueOutcome,
@@ -77,7 +82,9 @@ from .schemas import (
     ImportRequest,
     JobStatus,
     OpenCollection,
+    OpenRemote,
     OpenSource,
+    RemoteIn,
     PathMappingInfo,
     PlaylistNode,
     PrefixSuggestions,
@@ -137,7 +144,7 @@ def _adapter_error(_request, exc: AdapterError):
         InvalidCommand: 400,
         Unsupported: 422,
         LibraryNotSupported: 400,
-    }.get(type(exc), 400)
+    }.get(type(exc), 503 if isinstance(exc, Unavailable) else 400)
     return JSONResponse(status_code=status, content={"detail": str(exc)})
 
 
@@ -201,6 +208,171 @@ def collection_options(platform: str | None = None) -> CollectionOptions:
         detected=candidates,
         recent=recent,
     )
+
+
+# ---- remote libraries ----------------------------------------------------------
+# A library held by a Konduktor server (a container on the user's NAS), opened
+# from the picker's "Remote" step. The saved remotes are this computer's; the
+# password is in the OS keychain (`adapters/remote/config.py`).
+
+
+def _remote_out(remote) -> dict:
+    out = remote.public()
+    out["has_password"] = bool(remote_cfg().password(remote.id))
+    return out
+
+
+def remote_cfg():
+    from .adapters.remote import config
+
+    return config
+
+
+def _checked_remote(body: RemoteIn, remote_id: str | None):
+    """Build the remote from the form and handshake every address. Refuses —
+    nothing saved — when an address answers but refuses (wrong password, a
+    version that cannot talk), or when none answers at all; an unreachable
+    FALLBACK alone is fine (a VPN address is often unreachable at home)."""
+    from .adapters import remote as remote_lib
+
+    config = remote_cfg()
+    host, port = config.split_host(body.host)
+    fallback, fallback_port = config.split_host(body.fallback_host or "")
+    previous = config.get(remote_id) if remote_id else None
+    password = body.password if body.password else (config.password(remote_id) if remote_id else None)
+    if not body.name.strip() or not host or not body.username.strip():
+        raise HTTPException(400, "A name, an address and a username are all needed")
+    if not password:
+        raise HTTPException(400, "Enter the server's password")
+    remote = config.Remote(
+        id=previous.id if previous else config.new_id(), name=body.name.strip(), host=host,
+        port=body.port or port, fallback_host=fallback or None,
+        fallback_port=(body.fallback_port or fallback_port) if fallback else None,
+        username=body.username.strip(),
+    )
+    results = remote_lib.handshake(remote, password)
+    refused = [r for r in results if r["kind"] in ("auth", "version", "other")]
+    if refused:
+        raise HTTPException(400, {"message": refused[0]["error"], "results": results})
+    if not any(r["ok"] for r in results):
+        raise HTTPException(400, {"message": results[0]["error"], "results": results})
+    return remote, password, results
+
+
+@app.get("/api/remotes")
+def list_remotes() -> list[dict]:
+    return [_remote_out(r) for r in remote_cfg().remotes()]
+
+
+@app.post("/api/remotes")
+def add_remote(body: RemoteIn) -> dict:
+    remote, password, results = _checked_remote(body, None)
+    config = remote_cfg()
+    config.set_password(remote.id, password)
+    config.save(remote)
+    return {"remote": _remote_out(remote), "results": results}
+
+
+@app.patch("/api/remotes/{remote_id}")
+def edit_remote(remote_id: str, body: RemoteIn) -> dict:
+    config = remote_cfg()
+    if config.get(remote_id) is None:
+        raise HTTPException(404, "No such remote")
+    remote, password, results = _checked_remote(body, remote_id)
+    config.set_password(remote.id, password)
+    config.save(remote)
+    return {"remote": _remote_out(remote), "results": results}
+
+
+@app.delete("/api/remotes/{remote_id}")
+def delete_remote(remote_id: str) -> dict:
+    if STATE.remote_config is not None and STATE.remote_config.id == remote_id:
+        raise HTTPException(409, "That remote is open — open another library first")
+    if not remote_cfg().delete(remote_id):
+        raise HTTPException(404, "No such remote")
+    return {"status": "deleted"}
+
+
+def _running_batch() -> str | None:
+    """The kind of batch running here, for the heartbeat: another computer
+    asking to take over is told what it would cancel."""
+    for kind in BATCH_JOBS + ("import", "export"):
+        if JOBS.active(kind):
+            return kind
+    return None
+
+
+def _on_remote_change(state: str) -> None:
+    # Taken over: whatever batch is running here is now writing into a library
+    # this computer no longer holds — cancel it, as Cancel does (finished
+    # tracks stay as the edits the new holder inherits).
+    if state == "taken_over":
+        import threading
+
+        threading.Thread(target=_stop_batches, name="konduktor-takeover-stop", daemon=True).start()
+
+
+@app.post("/api/library/open-remote", response_model=CollectionStatus)
+def open_remote(body: OpenRemote) -> CollectionStatus:
+    """Connect to a saved remote and make its library THE library.
+
+    409 `{code: "in_use", machine, since, batch}` when another computer holds
+    it — the picker asks, and retries with `takeover`. On success, the edits
+    another computer left unsaved are reported (`pending_edits`) for the user
+    to save or discard.
+    """
+    from .adapters import remote as remote_lib
+
+    remote = remote_cfg().get(body.remote_id)
+    if remote is None:
+        raise HTTPException(404, "No such remote")
+    _stop_batches()
+    try:
+        opened = remote_lib.open_remote(remote, takeover=body.takeover, batch_probe=_running_batch)
+    except remote_lib.InUse as ex:
+        raise HTTPException(409, {"code": "in_use", **ex.holder})
+    except AdapterError as ex:
+        raise HTTPException(400, str(ex))
+    STATE.open_remote(opened)
+    opened.session.on_change(_on_remote_change)
+    status = collection_status()
+    status.pending_edits = opened.pending_edits
+    return status
+
+
+def _require_remote():
+    adapter = require_adapter()
+    if STATE.remote is None:
+        raise HTTPException(409, "The open library is not a remote one")
+    return adapter
+
+
+@app.get("/api/library/fs/list", response_model=FsListing)
+def library_fs_list(path: str | None = None) -> FsListing:
+    """Folders on the machine that HOLDS the library — where an import into a
+    remote library lands (`tracks.audio_destination == "library"`). Confined by
+    the server to its content folder; `home` is that folder."""
+    adapter = _require_remote()
+    listing = adapter.client.fs_list(path)
+    return FsListing(
+        path=listing["path"], parent=listing["parent"], home=listing["root"],
+        dirs=[FsEntry(name=e["name"], path=e["path"]) for e in listing["entries"] if e["is_dir"]],
+        files=[],
+    )
+
+
+@app.get("/api/remote-cache")
+def remote_cache_status() -> dict:
+    from .adapters.remote import cache
+
+    return cache.shared().usage()
+
+
+@app.delete("/api/remote-cache")
+def clear_remote_cache() -> dict:
+    from .adapters.remote import cache
+
+    return {"freed": cache.shared().clear()}
 
 
 @app.get("/api/library/path-mapping", response_model=PathMappingInfo)
@@ -683,9 +855,15 @@ def _library_info() -> LibraryInfo:
     driver = next((d for d in registry.drivers() if d.platform == caps.platform), None)
     namer = getattr(driver, "display_name_for", None)
     try:
-        display_name = namer(path) if namer else path.name
+        display_name = namer(path) if namer and STATE.remote_config is None else path.name
     except OSError:
         display_name = path.name
+    remote = None
+    if STATE.remote_config is not None:
+        # A remote is called what the user called it, not its file's name.
+        display_name = STATE.remote_config.name
+        remote = {"id": STATE.remote_config.id, "name": STATE.remote_config.name,
+                  "via": STATE.remote.client.via if STATE.remote else None}
     return LibraryInfo(
         platform=caps.platform,
         name=caps.save.app_name,
@@ -693,6 +871,7 @@ def _library_info() -> LibraryInfo:
         path=str(STATE.path),
         display_name=display_name,
         version=caps.version,
+        remote=remote,
     )
 
 
@@ -723,6 +902,14 @@ def platforms() -> list[PlatformOption]:
     # that keep a library in a known place come before the ones that are a
     # plugged-in drive, which is the real distinction a chooser is making.
     out.sort(key=lambda o: (o.removable, o.name.lower()))
+    # A library held by a Konduktor server — not a platform of its own (the
+    # server says which it holds), but a way to reach one, so it is offered
+    # last, after every platform on this computer.
+    from .adapters.remote import config as remote_config
+
+    saved = len(remote_config.remotes())
+    out.append(PlatformOption(platform="remote", name="Remote", library_label="remote library",
+                              selects="remote", installed=saved > 0, found=saved))
     return out
 
 
@@ -739,7 +926,8 @@ def state() -> EditState:
     return EditState(dirty=require_adapter().dirty, library=_library_info(),
                      pending_stems=pending if pending and pending["tracks"] else None,
                      stem_job=stem_job[0].id if stem_job else None,
-                     stem_recovery=STATE.recovery)
+                     stem_recovery=STATE.recovery,
+                     remote=STATE.remote.describe() if STATE.remote is not None else None)
 
 
 # ---- stem engine (download / side-load / remove) --------------------------
@@ -818,24 +1006,44 @@ def _require_no_pending_stems(what: str) -> None:
 def _stem_options(body):
     from .stems import convert
 
+    # A remote library's destination is a folder ON THE SERVER: not expanded
+    # here, where `~` is this computer's home.
+    remote = STATE.remote is not None
+    destination = None
+    if body.destination:
+        destination = Path(body.destination) if remote else Path(body.destination).expanduser()
     return convert.Options(
-        mode=body.mode, destination=Path(body.destination).expanduser() if body.destination else None,
+        mode=body.mode, destination=destination,
         collection=body.collection, playlist_id=body.playlist_id, new_playlist=body.new_playlist,
         device=prefs.load_prefs().get("stemDevice", "auto"),
     )
 
 
 def _stem_plan(body):
-    from .stems import convert
+    from .stems import convert, remote_convert
 
     adapter = require_adapter()
     caps = adapter.capabilities()
     if not (caps.writable and caps.tracks.stem_convertible):
         raise HTTPException(422, "This library cannot hold stem files")
     try:
+        if _remote_stems(adapter):
+            return adapter, remote_convert.plan(adapter, body.track_ids, _stem_options(body))
         return adapter, convert.plan(adapter, body.track_ids, _stem_options(body), STATE.pending)
     except convert.ConvertError as ex:
         raise HTTPException(400, str(ex))
+
+
+def _remote_stems(adapter) -> bool:
+    """A library held by a server: it plans and swaps, this computer separates
+    (`stems/remote_convert.py`)."""
+    return hasattr(adapter, "publish_stems")
+
+
+def _needs_engine(planned) -> bool:
+    if hasattr(planned, "server"):
+        return any(i.get("reuse") is None for i in planned.items)
+    return any(p.reuse is None for p in planned.items)
 
 
 @app.post("/api/tracks/stems/preview")
@@ -859,11 +1067,16 @@ def convert_to_stems(body: StemConvert) -> JobStatus:
         raise HTTPException(409, planned.blocked)
     if not planned.items:
         raise HTTPException(400, "None of these tracks can be converted")
-    if any(p.reuse is None for p in planned.items) and not em.default_manager().ready():
+    if _needs_engine(planned) and not em.default_manager().ready():
         raise HTTPException(409, "The stem engine is not installed")
     opts = _stem_options(body)
 
     def run(handle):
+        if _remote_stems(adapter):
+            from .stems import remote_convert
+
+            return remote_convert.run(handle, adapter, planned, opts,
+                                      still_current=lambda: STATE.adapter is adapter)
         return convert.run(handle, adapter, planned, opts, STATE.pending, mutation=STATE.mutation,
                            still_current=lambda: STATE.adapter is adapter)
 
@@ -926,8 +1139,23 @@ def reload_collection() -> dict:
     _require_no_pending_stems("Reloading")
     if not STATE.loaded:
         raise HTTPException(409, "No collection loaded")
-    STATE.open(STATE.path)  # re-parse current file from disk
+    if STATE.remote is not None:
+        STATE.adapter.refresh()  # a remote library is re-read from its server
+    else:
+        STATE.open(STATE.path)  # re-parse current file from disk
     return {"status": "reloaded", "tracks": len(require_adapter().tracks)}
+
+
+@app.on_event("shutdown")
+def _release_remote_session() -> None:
+    """A graceful stop hands a remote library's session back (see sidecar.py
+    for the abrupt one)."""
+    if STATE.remote is not None:
+        try:
+            STATE.remote.stop()
+            STATE.remote.client.release(timeout=2.0)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ---- read: stats / facets / tracks ------------------------------------
@@ -1229,18 +1457,36 @@ def _place_auto_cues(a, track_id: str, cues: TrackCues, slots: list) -> AutoHotc
 
 @app.post("/api/tracks/grid/auto", response_model=TrackCues)
 def auto_grid(body: AutoGridRequest) -> TrackCues:
-    """Detect tempo + first beat and build a beatgrid (see `core/grid_detect`).
+    """The deck's one-click Analyze: BPM + grid (see `core/grid_detect`) and,
+    where the library can store one, the KEY — from one decode.
 
     One constant-tempo marker, written the way the platform's own analyser would
     (on Traktor that also sets hotcue 1 to the first beat). Octave (half/double)
-    ambiguity in halftime genres is left for the ×2 / ÷2 controls."""
+    ambiguity in halftime genres is left for the ×2 / ÷2 controls. The key
+    always follows the analysis (a click on Analyze is a request for it), and
+    a key that cannot be found never fails the grid."""
     a = require_adapter()
     if a.track(body.track_id) is None:
         raise HTTPException(404, "Track not found")
+    path = a.audio_path(body.track_id)
+    if path is None or not path.exists():
+        raise HTTPException(400, "Audio file not found (is the drive mounted?)")
     try:
-        return _analyse_grid(a, body.track_id)
+        y, sr = _decode_for_analysis(path)
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(400, f"Could not decode: {ex}")
+    try:
+        cues = _analyse_grid(a, body.track_id, y=y, sr=sr)
     except _AnalysisError as ex:
         raise HTTPException(400, str(ex))
+    if a.capabilities().tracks.key_writable:
+        try:
+            found = key_detect.detect_key_samples(y, sr)
+            if found is not None:
+                a.set_key(body.track_id, found.wheel, found.mode)
+        except Exception:  # noqa: BLE001 — the grid is written; a key is a bonus
+            log.warning("key detection failed for %s", body.track_id, exc_info=True)
+    return cues
 
 
 class _AnalysisError(Exception):
@@ -1285,25 +1531,196 @@ def _submit_batch(kind: str, run) -> "Job":
         raise HTTPException(409, "A batch analysis is already running")
 
 
-def _analyse_grid(a, track_id: str) -> TrackCues:
+def _analyse_grid(a, track_id: str, step: GridStep = GridStep("full"), *,
+                  y=None, sr: int | None = None) -> TrackCues:
     """Detect and write one track's grid — shared by the deck's Analyze and the
-    batch job, so the two cannot come to mean different things."""
-    path = a.audio_path(track_id)
-    if path is None or not path.exists():
-        raise _AnalysisError("Audio file not found (is the drive mounted?)")
+    batch job, so the two cannot come to mean different things.
+
+    `step` is `core/grid_plan`'s decision. Each kind is written through the
+    command a hand edit of the same thing uses, so it inherits that command's
+    handling (Traktor's beat-1 companion cue, the time base, the BPM column):
+      - "full":  `set_analysed_grid` — one marker, written as the platform's
+                 own analyser would (on Traktor also hotcue 1 on the first beat);
+      - "bpm":   `set_grid_marker_bpm` on the first marker — the anchor, the
+                 marker's name and its companion stay exactly where they are;
+      - "phase": `move_grid_marker` on the first marker (dragging its
+                 companion), or a fresh marker at the kept BPM when there was
+                 only a TEMPO and no grid.
+    `y`/`sr` let a caller that already decoded the file share it."""
+    if step.action in ("none", "skip"):
+        raise ValueError(f"nothing to write for a {step.action!r} step")
+    if y is None:
+        path = a.audio_path(track_id)
+        if path is None or not path.exists():
+            raise _AnalysisError("Audio file not found (is the drive mounted?)")
     try:
-        found = grid_detect.detect_grid(str(path))
+        kw = {"y": y, "sr": sr} if y is not None else {}
+        found = grid_detect.detect_grid(
+            "" if y is not None else str(path),
+            bpm=step.hold_bpm if step.action == "phase" else None,
+            anchor=step.hold_anchor if step.action == "bpm" else None,
+            **kw,
+        )
     except Exception as ex:  # analysis is best-effort; never 500 the UI
         raise _AnalysisError(f"Analysis failed: {ex}") from ex
+    if step.action == "bpm":
+        return a.set_grid_marker_bpm(track_id, 0, found.bpm)
+    if step.action == "phase":
+        cues = a.track_cues(track_id)
+        if cues is not None and cues.grid_markers:
+            return a.move_grid_marker(track_id, 0, found.anchor)
     # "Analysed", not "replace": each platform writes an analysis result in its
     # own shape (Traktor pairs the first marker with a beat-1 cue).
     return a.set_analysed_grid(track_id, [(found.anchor, found.bpm)])
 
 
 
-@app.post("/api/tracks/grid/auto-batch", response_model=JobStatus)
-def auto_grid_batch(body: AutoGridBatchRequest) -> JobStatus:
-    """Analyse many tracks' grids as a JOB; poll `/api/jobs/{id}`.
+# ---- Analyze (the context menu's "Analyze…": BPM / Grid / Key) -------------
+
+
+def _require_analysable(a, body: AnalyzeRequest) -> None:
+    caps = a.capabilities()
+    if not (body.bpm or body.grid or body.key):
+        raise HTTPException(400, "Nothing to analyse: tick BPM, Grid or Key")
+    if (body.bpm or body.grid) and not caps.grid.editable:
+        raise HTTPException(422, "This library's beatgrids cannot be edited")
+    if body.key and not caps.tracks.key_writable:
+        raise HTTPException(422, "This library's keys cannot be written")
+
+
+def _grid_step(a, track, body: AnalyzeRequest, *, exact: bool) -> GridStep:
+    """`plan_grid` for one track. `exact` reads the real markers (a lazy
+    platform's projected count is only "has a grid"); the preview does not,
+    so it cannot see a flexible grid there — the run does."""
+    if not (body.bpm or body.grid):
+        return GridStep("none")
+    if track.grid_marker_count and exact:
+        markers = list((a.track_cues(track.id) or TrackCues()).grid_markers)
+    else:
+        markers = [SimpleNamespace(start=0.0, bpm=track.bpm or 0.0)] * (track.grid_marker_count or 0)
+    return plan_grid(bpm=body.bpm, grid=body.grid, markers=markers, track_bpm=track.bpm,
+                     locked=bool(track.grid_locked), replace_existing=body.replace_grid)
+
+
+def _wants_key(track, body: AnalyzeRequest) -> bool:
+    return body.key and (track.key_wheel is None or body.replace_key)
+
+
+@app.post("/api/tracks/analyze/preview", response_model=AnalyzePreview)
+def analyze_preview(body: AnalyzeRequest) -> AnalyzePreview:
+    """Counts for the Analyze dialog, from the same `plan_grid` the run uses."""
+    a = require_adapter()
+    out = AnalyzePreview(total=0)
+    for tid in dict.fromkeys(body.track_ids):
+        track = a.track(tid)
+        if track is None:
+            continue
+        out.total += 1
+        if track.grid_marker_count and not track.grid_locked:
+            out.with_grid += 1
+        step = _grid_step(a, track, body, exact=False)
+        if step.action in ("full", "bpm", "phase") or _wants_key(track, body):
+            out.tracks_to_analyze += 1
+        if step.action in ("full", "bpm", "phase"):
+            setattr(out, f"grid_{step.action}", getattr(out, f"grid_{step.action}") + 1)
+        elif step.action == "skip":
+            setattr(out, f"grid_{step.reason}", getattr(out, f"grid_{step.reason}") + 1)
+        if track.key_wheel is not None:
+            out.with_key += 1
+        if body.key:
+            if _wants_key(track, body):
+                out.key_set += 1
+            else:
+                out.key_existing += 1
+    return out
+
+
+def _decode_for_analysis(path: Path):
+    """Mono samples at the rate BOTH detectors work at (they share one decode)."""
+    import librosa
+
+    assert grid_detect._SR == key_detect.SR, "grid and key detection must share a sample rate"
+    return librosa.load(str(path), sr=key_detect.SR, mono=True)
+
+
+def _analyse_one(a, track_id: str, body: AnalyzeRequest, result: dict) -> None:
+    """Analyse one track as `body` asks, folding the outcome into `result`.
+
+    The file is decoded ONCE and shared by grid and key. A failing half is
+    reported and does not stop the other: a track whose grid cannot be fitted
+    (a one-shot) can still have a key, and the reverse."""
+    track = a.track(track_id)
+    title = (track.title or track_id) if track else track_id
+    if track is None:
+        result["failed"].append({"title": title, "reason": "Track not found"})
+        return
+    step = _grid_step(a, track, body, exact=True)
+    if step.action == "skip":
+        result["grid"][step.reason] += 1
+    want_key = _wants_key(track, body)
+    if body.key and not want_key:
+        result["key"]["existing"] += 1
+    if step.action not in ("full", "bpm", "phase") and not want_key:
+        return
+    path = a.audio_path(track_id)
+    if path is None or not path.exists():
+        result["failed"].append({"title": title, "reason": "Audio file not found (is the drive mounted?)"})
+        return
+    try:
+        y, sr = _decode_for_analysis(path)
+    except Exception as ex:  # noqa: BLE001 — an undecodable file is one failure
+        result["failed"].append({"title": title, "reason": f"Could not decode: {ex}"})
+        return
+    wrote = False
+    if step.action in ("full", "bpm", "phase"):
+        try:
+            _analyse_grid(a, track_id, step, y=y, sr=sr)
+            result["grid"][step.action] += 1
+            wrote = True
+        except (_AnalysisError, AdapterError) as ex:
+            result["failed"].append({"title": title, "reason": f"Grid: {ex}"})
+    if want_key:
+        try:
+            found = key_detect.detect_key_samples(y, sr)
+            if found is None:
+                result["key"]["none"] += 1
+            else:
+                a.set_key(track_id, found.wheel, found.mode)
+                result["key"]["set"] += 1
+                wrote = True
+        except (AdapterError, ValueError) as ex:
+            result["failed"].append({"title": title, "reason": f"Key: {ex}"})
+    if wrote:
+        result["analysed"].append(track_id)
+
+
+def _analyze_job(a, body: AnalyzeRequest):
+    ids = list(dict.fromkeys(body.track_ids))
+
+    def run(handle) -> dict:
+        result = {
+            "analysed": [], "failed": [],
+            "grid": {"full": 0, "bpm": 0, "phase": 0, "locked": 0, "existing": 0, "flexible": 0},
+            "key": {"set": 0, "existing": 0, "none": 0},
+        }
+        handle.progress(done=0, total=len(ids))
+        for i, track_id in enumerate(ids):
+            if handle.cancelled:
+                break  # keep what is done; return it rather than raise
+            track = a.track(track_id)
+            handle.progress(message=(track.title or track_id) if track else track_id)
+            _analyse_one(a, track_id, body, result)
+            handle.progress(done=i + 1)
+        # The names the context menu's toast read before the dialog existed.
+        result["locked"], result["existing"] = result["grid"]["locked"], result["grid"]["existing"]
+        return result
+
+    return run
+
+
+@app.post("/api/tracks/analyze", response_model=JobStatus)
+def analyze_batch(body: AnalyzeRequest) -> JobStatus:
+    """Analyse many tracks' BPM / grid / key as a JOB; poll `/api/jobs/{id}`.
 
     Each track is written as it finishes, into the in-memory model like any
     other edit — so a cancel keeps what is done (it is all unsaved until Save),
@@ -1311,37 +1728,18 @@ def auto_grid_batch(body: AutoGridBatchRequest) -> JobStatus:
     reported and skipped, never fatal: one unmounted drive must not stop 400
     other tracks."""
     a = require_adapter()
-    if not a.capabilities().grid.editable:
-        raise HTTPException(422, "This library's beatgrids cannot be edited")
+    _require_analysable(a, body)
     _require_no_batch()
-    ids = list(dict.fromkeys(body.track_ids))
-
-    def run(handle) -> dict:
-        result = {"analysed": [], "locked": 0, "existing": 0, "failed": []}
-        handle.progress(done=0, total=len(ids))
-        for i, track_id in enumerate(ids):
-            if handle.cancelled:
-                break  # keep what is done; return it rather than raise
-            track = a.track(track_id)
-            title = (track.title or track_id) if track else track_id
-            handle.progress(message=title)
-            if track is None:
-                result["failed"].append({"title": title, "reason": "Track not found"})
-            elif track.grid_locked:
-                result["locked"] += 1
-            elif track.grid_marker_count > 0 and not body.replace_existing:
-                result["existing"] += 1
-            else:
-                try:
-                    _analyse_grid(a, track_id)
-                    result["analysed"].append(track_id)
-                except (_AnalysisError, AdapterError) as ex:
-                    result["failed"].append({"title": title, "reason": str(ex)})
-            handle.progress(done=i + 1)
-        return result
-
-    job = _submit_batch(GRID_JOB, run)
+    job = _submit_batch(GRID_JOB, _analyze_job(a, body))
     return JobStatus(**job.as_dict())
+
+
+@app.post("/api/tracks/grid/auto-batch", response_model=JobStatus)
+def auto_grid_batch(body: AutoGridBatchRequest) -> JobStatus:
+    """The pre-dialog route: BPM + Grid, no key. Kept as an alias of
+    `/api/tracks/analyze` so the two cannot drift."""
+    return analyze_batch(AnalyzeRequest(track_ids=body.track_ids, bpm=True, grid=True,
+                                        key=False, replace_grid=body.replace_existing))
 
 
 @app.post("/api/tracks/cue/auto-batch", response_model=JobStatus)
@@ -1561,7 +1959,7 @@ def save() -> SaveResult:
 def get_history() -> list[HistoryEntry]:
     """All saved versions of the current collection, newest first."""
     require_adapter()
-    return [HistoryEntry(**e.__dict__) for e in history.list_history(STATE.path)]
+    return [HistoryEntry(**e.__dict__) for e in STATE.services.history()]
 
 
 @app.post("/api/history/{commit_id}/restore", response_model=CollectionStatus)
@@ -1571,14 +1969,8 @@ def restore_version(commit_id: str) -> CollectionStatus:
     reloads. The user should close Traktor first (it overwrites on exit)."""
     _require_no_pending_stems("Restoring a version")
     require_adapter()
-    data = history.read_version(STATE.path, commit_id)
-    if data is None:
+    if not STATE.restore_version(commit_id):
         raise HTTPException(404, f"Version not found: {commit_id}")
-    path = STATE.path
-    # The adapter's driver owns writing its own format back, even for a restore.
-    registry.driver_for(path).restore(path, data)
-    history.commit(path, data, f"Restored version {commit_id[:8]}", __version__)
-    STATE.open(path)  # rebuild read + edit models from the restored file
     return collection_status()
 
 
@@ -1586,7 +1978,7 @@ def restore_version(commit_id: str) -> CollectionStatus:
 def clear_history() -> dict:
     """Permanently delete ALL version history for the current collection."""
     require_adapter()
-    history.clear_history(STATE.path)
+    STATE.services.clear_history()
     return {"status": "cleared"}
 
 
@@ -1914,7 +2306,7 @@ def _folder_add_plan(body: FolderAddRequest):
 @app.post("/api/folder/add/preview")
 def folder_add_preview(body: FolderAddRequest) -> dict:
     _source, dest, destination, plan = _folder_add_plan(body)
-    out = plan.as_dict(free_bytes=importer.free_bytes(destination) if destination else None)
+    out = plan.as_dict(free_bytes=importer.free_bytes(destination, dest) if destination else None)
     if importer.places_audio(dest):
         _placed_space(out, dest, plan, destination)
     elif body.mode == "reference":
@@ -1933,7 +2325,7 @@ def folder_add(body: FolderAddRequest) -> JobStatus:
     if not plan.importable and not plan.existing:
         raise HTTPException(400, "Nothing to add (none of those files exist)")
     if body.mode == "copy" or importer.places_audio(dest):
-        free = importer.free_bytes(destination)
+        free = importer.free_bytes(destination, dest)
         needed = importer.placed_bytes(dest, plan) if importer.places_audio(dest) else plan.total_bytes
         if free is not None and free < needed + importer.SPACE_HEADROOM:
             raise HTTPException(
@@ -2002,7 +2394,7 @@ def import_preview(body: ImportRequest) -> dict:
     between the preview and the import, and a stale preview is worse than none.
     """
     _source, dest, destination, plan = _import_plan(body)
-    out = plan.as_dict(free_bytes=importer.free_bytes(destination))
+    out = plan.as_dict(free_bytes=importer.free_bytes(destination, dest))
     if importer.places_audio(dest):
         _placed_space(out, dest, plan, destination)
     return out
@@ -2015,7 +2407,7 @@ def start_import(body: ImportRequest) -> JobStatus:
     source, dest, destination, plan = _import_plan(body)
     if not plan.importable:
         raise HTTPException(400, "Nothing to import (no tracks, or none of their files exist)")
-    free = importer.free_bytes(destination)
+    free = importer.free_bytes(destination, dest)
     needed = importer.placed_bytes(dest, plan) if importer.places_audio(dest) else plan.total_bytes
     if free is not None and free < needed + importer.SPACE_HEADROOM:
         raise HTTPException(

@@ -114,6 +114,43 @@ Two independent apps that talk over HTTP:
       `backend/bench_grid_detect.py` scores it against any library's
       single-marker grids and reports that constant separately from detection
       error (29 Rekordbox references: old 1/29 BPMs, new 27/29).
+      Either half can be HELD — the Analyze dialog's BPM / Grid ticks:
+      `bpm=` keeps that tempo (no search, no round snap, no re-octave) and
+      finds only the phase; `anchor=` detects the tempo and returns the anchor
+      untouched, `drift_ms` then measuring how well the kept anchor fits.
+      `bench_grid_detect.py --hold bpm|anchor` scores each alone (2026-10-04,
+      15 local refs: phase given the right BPM 15/15; tempo given the right
+      anchor 14/15, the same miss as full analysis).
+    - `grid_plan.py` — **what an analysis does to one track's grid**, as one
+      pure function (`plan_grid` → `GridStep`) so the batch, the dialog's
+      counts and the tests agree. BPM+Grid = full, an existing grid replaced
+      only with Replace ticked; BPM alone keeps the first marker's anchor; Grid
+      alone keeps its BPM (else the track's TEMPO). With ONE tick, Replace does
+      not apply (adjusting is the point) and a track with nothing to keep is
+      analysed in full; a flexible grid is skipped, never flattened; locked is
+      always skipped. `main._analyse_grid` writes each through the hand-edit
+      command for the same thing — `set_grid_marker_bpm(0)` / `move_grid_marker(0)`
+      — so companions, marker names and time bases behave as for a hand edit.
+    - `key_detect.py` + `key_model.npz` — **musical key detection**: a small
+      CNN (Korzeniowski & Widmer 2017 — five 5x5 convs, a per-frame dense layer
+      over the WHOLE pitch axis, since a key is not pitch-invariant, logits
+      averaged over time), an ensemble of three, run in NUMPY — torch only
+      trains it (`backend/train_key_model.py`, engine venv), the backend never
+      imports it. Input is a 7-octave CQT at 36 bins/octave (C1–C8); the net
+      sees C2–C7, the spare octaves are for pitch-shift augmentation. Trained
+      on GiantSteps MTG, scored on the separate GiantSteps key set
+      (`bench_key_detect.py`): **69.4% exact, 83.4% harmonically mixable**;
+      key templates (Krumhansl/Temperley/KeyFinder/EDM) topped out at 49.5% on
+      the same features. ~0.6 s per track beside the decode. Always returns a
+      key for music (confidence tracks accuracy, but even the lowest band is
+      ~10x chance); None only for silence / under 5 s. The datasets are NOT on
+      the machine by default — fetch steps are in the training script.
+    - `musical_key.py` — the generic key (Camelot wheel 1-12 + mode) and the
+      three notations libraries STORE: `camelot` (8A), `open_key` (1m — Traktor's
+      default, Open Key n = Camelot n+7) and `musical` (Am, spelt as rekordbox
+      spells its own rows: flats for Db/Eb/Ab/Bb, F#). `parse` accepts all
+      three (and "Amin", "F# minor"), because a library holds what imported
+      tags said: a rekordbox stick's key table had "12A" beside "Abm".
     - `stem_file.py` + `tag_copy.py` — **writing a native-instruments STEM
       file** (Convert to Stems). An `ipod` MP4 with five AAC stereo 44.1 kHz
       streams (mix, drums, bass, synths, vox), streams 1-4 `disposition` 0,
@@ -487,6 +524,105 @@ Two independent apps that talk over HTTP:
     open / save / discard (and, next, a stem batch's swap step).
     History is app-level: the adapter returns the bytes it wrote plus a summary,
     and `AppState.save()` versions them. Every write path must go through it.
+    **Where** it is versioned is the open library's `services` (`services.py`):
+    `LocalServices` is the history repo in this computer's app-data, keyed by
+    path (what it always was); a remote library's live on its server. Routes
+    reach history through `STATE.services` / `STATE.restore_version`, never the
+    `history` module with `STATE.path`. `open_hooks` run at the end of every
+    open (and restore) — how the server re-applies its configured path mapping.
+  - **Remote libraries** (decided 2026-10-01/02 —
+    [the discussion](.claude/discussions/discuss-remote-library-2026-10-01.md)):
+    the whole library on the user's NAS, a Konduktor SERVER in a container
+    holding it, the desktop app opening it as "Remote". Three pieces:
+    - `remote_protocol.py` — the wire contract BOTH sides import: the
+      `LibraryAdapter` protocol itself as RPC (`RPC` table, `MUTATING` flag,
+      `EXCLUDED` with a reason for every member that does not travel —
+      `test_remote_protocol.py` fails on a protocol member that is neither),
+      args/results (de)serialised by pydantic `TypeAdapter`s built from the
+      protocol's own hints (a misspelt argument is refused, not defaulted),
+      `API_VERSION` (same major, server minor ≥ client's), the lease
+      (`LEASE_SECONDS` 120 / `HEARTBEAT_SECONDS` 15), `WireNewTrack` and the
+      prepared-analysis `.npz` packing. Bytes never travel as JSON.
+    - `server/` — `python -m konduktor.server` (the container's command;
+      `server/Dockerfile`, `compose.yaml`, `.env.example`). NOT `main.py`
+      behind a password. `config.py` reads the env (`KONDUKTOR_PLATFORM`
+      checked against the file, `_LIBRARY`, `_CONTENT`, `_USERNAME`,
+      `_PASSWORD`, `_PATH_MAP` "stored => here; …") and fails fast with one
+      line. `app.py`: HTTP Basic on every route; `/v1/hello`, `session/*`,
+      `rpc/{method}` (every answer carries `rev` plus the tracks it `changed`
+      / `removed`), `audio` (Range), `art`, `upload` (into a folder CONFINED
+      to the content folder — resolve then `is_relative_to`, so neither `..`
+      nor a symlink escapes — never overwriting, `-2` suffixes, per-session
+      so a cancel deletes only its own), `fs/list|space`, `save`, `discard`,
+      `history`, `export-sets`, and the stems routes below. Capabilities are
+      the adapter's plus `tracks.audio_destination="library"`,
+      `reference=False`, `paths.remappable=False`, `overwrite_risk="none"`.
+      `session.py`: ONE holder; a 409 names who holds it (machine, since,
+      running batch) and `takeover` replaces it; the old token is 423 from
+      then on; a lapsed lease is renewed silently for the SAME client if
+      nobody took it. Unsaved edits are the native model's, not the
+      session's: the next holder inherits them and `pending_edits`
+      (`last_editor` + the adapter's optional `edit_summary()`) asks them to
+      save or discard. A container restart loses them — accepted.
+      **Lightweight by decision: the server never decodes audio** — its
+      image ships `requirements-server.txt` without librosa / scikit-learn /
+      PyAV, and `test_layering.py` checks importing it pulls none in
+      (`stem_file._audio_stream_count` counts `soun` traks when PyAV is
+      absent). With a path mapping configured the server calls the
+      adapter's optional `set_write_stored_paths(True)`: a file added (or a
+      stem file swapped in) through the mapping is written in the library's
+      STORED form (`pathmap.stored_form`), so the collection keeps one
+      convention and still opens where it was made.
+    - `adapters/remote/` — the client, imports no platform adapter.
+      `RemoteAdapter` IS a `LibraryAdapter`: the frontend, export, import and
+      batches never learn a library is remote. It mirrors the projection in a
+      local `TrackIndex` (same query code), folds each command's `changed`
+      into it, and re-fetches on any `rev` gap. **`audio_path` downloads**
+      into the shared `cache.py` (keyed by the server's `AudioFacts` — path,
+      size, mtime — partial-then-rename, LRU under `remoteCacheBytes`, the
+      recently used never evicted); anything that needs only a file's
+      IDENTITY asks the new protocol member **`audio_facts`**, which never
+      downloads (`exporter.plan`, `importer._existing_files`). `client.py`
+      tries the address that last worked, then the others (primary →
+      fallback) on CONNECT failures only, and maps status codes back onto the
+      adapter error classes (423 → `SessionLost`, unreachable → `Unavailable`,
+      503 in `main.py`). `session.py` heartbeats (reporting the running batch)
+      and moves `connected / reconnecting / offline / taken_over`; anything
+      but connected/reconnecting makes `capabilities()` read-only with cause
+      `taken_over` / `offline`, and a 423 on any command flips it at once;
+      taken over cancels this computer's batches (`_on_remote_change`).
+      `config.py`: saved remotes in prefs (`remotes`, plus a stable
+      `remoteClientId`), passwords in the OS keychain via `keyring`
+      (`use_password_store` is the test seam). `services.py`: history, export
+      sets (`exports.use_store`, keyed by `remote:<server id>` so nothing on
+      this computer is mistaken for the server's) and the stems ledger
+      (`RemotePending`) all on the server. Imports UPLOAD
+      (`importer.uploads_audio` → `upload_audio`, cleaned up on failure; free
+      space from the server) into a folder the user picks on the server;
+      Rekordbox's add analysis — waveform, grid AND key — is computed HERE
+      (`core/add_analysis.prepare` with the lead the upload reports, sent as
+      `NewTrack.analysis`).
+      **Convert to Stems** (`stems/remote_convert.py`): the server plans
+      (`/v1/stems/plan`, its `convert.plan`), this computer downloads,
+      separates and encodes, uploads each verified file (`/v1/stems/stage`,
+      sha-256 checked, kept on the server as a LEFTOVER), and the server runs
+      the ordinary `convert._end_step` under its mutation lock with its own
+      ledger (`/v1/stems/publish`). Cancel abandons this run's uploads; a
+      takeover cannot, so they stay and the next run reuses them. The preview
+      adds `transfer` (download / upload / measured speed) and space lines for
+      both machines.
+    UI: the picker's platform list ends with **Remote** (`selects:
+    "remote"`) → `RemotePicker` (saved remotes; the form saves only after
+    `handshake` — a wrong password or version refuses, an unreachable
+    fallback alone does not; the in-use → Take over and the leftover-edits
+    Save / Discard / Decide-later prompts happen before the library shows).
+    `App` polls `['state']` every 5 s for a remote (`remote` in `EditState`),
+    re-reads capabilities on a change and toasts it; `StatusBar` shows the
+    connection. `FileBrowser`/`FolderPicker` take `listing="library"` for the
+    server's folders; Import / Add Files / Convert to Stems use it when
+    `tracks.audio_destination === 'library'` (folders remembered per remote:
+    `remoteImportFolders`, `remoteStemFolders`). Settings → Remote audio is
+    the cache. Path remapping hides on `paths.remappable === false`.
   - `library_id.py` — a **stable identity for a library that survives it being
     moved**. Everything else keys off the OS path (`history` hashes it, `prefs`
     stores it), which is fine for things a user shrugs at losing and NOT fine for
@@ -533,7 +669,13 @@ Two independent apps that talk over HTTP:
     "Map by hand…" link to `PathMappingDialog`; no backdrop-click dismiss.
   - `prefs.py` — persisted user prefs (`userprefs.json` in the per-OS app-data
     dir). Last-opened collection (global AND per-platform), library column
-    layout, prep-deck zoom, import destination. Best-effort.
+    layout, prep-deck zoom, import destination. Best-effort, but **every
+    read-modify-write holds `_LOCK` and every write is atomic**
+    (`paths.write_json`): the UI sends several PATCHes at once on launch, and
+    unlocked, with a truncating write, a reader caught the file empty and wrote
+    back only its own key — wiping every pref, the column layout included. A
+    file that will not parse is moved to `userprefs.json.corrupt`, never
+    silently overwritten. New helpers that read then write must take the lock.
   - `schemas.py` — HTTP request bodies + envelopes; re-exports `core.model`.
   - `main.py` — thin FastAPI routes (all under `/api`), talking only to the
     adapter. Starts **unloaded**; the library is chosen at runtime via
@@ -719,6 +861,18 @@ Two independent apps that talk over HTTP:
     original files" while conversions are pending (decided: the consequence is
     shown where Save is pressed). `Toast` takes an optional `action`;
     `StatusJob.unit: 'bytes'` shows a download in MB. Every background job's status-bar entry reads label + count · a bar SPLIT horizontally when the job reports per-item progress (top = the current item's `fraction`, 0-100 %; bottom = the whole job, (done + fraction) / total, so 99 % into the first of two tracks reads ~50 %) — a single bar otherwise; two colours in one bar was tried and read as confusing · its `status` ("separating 41 %") at its natural width · the item's name LAST (the only part that truncates; full name on hover). The section is a FIXED width (560 px; the view name on the left gives way instead) and everything BEFORE the bar is fixed (count sized for its largest value, "cancelling…" as a status, not a label), so neither a long name nor a phase change moves the bar. The status deliberately has no fixed slot: it is after the bar, and a slot left a gap before the name. `Job.fraction`/`status` come from `JobHandle.progress(fraction=, status=)` and reset whenever `done` advances; a stem conversion maps decode / separate / encode onto a track's 0-1 by measured shares.
+    `AnalyzeDialog` (the context menu's **Analyze…**, decided 2026-10-04:
+    BPM / Grid / Key ticks, remembered as `analyzeWhat`, each disabled with a
+    reason where the library cannot store it — offered when EITHER grids or
+    keys are writable; the Replace questions are inside the dialog, never a
+    second popup, and never remembered: the grid's only when BPM AND Grid are
+    ticked, since with one tick adjusting the grid is the point. Every count
+    and the "Analyze N" button come from `/api/tracks/analyze/preview`, i.e.
+    the backend's own `plan_grid`. The finished job's toast says what was
+    written and skipped, by reason. The deck's one-click Analyze writes the
+    key too, and App hands the deck the fresh copy of its track whenever the
+    view it came from refetches — the deck otherwise held a load-time
+    snapshot, so neither an analysed key nor an Edit Tags change reached it),
     `AutoCueDialog` (the Auto Hotcues slot template: event + beat offset per
     slot, a per-slot Replace tick for occupied slots — never remembered, since
     overwriting is a decision about THIS track — and the template itself
@@ -842,7 +996,11 @@ Two independent apps that talk over HTTP:
     via `GET`/`PATCH /api/prefs` (debounced; hydrated on launch, merged against
     defaults so newly-added columns still appear). The prep deck's main-waveform
     zoom persists the same way (`mainZoomSec`, hydrated in `PrepStrip` from the
-    shared `['prefs']` query).
+    shared `['prefs']` query). Continuously-changing prefs (columns, zoom,
+    `beatSize`) are written through ONE debounced writer, `lib/prefs.ts`
+    (`usePrefsWriter` / `queuePrefs`): changes merge into one PATCH, sent in
+    order, and the queue outlives unmounts; `QuitGuard` calls `flushPrefs()`
+    before quitting. Do not give a new pref its own timer.
 
 ## Commands
 
@@ -853,6 +1011,13 @@ Two independent apps that talk over HTTP:
 cd backend && source .venv/bin/activate
 uvicorn konduktor.main:app --reload --port 8000
 # point at another file: KONDUKTOR_NML=/path/to/collection.nml uvicorn ...
+
+# A Konduktor SERVER (a remote library) from source — configured by env, see
+# server/.env.example; the container runs the same command:
+KONDUKTOR_PLATFORM=traktor KONDUKTOR_LIBRARY=/path/collection.nml \
+  KONDUKTOR_CONTENT=/path/music KONDUKTOR_USERNAME=dj KONDUKTOR_PASSWORD=pw \
+  python -m konduktor.server            # listens on :8765
+docker build -f server/Dockerfile -t konduktor-server .   # from the repo root
 
 # Frontend
 cd frontend
@@ -881,7 +1046,12 @@ serialization path.** It enforces:
   — onto a staying track's path, or two differently-keyed entries for one file
   — which the preview reports first, while a chain (A onto B's old path, B
   onward) and a pre-existing duplicate are allowed, each track's staged art
-  and edits following the TRACK (H4).
+  and edits following the TRACK (H4). And **`set_key`** (N): on a keyed
+  entry only its INFO and MUSICAL_KEY lines change; an unkeyed one gains the
+  KEY attribute and one `<MUSICAL_KEY>` between LOUDNESS and CUE_V2 in
+  Traktor's layout; the encoding matches the real collection; a Camelot
+  collection gets Camelot; an ADDED Pioneer key ("Abm") lands as "6m"; and the
+  key tag reaches TKEY / `initialkey` in MP3, FLAC and M4A.
   The guard that catches serialization regressions like the lxml reformatting bug.
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched.
@@ -970,6 +1140,11 @@ serialization path.** It enforces:
   (pad, colour), loop and memory cue cross as themselves; and removing it
   deletes its analysis files. `test_folders.py` drives the same through
   `/api/folder/add` on a Rekordbox copy, and a non-addable library 422s.
+  And **`set_key`** (K): a key the library has changes exactly the track row
+  and the counter, pointing at its OWN row (found by meaning, not name); a
+  missing key adds one `djmdKey` row as rekordbox creates its own — its
+  spelling, `Seq` NULL, its own USN (so through the ORM; a raw insert is
+  left unstamped) — which the next `set_key` reuses.
 - `test_onelibrary_adapter.py` — the third adapter against the same contract.
   Unlike the Rekordbox tests it needs **nothing installed and nothing plugged
   in**: it runs against `fixtures/onelibrary/`, a real rekordbox 7 export trimmed
@@ -988,7 +1163,10 @@ serialization path.** It enforces:
   `nameForSearch` NULL, a new playlist on top with siblings shifted, entries
   from 1; and the stick hazards — another app's write refused, an unplugged
   drive keeps the edits, stale `-shm` deleted, the backup holds the old rows,
-  the drive never held open, file tags written (title yes, rating no).
+  the drive never held open, file tags written (title yes, rating no). And
+  `set_key`: an existing key changes only `content.key_id` and reaches TKEY as
+  the stick names it; a missing one adds a key row in rekordbox's spelling;
+  on Goober, "12A" projects a key and setting 12A reuses that row.
 - `test_onelibrary_anlz.py` — cue and grid edits in the ANLZ files. First
   against **rekordbox's own edit** of the same thing
   (`fixtures/onelibrary-goober/after/`): a recolour's `PCO2` and a grid edit's
@@ -1024,8 +1202,17 @@ serialization path.** It enforces:
   tempo and first beat are known rather than borrowed from another analyser:
   exact integer and non-integer BPMs, the 125 BPM the old detector could not
   return, octave choice, and the loud off-beat hat and syncopated bassline that
-  each fooled one band on real music. Accuracy on REAL music is
+  each fooled one band on real music. Holding either half: a held BPM comes
+  back untouched (never snapped or re-octaved, a wrong one reports drift) with
+  the phase still found through the hat/bass traps; a held anchor comes back
+  untouched with the tempo detected, an off-beat one reported as drift. And
+  `plan_grid`'s every rule. Accuracy on REAL music is
   `bench_grid_detect.py`'s job (not in `run_tests.sh`: it needs audio).
+- `test_key_detect.py` — key detection on SYNTHETIC cadences in all 24 keys
+  (I-IV-V-I / i-iv-V-i — a pop I-V-vi-IV is fairly called minor by an EDM
+  model), loudness / sample-rate invariance, None for silence, and the numpy
+  convolution against a direct implementation. Accuracy on real music is
+  `bench_key_detect.py`'s job (GiantSteps + any folder of key-tagged files).
 - `test_auto_hotcues.py` — Auto Hotcues in three layers: `structure.analyse`
   on SYNTHETIC audio with known sections (the intro with a kick is not a drop;
   no breakdown after the last drop), `plan`'s outcomes and beat-counted offsets
@@ -1033,7 +1220,7 @@ serialization path.** It enforces:
   collection — the previous implementation's route returned 500 on every call
   for a week while its helper's tests passed.
 - `test_grid_batch.py` — **batch analysis** from the context menu, both
-  `jobs.py` jobs shown in the status bar: Analyze Grid & BPM
+  `jobs.py` jobs shown in the status bar: Analyze… (BPM / Grid / Key)
   (`POST /api/tracks/grid/auto-batch`) and Auto Hotcues…
   (`POST /api/tracks/cue/auto-batch`, one template for every track). Pins the
   batch-only decisions: locked grids are skipped always, existing grids unless
@@ -1045,6 +1232,20 @@ serialization path.** It enforces:
   returns its result; opening another library cancels the run. Each shares its
   helper (`_analyse_grid`, `_place_auto_cues`) with the deck's single-track
   button.
+  Also BPM alone / Grid alone through `_analyse_grid` on a real Traktor copy:
+  the detector is asked to hold the right half, BPM alone retempos the marker
+  in place with its beat-1 cue untouched, Grid alone moves it (cue dragged
+  along) at the same tempo, and a TEMPO-only track gets one marker at it.
+  And **Analyze** (`POST /api/tracks/analyze` + `/analyze/preview`, the
+  dialog's BPM / Grid / Key; `grid/auto-batch` is now an alias of it with
+  BPM+Grid): nothing ticked 400s; Key alone sets keyless tracks, skips keyed
+  ones unless `replace_key`, never touches a grid; the preview's counts match
+  the run's (BPM alone: single grids adjusted, flexible skipped, bare in
+  full); a skipped track is never decoded and grid+key share ONE decode; a
+  grid that cannot be fitted still gets its key; the deck's Analyze writes
+  the key too and never fails on it. The decode is `main._decode_for_analysis`
+  (the seam the fakes replace); `test_key_detect.py` runs the route once with
+  the REAL decode and detectors on a generated F-minor 124 BPM WAV.
 - `test_bulk_remove.py` — the context menu's **Remove ▸** routes
   (`/api/tracks/grid/clear`, `/api/tracks/cue/clear`, `/api/tracks/remove`):
   locked grids are kept, clearing hotcues empties the whole bank (loops and the
@@ -1071,6 +1272,11 @@ serialization path.** It enforces:
   as a drive, and that the adapter and the browser share ONE mount scanner. Needs nothing installed: every assertion is about the SHAPE of the
   answer, and prefs are redirected to a temp file so a test can never rewrite
   the user's last-opened library.
+- `test_prefs.py` — `userprefs.json` under concurrent writes: 200 bursts of
+  simultaneous patches (plus a reader) keep every key and every patch; the
+  last-collection and path-mapping helpers lose nothing either; an unreadable
+  file is moved aside, not overwritten. Against the old unlocked code it fails
+  on the first trial.
 - `test_exports.py` — export sets against a temp copy of the real collection.
   Pins the things that would fail SILENTLY: a live reference picks up a playlist
   edited AFTER curation; contents dedupe across playlists and loose tracks; a
@@ -1123,11 +1329,35 @@ serialization path.** It enforces:
   reopen), and a running batch has stopped by the time discard returns; on
   Rekordbox (temp copy, skipped when absent) the library is clean afterwards and
   a later save writes nothing that was thrown away; read-only libraries 409.
+- `test_remote_protocol.py` — pure: every `LibraryAdapter` member is an RPC or
+  excluded with a reason, every command is `MUTATING`, args/results survive
+  JSON by the protocol's types (tuples, dataclasses, `None`), a misspelt or
+  missing argument is refused, a prepared analysis crosses intact, the
+  version rule.
+- `test_remote_server.py` — the server's own routes on a temp copy of the
+  collection with a FAKE clock: config refusals, 401s, one computer at a time
+  (423 without the token, 409 naming the holder and its batch, takeover kills
+  the old token, an expired lease frees it, the same client renews), leftover
+  edits named, save + history on the server, discard, confinement (`..`,
+  symlinks), uploads never overwrite and delete only their own, Range audio.
+- `test_remote_adapter.py` — END TO END: a real server in a thread, the app's
+  routes opening it. Handshake refusals, fallback, the mirror, Save touching
+  only the edited `<ENTRY>` THROUGH the trip, one download per file, Analyze
+  on the cached copy, export (and a re-export copying nothing), an upload
+  stored in the mapping's stored form, takeover → read-only at once,
+  reopening names the holder and the edits left, leaving releases.
+- `test_remote_stems.py` — Convert to Stems on a remote with the FAKE engine:
+  the plan's transfer and two-machine space, Replace parks and swaps ON THE
+  SERVER (saved file untouched until Save, which deletes the parked
+  original), Discard restores, Cancel deletes only this run's uploads, a
+  takeover's uploads are reused without the engine.
 - `test_layering.py` — `core/` imports nothing platform-specific, and no adapter
   imports another platform's library (checked on real imports via AST, so merely
   naming a platform in a comment is fine). Rekordbox and OneLibrary deliberately
   **share** `pyrekordbox`: the rule is "no adapter reaches for a rival vendor's
-  library", and a shared dependency is not a breach.
+  library", and a shared dependency is not a breach. Also: `adapters/remote`
+  imports no platform adapter, and importing `konduktor.server` pulls in no
+  librosa / scikit-learn / torch / numba / PyAV.
 
 Also validate the backend interactively at `http://localhost:8000/docs` and the
 frontend at `http://localhost:5173`.
@@ -1160,7 +1390,15 @@ frontend at `http://localhost:5173`.
   e.g. `Macintosh HD/:Music/:one.mp3`. This is how playlist entries
   (`PRIMARYKEY.KEY`) join to collection tracks. `Track.id` uses this.
 - **Rating** = `RANKING / 51`, giving 0–5 stars (`_rating_stars`).
-- **Key** is Traktor's display key string, e.g. `"10m"` (Open Key notation).
+- **Key** = two fields. `INFO@KEY` is the display text Traktor shows and tags
+  files with, in the user's notation (Open Key `"10m"` in the real
+  collection); `<MUSICAL_KEY VALUE>` is the analysed key, pitch class + 12 for
+  minor (`12` = C minor = `10m`; 6,628 of 6,641 entries carrying both agree).
+  1,354 entries have ONLY `MUSICAL_KEY` — analysed, never given text — so
+  `projection.entry_key` falls back to it (rendered Open Key). `set_key` and
+  `add_entry` write BOTH, the text in the collection's majority notation
+  (`TraktorStore.key_notation()`; an empty collection — an export — takes a
+  Traktor-native source's own, so Traktor→Traktor keeps the user's).
 - **Beatgrid = an ORDERED LIST of markers**, never a single BPM + anchor.
   Traktor stores each as a `CUE_V2 TYPE="4"` with its own `<GRID BPM>` child
   (flexible beatgrids, 3.4+); `<TEMPO BPM>` mirrors the **first marker by
@@ -1353,7 +1591,8 @@ that number and nothing else — everything derives from it:
     (`waveform.decode` → `analyse_samples` + `grid_detect`), in a first phase
     that may be cancelled through `checkpoint` before the library is touched;
     a file with no grid of its own gets Konduktor's (decided: arrive ready to
-    prep). Then `RekordboxStore.add_track` writes the row the way Rekordbox's
+    prep), and one with no key of its own a detected key
+    (`key_detect.with_detected_key`, from the same decode; OneLibrary too). Then `RekordboxStore.add_track` writes the row the way Rekordbox's
     own add was MEASURED to (file facts, `DateCreated` from the file's birth
     time, this library's device) and the grid/cues replay through
     `replace_grid`/`set_cue`/`add_memory_cue` — memory cues and colours cross
@@ -1585,7 +1824,12 @@ that number and nothing else — everything derives from it:
   **Key notation crosses via the wheel**, never by copying the string:
   `projection.render_key()` is the inverse of `parse_key`, shared by both Pioneer
   targets, so Traktor's `"10m"` becomes `"Cm"` rather than a literal `"10m"` in a
-  Pioneer library. **Caveat**: `djmdContent.FolderPath` is an ABSOLUTE host path,
+  Pioneer library. Both are now `core/musical_key`; until 2026-10-04
+  `render_key` spelt with SHARPS ("G#m", "D#", "C#m") where rekordbox's own rows
+  say "Abm", "Eb", "Dbm" — measured from the key rows rekordbox 7 created in
+  the local library. In-place writes (`set_key`, adds) find a key row by
+  MEANING, so a library's existing "12A" or "G#m" row is reused, never
+  duplicated. **Caveat**: `djmdContent.FolderPath` is an ABSOLUTE host path,
   so unlike Traktor and OneLibrary a Rekordbox export is not portable by copying
   the folder. Still unwritten and documented as unknown: OneLibrary's waveform
   tags and the `cue` table's MPEG seek columns.
@@ -1651,6 +1895,13 @@ that number and nothing else — everything derives from it:
   yet**, since nothing can be written. Note the OneLibrary work already demonstrated
   creating an `exportLibrary.db` from nothing, and `fixtures/onelibrary/schema.sql`
   is the DDL to do it with.
+- ✅ **Remote libraries** (2026-10-02) — a Konduktor server in a container
+  (TrueNAS) holds a Traktor or Rekordbox library; the app opens it as
+  "Remote": browse, prep, edit, Save (versioned on the server), export sticks,
+  import by upload, Convert to Stems — all with analysis and separation on the
+  laptop. One computer at a time, with takeover. See "Remote libraries" under
+  Architecture. Not yet: verified on a real TrueNAS (the image is published by
+  CI's `server-image` job), a web UI served by the server (decided: not now).
 - ⬜ Serato adapter
 - ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 

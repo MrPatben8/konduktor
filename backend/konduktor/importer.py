@@ -112,18 +112,19 @@ def _key(path: Path) -> str:
 def _existing_files(dest) -> dict[str, str]:
     """Every audio file the destination points at → its track id.
 
-    Resolved through the adapter's own `audio_path`, which is the only answer
+    Resolved through the adapter's own `audio_facts`, which is the only answer
     that includes the volume and the active path mapping; the projected
-    `filepath` is a display string and is not good enough to match on.
+    `filepath` is a display string and is not good enough to match on. Facts,
+    not `audio_path`: on a library held by a server that would download every
+    file it has.
     """
     out: dict[str, str] = {}
-    for track in dest.tracks:
-        try:
-            path = dest.audio_path(track.id)
-        except Exception:  # noqa: BLE001
-            path = None
-        if path is not None:
-            out.setdefault(_key(path), track.id)
+    try:
+        facts = dest.audio_facts([t.id for t in dest.tracks])
+    except Exception:  # noqa: BLE001
+        return out
+    for track_id, fact in facts.items():
+        out.setdefault(_key(Path(fact.key)), track_id)
     return out
 
 
@@ -216,12 +217,30 @@ def _all_playlists(source) -> list[tuple[str, str]]:
     return out
 
 
-def free_bytes(path: Path) -> int | None:
+def free_bytes(path: Path, dest=None) -> int | None:
+    """Free space where the audio will land. On the DESTINATION's machine: a
+    library held by a server reports its own disk (`free_space`), since the
+    path names a folder there, not here."""
+    remote_free = getattr(dest, "free_space", None) if dest is not None and uploads_audio(dest) else None
+    if remote_free is not None:
+        try:
+            return remote_free(str(path))
+        except Exception:  # noqa: BLE001 — unknown is not "full"
+            return None
     try:
         target = path if path.exists() else path.parent
         return shutil.disk_usage(target).free
     except OSError:
         return None
+
+
+def uploads_audio(dest) -> bool:
+    """Whether added audio is SENT to the machine holding the library (a
+    server) rather than copied on this one — `tracks.audio_destination`."""
+    try:
+        return dest.capabilities().tracks.audio_destination == "library" and hasattr(dest, "upload_audio")
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _unique_target(folder: Path, name: str, taken: set[str]) -> Path:
@@ -298,7 +317,13 @@ def run(
     """
     destination = plan.destination
     places = places_audio(dest)
-    if not reference and not places:
+    # A library held by a server: each file is UPLOADED into `destination`,
+    # a folder on the server, instead of copied here. Nothing can be left in
+    # place — the server cannot see this computer's files.
+    uploads = not places and uploads_audio(dest)
+    if uploads and reference:
+        raise ValueError("A remote library cannot reference files on this computer")
+    if not reference and not places and not uploads:
         assert destination is not None
         destination.mkdir(parents=True, exist_ok=True)
 
@@ -312,6 +337,8 @@ def run(
     # from it leaves the half-written file behind — which then makes the next
     # attempt suffix around a file that is not really there.
     created: list[Path] = []
+    # Files sent to the server, which a failure asks it to delete again.
+    uploaded: list[Path] = []
     taken: set[str] = set()
     moved = 0
 
@@ -332,6 +359,19 @@ def run(
                 target.parent.mkdir(parents=True, exist_ok=True)
             elif reference:
                 copied.append((planned, planned.source_path))
+                continue
+            elif uploads:
+                handle.progress(message=f"Uploading {planned.title}")
+
+                def sent(n: int) -> None:
+                    handle.raise_if_cancelled()  # mid-file: the server drops the partial
+                    bump(n)
+
+                # The server never overwrites: a taken name comes back `-2`…
+                target = dest.upload_audio(planned.source_path, str(destination),
+                                           planned.source_path.name, progress=sent)
+                uploaded.append(target)
+                copied.append((planned, target))
                 continue
             else:
                 target = _unique_target(destination, planned.source_path.name, taken)
@@ -409,6 +449,11 @@ def run(
                 target.unlink(missing_ok=True)
             except OSError:
                 log.debug("could not clean up %s", target, exc_info=True)
+        for target in uploaded:
+            try:
+                dest.delete_upload(target)  # refused once the library names it
+            except Exception:  # noqa: BLE001
+                log.debug("could not clean up upload %s", target, exc_info=True)
         raise
 
 

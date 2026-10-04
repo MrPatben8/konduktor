@@ -33,6 +33,7 @@ import { HotcueBar } from './HotcueBar'
 import { LoopControls, LOOP_SIZES, type LoopMode } from './LoopControls'
 import { MainWaveform, MIN_SEC, MAX_SEC, DEFAULT_SEC, type StemLane } from './MainWaveform'
 import { OverviewWaveform } from './OverviewWaveform'
+import { usePrefsWriter } from '../lib/prefs'
 
 /** Keys that mute stems 1-4 (Shift = solo), by `KeyboardEvent.code`. */
 const STEM_KEYS = ['KeyQ', 'KeyW', 'KeyE', 'KeyR']
@@ -165,11 +166,11 @@ export function PrepStrip({
 
   // Main-waveform zoom persists to userprefs.json so it survives track switches
   // (MainWaveform unmounts during each load) and app restarts. Hydrate once from
-  // the shared ['prefs'] query, then persist changes debounced (mirrors the
-  // column-layout prefs flow in App).
+  // the shared ['prefs'] query, then persist changes through the shared,
+  // debounced prefs writer (as App's column layout does).
   const prefsQuery = useQuery({ queryKey: ['prefs'], queryFn: api.getPrefs })
   const zoomHydratedRef = useRef(false)
-  const zoomSaveTimer = useRef<number | null>(null)
+  const writePrefs = usePrefsWriter()
   useEffect(() => {
     if (zoomHydratedRef.current || !prefsQuery.data) return
     zoomHydratedRef.current = true
@@ -180,20 +181,13 @@ export function PrepStrip({
   }, [prefsQuery.data])
   useEffect(() => {
     if (!zoomHydratedRef.current) return // don't clobber saved prefs pre-hydration
-    if (zoomSaveTimer.current) window.clearTimeout(zoomSaveTimer.current)
-    zoomSaveTimer.current = window.setTimeout(() => {
-      api.patchPrefs({ mainZoomSec: secPerView }).catch(() => {})
-    }, 500)
-    return () => {
-      if (zoomSaveTimer.current) window.clearTimeout(zoomSaveTimer.current)
-    }
-  }, [secPerView])
+    writePrefs({ mainZoomSec: secPerView })
+  }, [secPerView, writePrefs])
 
   // The loop/jump size persists the same way (survives track switches +
   // restarts). `beatJumpBeats` is its name from when only beat jump had a size;
   // it is read once so an upgrade keeps the user's choice.
   const sizeHydratedRef = useRef(false)
-  const sizeSaveTimer = useRef<number | null>(null)
   useEffect(() => {
     if (sizeHydratedRef.current || !prefsQuery.data) return
     sizeHydratedRef.current = true
@@ -203,14 +197,8 @@ export function PrepStrip({
   }, [prefsQuery.data])
   useEffect(() => {
     if (!sizeHydratedRef.current) return // don't clobber saved prefs pre-hydration
-    if (sizeSaveTimer.current) window.clearTimeout(sizeSaveTimer.current)
-    sizeSaveTimer.current = window.setTimeout(() => {
-      api.patchPrefs({ beatSize }).catch(() => {})
-    }, 500)
-    return () => {
-      if (sizeSaveTimer.current) window.clearTimeout(sizeSaveTimer.current)
-    }
-  }, [beatSize])
+    writePrefs({ beatSize })
+  }, [beatSize, writePrefs])
 
   const getCtx = (): AudioContext => {
     if (!audioCtxRef.current) {
@@ -1055,14 +1043,17 @@ export function PrepStrip({
       onError?.((e as Error).message)
     }
   }
-  // Analyze: backend detects BPM + first beat, sets the grid anchor and hotcue 1.
+  // Analyze: the backend detects BPM + first beat (setting the grid anchor and,
+  // on Traktor, hotcue 1) and the key where the library stores one. The key
+  // lands on the track: `applyCueEdit` refetches the lists, and App hands the
+  // deck the fresh copy.
   const runAnalyzeGrid = async () => {
     if (!track || gridBusy) return
     if (refuseGridEdit()) return
     setGridBusy(true)
     try {
       applyCueEdit(await api.autoGrid(track.id))
-      onNotify?.('success', 'Analyzed — set BPM, grid, and hotcue 1')
+      onNotify?.('success', caps.tracks.key_writable ? 'Analyzed — set BPM, grid and key' : 'Analyzed — set BPM and grid')
     } catch (e) {
       onError?.((e as Error).message)
     } finally {

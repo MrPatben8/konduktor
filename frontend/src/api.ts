@@ -227,7 +227,10 @@ export interface SaveCapabilities {
 }
 
 /** Why a library cannot be edited. A fact — lib/platformCopy.ts words it. */
-export type ReadonlyCause = 'platform_incomplete' | 'cloud_synced' | 'not_in_library' | 'browsing'
+export type ReadonlyCause =
+  | 'platform_incomplete' | 'cloud_synced' | 'not_in_library' | 'browsing'
+  /** A library held by a server: another computer took it over / the server is unreachable. */
+  | 'taken_over' | 'offline'
 
 export interface Capabilities {
   platform: Platform
@@ -255,12 +258,21 @@ export interface Capabilities {
     places_audio: boolean
     /** Tracks can be converted to native-instruments STEM files. */
     stem_convertible: boolean
+    /** The musical key can be set — what key analysis writes. */
+    key_writable: boolean
     /** Lower-case suffixes this library can hold — what a browsed folder lists. */
     audio_formats: string[]
     artwork: boolean
     artwork_note: string | null
+    /** Whose filesystem an import destination is on: this computer's ('host'),
+     *  or the machine holding the library ('library' — audio is uploaded). */
+    audio_destination: 'host' | 'library'
+    /** Added files can be left where they are rather than copied. */
+    reference: boolean
   }
   playlists: { folders: boolean; smart: 'none' | 'read_only'; reorder: boolean }
+  /** Path mapping / rewriting / the missing-files check apply to this library. */
+  paths: { remappable: boolean }
   save: SaveCapabilities
 }
 
@@ -271,6 +283,8 @@ export interface LibraryInfo {
   path: string
   display_name: string
   version: string | null
+  /** Set when the library is held by a server (a saved remote). */
+  remote: { id: string; name: string; via: string | null } | null
 }
 
 export interface PlatformOption {
@@ -278,7 +292,7 @@ export interface PlatformOption {
   name: string
   library_label: string
   /** Whether picking this platform's library means picking a file or a folder. */
-  selects: 'file' | 'directory'
+  selects: 'file' | 'directory' | 'remote'
   installed: boolean
   /** How many libraries this platform has right now; `installed` is `found > 0`. */
   found: number
@@ -300,6 +314,22 @@ export interface EditState {
   stem_job: string | null
   /** What this open's crash recovery did about an interrupted conversion. */
   stem_recovery: { committed: number; restored: number; kept: number } | null
+  /** A remote library's connection, null for a local one. */
+  remote: RemoteConnection | null
+}
+
+/** How this computer stands with a remote library's server. `taken_over`:
+ *  another computer holds the session, so this one is read-only. */
+export interface RemoteConnection {
+  state: 'connected' | 'reconnecting' | 'offline' | 'taken_over'
+  /** The address in use ('primary' / 'fallback'), when connected. */
+  via: 'primary' | 'fallback' | null
+  /** Who took it over, when `taken_over`. */
+  machine: string | null
+  /** Something to tell the user once ("the server restarted"), with a counter
+   *  that changes each time there is a new one. */
+  notice: string | null
+  notices: number
 }
 
 export interface CollectionStatus {
@@ -308,6 +338,61 @@ export interface CollectionStatus {
   library: LibraryInfo | null
   tracks: number | null
   playlists: number | null
+  /** Opening a remote: the unsaved edits another computer left there. */
+  pending_edits?: PendingEdits | null
+}
+
+/** Unsaved edits a remote library holds that another computer made. */
+export interface PendingEdits {
+  machine: string | null
+  summary: string
+}
+
+/** A saved remote — a Konduktor server this computer knows how to reach. The
+ *  password is in the OS keychain, never here. */
+export interface RemoteSettings {
+  id: string
+  name: string
+  host: string
+  port: number | null
+  fallback_host: string | null
+  fallback_port: number | null
+  username: string
+  has_password: boolean
+}
+
+export interface RemoteForm {
+  name: string
+  /** `host` or `host:port`. */
+  host: string
+  fallback_host?: string | null
+  username: string
+  /** Omitted on an edit: keep the saved one. */
+  password?: string
+}
+
+/** One address's answer to a handshake. */
+export interface HandshakeResult {
+  address: 'primary' | 'fallback'
+  url: string
+  ok: boolean
+  error: string | null
+  kind: 'ok' | 'unreachable' | 'auth' | 'version' | 'other'
+}
+
+/** Someone else holds a remote's session (409 from open-remote). */
+export interface RemoteInUse {
+  code: 'in_use'
+  machine: string
+  since: string
+  batch: string | null
+}
+
+export interface RemoteCacheUsage {
+  bytes: number
+  files: number
+  cap: number
+  free: number
 }
 
 export interface CollectionCandidate {
@@ -434,11 +519,41 @@ export interface JobStatus {
 }
 
 /** What a batch grid analysis did, per track outcome. */
-export interface GridBatchResult {
+/** What the Analyze dialog asks for. BPM and Grid are independent halves of
+ *  a beatgrid: BPM alone keeps the downbeat, Grid alone keeps the tempo.
+ *  `replace_grid` only guards a FULL re-analysis (both ticked). */
+export interface AnalyzeOptions {
+  bpm: boolean
+  grid: boolean
+  key: boolean
+  replace_grid: boolean
+  replace_key: boolean
+}
+
+/** What an Analyze run WOULD do — the backend's `plan_grid`, per track. */
+export interface AnalyzePreview {
+  total: number
+  tracks_to_analyze: number
+  grid_full: number
+  grid_bpm: number
+  grid_phase: number
+  grid_locked: number
+  grid_existing: number
+  grid_flexible: number
+  /** Unlocked tracks with a grid — the grid Replace tick's count. */
+  with_grid: number
+  key_set: number
+  key_existing: number
+  /** Tracks with a key — the key Replace tick's count. */
+  with_key: number
+}
+
+/** What an Analyze run did. */
+export interface AnalyzeResult {
   analysed: string[]
-  locked: number
-  existing: number
   failed: { title: string; reason: string }[]
+  grid: { full: number; bpm: number; phase: number; locked: number; existing: number; flexible: number }
+  key: { set: number; existing: number; none: number }
 }
 
 /** What a batch Auto Hotcues run did. `tracks` got the template (whatever it
@@ -483,6 +598,9 @@ export interface StemPlan {
   bytes: number
   /** The originals' size — what Save deletes in Replace mode. */
   original_bytes: number
+  /** A remote library: what must cross the network (bytes; `speed` in
+   *  bytes/s, `measured` false while it is still a default). */
+  transfer?: { download: number; upload: number; speed: number; measured: boolean }
 }
 
 /** A stem conversion job's `result`. */
@@ -711,6 +829,19 @@ async function getJSON<T>(url: string): Promise<T> {
   return res.json() as Promise<T>
 }
 
+/** A refusal from the backend. `message` is always a sentence; `detail` keeps
+ *  a structured answer (e.g. `{code: 'in_use', machine, since}`) for the few
+ *  callers that act on it rather than just showing it. */
+export class ApiError extends Error {
+  status: number
+  detail: unknown
+  constructor(status: number, message: string, detail: unknown) {
+    super(message)
+    this.status = status
+    this.detail = detail
+  }
+}
+
 async function send<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(API_BASE + url, {
     method,
@@ -718,14 +849,19 @@ async function send<T>(method: string, url: string, body?: unknown): Promise<T> 
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) {
-    let detail = `${res.status} ${res.statusText}`
+    let message = `${res.status} ${res.statusText}`
+    let detail: unknown = null
     try {
       const j = await res.json()
-      if (j.detail) detail = j.detail
+      if (j.detail) {
+        detail = j.detail
+        if (typeof j.detail === 'string') message = j.detail
+        else if (typeof j.detail?.message === 'string') message = j.detail.message
+      }
     } catch {
       /* ignore */
     }
-    throw new Error(detail)
+    throw new ApiError(res.status, message, detail)
   }
   return res.json() as Promise<T>
 }
@@ -750,6 +886,21 @@ export const api = {
     getJSON<CollectionOptions>(`/api/library/options${qs({ platform })}`),
   listDir: (path?: string, platform?: string) =>
     getJSON<FsListing>(`/api/fs/list${qs({ path, platform })}`),
+  /** Folders on the machine that HOLDS the library (a remote's server),
+   *  confined to its content folder — `home` is that folder. */
+  libraryListDir: (path?: string) => getJSON<FsListing>(`/api/library/fs/list${qs({ path })}`),
+
+  // ---- remote libraries ----
+  remotes: () => getJSON<RemoteSettings[]>('/api/remotes'),
+  addRemote: (form: RemoteForm) =>
+    send<{ remote: RemoteSettings; results: HandshakeResult[] }>('POST', '/api/remotes', form),
+  editRemote: (id: string, form: RemoteForm) =>
+    send<{ remote: RemoteSettings; results: HandshakeResult[] }>('PATCH', `/api/remotes/${id}`, form),
+  deleteRemote: (id: string) => send<{ status: string }>('DELETE', `/api/remotes/${id}`),
+  openRemote: (id: string, takeover = false) =>
+    send<CollectionStatus>('POST', '/api/library/open-remote', { remote_id: id, takeover }),
+  remoteCache: () => getJSON<RemoteCacheUsage>('/api/remote-cache'),
+  clearRemoteCache: () => send<{ freed: number }>('DELETE', '/api/remote-cache'),
   // Re-asked rather than cached: drives come and go while a dialog is open.
   places: (platform?: string) => getJSON<FsPlace[]>(`/api/fs/places${qs({ platform })}`),
 
@@ -887,12 +1038,11 @@ export const api = {
       track_id: trackId,
       slots,
     }),
-  // Backend detects tempo + first beat: sets BPM, hotcue 1, and grid anchor.
+  /** The deck's Analyze: BPM + grid (on Traktor also hotcue 1) and, where the
+   *  library stores one, the key — from one decode. Returns the cues; the key
+   *  lands on the track, so refetch the track lists. */
   autoGrid: (trackId: string) =>
     send<TrackCues>('POST', '/api/tracks/grid/auto', { track_id: trackId }),
-  /** Many tracks at once, as a job — poll `job()`. Locked grids are always
-   *  skipped; existing ones unless `replaceExisting`. The finished job's
-   *  `result` is a `GridBatchResult`. */
   /** Auto Hotcues over many tracks, one template for all, as a job. A track
    *  without a grid gets one analysed first. The finished job's `result` is a
    *  `CueBatchResult`. */
@@ -921,11 +1071,11 @@ export const api = {
   stemSideload: (path: string, kind: 'engine' | 'weights') =>
     send<StemEngineStatus>('POST', '/api/stems/engine/sideload', { path, kind }),
   stemEngineRemove: () => send<StemEngineStatus>('DELETE', '/api/stems/engine'),
-  autoGridBatch: (trackIds: string[], replaceExisting: boolean) =>
-    send<JobStatus>('POST', '/api/tracks/grid/auto-batch', {
-      track_ids: trackIds,
-      replace_existing: replaceExisting,
-    }),
+  analyzePreview: (trackIds: string[], opts: AnalyzeOptions) =>
+    send<AnalyzePreview>('POST', '/api/tracks/analyze/preview', { track_ids: trackIds, ...opts }),
+  /** Starts an analysis job; its `result` is an `AnalyzeResult`. */
+  analyze: (trackIds: string[], opts: AnalyzeOptions) =>
+    send<JobStatus>('POST', '/api/tracks/analyze', { track_ids: trackIds, ...opts }),
   setCueType: (trackId: string, slot: number, type: CueType) =>
     send<TrackCues>('PATCH', '/api/tracks/cue', { track_id: trackId, slot, type }),
   /** Recolour a cue from `capabilities.cues.palette`; null = uncoloured. */

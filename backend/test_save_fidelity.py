@@ -940,5 +940,151 @@ with tempfile.TemporaryDirectory() as d:
           f"{info.release_date!r} {info.import_date!r}")
 
 
+# ---- Invariant N: setting a key is localized, in Traktor's two fields -------
+# Traktor keeps the analysed key in <MUSICAL_KEY VALUE> (pitch class, +12 for
+# minor) and the text it shows / tags files with in INFO@KEY. `set_key` writes
+# both, as Traktor's analysis does, in the collection's own notation.
+print("== N. set_key writes INFO@KEY + MUSICAL_KEY, localized, in the collection's notation ==")
+import re  # noqa: E402
+
+from konduktor.adapters.traktor.projection import entry_key, musical_key_value, parse_key  # noqa: E402
+from konduktor.core.adapter import InvalidCommand  # noqa: E402
+
+real = TraktorCollection(path=REAL).nml.collection.entry
+both = [e for e in real if e.info and e.info.key and e.musical_key is not None
+        and parse_key(e.info.key)[0] is not None]
+agree = sum(musical_key_value(*parse_key(e.info.key)) == e.musical_key.value_attribute for e in both)
+check(f"N: MUSICAL_KEY encoding matches INFO@KEY on the real collection ({agree}/{len(both)})",
+      agree >= 0.995 * len(both), f"{len(both) - agree} disagree")
+mk_only = [e for e in real if e.musical_key is not None and not (e.info and e.info.key)]
+check(f"N: the {len(mk_only)} MUSICAL_KEY-only entries project a key",
+      mk_only and all(entry_key(e)[1] is not None for e in mk_only))
+
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    store = TraktorStore(work)
+    check("N: the real collection's notation is Open Key", store.key_notation() == "open_key",
+          store.key_notation())
+
+    def changed_lines(before: bytes, after: bytes) -> list[str]:
+        return [dl for dl in difflib.unified_diff(tag_lines(before), tag_lines(after), n=0)
+                if dl[:1] in "+-" and dl[:3] not in ("+++", "---")]
+
+    # A track that has both: the two existing lines change, nothing else.
+    keyed = next(e for e in store._nml.collection.entry
+                 if e.location and e.info and e.info.key == "10m" and e.musical_key is not None)
+    original = store._render()
+    store.set_key(store._key_of(keyed), 1, "minor")  # Camelot 1A = Ab minor = Open Key 6m
+    changed = changed_lines(original, store._render())
+    check("N: a keyed track: only its INFO and MUSICAL_KEY lines change",
+          len(changed) == 4 and 'KEY="6m"' in changed[1] and changed[3] == '+<MUSICAL_KEY VALUE="20">',
+          "\n".join(changed))
+
+    # A track that has neither: MUSICAL_KEY appears where Traktor puts it.
+    bare = next(e for e in store._nml.collection.entry
+                if e.location and e.info and not e.info.key and e.musical_key is None
+                and e.loudness is not None and e.cue_v2)
+    bare_id = store._key_of(bare)
+    original = store._render()
+    store.set_key(bare_id, 8, "major")  # C major
+    after = store._render()
+    changed = changed_lines(original, after)
+    check("N: an unkeyed track gains KEY on INFO plus one MUSICAL_KEY element",
+          len(changed) == 4 and 'KEY="1d"' in changed[1]
+          and changed[2] == '+<MUSICAL_KEY VALUE="0">' and changed[3] == "+</MUSICAL_KEY>",
+          "\n".join(changed))
+    i = after.find(f'FILE="{bare.location.file}"'.encode())
+    span = after[after.rfind(b"<ENTRY ", 0, i):after.find(b"</ENTRY>", i)].decode()
+    check("N: …between LOUDNESS and the first CUE_V2, as Traktor writes it",
+          span.index("<LOUDNESS") < span.index("<MUSICAL_KEY") < span.index("<CUE_V2"))
+    check("N: …in Traktor's exact layout",
+          re.search(r'</LOUDNESS>\n<MUSICAL_KEY VALUE="0"></MUSICAL_KEY>\n', span) is not None)
+
+    check("N: the file tag is given the INFO text", store._entry_field_value(bare, "key") == "1d")
+    try:
+        store.set_key(bare_id, 13, "minor")
+        check("N: an impossible key is refused", False)
+    except InvalidCommand:
+        check("N: an impossible key is refused", True)
+
+    store.save()
+    e = TraktorCollection(path=work).nml.collection.entry
+    saved = next(x for x in e if x.location and x.location.file == bare.location.file
+                 and x.location.dir == bare.location.dir)
+    check("N: survives a save + re-parse",
+          saved.info.key == "1d" and saved.musical_key.value_attribute == 0
+          and entry_key(saved)[1:] == (8, "major"))
+
+with tempfile.TemporaryDirectory() as d:
+    # An ADDED entry's key is rendered too: a Pioneer source's "Abm" is not
+    # copied into an Open Key collection, and MUSICAL_KEY is written.
+    from konduktor.adapters.traktor.export import SKELETON  # noqa: E402
+
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    store = TraktorStore(work)
+    pioneer = SimpleNamespace(title="N add", key="Abm", key_wheel=1, key_mode="minor")
+    added = store._entry_by_key[store.add_entry(pioneer, Path("/Volumes/KONDUKTOR_TEST_N/a.mp3"))]
+    check("N: an added Pioneer key is rendered in the collection's notation, with MUSICAL_KEY",
+          added.info.key == "6m" and added.musical_key.value_attribute == 20,
+          f"{added.info.key} {added.musical_key}")
+    odd = SimpleNamespace(title="N odd", key="DANCEDJ.CLUB", key_wheel=None, key_mode=None)
+    kept = store._entry_by_key[store.add_entry(odd, Path("/Volumes/KONDUKTOR_TEST_N/b.mp3"))]
+    check("N: text that names no key is kept, with no MUSICAL_KEY",
+          kept.info.key == "DANCEDJ.CLUB" and kept.musical_key is None)
+
+    empty = Path(d) / "export.nml"
+    empty.write_text(SKELETON, encoding="utf-8")
+    fresh = TraktorStore(empty)
+    camelot = SimpleNamespace(title="N cam", key="8A", key_wheel=8, key_mode="minor")
+    first = fresh._entry_by_key[fresh.add_entry(camelot, Path("/Volumes/KONDUKTOR_TEST_N/c.mp3"))]
+    check("N: an empty collection (an export) keeps a Traktor-native source's notation",
+          first.info.key == "8A", first.info.key)
+    nxt = fresh._entry_by_key[fresh.add_entry(pioneer, Path("/Volumes/KONDUKTOR_TEST_N/d.mp3"))]
+    check("N: …and follows it from then on", nxt.info.key == "1A", nxt.info.key)
+
+with tempfile.TemporaryDirectory() as d:
+    # The key reaches the frame DJ software reads, in every container written.
+    import av  # noqa: E402
+    import mutagen  # noqa: E402
+    import numpy as np  # noqa: E402
+    import soundfile  # noqa: E402
+
+    from konduktor.core import audio_tags  # noqa: E402
+    from stem_test_support import make_mp3  # noqa: E402
+
+    mp3 = make_mp3(Path(d) / "k.mp3", seconds=1)
+    flac = Path(d) / "k.flac"
+    soundfile.write(flac, np.zeros((44100, 2), np.float32), 44100)
+    m4a = Path(d) / "k.m4a"
+    with av.open(str(m4a), "w", format="ipod") as c:
+        st = c.add_stream("aac", rate=44100, layout="stereo")
+        fr = av.AudioFrame.from_ndarray(np.zeros((2, 1024), np.float32), format="fltp", layout="stereo")
+        fr.sample_rate = 44100
+        for pkt in list(st.encode(fr)) + list(st.encode(None)):
+            c.mux(pkt)
+    for path, frame in ((mp3, "TKEY"), (flac, "initialkey"), (m4a, "----:com.apple.iTunes:initialkey")):
+        r = audio_tags.write_tags(path, {"key": "9m"})
+        tags = mutagen.File(str(path)).tags
+        v = tags.get(frame)
+        v = v.text[0] if hasattr(v, "text") else (v[0] if v else None)
+        v = v.decode() if isinstance(v, bytes) else v
+        check(f"N: {path.suffix} key tag lands in {frame}", r.ok and v == "9m", f"{r} {v!r}")
+
+with tempfile.TemporaryDirectory() as d:
+    # A collection keyed in Camelot gets Camelot.
+    work = Path(d) / "collection.nml"
+    data = REAL.read_text(encoding="utf-8")
+    data = re.sub(r'KEY="(\d{1,2})([md])"',
+                  lambda m: f'KEY="{((int(m.group(1)) + 6) % 12) + 1}{"A" if m.group(2) == "m" else "B"}"', data)
+    work.write_text(data, encoding="utf-8")
+    store = TraktorStore(work)
+    check("N: a Camelot collection is detected as one", store.key_notation() == "camelot", store.key_notation())
+    target = next(e for e in store._nml.collection.entry if e.location and e.info)
+    store.set_key(store._key_of(target), 1, "minor")
+    check("N: …and written in Camelot", target.info.key == "1A", target.info.key)
+
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

@@ -70,6 +70,8 @@ export function PlatformIcon({
   // Masks are addressed by id, and one page can show the same mark twice.
   const mask = `pm-${useId().replace(/:/g, '')}`
   const Mark = MARKS[platform] ?? MARKS[ALIASES[platform]]
+  // A remote is a way to reach a library, not a platform with a mark of its own.
+  if (platform === 'remote') return <Icon name="server" size={size} className={className} />
   if (!Mark) return <Icon name="music" size={size} className={className} />
   return (
     <svg

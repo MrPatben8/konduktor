@@ -34,3 +34,8 @@ pyrekordbox @ git+https://github.com/dylanljones/pyrekordbox.git
 # The stem engine and its weights are downloaded over HTTPS by the sidecar; a
 # frozen Python on macOS has no system CA bundle of its own.
 certifi>=2024.7
+# Remote libraries (a Konduktor server on the user's NAS): the HTTP client the
+# remote adapter speaks to it with, and the OS keychain (macOS Keychain /
+# Windows Credential Manager) its password is kept in — never userprefs.json.
+httpx>=0.27
+keyring>=25

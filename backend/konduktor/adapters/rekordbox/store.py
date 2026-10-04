@@ -46,7 +46,7 @@ from ...core.adapter import (
 )
 from ...core.edit_journal import EditJournal
 from ...core.grid_edit import ReplaceGridCommands
-from ...core.pathmap import PathMapping
+from ...core.pathmap import PathMapping, stored_form
 from . import timebase
 from .cue_types import beat_loop_size, kind_for, role_and_slot
 
@@ -117,6 +117,8 @@ class RekordboxStore(ReplaceGridCommands):
     def __init__(self, path: Path):
         self.path = Path(path)
         self._mapping = PathMapping()
+        # Write an added file in the library's STORED form (`pathmap.stored_form`).
+        self._write_stored_paths = False
         self._grid_cache: dict[str, tuple[list[float], list[float], list[int]] | None] = {}
         self._journal = EditJournal()
         # Grid edits buffered until save(): ANLZ files are written to disk, so
@@ -375,6 +377,14 @@ class RekordboxStore(ReplaceGridCommands):
     def set_path_mapping(self, mapping: PathMapping) -> None:
         self._mapping = mapping or PathMapping()
 
+    def set_write_stored_paths(self, enabled: bool) -> None:
+        self._write_stored_paths = bool(enabled)
+
+    def _stored(self, audio: Path) -> Path:
+        if not self._write_stored_paths:
+            return Path(audio)
+        return stored_form(Path(audio), [self._mapping])
+
     def is_stem(self, track_id: str) -> bool:
         """Whether the track's FILE is a native-instruments stem file — read
         from its contents (only `.m4a`/`.mp4` are opened, ~0.7 ms each), and
@@ -506,6 +516,46 @@ class RekordboxStore(ReplaceGridCommands):
         self._db.flush()
         self._db.session.expire(row)
 
+    # ---- writes: musical key ---------------------------------------------
+    def _key_id(self, wheel: int | None, mode: str | None) -> str | None:
+        """The `djmdKey` row for a key, found by what it MEANS, not its text.
+
+        A library's key table holds rekordbox's own names ("Abm") and whatever
+        key tags imported ("12A"), so matching on a rendered name would add a
+        second row for a key the library already has. Only a key it has never
+        seen gets a row — created as rekordbox creates its own (measured on the
+        local library, which rekordbox fills lazily as it analyses): named in
+        its spelling, `Seq` NULL, and through the ORM so `commit()` stamps the
+        row's `rb_local_usn` like any other change. (The exporters' raw insert
+        would leave it unstamped.)"""
+        from .projection import parse_key, render_key
+
+        if wheel is None or mode is None:
+            return None
+        for k in self._db.query(self._tables.DjmdKey).all():
+            if parse_key(k.ScaleName) == (wheel, mode):
+                return str(k.ID)
+        row = self._tables.DjmdKey(
+            ID=str(uuid.uuid4().int % 2_147_483_647),
+            ScaleName=render_key(wheel, mode),
+            UUID=str(uuid.uuid4()),
+        )
+        self._db.add(row)
+        self._db.flush()
+        return str(row.ID)
+
+    def set_key(self, track_id: str, wheel: int, mode: str) -> None:
+        if not (isinstance(wheel, int) and 1 <= wheel <= 12) or mode not in ("major", "minor"):
+            raise InvalidCommand(f"Not a key: wheel {wheel!r}, mode {mode!r}")
+        row = self.content(track_id)
+        before = row.KeyID
+        row.KeyID = self._key_id(wheel, mode)
+        self._journal.record("track", "set", track_id, "key", before, row.KeyID)
+        # A foreign key, like artist: flush + expire, or the re-projection
+        # reads the old key back through the cached relationship.
+        self._db.flush()
+        self._db.session.expire(row)
+
     # ---- writes: playlists ------------------------------------------------
     def _playlist(self, node_id: str):
         t = self._tables
@@ -604,14 +654,15 @@ class RekordboxStore(ReplaceGridCommands):
         through the ordinary commands. `with_grid` reserves an empty `PQTZ`
         in the `.DAT` for `replace_grid` to fill."""
         from . import new_content
-        from .projection import render_key
 
         audio = Path(audio)
         if not audio.is_file():
             raise InvalidCommand(f"No audio file at {audio}")
         t = self._tables
-        if self._db.session.query(t.DjmdContent).filter_by(FolderPath=str(audio)).count():
-            raise InvalidCommand(f"The library already holds {audio}")
+        stored = self._stored(audio)
+        for form in {str(audio), str(stored)}:
+            if self._db.session.query(t.DjmdContent).filter_by(FolderPath=form).count():
+                raise InvalidCommand(f"The library already holds {audio}")
         facts = _file_facts(audio)
         content = self._db.add_content(
             str(audio),
@@ -633,11 +684,14 @@ class RekordboxStore(ReplaceGridCommands):
         content.AlbumID = new_content.lookup(self._db, "album", track.album)
         content.GenreID = new_content.lookup(self._db, "genre", track.genre)
         content.LabelID = new_content.lookup(self._db, "label", track.label)
-        # Rendered from the wheel, never copied: the source's notation is not
-        # Rekordbox's ("10m" is "Cm" here).
-        content.KeyID = new_content.lookup(
-            self._db, "key", render_key(track.key_wheel, track.key_mode))
+        # From the wheel, never the source's text: its notation is not
+        # Rekordbox's ("10m" is "Cm" here), and a row it already has is reused.
+        content.KeyID = self._key_id(track.key_wheel, track.key_mode)
         content.ContentLink = new_content.CONTENT_LINK
+        if stored != audio:
+            # pyrekordbox reads the file where it IS; the row names it as the
+            # library stores every other path (the server's mapping, inverted).
+            content.FolderPath = str(stored)
 
         track_uuid = str(content.UUID)
         rel = new_content.anlz_rel(track_uuid)

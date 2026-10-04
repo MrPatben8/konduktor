@@ -1,4 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '../api'
+import { useCaps } from '../lib/capabilities'
+import { RemoteCacheSettings } from './RemoteCacheSettings'
 import { ShortcutsDialog } from './ShortcutsDialog'
 import { StemsSettings } from './StemsSettings'
 
@@ -15,7 +19,13 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
   const [open, setOpen] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [showStems, setShowStems] = useState(false)
+  const [showCache, setShowCache] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  // Path remapping is a library on THIS computer's business; a remote's
+  // mapping is its server's configuration.
+  const remappable = useCaps().paths.remappable
+  const collection = useQuery({ queryKey: ['collection'], queryFn: api.collection })
+  const remote = !!collection.data?.library?.remote
 
   useEffect(() => {
     if (!open) return
@@ -56,6 +66,7 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
             up ? 'bottom-full mb-1' : 'mt-1'
           }`}
         >
+          {remappable && (
           <button
             onClick={() => {
               onOpenPathMapping()
@@ -68,6 +79,19 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
               Point the collection at moved or relocated files
             </span>
           </button>
+          )}
+          {remote && (
+            <button
+              onClick={() => {
+                setShowCache(true)
+                setOpen(false)
+              }}
+              className={item}
+            >
+              <span className="text-sm text-text">Remote audio…</span>
+              <span className="text-[11px] text-faint">This computer's copies of the server's tracks</span>
+            </button>
+          )}
           <button
             onClick={() => {
               setShowStems(true)
@@ -92,6 +116,7 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
       )}
       {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}
       {showStems && <StemsSettings onClose={() => setShowStems(false)} />}
+      {showCache && <RemoteCacheSettings onClose={() => setShowCache(false)} />}
     </div>
   )
 }
