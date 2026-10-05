@@ -40,7 +40,7 @@ function applyFilters(tracks: Track[], f: Filters): Track[] {
   const bpmMax = f.bpmMax ? parseFloat(f.bpmMax) : null
   return tracks.filter((t) => {
     if (q) {
-      const hay = `${t.artist ?? ''} ${t.title ?? ''} ${t.album ?? ''}`.toLowerCase()
+      const hay = [t.artist, t.title, t.album, t.comment, t.comment2].filter(Boolean).join(' ').toLowerCase()
       if (!hay.includes(q)) return false
     }
     if (f.genre && t.genre !== f.genre) return false
