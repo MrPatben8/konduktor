@@ -30,6 +30,7 @@ import { ImportDialog } from './components/ImportDialog'
 import { AddFilesDialog, type AddTarget } from './components/AddFilesDialog'
 import { ConvertStemsDialog } from './components/ConvertStemsDialog'
 import { StemReportDialog } from './components/StemReportDialog'
+import { SetPositionDialog } from './components/SetPositionDialog'
 import { Icon } from './lib/icons'
 import { usePrefsWriter } from './lib/prefs'
 
@@ -91,6 +92,8 @@ export default function App() {
   // Convert to Stems: the dialog's selection, a finished run's Details, and a
   // running engine download (which outlives the dialog — decided).
   const [stemDialog, setStemDialog] = useState<string[] | null>(null)
+  // Set Position…: the tracks being moved within the open playlist.
+  const [positioning, setPositioning] = useState<string[] | null>(null)
   const [stemReport, setStemReport] = useState<StemBatchResult | null>(null)
   const [engineJob, setEngineJob] = useState<string | null>(null)
   const [batchCancelling, setBatchCancelling] = useState(false)
@@ -1062,6 +1065,11 @@ export default function App() {
               : viewingDevice
                 ? []
                 : [{ label: 'Add to', submenu: addToItems(menu.ids) }]),
+            // Unlike drag-reorder this stays on while sorted or filtered: it
+            // moves within the playlist's FULL order, which the # column shows.
+            ...(playlistEditable
+              ? [{ label: 'Set Position…', onClick: () => setPositioning(menu.ids) }]
+              : []),
             ...(() => {
               const items = removeItems(menu.ids)
               return items.length ? [{ label: 'Remove', submenu: items }] : []
@@ -1103,6 +1111,14 @@ export default function App() {
         />
       )}
       {stemReport && <StemReportDialog result={stemReport} onClose={() => setStemReport(null)} />}
+      {positioning && (
+        <SetPositionDialog
+          order={tracks.map((t) => t.id)}
+          ids={positioning}
+          onMove={reorderPlaylist}
+          onClose={() => setPositioning(null)}
+        />
+      )}
       {editing && (
         <EditTagsDialog
           track={editing}

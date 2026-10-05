@@ -884,7 +884,11 @@ Two independent apps that talk over HTTP:
     `ContextMenu` (supports `▸` submenus, section headings, separators and
     checkbox items that toggle without closing — the header row's right-click
     column chooser uses those; "Add to" lists
-    playlists + exports and acts on the whole selection; "Remove ▸" holds
+    playlists + exports and acts on the whole selection; in an editable
+    playlist "Set Position…" (`SetPositionDialog`, `lib/playlistOrder.ts`)
+    moves the selection as ONE block in playlist order so its first track
+    lands at #N — allowed while sorted/filtered, unlike drag, because it
+    reorders the FULL entry list; "Remove ▸" holds
     From this playlist / From this export / Grids / Hotcues / From collection,
     each behind a `ConfirmDialog` — as is the playlist Delete key. Enter
     confirms unless a button has focus, so Tab-to-Cancel + Enter cancels) + `EditTagsDialog`
