@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import {
   flexRender,
   getCoreRowModel,
@@ -29,7 +29,8 @@ import {
   useSortable,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { Track } from '../api'
+import type { Track, TrackOrigin } from '../api'
+import { beginDrag, useDragPayload, useDropTarget } from '../lib/drag'
 import { TRACK_COLUMNS } from '../lib/trackColumns'
 
 /** Fields this platform can persist, for the table's per-cell edit gating.
@@ -71,6 +72,9 @@ interface Props {
   /** A view with a manual order. `enabled` is false while a sort or filter is
    *  active: reordering a partial or re-sorted list would lose the real order. */
   reorder?: { enabled: boolean; onReorder: (ids: string[]) => void }
+  /** Where dragged rows come from: whose ids they are, and the editable
+   *  playlist they leave on an Option-drag (move). Defaults to the collection. */
+  dragFrom?: { origin: TrackOrigin; playlistId?: string }
   /** Delete/Backspace removes the selected tracks from this view. */
   onRemove?: (ids: string[]) => void
   onRowContextMenu?: (track: Track, x: number, y: number) => void
@@ -277,6 +281,7 @@ export function TrackTable({
   positions,
   marked,
   reorder,
+  dragFrom,
   onRemove,
   onRowContextMenu,
   onHeaderContextMenu,
@@ -363,7 +368,7 @@ export function TrackTable({
   }
 
   const clickRow = (index: number, e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => {
-    if (!selection || justDraggedRef.current) return
+    if (!selection) return
     const id = rows[index].original.id
     const toggle = e.metaKey || e.ctrlKey
     const anchor = indexOf(anchorRef.current)
@@ -381,102 +386,87 @@ export function TrackTable({
     }
   }
 
-  // ---- row drag-to-reorder ----------------------------------------------
-  // `drop` is the gap the dragged rows would land in (0 = above the first row).
-  const [drag, setDrag] = useState<{ moving: Set<number>; drop: number } | null>(null)
+  // ---- dragging rows ------------------------------------------------------
+  // Every table's rows are a drag SOURCE (onto playlists, exports, the deck —
+  // lib/drag.tsx); a view with a manual order is also its own drop TARGET, the
+  // in-table reorder. `drop` is the gap the rows would land in (0 = above the
+  // first row).
   const pressRef = useRef<{ x: number; y: number; index: number } | null>(null)
-  const justDraggedRef = useRef(false)
-  const canDrag = !!reorder?.enabled
+  const tableKey = useRef({}).current
+  const dragging = useDragPayload()
+  const ownDrag = dragging?.kind === 'tracks' && dragging.source === tableKey ? dragging : null
+  const movingIds = useMemo(() => new Set(ownDrag?.ids ?? []), [ownDrag])
 
   useEffect(() => {
-    if (!canDrag) return
-    let raf = 0
-    let lastY = 0
-    let active: { moving: Set<number>; drop: number } | null = null
-
-    const dropAt = (clientY: number) => {
-      const top = bodyRef.current?.getBoundingClientRect().top ?? 0
-      return Math.max(0, Math.min(rowsRef.current.length, Math.round((clientY - top) / ROW_HEIGHT)))
-    }
-    // Hold near the top/bottom edge to scroll while dragging.
-    const autoScroll = () => {
-      const el = parentRef.current
-      if (el && active) {
-        const r = el.getBoundingClientRect()
-        const edge = 48
-        const dy =
-          lastY < r.top + edge + ROW_HEIGHT ? -12 : lastY > r.bottom - edge ? 12 : 0
-        if (dy) {
-          el.scrollTop += dy
-          active = { ...active, drop: dropAt(lastY) }
-          setDrag(active)
-        }
-      }
-      raf = requestAnimationFrame(autoScroll)
-    }
     const onMove = (e: PointerEvent) => {
       const press = pressRef.current
-      if (!press) return
-      lastY = e.clientY
-      if (!active) {
-        if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 6) return
-        // Dragging a selected row moves the whole selection; any other row
-        // moves alone (and becomes the selection, so what moves is visible).
-        const rs = rowsRef.current
-        const sel = selectionRef.current
-        const pressedId = rs[press.index].original.id
-        let moving: Set<number>
-        if (sel?.selected.has(pressedId)) {
-          moving = new Set(rs.flatMap((r, i) => (sel.selected.has(r.original.id) ? [i] : [])))
-        } else {
-          moving = new Set([press.index])
-          sel?.onChange(new Set([pressedId]))
-          anchorRef.current = leadRef.current = pressedId
-        }
-        active = { moving, drop: dropAt(e.clientY) }
-        document.body.style.userSelect = 'none'
-        document.body.style.cursor = 'grabbing'
-        window.getSelection()?.removeAllRanges()
-        raf = requestAnimationFrame(autoScroll)
-      } else {
-        active = { ...active, drop: dropAt(e.clientY) }
-      }
-      setDrag(active)
-    }
-    const end = () => {
+      if (!press || Math.hypot(e.clientX - press.x, e.clientY - press.y) < 6) return
       pressRef.current = null
-      if (!active) return
-      const { moving, drop } = active
-      active = null
-      cancelAnimationFrame(raf)
-      document.body.style.userSelect = ''
-      document.body.style.cursor = ''
-      setDrag(null)
-      // Swallow the click that follows the pointerup, so a drop is not also a
-      // click that re-selects the row it ended on.
-      justDraggedRef.current = true
-      setTimeout(() => (justDraggedRef.current = false), 0)
+      // Dragging a selected row carries the whole selection (in the table's
+      // order); any other row goes alone and becomes the selection, so what is
+      // being dragged is visible.
+      const rs = rowsRef.current
+      const sel = selectionRef.current
+      const pressed = rs[press.index]?.original
+      if (!pressed) return
+      let carried: Track[]
+      if (sel?.selected.has(pressed.id)) {
+        carried = rs.filter((r) => sel.selected.has(r.original.id)).map((r) => r.original)
+      } else {
+        carried = [pressed]
+        sel?.onChange(new Set([pressed.id]))
+        anchorRef.current = leadRef.current = pressed.id
+      }
+      const from = dragFromRef.current
+      beginDrag(
+        {
+          kind: 'tracks',
+          ids: [...new Set(carried.map((t) => t.id))],
+          tracks: carried,
+          origin: from?.origin ?? 'collection',
+          fromPlaylist: from?.playlistId,
+          source: tableKey,
+        },
+        { x: e.clientX, y: e.clientY, alt: e.altKey },
+      )
+    }
+    const release = () => (pressRef.current = null)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', release)
+    window.addEventListener('pointercancel', release)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', release)
+      window.removeEventListener('pointercancel', release)
+    }
+  }, [tableKey])
+
+  const [dropRef, dropHint] = useDropTarget<{ drop: number }>({
+    hint: (p, at) => {
+      if (p.kind !== 'tracks' || p.source !== tableKey || !reorderRef.current?.enabled) return null
+      const top = bodyRef.current?.getBoundingClientRect().top ?? 0
+      return { drop: Math.max(0, Math.min(rowsRef.current.length, Math.round((at.y - top) / ROW_HEIGHT))) }
+    },
+    onDrop: (p, { drop }) => {
+      if (p.kind !== 'tracks') return
+      const ids = new Set(p.ids)
       const rs = rowsRef.current.map((r) => r.original)
-      const kept = rs.filter((_, i) => !moving.has(i))
-      const block = rs.filter((_, i) => moving.has(i))
-      const at = drop - [...moving].filter((i) => i < drop).length
+      const kept = rs.filter((t) => !ids.has(t.id))
+      const block = rs.filter((t) => ids.has(t.id))
+      const at = drop - rs.slice(0, drop).filter((t) => ids.has(t.id)).length
       const next = [...kept.slice(0, at), ...block, ...kept.slice(at)]
       if (next.every((t, i) => t === rs[i])) return
       setData(next)
       reorderRef.current?.onReorder(next.map((t) => t.id))
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', end)
-    window.addEventListener('pointercancel', end)
-    return () => {
-      cancelAnimationFrame(raf)
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', end)
-      window.removeEventListener('pointercancel', end)
-      document.body.style.userSelect = ''
-      document.body.style.cursor = ''
-    }
-  }, [canDrag])
+    },
+  })
+  const scrollerRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      parentRef.current = el
+      dropRef(el)
+    },
+    [dropRef],
+  )
 
   // Latest values for the once-attached window listeners.
   const rowsRef = useRef(rows)
@@ -485,6 +475,8 @@ export function TrackTable({
   selectionRef.current = selection
   const reorderRef = useRef(reorder)
   reorderRef.current = reorder
+  const dragFromRef = useRef(dragFrom)
+  dragFromRef.current = dragFrom
 
   // Keyboard: ↑/↓ move the selection (Shift extends it), Cmd/Ctrl+A selects
   // every visible row, Esc clears, Delete/Backspace removes (where the view
@@ -547,7 +539,8 @@ export function TrackTable({
 
   return (
     <div
-      ref={parentRef}
+      ref={scrollerRef}
+      data-drag-scroll={bodyOffset.header}
       className="h-full overflow-auto px-1.5"
       onClick={(e) => {
         // A click in the empty space below the rows clears the selection.
@@ -568,13 +561,13 @@ export function TrackTable({
             const row = rows[vr.index]
             const isSelected = selection?.selected.has(row.original.id) ?? false
             const isActive = activeTrackId === row.original.id
-            const isMoving = drag?.moving.has(vr.index) ?? false
+            const isMoving = movingIds.has(row.original.id)
             return (
               <div
                 key={row.id}
                 data-row
                 className={`group absolute left-0 flex items-center border-b border-ink-850 text-sm ${
-                  isSelected ? 'bg-accent-soft/50' : drag ? '' : 'hover:bg-ink-850'
+                  isSelected ? 'bg-accent-soft/50' : dragging ? '' : 'hover:bg-ink-850'
                 } ${isMoving ? 'opacity-40' : ''}`}
                 style={{ top: 0, transform: `translateY(${vr.start - bodyOffset.top}px)`, height: vr.size, width: '100%' }}
                 onMouseDown={(e) => {
@@ -582,7 +575,7 @@ export function TrackTable({
                   if (selection && (e.shiftKey || e.metaKey || e.ctrlKey)) e.preventDefault()
                 }}
                 onPointerDown={(e) => {
-                  if (!canDrag || e.button !== 0 || e.shiftKey || e.metaKey || e.ctrlKey) return
+                  if (e.button !== 0 || e.shiftKey || e.metaKey || e.ctrlKey) return
                   // Not from a control inside the row (play, stars, an edit field).
                   if ((e.target as HTMLElement).closest('button, input, textarea, select, a')) return
                   pressRef.current = { x: e.clientX, y: e.clientY, index: vr.index }
@@ -620,10 +613,10 @@ export function TrackTable({
               </div>
             )
           })}
-          {drag && (
+          {dropHint && (
             <div
               className="pointer-events-none absolute left-0 z-10 h-0.5 w-full bg-accent"
-              style={{ top: drag.drop * ROW_HEIGHT - 1 }}
+              style={{ top: dropHint.drop * ROW_HEIGHT - 1 }}
             />
           )}
         </div>

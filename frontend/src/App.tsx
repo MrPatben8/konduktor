@@ -1412,6 +1412,7 @@ export default function App() {
                 onSortingChange={setSorting}
                 selection={{ selected, onChange: setSelected }}
                 marked={{ ids: heldInFolder, title: 'Already in your collection' }}
+                dragFrom={{ origin: 'folder' }}
                 onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
@@ -1447,6 +1448,7 @@ export default function App() {
                 sorting={sorting}
                 onSortingChange={setSorting}
                 onRowContextMenu={(track, x, y) => openMenu(track, x, y, false)}
+                dragFrom={{ origin: 'device' }}
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
                 activeTrackId={prepTrack?.id ?? null}
@@ -1508,6 +1510,10 @@ export default function App() {
                   : undefined
               }
               onRemove={playlistEditable ? confirmRemoveFromPlaylist : undefined}
+              dragFrom={{
+                origin: 'collection',
+                playlistId: playlistEditable && source.kind === 'playlist' ? source.id : undefined,
+              }}
               onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
               onPlay={playTrack}
