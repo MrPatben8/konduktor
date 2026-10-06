@@ -6,6 +6,8 @@ import { ExportRunDialog } from './ExportRunDialog'
 import type { Source } from './Sidebar'
 import { askConfirm } from '../lib/confirm'
 import { Icon } from '../lib/icons'
+import { useDropTarget, type DragPayload } from '../lib/drag'
+import { playlistIdsUnder } from '../lib/playlistTree'
 
 /**
  * Exports in the sidebar: each one a named, persisted slice of the library
@@ -105,6 +107,7 @@ export function ExportsSection({ source, onSelect, onDone, onError }: Props) {
             onSelect={onSelect}
             onEdit={() => setDialog({ editing: set })}
             onRun={() => setRunning(set)}
+            onDone={onDone}
             onDelete={async () => {
               // Deleting a set never touches its destination folder — the files
               // already exported are the user's, not Konduktor's to clean up.
@@ -132,6 +135,7 @@ function ExportRow({
   onEdit,
   onRun,
   onDelete,
+  onDone,
   onError,
 }: {
   set: ExportSet
@@ -140,6 +144,7 @@ function ExportRow({
   onEdit: () => void
   onRun: () => void
   onDelete: () => void
+  onDone: (msg: string) => void
   onError: (msg: string) => void
 }) {
   const qc = useQueryClient()
@@ -170,11 +175,51 @@ function ExportRow({
   const data = contents.data
   const expanded = open || inside
 
+  // A drop target for the collection's tracks (they become loose tracks) and
+  // for playlists or folders dragged from the tree (referenced, live, as
+  // "Add to export" does). Not gated on the library being writable: an export
+  // set is Konduktor's own data.
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['export-contents', set.id] })
+    qc.invalidateQueries({ queryKey: ['export-tracks', set.id] })
+    qc.invalidateQueries({ queryKey: ['export-loose', set.id] })
+  }
+  const accepts = (p: DragPayload) =>
+    p.kind === 'tracks' ? p.origin === 'collection' : playlistIdsUnder(p.node).length > 0
+  const [dropRef, over] = useDropTarget<true>({
+    hint: (p) => (accepts(p) ? true : null),
+    label: () => `Add to export ${set.name}`,
+    onDrop: async (p) => {
+      try {
+        if (p.kind === 'tracks') {
+          await api.addToExport(set.id, { track_ids: p.ids })
+          onDone(`Added ${p.ids.length} track${p.ids.length === 1 ? '' : 's'} to ${set.name}`)
+        } else {
+          const ids = playlistIdsUnder(p.node)
+          await api.addToExport(set.id, { playlist_ids: ids })
+          onDone(
+            p.node.kind === 'folder'
+              ? `Added ${ids.length} playlist${ids.length === 1 ? '' : 's'} from “${p.node.name}” to ${set.name}`
+              : `Added “${p.node.name}” to ${set.name}`,
+          )
+        }
+        refresh()
+      } catch (e) {
+        onError((e as Error).message)
+      }
+    },
+  })
+
   return (
     <div>
       <div
+        ref={dropRef}
         className={`group flex w-full items-center gap-1 rounded-md pr-1 transition-colors ${
-          selected ? 'is-selected text-text' : 'text-muted hover:bg-ink-800 hover:text-text'
+          over
+            ? 'bg-gold/10 text-text ring-1 ring-gold'
+            : selected
+              ? 'is-selected text-text'
+              : 'text-muted hover:bg-ink-800 hover:text-text'
         }`}
       >
         <button

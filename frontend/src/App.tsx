@@ -4,6 +4,7 @@ import type { ColumnSizingState, SortingState, VisibilityState } from '@tanstack
 import { CapabilitiesContext, slotLabeller } from './lib/capabilities'
 import { removalNote, writeHint } from './lib/platformCopy'
 import { invalidateTrackLists } from './lib/trackQueries'
+import { addTracksToPlaylist } from './lib/addTracks'
 import { api, type AnalyzeOptions, type AnalyzeResult, type CueBatchResult, type AutoCueSlot, type PlaylistNode, type StemBatchResult, type Track, type TrackOrigin } from './api'
 import { confirmDiscardUnsaved } from './lib/unsaved'
 import {
@@ -342,20 +343,20 @@ export default function App() {
     },
     [refreshExport, exportSets.data, notify, onError],
   )
+  // The same path as a drop on a sidebar playlist (lib/addTracks.ts), so the
+  // menu and the drag ask about duplicates alike.
+  const duplicatesAllowed = !!capabilities.data?.playlists.duplicates
   const addToPlaylist = useCallback(
     async (uuid: string, ids: string[]) => {
       try {
-        const res = await api.addEntries(uuid, ids)
-        qc.invalidateQueries({ queryKey: ['state'] })
-        qc.invalidateQueries({ queryKey: ['playlists'] })
-        qc.invalidateQueries({ queryKey: ['playlist', uuid] })
         const name = addablePlaylists.find((p) => p.id === uuid)?.name ?? 'playlist'
-        notify('success', `Added ${res.added} track${res.added === 1 ? '' : 's'} to ${name}`)
+        const msg = await addTracksToPlaylist({ qc, playlist: { id: uuid, name }, ids, duplicatesAllowed })
+        if (msg) notify('success', msg)
       } catch (e) {
         onError((e as Error).message)
       }
     },
-    [qc, addablePlaylists, notify, onError],
+    [qc, addablePlaylists, duplicatesAllowed, notify, onError],
   )
   const removeFromExport = useCallback(
     async (id: string, ids: string[]) => {

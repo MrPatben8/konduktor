@@ -11,6 +11,9 @@ import { ConfirmDialog, type ConfirmRequest } from './ConfirmDialog'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { Icon, type IconName } from '../lib/icons'
 import { PlatformIcon } from '../lib/platformIcons'
+import { addTracksToPlaylist } from '../lib/addTracks'
+import { usePressToDrag, useDropTarget, type DragPayload } from '../lib/drag'
+import { playlistIdsUnder } from '../lib/playlistTree'
 
 /**
  * Which view the main table is showing.
@@ -57,11 +60,6 @@ interface Props {
 
 // Kind picks the icon; every behavioural question is answered by the node's own
 // flags, so nothing here infers what a node can do from what it is called.
-/** Every selectable playlist at or under a node, in tree order. */
-function playlistIdsUnder(node: PlaylistNode): string[] {
-  const here = node.kind === 'folder' ? [] : [node.id]
-  return [...here, ...(node.children ?? []).flatMap(playlistIdsUnder)]
-}
 
 /** The confirm wording for deleting a node. A folder says what goes with it,
  *  since the whole subtree is deleted and the row only shows the folder. */
@@ -105,6 +103,11 @@ interface RowActions {
   onPickExport: (e: React.MouseEvent<HTMLElement>, node: PlaylistNode) => void
   onCommitDraft: (name: string) => void
   onCancelDraft: () => void
+  /** Whether a drag of tracks may drop on this playlist. */
+  acceptsTracks: (node: PlaylistNode, p: Extract<DragPayload, { kind: 'tracks' }>) => boolean
+  /** Tracks dropped on a playlist; `alt` (Option) moves them out of the
+   *  playlist they came from. */
+  onDropTracks: (node: PlaylistNode, p: Extract<DragPayload, { kind: 'tracks' }>, alt: boolean) => void
 }
 
 /** The inline name field for a node being created. Enter or clicking away
@@ -156,6 +159,7 @@ function DraftRow({
 
 function NodeRow({
   node,
+  parentId,
   depth,
   source,
   onSelect,
@@ -166,6 +170,8 @@ function NodeRow({
   actions,
 }: {
   node: PlaylistNode
+  /** The folder this node sits in; null = the top level. */
+  parentId: string | null
   depth: number
   source: Source
   onSelect: (s: Source) => void
@@ -191,12 +197,30 @@ function NodeRow({
     setRenamingId(node.id)
   }
 
+  // A row is a drag SOURCE (onto an export, or elsewhere in the tree) and a
+  // drop TARGET for tracks. Whether it takes them is the node's own
+  // `can_add_tracks` plus the library being writable, decided by the sidebar.
+  const startDrag = usePressToDrag(() => (renaming ? null : { kind: 'node', node, parentId }))
+  const moves = (p: DragPayload, alt: boolean) =>
+    p.kind === 'tracks' && alt && !!p.fromPlaylist && p.fromPlaylist !== node.id
+  const [dropRef, over] = useDropTarget<true>({
+    hint: (p) => (p.kind === 'tracks' && actions.acceptsTracks(node, p) ? true : null),
+    label: (p, _h, at) => `${moves(p, at.alt) ? 'Move' : 'Add'} to ${node.name}`,
+    onDrop: (p, _h, at) => p.kind === 'tracks' && actions.onDropTracks(node, p, at.alt),
+  })
+
   return (
     <div>
       <div
+        ref={dropRef}
+        onPointerDown={startDrag}
         onContextMenu={(e) => actions.onContextMenu(e, node)}
         className={`group flex items-center gap-1 rounded-[10px] pr-1 text-sm transition-colors ${
-          selected ? 'is-selected font-medium text-text' : 'text-muted hover:bg-ink-800 hover:text-text'
+          over
+            ? 'bg-accent-soft/40 text-text ring-1 ring-accent'
+            : selected
+              ? 'is-selected font-medium text-text'
+              : 'text-muted hover:bg-ink-800 hover:text-text'
         }`}
       >
         <button
@@ -298,6 +322,7 @@ function NodeRow({
             <NodeRow
               key={c.id}
               node={c}
+              parentId={node.id}
               depth={depth + 1}
               source={source}
               onSelect={onSelect}
@@ -339,8 +364,9 @@ export function Sidebar({
   }
   // There is no per-node flag for "you may create a NEW playlist" — the node
   // flags describe existing nodes — so this is the library-level gate.
-  const canCreate = useCaps().writable
-  const foldersSupported = useCaps().playlists.folders
+  const caps = useCaps()
+  const canCreate = caps.writable
+  const foldersSupported = caps.playlists.folders
   const { data: playlists, isLoading } = useQuery({
     queryKey: ['playlists'],
     queryFn: api.playlists,
@@ -496,6 +522,24 @@ export function Sidebar({
       setDraft(null)
     },
     onCancelDraft: () => setDraft(null),
+    // Only the collection's own tracks: a device's or a folder's ids mean
+    // nothing to the collection's playlists.
+    acceptsTracks: (node, p) =>
+      caps.writable && node.can_add_tracks && p.origin === 'collection' && p.fromPlaylist !== node.id,
+    onDropTracks: async (node, p, alt) => {
+      try {
+        const msg = await addTracksToPlaylist({
+          qc,
+          playlist: node,
+          ids: p.ids,
+          duplicatesAllowed: caps.playlists.duplicates,
+          moveFrom: alt ? p.fromPlaylist : undefined,
+        })
+        if (msg) onDone(msg)
+      } catch (e) {
+        onError((e as Error).message)
+      }
+    },
   }
 
   return (
@@ -563,6 +607,7 @@ export function Sidebar({
         {/* Right-click here (below the rows) creates at the top level; rows
             stop the event so they get their own menu. */}
         <div
+          data-drag-scroll=""
           className="mt-1 min-h-24 flex-1 overflow-y-auto px-2 pb-4"
           onContextMenu={(e) => openMenu(e, createItems(null))}
         >
@@ -572,6 +617,7 @@ export function Sidebar({
             <NodeRow
               key={n.id}
               node={n}
+              parentId={null}
               depth={0}
               source={source}
               onSelect={onSelect}

@@ -12,19 +12,26 @@
 import { useEffect, useState } from 'react'
 import { ConfirmDialog, type ConfirmRequest } from '../components/ConfirmDialog'
 
-type Ask = Omit<ConfirmRequest, 'onConfirm'>
-type Pending = { req: Ask; resolve: (ok: boolean) => void }
+type Ask = Omit<ConfirmRequest, 'onConfirm' | 'onAlt' | 'altLabel'>
+type Choice = 'confirm' | 'alt' | null
+type Pending = { req: Ask & { altLabel?: string }; resolve: (choice: Choice) => void }
 
 let open: ((p: Pending) => void) | null = null
 
 /** Show a confirmation and resolve true (confirmed) or false (cancelled). */
 export function askConfirm(req: Ask): Promise<boolean> {
+  return askChoice(req).then((c) => c === 'confirm')
+}
+
+/** A confirmation with a SECOND way to go ahead (`altLabel`): resolves
+ *  'confirm', 'alt', or null when cancelled. */
+export function askChoice(req: Ask & { altLabel?: string }): Promise<Choice> {
   return new Promise((resolve) => {
     if (open) open({ req, resolve })
     // No host mounted (should not happen outside tests): refuse rather than
     // fall back to a native dialog, since a destructive action must not go
     // ahead unconfirmed.
-    else resolve(false)
+    else resolve(null)
   })
 }
 
@@ -34,7 +41,7 @@ export function ConfirmHost() {
   useEffect(() => {
     open = (p) =>
       setPending((prev) => {
-        prev?.resolve(false) // a second ask supersedes an unanswered one
+        prev?.resolve(null) // a second ask supersedes an unanswered one
         return p
       })
     return () => {
@@ -45,10 +52,11 @@ export function ConfirmHost() {
   return (
     <ConfirmDialog
       {...pending.req}
-      // A promise settles once, so confirm-then-close resolves `true`.
-      onConfirm={() => pending.resolve(true)}
+      // A promise settles once, so confirm-then-close resolves 'confirm'.
+      onConfirm={() => pending.resolve('confirm')}
+      onAlt={() => pending.resolve('alt')}
       onClose={() => {
-        pending.resolve(false)
+        pending.resolve(null)
         setPending(null)
       }}
     />

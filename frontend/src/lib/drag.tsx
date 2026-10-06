@@ -204,6 +204,34 @@ export function beginDrag(payload: DragPayload, at: { x: number; y: number; alt:
   evaluate()
 }
 
+/** A pointerdown handler that starts a drag once the press moves 6 px. A plain
+ *  click never moves that far, so the element keeps its click; a press on a
+ *  field inside it (a rename input) never drags. `make` is asked at the moment
+ *  the drag starts and may return null to refuse. */
+export function usePressToDrag(make: () => DragPayload | null): (e: React.PointerEvent) => void {
+  const makeRef = useRef(make)
+  makeRef.current = make
+  return useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0 || e.shiftKey || e.metaKey || e.ctrlKey) return
+    if ((e.target as HTMLElement).closest('input, textarea, select')) return
+    const start = { x: e.clientX, y: e.clientY }
+    const onMove = (m: PointerEvent) => {
+      if (Math.hypot(m.clientX - start.x, m.clientY - start.y) < 6) return
+      stop()
+      const payload = makeRef.current()
+      if (payload) beginDrag(payload, { x: m.clientX, y: m.clientY, alt: m.altKey })
+    }
+    const stop = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', stop)
+      window.removeEventListener('pointercancel', stop)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', stop)
+    window.addEventListener('pointercancel', stop)
+  }, [])
+}
+
 /** The drag in progress, or null. Changes only when a drag starts or ends. */
 export function useDragPayload(): DragPayload | null {
   return useSyncExternalStore(subscribe, () => state.payload)
