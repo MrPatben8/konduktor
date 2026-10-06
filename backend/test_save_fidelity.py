@@ -1086,5 +1086,110 @@ with tempfile.TemporaryDirectory() as d:
     check("N: …and written in Camelot", target.info.key == "1A", target.info.key)
 
 
+# ---- O: moving playlists in the tree ----------------------------------
+# Drag and drop in the sidebar. Moving a node relocates its whole block, so
+# the guarantee is: the COLLECTION is untouched, the tree reads back as moved,
+# and moving it back reproduces the original bytes exactly.
+print("\n== O. move_playlist ==")
+
+
+def _collection_span(data: bytes) -> bytes:
+    return data[data.find(b"<COLLECTION"):data.find(b"</COLLECTION>")]
+
+
+def _find(nodes, name):
+    for n in nodes:
+        if n.name == name:
+            return n
+        hit = _find(n.children, name)
+        if hit is not None:
+            return hit
+    return None
+
+
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    before = work.read_bytes()
+    store = TraktorStore(work)
+    roots = store.tree()
+    folders = [n for n in roots if n.kind == "folder" and n.children]
+    loose = [n for n in roots if n.kind == "playlist"]
+    if len(folders) < 2 or len(loose) < 2:
+        print("  [SKIP] the reference collection has too few top-level nodes")
+    else:
+        src, dst = folders[0], folders[1]
+        pl = next((c for c in src.children if c.kind == "playlist"), None) or loose[0]
+        home = _find(roots, pl.name)
+        home_parent = next((f.id for f in roots if any(c.id == pl.id for c in f.children)), None)
+        home_index = ([c.id for c in (src.children if home_parent else roots)].index(pl.id))
+        check("O: every node offers can_move", all(n.can_move for n in roots))
+
+        # A playlist into another folder, at a position.
+        new_id = store.move_playlist(pl.id, dst.id, 1)
+        tree = store.tree()
+        moved_into = next(n for n in tree if n.id == dst.id)
+        check("O: a playlist keeps its id when moved", new_id == pl.id, new_id)
+        check("O: …and lands at the index asked for",
+              len(moved_into.children) > 1 and moved_into.children[1].id == pl.id,
+              [c.name for c in moved_into.children[:3]])
+        store.save()
+        moved = work.read_bytes()
+        check("O: the COLLECTION is untouched by a move",
+              _collection_span(moved) == _collection_span(before))
+        reread = TraktorStore(work).tree()
+        check("O: the move round-trips through a save",
+              any(c.id == pl.id for c in next(n for n in reread if n.id == dst.id).children))
+
+        # …and back again: byte-identical to the original.
+        store.move_playlist(pl.id, home_parent, home_index)
+        store.save()
+        check("O: moving it back restores the original bytes", work.read_bytes() == before,
+              f"{diff_count(before, work.read_bytes())} lines differ")
+
+        # A folder moves with its subtree, and its id (a path) changes with it.
+        new_folder = store.move_playlist(src.id, dst.id, 0)
+        check("O: a moved folder answers its new path id",
+              new_folder == f"{dst.id}/{src.name}", new_folder)
+        inner = next(n for n in store.tree() if n.id == dst.id).children[0]
+        check("O: …and its subtree moved with it",
+              inner.id == new_folder and len(inner.children) == len(src.children))
+        child_ids = [c.id for c in inner.children]
+        check("O: …children keep addressable ids",
+              all(c.startswith((new_folder.replace("fld:", "sl:") + "/", new_folder + "/"))
+                  or not c.startswith(("fld:", "sl:")) for c in child_ids), child_ids[:3])
+
+        # Into itself: refused, nothing changed.
+        snapshot = store._render()
+        try:
+            store.move_playlist(dst.id, new_folder, 0)
+            check("O: a folder cannot be moved into its own descendant", False)
+        except PlaylistError:
+            check("O: a folder cannot be moved into its own descendant",
+                  store._render() == snapshot)
+
+        # A namesake folder in the target: refused (two paths would be one).
+        store.create_folder(src.name, None)
+        snapshot = store._render()
+        try:
+            store.move_playlist(new_folder, None, 0)
+            check("O: a folder cannot land beside a namesake", False)
+        except PlaylistError:
+            check("O: a folder cannot land beside a namesake", store._render() == snapshot)
+
+        # A smart playlist moves too, by its path id.
+        smart = next((c for c in inner.children if c.kind == "smart"), None)
+        if smart is not None:
+            sid = store.move_playlist(smart.id, None, 0)
+            check("O: a smart playlist moves and answers its new id",
+                  sid == f"sl:{smart.name}" and store.tree()[0].id == sid, sid)
+
+    # A no-op move leaves the store clean.
+    fresh = TraktorStore(work)
+    first = fresh.tree()[0]
+    fresh.move_playlist(first.id, None, 0)
+    check("O: moving a node onto its own place is not an edit", not fresh.dirty)
+
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

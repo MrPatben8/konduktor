@@ -131,6 +131,10 @@ class TraktorAdapter:
         with _translate():
             self._store.delete_playlist(node_id)
 
+    def move_playlist(self, node_id: str, parent_id: str | None, index: int) -> str:
+        with _translate():
+            return self._store.move_playlist(node_id, parent_id, index)
+
     def set_playlist_entries(self, node_id: str, track_ids: list[str]) -> int:
         """Replace a playlist's contents. The adapter resolves each id to its
         native entry kind, so callers never see Traktor's STEM/TRACK split."""

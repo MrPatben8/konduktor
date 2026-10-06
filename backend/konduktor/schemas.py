@@ -21,6 +21,20 @@ class SetEntries(BaseModel):
     track_ids: list[str]  # ordered; full desired contents of the playlist
 
 
+class AddEntries(BaseModel):
+    track_ids: list[str]
+    # Tracks the playlist already holds: "skip" them, "add" them again (only
+    # where `playlists.duplicates`, else skipped), or "ask" — change nothing and
+    # report how many, so the UI can ask and send again with skip/add.
+    duplicates: Literal["skip", "add", "ask"] = "skip"
+
+
+class MovePlaylist(BaseModel):
+    node_id: str
+    parent_id: str | None = None  # None = the top level
+    index: int  # among the new parent's children, not counting the node
+
+
 class EditTrack(BaseModel):
     track_id: str
     fields: dict[str, str | int | None]

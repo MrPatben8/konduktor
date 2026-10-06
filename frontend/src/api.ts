@@ -83,6 +83,8 @@ export interface PlaylistNode {
   can_rename: boolean
   can_delete: boolean
   can_contain_children: boolean
+  /** Can be dragged elsewhere in the tree (reordered, or into a folder). */
+  can_move: boolean
 }
 
 export type SortField =
@@ -270,7 +272,13 @@ export interface Capabilities {
     /** Added files can be left where they are rather than copied. */
     reference: boolean
   }
-  playlists: { folders: boolean; smart: 'none' | 'read_only'; reorder: boolean }
+  playlists: {
+    folders: boolean
+    smart: 'none' | 'read_only'
+    reorder: boolean
+    /** A playlist can hold the same track twice (else duplicates are skipped). */
+    duplicates: boolean
+  }
   /** Path mapping / rewriting / the missing-files check apply to this library. */
   paths: { remappable: boolean }
   save: SaveCapabilities
@@ -988,12 +996,23 @@ export const api = {
     send<{ status: string; count: number }>('PUT', `/api/playlists/${encodeURIComponent(nodeId)}/entries`, {
       track_ids: trackIds,
     }),
-  addEntries: (nodeId: string, trackIds: string[]) =>
-    send<{ status: string; added: number; count: number }>(
+  /** Append tracks. `duplicates` decides tracks already there: skip them,
+   *  add them again (where `playlists.duplicates`), or `ask` — nothing changes
+   *  and the answer's `status: 'duplicates'` says how many, to ask and resend. */
+  addEntries: (nodeId: string, trackIds: string[], duplicates: 'skip' | 'add' | 'ask' = 'skip') =>
+    send<{ status: 'added' | 'duplicates'; added: number; duplicates: number; count: number }>(
       'POST',
       `/api/playlists/${encodeURIComponent(nodeId)}/add`,
-      { track_ids: trackIds },
+      { track_ids: trackIds, duplicates },
     ),
+  /** Move a tree node to `index` among `parentId`'s children (null = top
+   *  level), counted without it. Answers its id AFTER the move. */
+  movePlaylist: (nodeId: string, parentId: string | null, index: number) =>
+    send<{ status: string; id: string }>('POST', '/api/playlists/move', {
+      node_id: nodeId,
+      parent_id: parentId,
+      index,
+    }),
   getPrefs: () => getJSON<Record<string, unknown>>('/api/prefs'),
   patchPrefs: (patch: Record<string, unknown>) =>
     send<Record<string, unknown>>('PATCH', '/api/prefs', patch),

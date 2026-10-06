@@ -73,7 +73,7 @@ _READ = (
 )
 _MUTATING = (
     "create_playlist", "create_folder", "rename_playlist", "delete_playlist",
-    "set_playlist_entries", "remove_tracks", "set_track_metadata", "set_key", "set_cue",
+    "move_playlist", "set_playlist_entries", "remove_tracks", "set_track_metadata", "set_key", "set_cue",
     "set_cue_type", "set_cue_color", "delete_cue", "place_cues", "add_grid_marker",
     "move_grid_marker", "set_grid_marker_bpm", "delete_grid_marker", "replace_grid",
     "set_analysed_grid", "delete_grid", "set_grid_lock", "add_tracks",

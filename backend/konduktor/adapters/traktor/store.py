@@ -160,11 +160,13 @@ class TraktorStore:
                 can_reorder=True,
                 can_rename=True,
                 can_delete=True,
+                can_move=True,
             )
         if ntype == "SMARTLIST" or node.smartplaylist is not None:
             # Rule-based, so it has no static entry list to show or edit.
             return PlaylistNode(
-                id="sl:" + "/".join(parent_path + [name]), name=name, kind="smart"
+                id="sl:" + "/".join(parent_path + [name]), name=name, kind="smart",
+                can_move=True,
             )
         path = parent_path + [name]
         return PlaylistNode(
@@ -175,6 +177,7 @@ class TraktorStore:
             can_contain_children=True,
             can_rename=True,
             can_delete=True,
+            can_move=True,
         )
 
     @staticmethod
@@ -347,6 +350,79 @@ class TraktorStore:
             parent.subnodes.count = len(parent.subnodes.node)
             self._note("playlist-delete", node.name)
             self.dirty = True
+
+    def _find_node(self, node_id: str) -> Nodetype:
+        """Any node by its id: a playlist's UUID, a folder's `fld:` path or a
+        smart playlist's `sl:` path (its folder path plus its own name)."""
+        if node_id.startswith("fld:"):
+            return self._find_folder(node_id)
+        if node_id.startswith("sl:"):
+            *folders, name = node_id[len("sl:"):].split("/")
+            parent = self._find_folder("fld:" + "/".join(folders) if folders else None)
+            match = next(
+                (c for c in self._children(parent)
+                 if (c.type == "SMARTLIST" or c.smartplaylist is not None) and c.name == name),
+                None,
+            )
+            if match is None:
+                raise PlaylistError(f"Smart playlist not found: {node_id}")
+            return match
+        node = self._find_playlist_node(node_id)
+        if node is None:
+            raise PlaylistError(f"Playlist not found: {node_id}")
+        return node
+
+    def move_playlist(self, node_id: str, parent_id: str | None, index: int) -> str:
+        """Move a node to `index` among `parent_id`'s children (counted without
+        it) and return its id afterwards — a folder's and a smart playlist's id
+        is their path of names, so moving one changes it (and its subtree's).
+
+        A folder or smart playlist landing beside a namesake of its own kind is
+        refused, as rename refuses it: the two paths would be one, and one of
+        them unaddressable. Playlists are UUIDs, so their names may repeat."""
+        with self._lock:
+            node = self._find_node(node_id)
+            if node is self._root():
+                raise PlaylistError("Cannot move the root folder")
+            dest = self._find_folder(parent_id)
+            if dest is node or any(n is dest for n in self._iter_nodes(node)):
+                raise PlaylistError("A folder cannot be moved into itself")
+            is_folder = node.playlist is None and node.smartplaylist is None and (
+                node.type or "FOLDER") == "FOLDER"
+            is_smart = node.type == "SMARTLIST" or node.smartplaylist is not None
+            if is_folder or is_smart:
+                kind = "folder" if is_folder else "smart playlist"
+                for c in self._children(dest):
+                    same_kind = (
+                        (c.type or "FOLDER") == "FOLDER" and c.playlist is None
+                        and c.smartplaylist is None
+                    ) if is_folder else (c.type == "SMARTLIST" or c.smartplaylist is not None)
+                    if c is not node and same_kind and c.name == node.name:
+                        raise PlaylistError(f'There is already a {kind} called "{node.name}" there')
+            source = self._find_parent_of(node)
+            if source is None:
+                raise PlaylistError("Cannot move a top-level node")
+            siblings = [c for c in self._children(dest) if c is not node]
+            index = max(0, min(int(index), len(siblings)))
+            if source is dest and self._children(dest).index(node) == index:
+                return self._node_id(node, parent_id)  # already there
+            source.subnodes.node.remove(node)
+            source.subnodes.count = len(source.subnodes.node)
+            if dest.subnodes is None:
+                dest.subnodes = Subnodestype(node=[], count=0)
+            dest.subnodes.node.insert(index, node)
+            dest.subnodes.count = len(dest.subnodes.node)
+            self._note("playlist-move", node.name)
+            self.dirty = True
+            return self._node_id(node, parent_id)
+
+    def _node_id(self, node: Nodetype, parent_id: str | None) -> str:
+        """The id `_to_model` gives `node` inside the folder `parent_id`."""
+        if node.playlist is not None:
+            return node.playlist.uuid
+        prefix = parent_id[len("fld:"):] if parent_id and parent_id.startswith("fld:") else ""
+        tag = "sl:" if (node.type == "SMARTLIST" or node.smartplaylist is not None) else "fld:"
+        return tag + "/".join(p for p in (prefix, node.name or "(unnamed)") if p)
 
     def set_entries(self, playlist_uuid: str, entries: list[tuple[str, str]]) -> None:
         with self._lock:

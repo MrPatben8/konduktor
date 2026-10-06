@@ -31,6 +31,7 @@ os.environ["KONDUKTOR_DATA_DIR"] = tempfile.mkdtemp(prefix="konduktor-rbfid-appd
 
 from konduktor.adapters.rekordbox import discovery  # noqa: E402
 from konduktor.adapters.rekordbox.adapter import RekordboxAdapter  # noqa: E402
+from konduktor.core.adapter import InvalidCommand  # noqa: E402
 
 failed = False
 
@@ -301,6 +302,51 @@ with tempfile.TemporaryDirectory() as d:
           not {folder_id, inner_id} & set(flat_ids(after_folder.playlist_tree())))
     folder_reopened.close()
     after_folder.close()
+
+    # ---- E2: moving nodes in the tree (sidebar drag and drop) -----------
+    print("== E2: move_playlist reorders and reparents, touching only playlist rows ==")
+    clean_copy(REAL, work, closing=[adapter, again, final, reopened])
+    adapter = RekordboxAdapter(work)
+    folder_id = adapter.create_folder("Konduktor Move Folder")
+    a_id = adapter.create_playlist("Konduktor Move A")
+    b_id = adapter.create_playlist("Konduktor Move B")
+    adapter.save()
+    adapter.close()
+    before = dump(work)
+    adapter = RekordboxAdapter(work)
+    check("every node offers can_move", all(n.can_move for n in adapter.playlist_tree()))
+    adapter.move_playlist(b_id, folder_id, 0)
+    adapter.move_playlist(a_id, None, 0)
+    tree = adapter.playlist_tree()
+    check("a playlist moved into a folder is its child",
+          [c.id for c in next(n for n in tree if n.id == folder_id).children] == [b_id])
+    check("a playlist moved to index 0 is first at the top level", tree[0].id == a_id,
+          [n.name for n in tree[:3]])
+    try:
+        adapter.move_playlist(folder_id, folder_id, 0)
+        check("a folder cannot be moved into itself", False)
+    except InvalidCommand:
+        check("a folder cannot be moved into itself", True)
+    adapter.save()
+    changes = diff(before, dump(work))
+    check("only djmdPlaylist rows and the counter change",
+          {t for t, _, _, _ in changes} <= {"djmdPlaylist", "agentRegistry"}, describe(changes))
+    rows = dump(work)["djmdPlaylist"]
+    for parent in ("root", folder_id):
+        seqs = sorted(int(r["Seq"]) for r in rows.values()
+                      if str(r["ParentID"]) == parent and not r["rb_local_deleted"])
+        check(f"Seq stays 1..n under {parent}", seqs == list(range(1, len(seqs) + 1)), seqs)
+    adapter.close()
+    reopened = RekordboxAdapter(work)
+    tree = reopened.playlist_tree()
+    check("the moves round-trip through a reopen",
+          tree[0].id == a_id
+          and [c.id for c in next(n for n in tree if n.id == folder_id).children] == [b_id])
+    reopened.move_playlist(b_id, None, len(tree))
+    check("a playlist moved out of a folder lands last at the top level",
+          reopened.playlist_tree()[-1].id == b_id)
+    reopened.close()
+    again = final = RekordboxAdapter(work)
 
     # ---- F: a cue write touches the cue row AND its mirror ---------------
     print("== F: a hot cue write is localized, and keeps the mirror in step ==")

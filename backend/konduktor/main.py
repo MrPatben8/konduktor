@@ -92,6 +92,8 @@ from .schemas import (
     RemapResult,
     RenamePlaylist,
     SaveResult,
+    AddEntries,
+    MovePlaylist,
     SetEntries,
     SourceCandidate,
     SourceStatus,
@@ -1227,6 +1229,7 @@ def create_playlist(body: CreatePlaylist) -> PlaylistNode:
         can_reorder=True,
         can_rename=True,
         can_delete=True,
+        can_move=True,
     )
 
 
@@ -1241,6 +1244,7 @@ def create_folder(body: CreatePlaylist) -> PlaylistNode:
         can_contain_children=True,
         can_rename=True,
         can_delete=True,
+        can_move=True,
     )
 
 
@@ -1265,17 +1269,35 @@ def set_entries(playlist_uuid: str, body: SetEntries) -> dict:
     return {"status": "updated", "id": playlist_uuid, "count": n}
 
 
+@app.post("/api/playlists/move")
+def move_playlist(body: MovePlaylist) -> dict:
+    """Move a playlist, folder or smart playlist in the tree. Answers the
+    node's id AFTER the move, which on some platforms is not the one sent."""
+    new_id = require_adapter().move_playlist(body.node_id, body.parent_id, body.index)
+    return {"status": "moved", "id": new_id}
+
+
 @app.post("/api/playlists/{playlist_uuid}/add")
-def add_entries(playlist_uuid: str, body: SetEntries) -> dict:
-    """Append tracks to a playlist (skips ids already present)."""
+def add_entries(playlist_uuid: str, body: AddEntries) -> dict:
+    """Append tracks to a playlist. Tracks already there are skipped, added
+    again, or — `duplicates="ask"` — counted with nothing changed (see
+    `AddEntries`). `duplicates` in the answer is how many there were."""
     a = require_adapter()
     current = a.playlist_entries(playlist_uuid)
     if current is None:
         raise HTTPException(404, f"Playlist not found: {playlist_uuid}")
     have = set(current)
-    added = [tid for tid in body.track_ids if tid not in have]
-    n = a.set_playlist_entries(playlist_uuid, current + added)
-    return {"status": "added", "id": playlist_uuid, "added": len(added), "count": n}
+    dupes = [tid for tid in body.track_ids if tid in have]
+    mode = body.duplicates
+    if mode != "skip" and not a.capabilities().playlists.duplicates:
+        mode = "skip"
+    if mode == "ask" and dupes:
+        return {"status": "duplicates", "id": playlist_uuid, "added": 0,
+                "duplicates": len(dupes), "count": len(current)}
+    added = list(body.track_ids) if mode == "add" else [t for t in body.track_ids if t not in have]
+    n = a.set_playlist_entries(playlist_uuid, current + added) if added else len(current)
+    return {"status": "added", "id": playlist_uuid, "added": len(added),
+            "duplicates": len(dupes), "count": n}
 
 
 @app.patch("/api/tracks")

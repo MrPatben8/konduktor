@@ -194,6 +194,9 @@ class RemoteAdapter:
     def delete_playlist(self, node_id):
         return self._call("delete_playlist", node_id=node_id)
 
+    def move_playlist(self, node_id, parent_id, index):
+        return self._call("move_playlist", node_id=node_id, parent_id=parent_id, index=index)
+
     def set_playlist_entries(self, node_id, track_ids):
         return self._call("set_playlist_entries", node_id=node_id, track_ids=list(track_ids))
 

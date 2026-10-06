@@ -264,6 +264,44 @@ seqs = sorted(r["sequenceNo"] for r in after["playlist"].values() if r["playlist
 check("and closes the gap among its siblings", seqs == list(range(len(seqs))), str(seqs))
 a.close()
 
+print("== moving playlists (sidebar drag and drop) ==")
+drive = fresh_drive()
+a = OneLibraryAdapter(drive)
+folder = a.create_folder("Gigs")
+probe = a.create_playlist("Probe")
+a.save()
+before = dump(db_of(drive))
+check("every node offers can_move", all(n.can_move for n in a.playlist_tree()))
+demos = next(n for n in a.playlist_tree() if n.name == "demos")
+a.move_playlist(demos.id, folder, 0)
+a.move_playlist(probe, None, 1)
+tree = a.playlist_tree()
+check("a playlist moved into a folder is its child",
+      [c.id for c in next(n for n in tree if n.id == folder).children] == [demos.id])
+check("a playlist moves to the index asked for", [n.id for n in tree] == [folder, probe],
+      str([n.name for n in tree]))
+check("a folder cannot be moved into itself",
+      _raises(lambda: a.move_playlist(folder, folder, 0), InvalidCommand))
+check("nor into a playlist", _raises(lambda: a.move_playlist(probe, demos.id, 0), InvalidCommand))
+a.save()
+after = dump(db_of(drive))
+changes = diff(before, after)
+check("only playlist rows change, by UPDATE",
+      {(t, kind) for t, _, kind, _ in changes} == {("playlist", "UPDATE")}, describe(changes))
+check("only parent and sequenceNo columns change",
+      {c for *_, f in changes for c in f} <= {"playlist_id_parent", "sequenceNo"},
+      str([f for *_, f in changes]))
+for parent in (0, int(folder)):
+    seqs = sorted(r["sequenceNo"] for r in after["playlist"].values() if r["playlist_id_parent"] == parent)
+    check(f"sequenceNo stays 0..n-1 under {parent}", seqs == list(range(len(seqs))), str(seqs))
+a.close()
+reopened = OneLibraryAdapter(drive)
+check("the move round-trips through a reopen",
+      [c.id for c in next(n for n in reopened.playlist_tree() if n.id == folder).children] == [demos.id])
+reopened.move_playlist(probe, None, 1)
+check("moving a node onto its own place is not an edit", reopened.dirty is False)
+reopened.close()
+
 # ---- E: a stick's hazards ------------------------------------------------------------
 print("== another app wrote the drive since it was opened ==")
 drive = fresh_drive()

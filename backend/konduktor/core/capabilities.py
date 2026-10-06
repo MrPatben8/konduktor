@@ -106,6 +106,9 @@ class PlaylistCapabilities(BaseModel):
     folders: bool = False
     smart: Literal["none", "read_only"] = "none"
     reorder: bool = False
+    # A playlist can hold the same track more than once. Where it cannot, a
+    # drop of tracks already there skips them rather than asking.
+    duplicates: bool = False
 
 
 class PathCapabilities(BaseModel):
