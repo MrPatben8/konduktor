@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type PlaylistKind, type PlaylistNode } from '../api'
 import { useCaps } from '../lib/capabilities'
@@ -12,8 +12,8 @@ import { ContextMenu, type MenuItem } from './ContextMenu'
 import { Icon, type IconName } from '../lib/icons'
 import { PlatformIcon } from '../lib/platformIcons'
 import { addTracksToPlaylist } from '../lib/addTracks'
-import { usePressToDrag, useDropTarget, type DragPayload } from '../lib/drag'
-import { playlistIdsUnder } from '../lib/playlistTree'
+import { useDragPayload, usePressToDrag, useDropTarget, type DragPayload } from '../lib/drag'
+import { nodeIdsUnder, playlistIdsUnder } from '../lib/playlistTree'
 
 /**
  * Which view the main table is showing.
@@ -108,7 +108,21 @@ interface RowActions {
   /** Tracks dropped on a playlist; `alt` (Option) moves them out of the
    *  playlist they came from. */
   onDropTracks: (node: PlaylistNode, p: Extract<DragPayload, { kind: 'tracks' }>, alt: boolean) => void
+  /** Whether a node may be dragged elsewhere in the tree. */
+  canMove: (node: PlaylistNode) => boolean
+  /** A node dropped in the tree: `index` among `parentId`'s children,
+   *  counted without it (what `move_playlist` takes). */
+  onMoveNode: (node: PlaylistNode, parentId: string | null, index: number, into: PlaylistNode | null) => void
 }
+
+/** Where a dragged node would land, relative to the row under the pointer:
+ *  `before`/`after` it, `into` it (a folder; appended), or `first` inside it —
+ *  the lower edge of an EXPANDED folder, where the line sits above its first
+ *  child. `tracks` is a track drop on a playlist; `peek` is tracks held over a
+ *  collapsed folder, which opens it and drops nothing. */
+type RowHint =
+  | { zone: 'tracks' | 'peek' }
+  | { zone: 'before' | 'after' | 'into' | 'first'; parentId: string | null; index: number }
 
 /** The inline name field for a node being created. Enter or clicking away
  *  commits a non-empty name; Esc (or an empty name) creates nothing. */
@@ -160,6 +174,7 @@ function DraftRow({
 function NodeRow({
   node,
   parentId,
+  siblings,
   depth,
   source,
   onSelect,
@@ -172,6 +187,8 @@ function NodeRow({
   node: PlaylistNode
   /** The folder this node sits in; null = the top level. */
   parentId: string | null
+  /** That folder's children, this node included, in order. */
+  siblings: PlaylistNode[]
   depth: number
   source: Source
   onSelect: (s: Source) => void
@@ -203,26 +220,90 @@ function NodeRow({
   const startDrag = usePressToDrag(() => (renaming ? null : { kind: 'node', node, parentId }))
   const moves = (p: DragPayload, alt: boolean) =>
     p.kind === 'tracks' && alt && !!p.fromPlaylist && p.fromPlaylist !== node.id
-  const [dropRef, over] = useDropTarget<true>({
-    hint: (p) => (p.kind === 'tracks' && actions.acceptsTracks(node, p) ? true : null),
-    label: (p, _h, at) => `${moves(p, at.alt) ? 'Move' : 'Add'} to ${node.name}`,
-    onDrop: (p, _h, at) => p.kind === 'tracks' && actions.onDropTracks(node, p, at.alt),
+
+  // A node held over this row: which zone, and where that puts it. Never into
+  // itself or anything nested in it; a drop that would leave it exactly where
+  // it is shows nothing.
+  const placeNode = (p: Extract<DragPayload, { kind: 'node' }>, y: number, el: HTMLElement): RowHint | null => {
+    if (!actions.canMove(p.node) || nodeIdsUnder(p.node).has(node.id)) return null
+    const r = el.getBoundingClientRect()
+    const f = (y - r.top) / r.height
+    const opened = expanded && node.children.length > 0
+    const zone: 'before' | 'after' | 'into' | 'first' = node.can_contain_children
+      ? f < 0.25 ? 'before' : f > 0.75 ? (opened ? 'first' : 'after') : 'into'
+      : f < 0.5 ? 'before' : 'after'
+    let target: string | null
+    let index: number
+    let current: PlaylistNode[]
+    if (zone === 'into' || zone === 'first') {
+      target = node.id
+      current = node.children
+      index = zone === 'first' ? 0 : node.children.filter((c) => c.id !== p.node.id).length
+    } else {
+      target = parentId
+      current = siblings
+      const i = siblings.filter((c) => c.id !== p.node.id).findIndex((c) => c.id === node.id)
+      index = zone === 'before' ? i : i + 1
+    }
+    if (target === p.parentId && current.findIndex((c) => c.id === p.node.id) === index) return null
+    return { zone, parentId: target, index }
+  }
+  const [dropRef, over] = useDropTarget<RowHint>({
+    hint: (p, at, el) => {
+      if (p.kind === 'node') return placeNode(p, at.y, el)
+      if (actions.acceptsTracks(node, p)) return { zone: 'tracks' }
+      return isFolder && !expanded ? { zone: 'peek' } : null
+    },
+    label: (p, h, at) => {
+      if (h.zone === 'tracks') return `${moves(p, at.alt) ? 'Move' : 'Add'} to ${node.name}`
+      if (h.zone === 'peek') return null
+      return h.zone === 'into' || h.zone === 'first' ? `Move into ${node.name}` : `Move ${h.zone} ${node.name}`
+    },
+    onDrop: (p, h, at) => {
+      if (p.kind === 'tracks') {
+        if (h.zone === 'tracks') actions.onDropTracks(node, p, at.alt)
+      } else if ('parentId' in h) {
+        actions.onMoveNode(p.node, h.parentId, h.index, h.zone === 'into' && !expanded ? node : null)
+      }
+    },
   })
+  // Holding a drag over a collapsed folder opens it, so a playlist nested in
+  // it can be reached without letting go.
+  const opening = over?.zone === 'into' || over?.zone === 'peek'
+  useEffect(() => {
+    if (!opening || expanded) return
+    const t = setTimeout(() => setOpen(true), 600)
+    return () => clearTimeout(t)
+  }, [opening, expanded])
+  const ringed = over?.zone === 'tracks' || over?.zone === 'into'
+  const dragging = useDragPayload()
+  const beingMoved = dragging?.kind === 'node' && dragging.node.id === node.id
+  const line = over?.zone === 'before' || over?.zone === 'after' || over?.zone === 'first' ? over.zone : null
 
   return (
-    <div>
+    <div className={beingMoved ? 'opacity-40' : undefined}>
       <div
         ref={dropRef}
+        data-node-row
         onPointerDown={startDrag}
         onContextMenu={(e) => actions.onContextMenu(e, node)}
-        className={`group flex items-center gap-1 rounded-[10px] pr-1 text-sm transition-colors ${
-          over
+        className={`group relative flex items-center gap-1 rounded-[10px] pr-1 text-sm transition-colors ${
+          ringed
             ? 'bg-accent-soft/40 text-text ring-1 ring-accent'
             : selected
               ? 'is-selected font-medium text-text'
               : 'text-muted hover:bg-ink-800 hover:text-text'
         }`}
       >
+        {line && (
+          <span
+            aria-hidden
+            className={`pointer-events-none absolute right-1 h-0.5 rounded-full bg-accent ${
+              line === 'before' ? '-top-px' : '-bottom-px'
+            }`}
+            style={{ left: 8 + (line === 'first' ? depth + 1 : depth) * 14 }}
+          />
+        )}
         <button
           onClick={() => {
             if (isFolder) setOpen((o) => !o)
@@ -323,6 +404,7 @@ function NodeRow({
               key={c.id}
               node={c}
               parentId={node.id}
+              siblings={node.children}
               depth={depth + 1}
               source={source}
               onSelect={onSelect}
@@ -526,6 +608,17 @@ export function Sidebar({
     // nothing to the collection's playlists.
     acceptsTracks: (node, p) =>
       caps.writable && node.can_add_tracks && p.origin === 'collection' && p.fromPlaylist !== node.id,
+    canMove: (node) => caps.writable && node.can_move,
+    onMoveNode: async (node, parentId, index, into) => {
+      try {
+        await api.movePlaylist(node.id, parentId, index)
+        invalidate()
+        // Into a COLLAPSED folder the node vanishes from view, so say where.
+        if (into) onDone(`Moved “${node.name}” into ${into.name}`)
+      } catch (e) {
+        onError((e as Error).message)
+      }
+    },
     onDropTracks: async (node, p, alt) => {
       try {
         const msg = await addTracksToPlaylist({
@@ -541,6 +634,22 @@ export function Sidebar({
       }
     },
   }
+
+  // The empty space below the rows: a node dropped there goes to the END of
+  // the top level. Only the space itself — over a row that declined (a folder
+  // into its own subtree), nothing happens rather than this.
+  const roots = playlists ?? []
+  const [rootDropRef, rootOver] = useDropTarget<{ index: number }>({
+    hint: (p, at) => {
+      if (p.kind !== 'node' || !actions.canMove(p.node)) return null
+      if (document.elementFromPoint(at.x, at.y)?.closest('[data-node-row]')) return null
+      const index = roots.filter((n) => n.id !== p.node.id).length
+      if (p.parentId === null && roots.findIndex((n) => n.id === p.node.id) === index) return null
+      return { index }
+    },
+    label: () => 'Move to the top level',
+    onDrop: (p, h) => p.kind === 'node' && actions.onMoveNode(p.node, null, h.index, null),
+  })
 
   return (
     <aside className="glass flex h-full w-64 shrink-0 flex-col">
@@ -607,6 +716,7 @@ export function Sidebar({
         {/* Right-click here (below the rows) creates at the top level; rows
             stop the event so they get their own menu. */}
         <div
+          ref={rootDropRef}
           data-drag-scroll=""
           className="mt-1 min-h-24 flex-1 overflow-y-auto px-2 pb-4"
           onContextMenu={(e) => openMenu(e, createItems(null))}
@@ -618,6 +728,7 @@ export function Sidebar({
               key={n.id}
               node={n}
               parentId={null}
+              siblings={playlists}
               depth={0}
               source={source}
               onSelect={onSelect}
@@ -628,6 +739,7 @@ export function Sidebar({
               actions={actions}
             />
           ))}
+          {rootOver && <div aria-hidden className="mx-2 mt-0.5 h-0.5 rounded-full bg-accent" />}
         </div>
 
         {menu && <ContextMenu {...menu} onClose={() => setMenu(null)} />}

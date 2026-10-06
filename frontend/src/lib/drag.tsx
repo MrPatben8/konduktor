@@ -154,18 +154,28 @@ export function beginDrag(payload: DragPayload, at: { x: number; y: number; alt:
     }
   }
   // Hold near the edge of a `data-drag-scroll` element to scroll it. Its
-  // value is the height covered at the top (a sticky header).
+  // value is the height covered at the top (a sticky header). The edge is
+  // thinner than a row and must be HELD for a moment first: otherwise the
+  // first or last visible row cannot be dropped on, because the list scrolls
+  // out from under a pointer resting on it.
   let raf = 0
+  const dwell = new Map<HTMLElement, number>()
   const autoScroll = () => {
     const { x, y } = state
     let scrolled = false
     document.querySelectorAll<HTMLElement>('[data-drag-scroll]').forEach((el) => {
       const r = el.getBoundingClientRect()
-      if (x < r.left || x > r.right || y < r.top - 24 || y > r.bottom + 24) return
       const top = r.top + Number(el.dataset.dragScroll || 0)
-      const edge = 40
-      const dy = y < top + edge ? -Math.ceil((top + edge - y) / 4) : y > r.bottom - edge ? Math.ceil((y - r.bottom + edge) / 4) : 0
-      if (!dy) return
+      const edge = 20
+      const inside = x >= r.left && x <= r.right && y >= r.top - 24 && y <= r.bottom + 24
+      const dy = !inside ? 0 : y < top + edge ? -Math.ceil((top + edge - y) / 3) : y > r.bottom - edge ? Math.ceil((y - r.bottom + edge) / 3) : 0
+      if (!dy) {
+        dwell.delete(el)
+        return
+      }
+      const since = dwell.get(el) ?? performance.now()
+      dwell.set(el, since)
+      if (performance.now() - since < 250) return
       const before = el.scrollTop
       el.scrollTop += Math.max(-20, Math.min(20, dy))
       scrolled ||= el.scrollTop !== before

@@ -8,3 +8,15 @@ export function playlistIdsUnder(node: PlaylistNode): string[] {
   const here = node.kind === 'folder' ? [] : [node.id]
   return [...here, ...(node.children ?? []).flatMap(playlistIdsUnder)]
 }
+
+/** The ids of a node and everything nested in it — where a dragged folder
+ *  cannot go. */
+export function nodeIdsUnder(node: PlaylistNode): Set<string> {
+  const ids = new Set<string>()
+  const walk = (n: PlaylistNode) => {
+    ids.add(n.id)
+    n.children.forEach(walk)
+  }
+  walk(node)
+  return ids
+}
