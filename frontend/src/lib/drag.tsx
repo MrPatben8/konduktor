@@ -28,6 +28,8 @@ export type DragPayload =
       kind: 'tracks'
       ids: string[]
       tracks: Track[]
+      /** The row the drag started on — what a drop on the deck loads. */
+      lead: Track
       /** Which library the ids belong to — a device's or a folder's are not
        *  the collection's, so collection targets must not take them as such. */
       origin: TrackOrigin

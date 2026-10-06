@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type PlaylistKind, type PlaylistNode } from '../api'
+import { api, type PlaylistKind, type PlaylistNode, type TrackOrigin } from '../api'
+import type { AddTarget } from './AddFilesDialog'
 import { useCaps } from '../lib/capabilities'
 import { SaveBar } from './SaveBar'
 import { confirmDiscardUnsaved } from '../lib/unsaved'
@@ -53,6 +54,9 @@ interface Props {
   /** Open a drive's library as THE library (Devices' "Open for editing…"). */
   onOpenLibrary: (path: string) => void
   onDone: (msg: string) => void
+  /** Tracks not in the collection yet (a device's, a folder's) dropped on a
+   *  playlist or export: open the dialog that adds them, target filled in. */
+  onAddForeign: (origin: TrackOrigin, ids: string[], target: AddTarget) => void
   onOpenPathMapping: () => void
   /** After unsaved edits were discarded (SaveBar). */
   onDiscarded?: () => void
@@ -255,7 +259,11 @@ function NodeRow({
       return isFolder && !expanded ? { zone: 'peek' } : null
     },
     label: (p, h, at) => {
-      if (h.zone === 'tracks') return `${moves(p, at.alt) ? 'Move' : 'Add'} to ${node.name}`
+      if (h.zone === 'tracks') {
+        if (p.kind === 'tracks' && p.origin === 'device') return `Import into ${node.name}…`
+        if (p.kind === 'tracks' && p.origin === 'folder') return `Add to ${node.name}…`
+        return `${moves(p, at.alt) ? 'Move' : 'Add'} to ${node.name}`
+      }
       if (h.zone === 'peek') return null
       return h.zone === 'into' || h.zone === 'first' ? `Move into ${node.name}` : `Move ${h.zone} ${node.name}`
     },
@@ -430,6 +438,7 @@ export function Sidebar({
   onSwitchLibrary,
   onOpenLibrary,
   onDone,
+  onAddForeign,
   onOpenPathMapping,
   onDiscarded,
 }: Props) {
@@ -604,10 +613,12 @@ export function Sidebar({
       setDraft(null)
     },
     onCancelDraft: () => setDraft(null),
-    // Only the collection's own tracks: a device's or a folder's ids mean
-    // nothing to the collection's playlists.
+    // A device's or a folder's tracks are not in the collection yet, so they
+    // can only come if the collection can ADD tracks — via the add dialog.
     acceptsTracks: (node, p) =>
-      caps.writable && node.can_add_tracks && p.origin === 'collection' && p.fromPlaylist !== node.id,
+      caps.writable &&
+      node.can_add_tracks &&
+      (p.origin === 'collection' ? p.fromPlaylist !== node.id : caps.tracks.addable),
     canMove: (node) => caps.writable && node.can_move,
     onMoveNode: async (node, parentId, index, into) => {
       try {
@@ -620,6 +631,10 @@ export function Sidebar({
       }
     },
     onDropTracks: async (node, p, alt) => {
+      if (p.origin !== 'collection') {
+        onAddForeign(p.origin, p.ids, { kind: 'playlist', id: node.id, name: node.name })
+        return
+      }
       try {
         const msg = await addTracksToPlaylist({
           qc,
@@ -745,7 +760,13 @@ export function Sidebar({
         {menu && <ContextMenu {...menu} onClose={() => setMenu(null)} />}
         {confirmReq && <ConfirmDialog {...confirmReq} onClose={() => setConfirmReq(null)} />}
 
-        <ExportsSection source={source} onSelect={onSelect} onDone={onDone} onError={onError} />
+        <ExportsSection
+          source={source}
+          onSelect={onSelect}
+          onDone={onDone}
+          onError={onError}
+          onAddForeign={onAddForeign}
+        />
 
         <DevicesSection
           source={source}

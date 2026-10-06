@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type ExportSet } from '../api'
+import { api, type ExportSet, type TrackOrigin } from '../api'
+import type { AddTarget } from './AddFilesDialog'
+import { useCaps } from '../lib/capabilities'
 import { ExportDialog } from './ExportDialog'
 import { ExportRunDialog } from './ExportRunDialog'
 import type { Source } from './Sidebar'
@@ -29,9 +31,10 @@ interface Props {
   onSelect: (s: Source) => void
   onDone: (msg: string) => void
   onError: (msg: string) => void
+  onAddForeign: (origin: TrackOrigin, ids: string[], target: AddTarget) => void
 }
 
-export function ExportsSection({ source, onSelect, onDone, onError }: Props) {
+export function ExportsSection({ source, onSelect, onDone, onError, onAddForeign }: Props) {
   const qc = useQueryClient()
   const [dialog, setDialog] = useState<{ editing: ExportSet | null } | null>(null)
   const [running, setRunning] = useState<ExportSet | null>(null)
@@ -108,6 +111,7 @@ export function ExportsSection({ source, onSelect, onDone, onError }: Props) {
             onEdit={() => setDialog({ editing: set })}
             onRun={() => setRunning(set)}
             onDone={onDone}
+            onAddForeign={onAddForeign}
             onDelete={async () => {
               // Deleting a set never touches its destination folder — the files
               // already exported are the user's, not Konduktor's to clean up.
@@ -137,6 +141,7 @@ function ExportRow({
   onDelete,
   onDone,
   onError,
+  onAddForeign,
 }: {
   set: ExportSet
   source: Source
@@ -146,8 +151,12 @@ function ExportRow({
   onDelete: () => void
   onDone: (msg: string) => void
   onError: (msg: string) => void
+  onAddForeign: (origin: TrackOrigin, ids: string[], target: AddTarget) => void
 }) {
   const qc = useQueryClient()
+  // The COLLECTION's capabilities (the sidebar sits outside the browsed view's
+  // swap): a device's or folder's tracks must be added to it first.
+  const caps = useCaps()
   const selected = source.kind === 'export' && source.id === set.id
   const inside =
     selected ||
@@ -185,11 +194,20 @@ function ExportRow({
     qc.invalidateQueries({ queryKey: ['export-loose', set.id] })
   }
   const accepts = (p: DragPayload) =>
-    p.kind === 'tracks' ? p.origin === 'collection' : playlistIdsUnder(p.node).length > 0
+    p.kind === 'tracks'
+      ? p.origin === 'collection' || (caps.writable && caps.tracks.addable)
+      : playlistIdsUnder(p.node).length > 0
   const [dropRef, over] = useDropTarget<true>({
     hint: (p) => (accepts(p) ? true : null),
-    label: () => `Add to export ${set.name}`,
+    label: (p) =>
+      p.kind === 'tracks' && p.origin === 'device'
+        ? `Import into export ${set.name}…`
+        : `Add to export ${set.name}${p.kind === 'tracks' && p.origin === 'folder' ? '…' : ''}`,
     onDrop: async (p) => {
+      if (p.kind === 'tracks' && p.origin !== 'collection') {
+        onAddForeign(p.origin, p.ids, { kind: 'export', id: set.id, name: set.name })
+        return
+      }
       try {
         if (p.kind === 'tracks') {
           await api.addToExport(set.id, { track_ids: p.ids })

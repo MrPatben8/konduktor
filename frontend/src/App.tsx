@@ -5,6 +5,7 @@ import { CapabilitiesContext, slotLabeller } from './lib/capabilities'
 import { removalNote, writeHint } from './lib/platformCopy'
 import { invalidateTrackLists } from './lib/trackQueries'
 import { addTracksToPlaylist } from './lib/addTracks'
+import { useDropTarget } from './lib/drag'
 import { api, type AnalyzeOptions, type AnalyzeResult, type CueBatchResult, type AutoCueSlot, type PlaylistNode, type StemBatchResult, type Track, type TrackOrigin } from './api'
 import { confirmDiscardUnsaved } from './lib/unsaved'
 import {
@@ -83,6 +84,9 @@ export default function App() {
   const [adding, setAdding] = useState<{ ids: string[]; target: AddTarget | null } | null>(null)
   const [playRequest, setPlayRequest] = useState(0) // bump → deck loads & auto-plays
   const [importing, setImporting] = useState(false)
+  // Device tracks dropped on a collection playlist / export: Import, with
+  // just those tracks and that target.
+  const [importDrop, setImportDrop] = useState<{ ids: string[]; target: AddTarget } | null>(null)
   // Batch analysis (grid, or Auto Hotcues): a confirm step, then the running
   // job, polled into the status bar. ONE at a time across both kinds — the
   // backend refuses a second, since a grid run would move the beats a hotcue
@@ -102,9 +106,9 @@ export default function App() {
   // Every Remove ▸ action (and the playlist Delete key) confirms first.
   const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null)
 
-  const loadTrack = useCallback((t: Track) => {
+  const loadTrack = useCallback((t: Track, origin: TrackOrigin = viewOriginRef.current) => {
     setPrepTrack(t)
-    setPrepOrigin(viewOriginRef.current)
+    setPrepOrigin(origin)
   }, [])
   const playTrack = useCallback(
     (t: Track) => {
@@ -358,6 +362,22 @@ export default function App() {
     },
     [qc, addablePlaylists, duplicatesAllowed, notify, onError],
   )
+  // Tracks from a device or a Files folder dropped on a collection playlist or
+  // export: they are not in the collection yet, so the drop opens the dialog
+  // that adds them — with that target filled in, and copy-vs-reference still
+  // asked (decided 2026-10-06).
+  const addForeign = useCallback(
+    (origin: TrackOrigin, ids: string[], target: AddTarget) => {
+      if (origin === 'folder') setAdding({ ids, target })
+      else if (origin === 'device') setImportDrop({ ids, target })
+    },
+    [],
+  )
+  const [deckDropRef, deckOver] = useDropTarget<true>({
+    hint: (p) => (p.kind === 'tracks' ? true : null),
+    label: (p) => (p.kind === 'tracks' && p.ids.length > 1 ? `Load “${p.lead.title || 'Untitled'}” into the deck` : 'Load into the deck'),
+    onDrop: (p) => p.kind === 'tracks' && loadTrack(p.lead, p.origin),
+  })
   const removeFromExport = useCallback(
     async (id: string, ids: string[]) => {
       try {
@@ -1208,7 +1228,27 @@ export default function App() {
         />
       )}
 
-      {/* Prep strip spans the top of the window; the library sits below it. */}
+      {importDrop && (
+        <ImportDialog
+          playlistId={null}
+          trackIds={importDrop.ids}
+          target={importDrop.target}
+          deviceLabel={deviceLabel}
+          onClose={() => setImportDrop(null)}
+          onDone={(msg) => {
+            setImportDrop(null)
+            notify('success', msg)
+          }}
+          onError={onError}
+        />
+      )}
+
+      {/* Prep strip spans the top of the window; the library sits below it.
+          A track dropped on it loads (paused) — the row the drag started on. */}
+      <div ref={deckDropRef} className="relative shrink-0">
+      {deckOver && (
+        <div aria-hidden className="pointer-events-none absolute inset-0 z-10 rounded-[22px] ring-2 ring-accent" />
+      )}
       <CapabilitiesContext.Provider value={deckCaps}>
         <PrepStrip
           track={prepTrack}
@@ -1220,6 +1260,7 @@ export default function App() {
           onPlayingChange={setDeckPlaying}
         />
       </CapabilitiesContext.Provider>
+      </div>
 
       <div className="flex min-h-0 flex-1 gap-3">
         <Sidebar
@@ -1231,6 +1272,7 @@ export default function App() {
           onSwitchLibrary={() => setForcePicker(true)}
           onOpenLibrary={(path) => void openForEditing(path)}
           onDone={(msg) => notify('success', msg)}
+          onAddForeign={addForeign}
           onOpenPathMapping={() => setShowPaths(true)}
           onDiscarded={() => afterBulk(prepTrack ? [prepTrack.id] : [], true)}
         />

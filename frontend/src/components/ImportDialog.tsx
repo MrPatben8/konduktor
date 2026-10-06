@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type ImportPreview, type JobStatus } from '../api'
 import { useCaps } from '../lib/capabilities'
 import { placedAudioSummary } from '../lib/platformCopy'
+import type { AddTarget } from './AddFilesDialog'
 import { FolderPicker } from './FolderPicker'
 import { useServerImportFolder } from './AddFilesDialog'
 
@@ -29,13 +30,18 @@ function gb(bytes: number): string {
 interface Props {
   /** Playlist to import, or null for the whole device. */
   playlistId: string | null
+  /** Instead: just these device tracks (dragged out of the device's view). */
+  trackIds?: string[]
+  /** Where they go once imported — the playlist or export they were dropped
+   *  on. They are in the collection first either way. */
+  target?: AddTarget | null
   deviceLabel: string
   onClose: () => void
   onDone: (msg: string) => void
   onError: (msg: string) => void
 }
 
-export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError }: Props) {
+export function ImportDialog({ playlistId, trackIds, target, deviceLabel, onClose, onDone, onError }: Props) {
   const qc = useQueryClient()
   // The BASE folder, and whether to put this device's audio in its own
   // subfolder of it. Kept apart rather than as one path because they are two
@@ -81,13 +87,15 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
 
   const body = {
     destination,
-    playlist_ids: playlistId ? [playlistId] : [],
-    track_ids: [],
+    playlist_ids: trackIds ? [] : playlistId ? [playlistId] : [],
+    track_ids: trackIds ?? [],
     folder_name: deviceLabel,
+    into_playlist: target?.kind === 'playlist' ? target.id : null,
+    export_id: target?.kind === 'export' ? target.id : null,
   }
 
   const preview = useQuery<ImportPreview>({
-    queryKey: ['import-preview', destination, playlistId],
+    queryKey: ['import-preview', destination, playlistId, trackIds?.join('\n'), target?.id],
     queryFn: () => api.importPreview(body),
     enabled: !!destination && !job,
     staleTime: 0,
@@ -113,9 +121,16 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
             qc.invalidateQueries({ queryKey: ['collection'] })
             qc.invalidateQueries({ queryKey: ['state'] })
             qc.invalidateQueries({ queryKey: ['facets'] })
+            if (target) {
+              qc.invalidateQueries({ queryKey: ['playlist', target.id] })
+              qc.invalidateQueries({ queryKey: ['export-contents', target.id] })
+              qc.invalidateQueries({ queryKey: ['export-tracks', target.id] })
+              qc.invalidateQueries({ queryKey: ['export-loose', target.id] })
+            }
             onDone(
               `Imported ${r?.tracks ?? 0} track${r?.tracks === 1 ? '' : 's'}` +
-                (r?.playlists ? ` and ${r.playlists} playlist${r.playlists === 1 ? '' : 's'}` : ''),
+                (r?.playlists ? ` and ${r.playlists} playlist${r.playlists === 1 ? '' : 's'}` : '') +
+                (target ? ` into ${target.name}` : ''),
             )
           } else if (next.state === 'failed') {
             onError(next.error || 'Import failed')
@@ -129,7 +144,7 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
     return () => {
       if (pollRef.current) window.clearInterval(pollRef.current)
     }
-  }, [job, qc, onDone, onError])
+  }, [job, qc, onDone, onError, target])
 
   const start = async () => {
     setStarting(true)
@@ -174,9 +189,15 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
       <div className="w-full max-w-lg glass-overlay">
         <div className="border-b border-line px-5 py-3">
           <h2 className="text-sm font-semibold text-text">
-            Import from {deviceLabel}
-            {playlistId ? '' : ' — everything'}
+            {trackIds
+              ? `Import ${trackIds.length} track${trackIds.length === 1 ? '' : 's'} from ${deviceLabel}`
+              : `Import from ${deviceLabel}${playlistId ? '' : ' — everything'}`}
           </h2>
+          {target && (
+            <p className="mt-0.5 text-xs text-muted">
+              Into your collection, then into {target.kind === 'export' ? 'the export ' : ''}“{target.name}”.
+            </p>
+          )}
         </div>
 
         <div className="space-y-4 px-5 py-4 text-sm">
@@ -270,9 +291,11 @@ export function ImportDialog({ playlistId, deviceLabel, onClose, onDone, onError
                     </div>
                   )}
 
-                  <div className="text-xs text-faint">
-                    Playlists land in a folder called “{deviceLabel}”.
-                  </div>
+                  {p.playlists.length > 0 && (
+                    <div className="text-xs text-faint">
+                      Playlists land in a folder called “{deviceLabel}”.
+                    </div>
+                  )}
                 </div>
               )}
             </>

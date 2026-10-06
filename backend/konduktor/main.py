@@ -2445,11 +2445,18 @@ def start_import(body: ImportRequest) -> JobStatus:
     folder_name = body.folder_name
     if folder_name is None and STATE.source is not None:
         folder_name = STATE.source.capabilities().save.library_label
+    library = STATE.library_id
 
-    job = JOBS.submit(
-        "import",
-        lambda handle: importer.run(source, dest, plan, handle, folder_name=folder_name),
-    )
+    def work(handle):
+        result = importer.run(
+            source, dest, plan, handle, folder_name=folder_name, into_playlist=body.into_playlist,
+        )
+        # As folder add: an export set is Konduktor's data, updated afterwards.
+        if body.export_id is not None and library is not None:
+            exports.add(library, body.export_id, track_ids=result["track_ids"])
+        return result
+
+    job = JOBS.submit("import", work)
     return JobStatus(**job.as_dict())
 
 

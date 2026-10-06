@@ -507,6 +507,11 @@ class ImportRequest(BaseModel):
     # Playlists land in a folder named after the drive. Null keeps them at the
     # root; the default is filled in from the source's label.
     folder_name: str | None = None
+    # Device tracks dropped on a collection playlist / an export (drag and
+    # drop): every imported track — and every one the collection already
+    # holds — goes into it, as folder add does.
+    into_playlist: str | None = None
+    export_id: str | None = None
 
 
 class Drive(BaseModel):

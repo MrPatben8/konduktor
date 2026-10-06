@@ -441,6 +441,10 @@ export interface ImportRequest {
   playlist_ids?: string[]
   /** Playlists land in a folder named this; null keeps them at the root. */
   folder_name?: string | null
+  /** Every imported track (and any already held) also goes into this
+   *  collection playlist / export — a drop of device tracks on one. */
+  into_playlist?: string | null
+  export_id?: string | null
 }
 
 export interface ImportPreview {

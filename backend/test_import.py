@@ -447,6 +447,43 @@ check("re-importing flags the tracks as already present",
 check("but does not refuse them — the user chose to add everything",
       len(plan8.importable) == 2)
 
+print("== import route: chosen tracks into a playlist and an export (drag and drop) ==")
+# Device tracks dropped on a collection playlist open Import with that playlist
+# as the target: only the chosen tracks, no drive folder, all into the playlist.
+nml9, music9, _ = fresh_collection()
+drive9 = Path(tempfile.mkdtemp(prefix="konduktor-import-drive-")) / "Dingus"
+shutil.copytree(FIXTURE, drive9, ignore=shutil.ignore_patterns("rekordbox-edited"))
+from fastapi.testclient import TestClient  # noqa: E402
+
+import konduktor.main as main  # noqa: E402
+
+with TestClient(main.app) as c:
+    check("the collection opens", c.post("/api/library/open", json={"path": str(nml9)}).status_code == 200)
+    check("the drive opens as a source", c.post("/api/source/open", json={"path": str(drive9)}).status_code == 200)
+    picked = c.get("/api/source/tracks", params={"limit": 10}).json()
+    picked = picked["items"][:1]
+    target = c.post("/api/playlists", json={"name": "Dropped"}).json()["id"]
+    eset = c.post("/api/exports", json={"name": "Gig", "targets": ["traktor"],
+                                        "destination": str(music9.parent / "gig")}).json()["id"]
+    r = c.post("/api/import", json={"destination": str(music9), "track_ids": [picked[0]["id"]],
+                                    "into_playlist": target, "export_id": eset})
+    check("the import starts", r.status_code == 200, r.text[:200])
+    job = r.json()
+    for _ in range(200):
+        job = c.get(f"/api/jobs/{job['id']}").json()
+        if job["state"] != "running":
+            break
+        time.sleep(0.05)
+    check("…and finishes", job["state"] == "done", str(job)[:300])
+    entries = c.get(f"/api/playlists/{target}/tracks").json()
+    check("the one chosen track lands in the target playlist",
+          len(entries) == 1 and entries[0]["title"] == picked[0]["title"], str([e["title"] for e in entries]))
+    names = [n["name"] for n in c.get("/api/playlists").json()]
+    check("no drive folder is made when no playlist was chosen", "Dingus" not in names, str(names))
+    ex = next(e for e in c.get("/api/exports").json() if e["id"] == eset)
+    check("…and it is added to the export too", ex["track_ids"] == [entries[0]["id"]], str(ex["track_ids"]))
+    c.delete("/api/source")
+
 print()
 print("RESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

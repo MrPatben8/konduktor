@@ -423,6 +423,7 @@ export function TrackTable({
           kind: 'tracks',
           ids: [...new Set(carried.map((t) => t.id))],
           tracks: carried,
+          lead: pressed,
           origin: from?.origin ?? 'collection',
           fromPlaylist: from?.playlistId,
           source: tableKey,
