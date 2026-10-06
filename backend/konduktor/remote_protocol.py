@@ -34,7 +34,8 @@ from .core.model import AutoHotcue, Track, TrackCues
 #: (major, minor). A client speaks to a server of the SAME major whose minor is
 #: at least its own: minors only add. Bump the minor for an added route or
 #: method, the major for anything an older client would misread.
-API_VERSION: tuple[int, int] = (1, 0)
+#: 1.1 — `move_playlist` (sidebar drag and drop).
+API_VERSION: tuple[int, int] = (1, 1)
 
 #: How long a session survives without a heartbeat, and how often the holder
 #: sends one. Long enough to ride out a Wi-Fi blip or a switch to the fallback
