@@ -10,6 +10,10 @@ export interface ConfirmRequest {
   /** `danger` (default) for destructive actions — a pink button; `primary`
    *  for a caution that is not destruction, e.g. switching library. */
   tone?: 'danger' | 'primary'
+  /** A second way to go ahead, as a plain button beside the confirm one
+   *  (e.g. "Add them again" next to "Add 6 new"). Enter still means confirm. */
+  altLabel?: string
+  onAlt?: () => void
   onConfirm: () => Promise<void> | void
 }
 
@@ -19,7 +23,7 @@ interface Props extends ConfirmRequest {
 
 /** A yes/no confirmation for destructive actions. Enter confirms and Esc
  *  cancels, so a confirmed Delete key stays a two-keystroke action. */
-export function ConfirmDialog({ title, body, confirmLabel, tone = 'danger', onConfirm, onClose }: Props) {
+export function ConfirmDialog({ title, body, confirmLabel, tone = 'danger', altLabel, onAlt, onConfirm, onClose }: Props) {
   const [busy, setBusy] = useState(false)
 
   const confirm = async () => {
@@ -69,6 +73,18 @@ export function ConfirmDialog({ title, body, confirmLabel, tone = 'danger', onCo
           >
             Cancel
           </button>
+          {altLabel && onAlt && (
+            <button
+              onClick={() => {
+                onAlt()
+                onClose()
+              }}
+              disabled={busy}
+              className="btn-glass rounded-full px-4 py-1.5 text-sm text-text disabled:opacity-40"
+            >
+              {altLabel}
+            </button>
+          )}
           <button
             onClick={() => void confirm()}
             disabled={busy}

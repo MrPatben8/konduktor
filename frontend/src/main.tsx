@@ -8,6 +8,7 @@ import App from './App.tsx'
 import { UpdateCheck } from './components/UpdateDialog.tsx'
 import { AmbientBackdrop } from './components/AmbientBackdrop.tsx'
 import { ConfirmHost } from './lib/confirm.tsx'
+import { DragLayer } from './lib/drag.tsx'
 import { QuitGuard } from './components/QuitGuard.tsx'
 import { preventHistoryNavigation } from './lib/noNavigation.ts'
 
@@ -34,6 +35,8 @@ createRoot(document.getElementById('root')!).render(
       <ConfirmHost />
       {/* Save · Discard · Cancel when quitting with unsaved changes. */}
       <QuitGuard />
+      {/* The ghost under the cursor while dragging tracks or playlists. */}
+      <DragLayer />
     </QueryClientProvider>
   </StrictMode>,
 )

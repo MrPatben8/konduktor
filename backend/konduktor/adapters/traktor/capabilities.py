@@ -74,7 +74,12 @@ def capabilities_for(path: Path, editable_fields: list[str]) -> Capabilities:
                 "need a manual Import Cover Art to show up."
             ),
         ),
-        playlists=PlaylistCapabilities(folders=True, smart="read_only", reorder=True),
+        playlists=PlaylistCapabilities(
+            folders=True, smart="read_only", reorder=True,
+            # A playlist's entries are a plain list of PRIMARYKEYs, and Traktor
+            # itself adds a track twice when asked.
+            duplicates=True,
+        ),
         save=SaveCapabilities(
             app_name="Traktor",
             library_label="collection.nml",

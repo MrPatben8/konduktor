@@ -130,6 +130,9 @@ class PlaylistNode(BaseModel):
     can_rename: bool = False
     can_delete: bool = False
     can_contain_children: bool = False  # a valid parent for a new playlist
+    # Can be dragged elsewhere in the tree (`move_playlist`): reordered among
+    # its siblings or moved into another folder.
+    can_move: bool = False
 
 
 PlaylistNode.model_rebuild()

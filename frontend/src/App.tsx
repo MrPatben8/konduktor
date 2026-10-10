@@ -4,6 +4,8 @@ import type { ColumnSizingState, SortingState, VisibilityState } from '@tanstack
 import { CapabilitiesContext, slotLabeller } from './lib/capabilities'
 import { removalNote, writeHint } from './lib/platformCopy'
 import { invalidateTrackLists } from './lib/trackQueries'
+import { addTracksToPlaylist } from './lib/addTracks'
+import { useDropTarget } from './lib/drag'
 import { api, type AnalyzeOptions, type AnalyzeResult, type CueBatchResult, type AutoCueSlot, type PlaylistNode, type StemBatchResult, type Track, type TrackOrigin } from './api'
 import { confirmDiscardUnsaved } from './lib/unsaved'
 import {
@@ -30,6 +32,7 @@ import { ImportDialog } from './components/ImportDialog'
 import { AddFilesDialog, type AddTarget } from './components/AddFilesDialog'
 import { ConvertStemsDialog } from './components/ConvertStemsDialog'
 import { StemReportDialog } from './components/StemReportDialog'
+import { SetPositionDialog } from './components/SetPositionDialog'
 import { Icon } from './lib/icons'
 import { usePrefsWriter } from './lib/prefs'
 
@@ -39,7 +42,7 @@ function applyFilters(tracks: Track[], f: Filters): Track[] {
   const bpmMax = f.bpmMax ? parseFloat(f.bpmMax) : null
   return tracks.filter((t) => {
     if (q) {
-      const hay = `${t.artist ?? ''} ${t.title ?? ''} ${t.album ?? ''}`.toLowerCase()
+      const hay = [t.artist, t.title, t.album, t.comment, t.comment2].filter(Boolean).join(' ').toLowerCase()
       if (!hay.includes(q)) return false
     }
     if (f.genre && t.genre !== f.genre) return false
@@ -81,6 +84,9 @@ export default function App() {
   const [adding, setAdding] = useState<{ ids: string[]; target: AddTarget | null } | null>(null)
   const [playRequest, setPlayRequest] = useState(0) // bump → deck loads & auto-plays
   const [importing, setImporting] = useState(false)
+  // Device tracks dropped on a collection playlist / export: Import, with
+  // just those tracks and that target.
+  const [importDrop, setImportDrop] = useState<{ ids: string[]; target: AddTarget } | null>(null)
   // Batch analysis (grid, or Auto Hotcues): a confirm step, then the running
   // job, polled into the status bar. ONE at a time across both kinds — the
   // backend refuses a second, since a grid run would move the beats a hotcue
@@ -91,6 +97,8 @@ export default function App() {
   // Convert to Stems: the dialog's selection, a finished run's Details, and a
   // running engine download (which outlives the dialog — decided).
   const [stemDialog, setStemDialog] = useState<string[] | null>(null)
+  // Set Position…: the tracks being moved within the open playlist.
+  const [positioning, setPositioning] = useState<string[] | null>(null)
   const [stemReport, setStemReport] = useState<StemBatchResult | null>(null)
   const [engineJob, setEngineJob] = useState<string | null>(null)
   const [batchCancelling, setBatchCancelling] = useState(false)
@@ -98,9 +106,9 @@ export default function App() {
   // Every Remove ▸ action (and the playlist Delete key) confirms first.
   const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null)
 
-  const loadTrack = useCallback((t: Track) => {
+  const loadTrack = useCallback((t: Track, origin: TrackOrigin = viewOriginRef.current) => {
     setPrepTrack(t)
-    setPrepOrigin(viewOriginRef.current)
+    setPrepOrigin(origin)
   }, [])
   const playTrack = useCallback(
     (t: Track) => {
@@ -339,21 +347,37 @@ export default function App() {
     },
     [refreshExport, exportSets.data, notify, onError],
   )
+  // The same path as a drop on a sidebar playlist (lib/addTracks.ts), so the
+  // menu and the drag ask about duplicates alike.
+  const duplicatesAllowed = !!capabilities.data?.playlists.duplicates
   const addToPlaylist = useCallback(
     async (uuid: string, ids: string[]) => {
       try {
-        const res = await api.addEntries(uuid, ids)
-        qc.invalidateQueries({ queryKey: ['state'] })
-        qc.invalidateQueries({ queryKey: ['playlists'] })
-        qc.invalidateQueries({ queryKey: ['playlist', uuid] })
         const name = addablePlaylists.find((p) => p.id === uuid)?.name ?? 'playlist'
-        notify('success', `Added ${res.added} track${res.added === 1 ? '' : 's'} to ${name}`)
+        const msg = await addTracksToPlaylist({ qc, playlist: { id: uuid, name }, ids, duplicatesAllowed })
+        if (msg) notify('success', msg)
       } catch (e) {
         onError((e as Error).message)
       }
     },
-    [qc, addablePlaylists, notify, onError],
+    [qc, addablePlaylists, duplicatesAllowed, notify, onError],
   )
+  // Tracks from a device or a Files folder dropped on a collection playlist or
+  // export: they are not in the collection yet, so the drop opens the dialog
+  // that adds them — with that target filled in, and copy-vs-reference still
+  // asked (decided 2026-10-06).
+  const addForeign = useCallback(
+    (origin: TrackOrigin, ids: string[], target: AddTarget) => {
+      if (origin === 'folder') setAdding({ ids, target })
+      else if (origin === 'device') setImportDrop({ ids, target })
+    },
+    [],
+  )
+  const [deckDropRef, deckOver] = useDropTarget<true>({
+    hint: (p) => (p.kind === 'tracks' ? true : null),
+    label: (p) => (p.kind === 'tracks' && p.ids.length > 1 ? `Load “${p.lead.title || 'Untitled'}” into the deck` : 'Load into the deck'),
+    onDrop: (p) => p.kind === 'tracks' && loadTrack(p.lead, p.origin),
+  })
   const removeFromExport = useCallback(
     async (id: string, ids: string[]) => {
       try {
@@ -1062,6 +1086,11 @@ export default function App() {
               : viewingDevice
                 ? []
                 : [{ label: 'Add to', submenu: addToItems(menu.ids) }]),
+            // Unlike drag-reorder this stays on while sorted or filtered: it
+            // moves within the playlist's FULL order, which the # column shows.
+            ...(playlistEditable
+              ? [{ label: 'Set Position…', onClick: () => setPositioning(menu.ids) }]
+              : []),
             ...(() => {
               const items = removeItems(menu.ids)
               return items.length ? [{ label: 'Remove', submenu: items }] : []
@@ -1103,6 +1132,14 @@ export default function App() {
         />
       )}
       {stemReport && <StemReportDialog result={stemReport} onClose={() => setStemReport(null)} />}
+      {positioning && (
+        <SetPositionDialog
+          order={tracks.map((t) => t.id)}
+          ids={positioning}
+          onMove={reorderPlaylist}
+          onClose={() => setPositioning(null)}
+        />
+      )}
       {editing && (
         <EditTagsDialog
           track={editing}
@@ -1191,7 +1228,27 @@ export default function App() {
         />
       )}
 
-      {/* Prep strip spans the top of the window; the library sits below it. */}
+      {importDrop && (
+        <ImportDialog
+          playlistId={null}
+          trackIds={importDrop.ids}
+          target={importDrop.target}
+          deviceLabel={deviceLabel}
+          onClose={() => setImportDrop(null)}
+          onDone={(msg) => {
+            setImportDrop(null)
+            notify('success', msg)
+          }}
+          onError={onError}
+        />
+      )}
+
+      {/* Prep strip spans the top of the window; the library sits below it.
+          A track dropped on it loads (paused) — the row the drag started on. */}
+      <div ref={deckDropRef} className="relative shrink-0">
+      {deckOver && (
+        <div aria-hidden className="pointer-events-none absolute inset-0 z-10 rounded-[22px] ring-2 ring-accent" />
+      )}
       <CapabilitiesContext.Provider value={deckCaps}>
         <PrepStrip
           track={prepTrack}
@@ -1203,6 +1260,7 @@ export default function App() {
           onPlayingChange={setDeckPlaying}
         />
       </CapabilitiesContext.Provider>
+      </div>
 
       <div className="flex min-h-0 flex-1 gap-3">
         <Sidebar
@@ -1214,6 +1272,7 @@ export default function App() {
           onSwitchLibrary={() => setForcePicker(true)}
           onOpenLibrary={(path) => void openForEditing(path)}
           onDone={(msg) => notify('success', msg)}
+          onAddForeign={addForeign}
           onOpenPathMapping={() => setShowPaths(true)}
           onDiscarded={() => afterBulk(prepTrack ? [prepTrack.id] : [], true)}
         />
@@ -1396,6 +1455,7 @@ export default function App() {
                 onSortingChange={setSorting}
                 selection={{ selected, onChange: setSelected }}
                 marked={{ ids: heldInFolder, title: 'Already in your collection' }}
+                dragFrom={{ origin: 'folder' }}
                 onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
@@ -1431,6 +1491,7 @@ export default function App() {
                 sorting={sorting}
                 onSortingChange={setSorting}
                 onRowContextMenu={(track, x, y) => openMenu(track, x, y, false)}
+                dragFrom={{ origin: 'device' }}
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
                 activeTrackId={prepTrack?.id ?? null}
@@ -1492,6 +1553,10 @@ export default function App() {
                   : undefined
               }
               onRemove={playlistEditable ? confirmRemoveFromPlaylist : undefined}
+              dragFrom={{
+                origin: 'collection',
+                playlistId: playlistEditable && source.kind === 'playlist' ? source.id : undefined,
+              }}
               onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
               onPlay={playTrack}

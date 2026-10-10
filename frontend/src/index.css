@@ -87,6 +87,13 @@ body,
   overscroll-behavior: none;
 }
 
+/* While something is being dragged (lib/drag.tsx), the cursor is the hand
+   everywhere — buttons and links would otherwise show their own. */
+html.is-dragging,
+html.is-dragging * {
+  cursor: grabbing !important;
+}
+
 body {
   margin: 0;
   background: var(--color-ink-950);

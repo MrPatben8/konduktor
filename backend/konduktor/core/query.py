@@ -105,6 +105,8 @@ class TrackIndex:
                 if (t.artist and ql in t.artist.lower())
                 or (t.title and ql in t.title.lower())
                 or (t.album and ql in t.album.lower())
+                or (t.comment and ql in t.comment.lower())
+                or (t.comment2 and ql in t.comment2.lower())
             ]
         if genre:
             items = [t for t in items if t.genre == genre]

@@ -652,6 +652,45 @@ class OneLibraryStore(ReplaceGridCommands):
         db.flush()
         self._journal.record("playlist", "delete", name)
 
+    def move_playlist(self, node_id: str, parent_id: str | None, index: int) -> str:
+        """Move a node to `index` among `parent_id`'s children, renumbering
+        `sequenceNo` from 0 in both parents as create and delete do. The
+        Device Library's playlist tree follows at Save (`device_library`
+        mirrors parent and sort from these rows)."""
+        db = self._require_db()
+        row = self._playlist(node_id)
+        dest = 0
+        if parent_id:
+            folder = self._playlist(parent_id)
+            if int(folder.attribute or 0) != ATTRIBUTE_FOLDER:
+                raise InvalidCommand("A playlist can only be moved into a folder")
+            dest = int(folder.playlist_id)
+            ancestor = folder
+            while ancestor is not None:
+                if int(ancestor.playlist_id) == int(row.playlist_id):
+                    raise InvalidCommand("A folder cannot be moved into itself")
+                up = int(ancestor.playlist_id_parent or 0)
+                ancestor = self._playlist(str(up)) if up else None
+        source = int(row.playlist_id_parent or 0)
+        siblings = self._siblings(dest, excluding=row.playlist_id)
+        index = max(0, min(int(index), len(siblings)))
+        order = siblings[:index] + [row] + siblings[index:]
+        if source == dest and [r.playlist_id for r in order] == [
+            r.playlist_id for r in self._siblings(dest)
+        ]:
+            return str(row.playlist_id)
+        row.playlist_id_parent = dest
+        for n, r in enumerate(order):
+            if int(r.sequenceNo or 0) != n:
+                r.sequenceNo = n
+        if source != dest:
+            for n, r in enumerate(self._siblings(source, excluding=row.playlist_id)):
+                if int(r.sequenceNo or 0) != n:
+                    r.sequenceNo = n
+        db.flush()
+        self._journal.record("playlist", "move", row.name)
+        return str(row.playlist_id)
+
     def set_playlist_entries(self, node_id: str, track_ids: list[str]) -> int:
         """Replace a playlist's contents, in order, numbered from 1 (measured)."""
         from pyrekordbox.devicelib_plus import models

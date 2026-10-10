@@ -35,6 +35,21 @@ Two independent apps that talk over HTTP:
     - `adapter.py` — the `LibraryAdapter` / `LibraryDriver` protocols and the
       error tree (`NotFound` → 404, `InvalidCommand` → 400, `Unsupported` → 422),
       mapped to status codes once in `main.py` rather than per route.
+      **`move_playlist(node_id, parent_id, index)`** (sidebar drag and drop,
+      `POST /api/playlists/move`) moves any tree node; `index` counts the new
+      parent's children WITHOUT the node, and it returns the node's id AFTER
+      the move — a Traktor folder's / smart playlist's id is its path, so it
+      changes (playlists keep their UUID, so export sets never need
+      retargeting). Gated per node on `PlaylistNode.can_move`. Traktor refuses a
+      folder or smart playlist landing beside a namesake (as rename does);
+      Rekordbox renumbers `Seq` itself (pyrekordbox's version cannot move to the
+      top level) and keeps `masterPlaylists6.xml`'s `ParentId` in step;
+      OneLibrary renumbers `sequenceNo` from 0, and the pdb follows at Save.
+      `POST /api/playlists/{id}/add` takes `duplicates`: `skip` / `add` / `ask`
+      (nothing changes, the count comes back so the UI can ask and resend);
+      `add` only where `capabilities.playlists.duplicates` — Traktor only, since
+      OneLibrary's `playlist_content` is keyed on (playlist, content) and
+      rekordbox's tolerance of a repeat is unmeasured.
     - `capabilities.py` — `Capabilities`: what the loaded library can persist, so
       the UI can gate controls instead of branching on the platform.
     - `query.py` (`TrackIndex`) — all query/filter/sort/facet/stats logic, over
@@ -811,6 +826,21 @@ Two independent apps that talk over HTTP:
     space below the rows creates at the top level, and the new node is named
     in place (Esc or an empty name creates nothing). Rename/Delete are on the
     same menu and the row's hover buttons, which share one set of actions.
+    **Drag and drop** (lib/drag.tsx, below): a row is a drag source and a drop
+    target with ZONES — a playlist's upper/lower half is before/after; a
+    folder's top/bottom quarter before/after and its middle INTO (appended),
+    except the bottom quarter of an OPEN folder, which is "first inside"; the
+    empty space below the rows is "end of the top level". Never into the
+    dragged node's own subtree, and a drop that would change nothing shows no
+    indicator. Holding over a collapsed folder opens it after 0.6 s (tracks
+    too, so nested playlists are reachable). Tracks dropped on a playlist go
+    through `lib/addTracks.ts` — shared with the context menu's "Add to" —
+    which ASKS about duplicates where the platform can hold them (decided:
+    ask each time), and Option/Alt moves them out of the editable playlist
+    they came from. A device's or Files folder's tracks open `ImportDialog`
+    (`trackIds` + `target`) / `AddFilesDialog` with the target filled in
+    (`onAddForeign`), so copy-vs-reference is still asked. Export rows take the
+    collection's tracks and any playlist/folder (as "Add to export" does).
     A Traktor folder's id is its PATH of names, so the `PATCH`/`DELETE`
     playlist routes take a `:path` param, a folder name may not contain `/`,
     and renaming onto a sibling folder's name is refused), `QuitGuard` (mounted in `main.tsx`: the desktop shell PREVENTS window close /
@@ -838,7 +868,28 @@ Two independent apps that talk over HTTP:
     not dnd-kit sortable**: a SortableContext around the virtualizer loops on its
     flushSync-driven measurement — which is why playlists were once a separate,
     non-virtualized `PlaylistTable`. Fixed 44 px rows make the drop index just
-    pointer-y / ROW_HEIGHT. dnd-kit still reorders the header's columns.)
+    pointer-y / ROW_HEIGHT. dnd-kit still reorders the header's columns.
+    Every table's rows are a DRAG SOURCE through `lib/drag.tsx` (a selected row
+    carries the selection, the payload's `lead` is the row grabbed, `dragFrom`
+    says whose ids they are and which editable playlist an Option-drag leaves);
+    the in-table reorder is just the table's own drop target.)
+    **`lib/drag.tsx` — drag and drop across the window** (decided 2026-10-06,
+    [the discussion](.claude/discussions/discuss-drag-and-drop-2026-10-06.md)):
+    ONE gesture, the TARGET decides what it means. Pointer events, NOT HTML5
+    DnD — Tauri's webview captures native drag events for file drops on
+    Windows. A source calls `beginDrag` past a 6 px threshold (`usePressToDrag`
+    for plain elements); targets register with `useDropTarget({ hint, label,
+    onDrop })` and are found by `elementFromPoint` then up the ancestors, the
+    innermost whose `hint` is non-null winning, so a target declines a spot by
+    returning null. A module-level store read through narrow
+    `useSyncExternalStore` selectors: a move re-renders only the target under
+    the pointer and the ghost (`DragLayer`, mounted in main.tsx), never the
+    table. Esc cancels (before every other Esc handler); the click after a drop
+    is swallowed; `data-drag-scroll="<top inset>"` makes an element scroll at a
+    20 px edge after a 250 ms dwell — any less and the first/last visible row
+    could not be dropped on. Targets: playlist + export rows (Sidebar,
+    ExportsSection), the tree's zones, the table's reorder, and the DECK
+    (App), which loads the grabbed row paused, in its own origin.
     `ConvertStemsDialog` (**Convert to Stems**, one dialog — decided: Where =
     Replace the originals (its option STATES that Save deletes them, since
     the choice is remembered and may be preselected) or Save to a folder; In
@@ -884,7 +935,11 @@ Two independent apps that talk over HTTP:
     `ContextMenu` (supports `▸` submenus, section headings, separators and
     checkbox items that toggle without closing — the header row's right-click
     column chooser uses those; "Add to" lists
-    playlists + exports and acts on the whole selection; "Remove ▸" holds
+    playlists + exports and acts on the whole selection; in an editable
+    playlist "Set Position…" (`SetPositionDialog`, `lib/playlistOrder.ts`)
+    moves the selection as ONE block in playlist order so its first track
+    lands at #N — allowed while sorted/filtered, unlike drag, because it
+    reorders the FULL entry list; "Remove ▸" holds
     From this playlist / From this export / Grids / Hotcues / From collection,
     each behind a `ConfirmDialog` — as is the playlist Delete key. Enter
     confirms unless a button has focus, so Tab-to-Cancel + Enter cancels) + `EditTagsDialog`
@@ -1051,10 +1106,17 @@ serialization path.** It enforces:
   KEY attribute and one `<MUSICAL_KEY>` between LOUDNESS and CUE_V2 in
   Traktor's layout; the encoding matches the real collection; a Camelot
   collection gets Camelot; an ADDED Pioneer key ("Abm") lands as "6m"; and the
-  key tag reaches TKEY / `initialkey` in MP3, FLAC and M4A.
+  key tag reaches TKEY / `initialkey` in MP3, FLAC and M4A. And
+  **`move_playlist`** (O): the COLLECTION is untouched, a move round-trips and
+  moving back is byte-identical; a folder moves with its subtree and answers
+  its new path id; into its own descendant / beside a namesake is refused with
+  nothing changed; a smart playlist moves by its path id; a no-op is not dirty.
   The guard that catches serialization regressions like the lxml reformatting bug.
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
-  Traktor-valid, backup-first, COLLECTION byte-identical, original untouched.
+  Traktor-valid, backup-first, COLLECTION byte-identical, original untouched;
+  plus the drag-and-drop routes: `/add`'s three `duplicates` modes (`ask`
+  changes nothing and counts) and `/api/playlists/move` (path id answered,
+  400 into itself, 404 unknown).
 - `test_timebase.py` — Traktor's MP3 time base: `mp3_gapless` on generated
   MP3s (header found after a 1 MB ID3 tag; header-less has none), the offset
   in samples (2257 at 44.1 and 48 kHz, 0 header-less / WAV / missing), every
@@ -1122,7 +1184,9 @@ serialization path.** It enforces:
   against SQLite). Asserts a no-op save changes zero rows; a one-field edit
   changes exactly two — the track and `agentRegistry.localUpdateCount` — with the
   counter up by one and the edited row stamped with it; edits are invisible on
-  disk until save; and playlist create/fill/rename/delete round-trip. And
+  disk until save; and playlist create/fill/rename/delete round-trip, and
+  `move_playlist` (E2) changes only `djmdPlaylist` rows + the counter with
+  `Seq` 1..n in both parents. And
   **removing a track** deletes exactly the rows Rekordbox 7 deletes (measured
   2026-10-01 by diffing a removal made in Rekordbox itself: `djmdContent`,
   `djmdCue`, `contentCue`, `contentFile`, `djmdMixerParam`, `djmdSongPlaylist`
@@ -1161,7 +1225,8 @@ serialization path.** It enforces:
   changes zero rows, a title edit exactly `content.title` (no counter, as
   rekordbox), dates as `YYYY-MM-DD` text, lookups found-or-created with
   `nameForSearch` NULL, a new playlist on top with siblings shifted, entries
-  from 1; and the stick hazards — another app's write refused, an unplugged
+  from 1, a move changing only parent + `sequenceNo` (0..n-1 in both
+  parents); and the stick hazards — another app's write refused, an unplugged
   drive keeps the edits, stale `-shm` deleted, the backup holds the old rows,
   the drive never held open, file tags written (title yes, rating no). And
   `set_key`: an existing key changes only `content.key_id` and reaches TKEY as
@@ -1198,6 +1263,9 @@ serialization path.** It enforces:
   companion cue is invented), that the existing 8,485 entries render
   byte-identically, that the job registry runs/fails/cancels, and that a
   cancelled import leaves **no orphaned audio and an untouched collection**.
+  And the route with chosen `track_ids` + `into_playlist` + `export_id` (a
+  device drop): only that track, into the playlist and the export, no drive
+  folder made.
 - `test_grid_detect.py` — beatgrid detection on **synthetic** audio, so the
   tempo and first beat are known rather than borrowed from another analyser:
   exact integer and non-integer BPMs, the 125 BPM the old detector could not
@@ -1895,6 +1963,9 @@ that number and nothing else — everything derives from it:
   yet**, since nothing can be written. Note the OneLibrary work already demonstrated
   creating an `exportLibrary.db` from nothing, and `fixtures/onelibrary/schema.sql`
   is the DDL to do it with.
+- ✅ **Drag and drop** (2026-10-06) — tracks onto playlists / exports / the
+  deck, playlists around the tree and onto exports; see `lib/drag.tsx` and
+  the Sidebar under Architecture.
 - ✅ **Remote libraries** (2026-10-02) — a Konduktor server in a container
   (TrueNAS) holds a Traktor or Rekordbox library; the app opens it as
   "Remote": browse, prep, edit, Save (versioned on the server), export sticks,

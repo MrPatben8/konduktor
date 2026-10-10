@@ -608,6 +608,79 @@ class RekordboxStore(ReplaceGridCommands):
         self._db.delete_playlist(row)
         self._journal.record("playlist", "delete", name)
 
+    def move_playlist(self, node_id: str, parent_id: str | None, index: int) -> str:
+        """Move a node to `index` among `parent_id`'s visible children.
+
+        Not pyrekordbox's `move_playlist`: its `parent=None` means "keep the
+        parent", so nothing can be moved to the top level with it. The same
+        writes are made here — `ParentID`, the moved row's `updated_at`, and
+        `Seq` renumbered from 1 in both parents (only rows whose `Seq` changes
+        are touched) — plus `masterPlaylists6.xml`'s `ParentId`, which
+        pyrekordbox's version leaves stale. Rekordbox's hidden working lists
+        share the table and the numbering, so `index` is placed relative to
+        the VISIBLE siblings and the hidden ones keep their order around it."""
+        import datetime
+
+        from pyrekordbox.masterdb.database import SPECIAL_PLAYLIST_IDS
+
+        t = self._tables
+        row = self._playlist(node_id)
+        dest = self._playlist(parent_id) if parent_id else None
+        if dest is not None and int(dest.Attribute or 0) != int(t.PlaylistType.FOLDER):
+            raise InvalidCommand("A playlist can only be moved into a folder")
+        ancestor = dest
+        while ancestor is not None:
+            if str(ancestor.ID) == str(row.ID):
+                raise InvalidCommand("A folder cannot be moved into itself")
+            up = str(ancestor.ParentID or "root")
+            ancestor = None if up in ("root", "0", "") else self._playlist(up)
+
+        def children(key: str) -> list:
+            return (
+                self._db.session.query(t.DjmdPlaylist)
+                .filter(t.DjmdPlaylist.ParentID == key)
+                .filter(t.DjmdPlaylist.rb_local_deleted == 0)
+                .order_by(t.DjmdPlaylist.Seq)
+                .all()
+            )
+
+        old_key = str(row.ParentID or "root")
+        new_key = str(dest.ID) if dest is not None else "root"
+        siblings = [c for c in children(new_key) if str(c.ID) != str(row.ID)]
+        visible = [c for c in siblings if str(c.ID) not in SPECIAL_PLAYLIST_IDS]
+        index = max(0, min(int(index), len(visible)))
+        if index < len(visible):
+            at = siblings.index(visible[index])
+        else:
+            at = siblings.index(visible[-1]) + 1 if visible else len(siblings)
+        order = siblings[:at] + [row] + siblings[at:]
+        if old_key == new_key and [str(c.ID) for c in order] == [
+            str(c.ID) for c in children(new_key)
+        ]:
+            return str(row.ID)
+
+        row.ParentID = new_key
+        with self._db.registry.disabled():
+            row.updated_at = datetime.datetime.now()
+        for n, c in enumerate(order, start=1):
+            if c.Seq != n:
+                c.Seq = n
+        if old_key != new_key:
+            for n, c in enumerate(
+                (c for c in children(old_key) if str(c.ID) != str(row.ID)), start=1
+            ):
+                if c.Seq != n:
+                    c.Seq = n
+            xml = getattr(self._db, "playlist_xml", None)
+            if xml is not None:
+                try:
+                    xml.update(row.ID, parent_id=new_key)
+                except ValueError:
+                    pass  # a playlist the XML never listed: nothing to keep in step
+        self._db.flush()
+        self._journal.record("playlist", "move", row.Name)
+        return str(row.ID)
+
     def set_playlist_entries(self, node_id: str, track_ids: list[str]) -> int:
         """Replace a playlist's contents, in the given order.
 

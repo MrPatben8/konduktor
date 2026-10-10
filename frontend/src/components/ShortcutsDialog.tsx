@@ -58,11 +58,17 @@ function sections(slots: number): Section[] {
         { keys: [[MOD, 'Click']], action: 'Add to / remove from the selection' },
         { keys: [['Double-click']], action: 'Edit a cell' },
         { keys: [['Right-click']], action: 'Track menu (header: choose columns)' },
+        { keys: [['Drag rows']], action: 'Onto a playlist or export to add, onto the deck to load, within a playlist to reorder' },
+        { keys: [[ALT_KEY, 'Drag']], action: 'Move tracks to another playlist (out of this one)' },
+        { keys: [['Esc']], action: 'While dragging: cancel the drag' },
       ],
     },
     {
       title: 'Sidebar',
-      rows: [{ keys: [['Right-click']], action: 'New playlist or folder, rename, delete' }],
+      rows: [
+        { keys: [['Right-click']], action: 'New playlist or folder, rename, delete' },
+        { keys: [['Drag']], action: 'Rearrange playlists and folders; onto an export to add one' },
+      ],
     },
     {
       title: 'Fields & dialogs',

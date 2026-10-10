@@ -193,6 +193,7 @@ class OneLibraryAdapter:
                 can_rename=writable,
                 can_delete=writable,
                 can_contain_children=kind == "folder",
+                can_move=writable,
             )
             parent = str(getattr(r, "playlist_id_parent", 0) or 0)
             parents[node_id] = "root" if parent in ("0", "", "None") else parent
@@ -424,6 +425,10 @@ class OneLibraryAdapter:
     def delete_playlist(self, node_id: str) -> None:
         self._require_writable("Deleting playlists")
         self._store.delete_playlist(node_id)
+
+    def move_playlist(self, node_id: str, parent_id: str | None, index: int) -> str:
+        self._require_writable("Moving playlists")
+        return self._store.move_playlist(node_id, parent_id, index)
 
     def set_playlist_entries(self, node_id: str, track_ids: list[str]) -> int:
         self._require_writable("Editing playlists")

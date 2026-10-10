@@ -106,6 +106,13 @@ with tempfile.TemporaryDirectory() as d:
     adapter.set_track_metadata(tid, {"genre": "Konduktor Test Genre"})
     check("metadata edit is visible in the projection",
           adapter.track(tid).genre == "Konduktor Test Genre")
+    # search reaches both comments, case-insensitively
+    adapter.set_track_metadata(tid, {"comment": "Konduktor Search One",
+                                     "comment2": "Konduktor Search Two"})
+    for q in ("search one", "SEARCH TWO"):
+        hits = adapter.query_tracks(q=q, limit=20000).items
+        check(f"search {q!r} finds the track by its comment",
+              [x.id for x in hits] == [tid], f"{len(hits)} hits")
 
     # key — the projection's wheel, mode AND display text all follow
     t = adapter.set_key(tid, 4, "minor")      # 4A = F minor = Open Key 9m

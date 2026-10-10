@@ -172,6 +172,43 @@ check("COLLECTION still byte-identical after folder delete",
 check("unknown folder is 404",
       client.delete("/api/playlists/fld:No Such Folder").status_code == 404)
 
+print("== drag and drop: add with duplicates, move ==")
+target = client.post("/api/playlists", json={"name": "Konduktor Drop"}).json()["id"]
+first, rest = track_ids[:2], track_ids[2:4]
+r = client.post(f"/api/playlists/{target}/add", json={"track_ids": first}).json()
+check("a plain add appends", r["added"] == 2 and r["duplicates"] == 0)
+r = client.post(f"/api/playlists/{target}/add",
+                json={"track_ids": first[:1] + rest, "duplicates": "ask"}).json()
+check("'ask' with a duplicate changes nothing and counts it",
+      r["status"] == "duplicates" and r["duplicates"] == 1
+      and client.get(f"/api/playlists/{target}/tracks").json().__len__() == 2)
+r = client.post(f"/api/playlists/{target}/add",
+                json={"track_ids": first[:1] + rest, "duplicates": "skip"}).json()
+check("'skip' adds only the new ones", r["added"] == 2 and r["duplicates"] == 1 and r["count"] == 4)
+r = client.post(f"/api/playlists/{target}/add",
+                json={"track_ids": first[:1], "duplicates": "add"}).json()
+check("'add' adds it again (Traktor can hold a track twice)", r["added"] == 1 and r["count"] == 5)
+r = client.post(f"/api/playlists/{target}/add",
+                json={"track_ids": track_ids[4:5], "duplicates": "ask"}).json()
+check("'ask' with nothing duplicated simply adds", r["status"] == "added" and r["added"] == 1)
+check("capabilities say Traktor holds duplicates",
+      client.get("/api/capabilities").json()["playlists"]["duplicates"] is True)
+
+box = client.post("/api/playlists/folders", json={"name": "Konduktor Drop Box"}).json()["id"]
+r = client.post("/api/playlists/move", json={"node_id": target, "parent_id": box, "index": 0})
+check("move answers the playlist's id", r.status_code == 200 and r.json()["id"] == target)
+r = client.post("/api/playlists/move", json={"node_id": box, "parent_id": None, "index": 0})
+check("moving a folder answers its (path) id", r.json()["id"] == box)
+check("…and it is first at the top level", client.get("/api/playlists").json()[0]["id"] == box)
+r = client.post("/api/playlists/move", json={"node_id": box, "parent_id": box, "index": 0})
+check("a folder into itself is a 400", r.status_code == 400)
+r = client.post("/api/playlists/move", json={"node_id": "nope", "parent_id": None, "index": 0})
+check("an unknown node is a 404", r.status_code == 404)
+client.delete(f"/api/playlists/{box}")
+client.post("/api/save")
+check("COLLECTION still byte-identical after drops and moves",
+      collection_span(WORK.read_bytes()) == collection_before)
+
 print("== original untouched ==")
 check(
     "original collection.nml never modified",

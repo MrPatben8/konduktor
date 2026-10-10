@@ -59,7 +59,7 @@ export function Toolbar({
           value={filters.search}
           onChange={(e) => set({ search: e.target.value })}
           ref={searchRef}
-          placeholder="Search artist, title, album…"
+          placeholder="Artist, title, album, comment…"
           className="well w-72 rounded-full py-1.5 pl-9 pr-8 text-sm text-text outline-none placeholder:text-faint focus:ring-1 focus:ring-accent"
         />
         {filters.search && (
