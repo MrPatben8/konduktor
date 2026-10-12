@@ -11,6 +11,7 @@ import { ConfirmHost } from './lib/confirm.tsx'
 import { DragLayer } from './lib/drag.tsx'
 import { QuitGuard } from './components/QuitGuard.tsx'
 import { preventHistoryNavigation } from './lib/noNavigation.ts'
+import { StartupGate } from './components/StartupScreen.tsx'
 
 preventHistoryNavigation()
 
@@ -28,15 +29,18 @@ createRoot(document.getElementById('root')!).render(
     <QueryClientProvider client={queryClient}>
       {/* Behind everything, the picker screen included: every surface is glass over it. */}
       <AmbientBackdrop />
-      <App />
-      {/* Mounted beside App so the update dialog shows even on the picker screen. */}
-      <UpdateCheck />
-      {/* askConfirm()'s dialogs — the app's replacement for window.confirm. */}
-      <ConfirmHost />
-      {/* Save · Discard · Cancel when quitting with unsaved changes. */}
-      <QuitGuard />
-      {/* The ghost under the cursor while dragging tracks or playlists. */}
-      <DragLayer />
+      {/* The desktop app's startup screen: nothing below mounts until the backend answers. */}
+      <StartupGate>
+        <App />
+        {/* Mounted beside App so the update dialog shows even on the picker screen. */}
+        <UpdateCheck />
+        {/* askConfirm()'s dialogs — the app's replacement for window.confirm. */}
+        <ConfirmHost />
+        {/* Save · Discard · Cancel when quitting with unsaved changes. */}
+        <QuitGuard />
+        {/* The ghost under the cursor while dragging tracks or playlists. */}
+        <DragLayer />
+      </StartupGate>
     </QueryClientProvider>
   </StrictMode>,
 )

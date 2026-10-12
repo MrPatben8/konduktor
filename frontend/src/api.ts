@@ -837,14 +837,15 @@ export interface PrefixSuggestions {
 }
 
 // API origin. In the packaged desktop app the frontend is served from
-// tauri://localhost, so it can't use relative /api paths — the Tauri shell
-// injects window.__KONDUKTOR_API__ (the sidecar's http://127.0.0.1:<port>)
-// before any app script runs. In the browser dev server it's undefined, so we
-// fall back to relative URLs and let Vite proxy /api to the backend.
-export const API_BASE: string =
-  (typeof window !== 'undefined' &&
-    (window as unknown as { __KONDUKTOR_API__?: string }).__KONDUKTOR_API__) ||
-  ''
+// tauri://localhost, so it can't use relative /api paths: the sidecar's
+// http://127.0.0.1:<port> is only known once it has started, and the startup
+// screen (StartupScreen.tsx) sets it here before anything else renders. In the
+// browser dev server it stays '', so URLs are relative and Vite proxies /api.
+export let API_BASE = ''
+
+export function setApiBase(url: string): void {
+  API_BASE = url
+}
 
 async function getJSON<T>(url: string): Promise<T> {
   const res = await fetch(API_BASE + url)

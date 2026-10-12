@@ -39,7 +39,7 @@ cd ..
 # 1) Freeze + stage the backend sidecar (from the activated backend venv)
 cd backend
 .\.venv\Scripts\Activate.ps1     # if not already active
-.\build_sidecar.ps1              # → frontend\src-tauri\binaries\konduktor-sidecar-<triple>.exe
+.\build_sidecar.ps1              # → frontend\src-tauri\binaries\konduktor-sidecar\ (a folder)
 cd ..
 
 # 2) Build the app
@@ -56,7 +56,8 @@ frontend\src-tauri\target\release\bundle\msi\Konduktor_0.1.0_x64_en-US.msi
 frontend\src-tauri\target\release\bundle\nsis\Konduktor_0.1.0_x64-setup.exe
 ```
 
-Either one installs the app (bundling the sidecar `.exe` alongside it).
+Either one installs the app, with the sidecar folder in its `sidecar\` resource
+folder (`tauri.windows.conf.json`).
 
 ## Rebuilding after changes
 

@@ -55,10 +55,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      # --- Step 1: freeze the FastAPI backend into a single-file sidecar ---
+      # --- Step 1: freeze the FastAPI backend into a onedir sidecar folder ---
       # build_sidecar.* stages it as
-      #   frontend/src-tauri/binaries/konduktor-sidecar-<triple>[.exe]
-      # which tauri.conf.json's externalBin bundles into the app.
+      #   frontend/src-tauri/binaries/konduktor-sidecar/
+      # which tauri.macos.conf.json (bundle.macOS.files, keeps its symlinks) /
+      # tauri.windows.conf.json (bundle.resources) put in the app as `sidecar/`.
       - name: Install backend deps
         working-directory: backend
         run: |

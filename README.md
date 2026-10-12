@@ -126,14 +126,14 @@ On top of the Python 3.11+ and Node 18+ from above:
   [BUILDING-WINDOWS.md](BUILDING-WINDOWS.md) for the one-time toolchain setup.
 
 The build is a two-step recipe on both platforms: **freeze the backend into a
-sidecar binary**, then **build the app**. The only difference is which sidecar
+sidecar folder**, then **build the app**. The only difference is which sidecar
 script you run — `.sh` on macOS/Linux, `.ps1` on Windows. Each build runs on its
 own OS (the app can't be cross-compiled).
 
 ### macOS / Linux
 
 ```bash
-# 1) Freeze the backend into a sidecar binary (from the activated backend venv)
+# 1) Freeze the backend into a sidecar folder (from the activated backend venv)
 cd backend && source .venv/bin/activate && ./build_sidecar.sh && cd ..
 
 # 2) Build the app
@@ -147,7 +147,7 @@ The installer lands at
 ### Windows
 
 ```powershell
-# 1) Freeze the backend into a sidecar binary (from the activated backend venv)
+# 1) Freeze the backend into a sidecar folder (from the activated backend venv)
 cd backend; .\.venv\Scripts\Activate.ps1; .\build_sidecar.ps1; cd ..
 
 # 2) Build the app

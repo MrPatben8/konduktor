@@ -5,6 +5,11 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Konduktor</title>
+    <!-- The app's base colour before any stylesheet loads, so the window's
+         first frame is dark (the shell sets the same colour on the window).
+         On body ONLY: a background on html stops body's from spreading to the
+         page, and body's own box then paints over AmbientBackdrop (-z-10). -->
+    <style>:root { color-scheme: dark; } body { background: #05060a; }</style>
   </head>
   <body>
     <div id="root"></div>

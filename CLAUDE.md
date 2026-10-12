@@ -875,7 +875,17 @@ Two independent apps that talk over HTTP:
     shell quits anyway after ~2 s without one, so a hung page cannot trap the
     user), quits (`quit_now`) when nothing is unsaved, else asks Save · Discard
     · Cancel; the sidecar is killed only at `RunEvent::Exit`, after the answer;
-    browser dev gets `beforeunload`), `SaveBar` (+ "Discard changes…" when
+    browser dev gets `beforeunload`), `StartupGate` (mounted in `main.tsx`
+    around everything but `AmbientBackdrop`: the shell opens the window AT ONCE
+    and starts the sidecar beside it, so nothing that calls the API mounts
+    until `backend_status` / `konduktor://backend` says ready, which is when
+    `setApiBase` gets the sidecar's address. Meanwhile `StartupScreen` shows
+    the icon with a generated waveform scrolling under a fixed playhead, a
+    "first launch takes longer" note after 6 s, Quit / Keep waiting after 90 s,
+    and if the sidecar exits its last 30 output lines with Copy details / Quit
+    / Try again (`backend_restart`). The shell has no timeout of its own. Before
+    ready it answers quit requests itself — nothing can be unsaved — and stops
+    at ready so it never races `QuitGuard`), `SaveBar` (+ "Discard changes…" when
     dirty, and the settings gear beside it, whose menu opens `ShortcutsDialog` — the shortcut list is written out BY HAND, so a new or changed shortcut in `PrepStrip` / `TrackTable` must be added there too — and `AppSettings` ("Konduktor Settings…": app-level prefs, each with its default in `APP_SETTING_DEFAULTS` and read through `useAppSetting`; today `expandPlaylistFolders` and `exportRootFolder`, both default off — the latter read by the backend at `run_export` and passed down as `ExportPayload.root_folder`. The Sidebar holds folder open state as per-id overrides of that setting, reset on a new library or a change of the setting, and carried to the new ids when a rename/move changes a folder's path id)), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
     `TrackTable` (**the one track list** — All Tracks, playlists, exports and
     devices. TanStack Table + **virtualized** grid; per-row play button,
@@ -1489,6 +1499,21 @@ frontend at `http://localhost:5173`.
    render is the library's own pipeline (see "Write path"), which reproduces
    Traktor's byte-exact layout so a no-op save is byte-identical and only edited
    objects diff. `test_save_fidelity.py` enforces this.
+4. **The desktop sidecar is a PyInstaller ONEDIR folder — never go back to
+   onefile.** A onefile binary unpacked ~390 native libraries into a NEW temp
+   folder on every launch, and macOS (XProtect / syspolicyd) checks each library
+   it has not seen before as it is dlopen()ed, keyed per FILE: the window
+   appeared only after ~10 s on every launch (measured 2026-10-12: 95 s to load
+   them all fresh, 1 s once seen). As a folder in the app they are checked
+   once; a launch is ~0.5 s. `build_sidecar.*` stages
+   `src-tauri/binaries/konduktor-sidecar/`; `lib.rs` spawns
+   `<resources>/sidecar/konduktor-sidecar[.exe]`. On macOS it is bundled by
+   `tauri.macos.conf.json`'s `bundle.macOS.files`, NOT `bundle.resources`:
+   the resource copier follows symlinks, turning PyInstaller's 37 library
+   aliases (`_internal/libavcodec… -> av/.dylibs/…`, `Python.framework`'s
+   `Versions/Current`) into second copies a library could be loaded twice
+   from. Windows has no such links and uses `resources`
+   (`tauri.windows.conf.json`).
 
 ## Data model notes
 
