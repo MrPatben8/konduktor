@@ -12,6 +12,8 @@ import { api } from '../api'
 /** The prefs this dialog owns, and what each is when never set. */
 export const APP_SETTING_DEFAULTS = {
   expandPlaylistFolders: false,
+  /** Read by the backend when an export runs (`main.run_export`). */
+  exportRootFolder: false,
 }
 
 type AppSettingKey = keyof typeof APP_SETTING_DEFAULTS
@@ -26,6 +28,7 @@ export function useAppSetting<K extends AppSettingKey>(key: K): (typeof APP_SETT
 export function AppSettings({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient()
   const expandFolders = useAppSetting('expandPlaylistFolders')
+  const exportRootFolder = useAppSetting('exportRootFolder')
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -70,6 +73,24 @@ export function AppSettings({ onClose }: { onClose: () => void }) {
                 <span className="block text-sm text-text">Expand playlist folders by default</span>
                 <span className="block text-xs text-faint">
                   Show every folder open when a library is opened. Off, they start collapsed.
+                </span>
+              </span>
+            </label>
+          </section>
+          <section className="space-y-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-faint">Exports</h3>
+            <label className="flex cursor-pointer items-start gap-2.5">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={exportRootFolder}
+                onChange={(e) => void set({ exportRootFolder: e.target.checked })}
+              />
+              <span className="min-w-0">
+                <span className="block text-sm text-text">Put exported playlists in a folder</span>
+                <span className="block text-xs text-faint">
+                  Nest an export's playlists in one folder named after the export. Off, they sit at the
+                  top level of the exported library. Applies from the next export.
                 </span>
               </span>
             </label>

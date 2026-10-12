@@ -876,7 +876,7 @@ Two independent apps that talk over HTTP:
     user), quits (`quit_now`) when nothing is unsaved, else asks Save · Discard
     · Cancel; the sidecar is killed only at `RunEvent::Exit`, after the answer;
     browser dev gets `beforeunload`), `SaveBar` (+ "Discard changes…" when
-    dirty, and the settings gear beside it, whose menu opens `ShortcutsDialog` — the shortcut list is written out BY HAND, so a new or changed shortcut in `PrepStrip` / `TrackTable` must be added there too — and `AppSettings` ("Konduktor Settings…": app-level prefs, each with its default in `APP_SETTING_DEFAULTS` and read through `useAppSetting`; today `expandPlaylistFolders`, default off. The Sidebar holds folder open state as per-id overrides of that setting, reset on a new library or a change of the setting, and carried to the new ids when a rename/move changes a folder's path id)), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
+    dirty, and the settings gear beside it, whose menu opens `ShortcutsDialog` — the shortcut list is written out BY HAND, so a new or changed shortcut in `PrepStrip` / `TrackTable` must be added there too — and `AppSettings` ("Konduktor Settings…": app-level prefs, each with its default in `APP_SETTING_DEFAULTS` and read through `useAppSetting`; today `expandPlaylistFolders` and `exportRootFolder`, both default off — the latter read by the backend at `run_export` and passed down as `ExportPayload.root_folder`. The Sidebar holds folder open state as per-id overrides of that setting, reset on a new library or a change of the setting, and carried to the new ids when a rename/move changes a folder's path id)), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
     `TrackTable` (**the one track list** — All Tracks, playlists, exports and
     devices. TanStack Table + **virtualized** grid; per-row play button,
     configurable columns, header sorting, inline double-click editing, and
@@ -1747,7 +1747,11 @@ that number and nothing else — everything derives from it:
   **volume-relative** `DIR`, never a host path — so a USB export is portable by
   construction, and the `.nml` cannot be written until the destination is known.
   Also settled: loose tracks land in an **"Other" playlist**, playlist folders
-  are preserved, and the export is a **standalone `collection.nml`** the user
+  are preserved — at the exported library's TOP LEVEL by default; the
+  `exportRootFolder` setting (`ExportPayload.root_folder`) nests the whole
+  tree, Other included, in one folder named after the export, in all four
+  writers (decided 2026-10-12: the export is a library of its own, so the
+  wrapper was one more click at the gig), and the export is a **standalone `collection.nml`** the user
   swaps into a Traktor install — so it needs the full skeleton, verified from the
   real file: `<NML VERSION="20">`, `<HEAD>`, `<COLLECTION ENTRIES>`,
   `<SETS ENTRIES="0">`, `<PLAYLISTS>` wrapping a `$ROOT` FOLDER node with a

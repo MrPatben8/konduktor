@@ -198,8 +198,9 @@ class RekordboxDeviceExporter:
 
     @staticmethod
     def _playlists(payload: ExportPayload, by_source: dict) -> tuple[list[bytes], list[bytes]]:
-        """The tree under one folder named after the export, as the other
-        targets build it. `sort_order` is a node's position among its siblings."""
+        """The tree as the other targets build it — at the top level (parent
+        0), or with `payload.root_folder` under one folder named after the
+        export. `sort_order` is a node's position among its siblings."""
         tree: list[bytes] = []
         entries: list[bytes] = []
         next_id = [0]
@@ -220,7 +221,7 @@ class RekordboxDeviceExporter:
                     index += 1
                     entries.append(pdb.playlist_entry_row(index, track_id, playlist_id))
 
-        root = add(payload.name, 0, folder=True)
+        root = add(payload.name, 0, folder=True) if payload.root_folder else 0
         folders: dict[tuple[str, ...], int] = {(): root}
         for playlist in payload.playlists:
             parent = root

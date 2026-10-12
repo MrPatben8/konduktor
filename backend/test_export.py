@@ -137,19 +137,20 @@ def walk(nodes, path=()):
 
 
 walk(back.playlist_tree())
-check("one folder named after the export", ("GIG",) in tree and tree[("GIG",)].kind == "folder")
-check("nested folders are preserved", ("GIG", "House") in tree)
-check("and nest further", ("GIG", "House", "Slow") in tree)
+# By default the tree sits at the top level: an export is a library of its own.
+check("no folder named after the export by default", ("GIG",) not in tree)
+check("nested folders are preserved", ("House",) in tree and tree[("House",)].kind == "folder")
+check("and nest further", ("House", "Slow") in tree)
 check("playlists land in their folder",
-      ("GIG", "House", "Peak Time") in tree and ("GIG", "House", "Slow", "Warmup") in tree)
+      ("House", "Peak Time") in tree and ("House", "Slow", "Warmup") in tree)
 check("with the right counts",
-      tree[("GIG", "House", "Peak Time")].count == 2
-      and tree[("GIG", "House", "Slow", "Warmup")].count == 1)
+      tree[("House", "Peak Time")].count == 2
+      and tree[("House", "Slow", "Warmup")].count == 1)
 # A track added individually would otherwise be reachable only by search.
-check("loose tracks get an 'Other' playlist", ("GIG", "Other") in tree)
+check("loose tracks get an 'Other' playlist, at the top level", ("Other",) in tree)
 check("holding exactly the ones no playlist claimed",
-      tree[("GIG", "Other")].count == 1, tree[("GIG", "Other")].count)
-other_ids = back.playlist_entries(tree[("GIG", "Other")].id)
+      tree[("Other",)].count == 1, tree[("Other",)].count)
+other_ids = back.playlist_entries(tree[("Other",)].id)
 check("and it is the right track",
       back.track(other_ids[0]).title == plain.title)
 
@@ -182,7 +183,19 @@ again = exporter.write(payload, dest).library
 check("the entry count did not double",
       f'<COLLECTION ENTRIES="{len(chosen)}">' in again.read_text(encoding="utf-8"))
 check("and the tree did not duplicate",
-      len(TraktorDriver().open(again).playlist_tree()) == 1)
+      len(TraktorDriver().open(again).playlist_tree()) == len(back.playlist_tree()))
+
+print("== with the root-folder setting: everything under one folder named after the export ==")
+payload.root_folder = True
+rooted = TraktorDriver().open(exporter.write(payload, dest).library)
+tree.clear()
+walk(rooted.playlist_tree())
+check("one top-level node: a folder named after the export",
+      [n.name for n in rooted.playlist_tree()] == ["GIG"] and tree[("GIG",)].kind == "folder")
+check("the tree nests inside it",
+      ("GIG", "House", "Peak Time") in tree and ("GIG", "House", "Slow", "Warmup") in tree)
+check("and so does 'Other'", ("GIG", "Other") in tree and tree[("GIG", "Other")].count == 1)
+payload.root_folder = False
 
 # ==============================================================================
 # Running an export: the copy, the safety rules, and the rollback.
@@ -207,7 +220,7 @@ for i, track in enumerate(src.tracks[:4]):
     seed_items.append(ExportTrack(track=track, destination=audio, cues=src.track_cues(track.id)))
 exporter_obj = core_export.for_platform("traktor")
 exporter_obj.write(
-    _Payload(name="Source", tracks=seed_items,
+    _Payload(name="Source", tracks=seed_items, root_folder=True,
              playlists=[ExportPlaylist(name="Peak Time",
                                        track_ids=[src.tracks[0].id, src.tracks[1].id])]),
     lib_root,

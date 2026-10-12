@@ -177,9 +177,9 @@ check("bpm x100, rating, file type, bitmask as rekordbox writes them",
 check("the file path is drive-relative", lib.tracks[0]["file_path"] == "/Contents/House/One.wav", lib.tracks[0]["file_path"])
 check("no computer's masterDbId is claimed", all(t["u3"] == 0 and t["u4"] == 0 for t in lib.tracks))
 tree = {p["name"]: p for p in lib.playlists}
-check("the tree: a folder named after the export > House > Peak, plus Other for loose tracks",
-      tree["GIG"]["folder"] and tree["House"]["parent"] == tree["GIG"]["id"]
-      and tree["Peak"]["parent"] == tree["House"]["id"] and tree["Other"]["parent"] == tree["GIG"]["id"])
+check("the tree: House > Peak, plus Other for loose tracks, at the top level (parent 0)",
+      "GIG" not in tree and tree["House"]["folder"] and tree["House"]["parent"] == 0
+      and tree["Peak"]["parent"] == tree["House"]["id"] and tree["Other"]["parent"] == 0)
 peak = [e for e in lib.entries if e[2] == tree["Peak"]["id"]]
 check("playlist entries in order, 1-based", peak == [(1, 1, tree["Peak"]["id"]), (2, 2, tree["Peak"]["id"])], peak)
 check("every track has an analysis path, and the files exist",
@@ -188,6 +188,13 @@ check("artwork rows name the a<n>.jpg files, which exist",
       all((root / p.lstrip("/")).is_file() for p in lib.artwork.values()) and len(lib.artwork) == 3)
 check("every file written is reported, so a re-export can clear it",
       all(p.exists() for p in written.all_paths))
+import dataclasses  # noqa: E402
+rooted_tree = {p["name"]: p for p in P.read(
+    dev.write(dataclasses.replace(payload, root_folder=True), root).library.read_bytes()).playlists}
+check("with the root-folder setting: a folder named after the export holds House and Other",
+      rooted_tree["GIG"]["folder"] and rooted_tree["GIG"]["parent"] == 0
+      and rooted_tree["House"]["parent"] == rooted_tree["GIG"]["id"]
+      and rooted_tree["Other"]["parent"] == rooted_tree["GIG"]["id"])
 
 print("== alongside OneLibrary: one set of analysis files and artwork ==")
 both = Path(tempfile.mkdtemp())
@@ -195,7 +202,6 @@ for t in tracks:
     dst = both / t.destination.relative_to(root)
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_bytes(t.destination.read_bytes())
-import dataclasses  # noqa: E402
 moved = [dataclasses.replace(t, destination=both / t.destination.relative_to(root)) for t in tracks]
 both_payload = ExportPayload(name="GIG", tracks=moved, playlists=payload.playlists)
 ol_written = core_export.for_platform("onelibrary").write(both_payload, both)

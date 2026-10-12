@@ -765,7 +765,10 @@ def run_export(set_id: str) -> JobStatus:
     built = exporter.plan(adapter, found)
     if built.blocked:
         raise HTTPException(409, built.blocked)
-    job = JOBS.submit("export", lambda handle: exporter.run(adapter, found, built, handle))
+    # A Konduktor setting, read when the export starts.
+    root_folder = bool(prefs.load_prefs().get("exportRootFolder", False))
+    job = JOBS.submit("export", lambda handle: exporter.run(
+        adapter, found, built, handle, root_folder=root_folder))
     return JobStatus(**job.as_dict())
 
 

@@ -173,9 +173,23 @@ for platform, reopen in (
 
     tree.clear()
     walk(back.playlist_tree())
-    check("a folder named after the export", ("GIG",) in tree)
-    check("nested folders are preserved", ("GIG", "House") in tree)
+    check("no folder named after the export by default", ("GIG",) not in tree)
+    check("nested folders are preserved, at the top level", ("House",) in tree)
     check("with the playlist inside",
+          ("House", "Peak Time") in tree
+          and tree[("House", "Peak Time")].count == len(chosen))
+
+    print(f"-- {platform}: with the root-folder setting")
+    rooted_root = Path(tempfile.mkdtemp()) / "GIG"
+    rooted_payload = build(rooted_root)
+    rooted_payload.root_folder = True
+    exporter.write(rooted_payload, rooted_root)
+    rooted = reopen(rooted_root)
+    tree.clear()
+    walk(rooted.playlist_tree())
+    check("one top-level node: a folder named after the export",
+          [n.name for n in rooted.playlist_tree()] == ["GIG"])
+    check("the tree nests inside it",
           ("GIG", "House", "Peak Time") in tree
           and tree[("GIG", "House", "Peak Time")].count == len(chosen))
 

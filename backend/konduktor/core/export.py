@@ -94,8 +94,14 @@ class ExportPayload:
 
     tracks: list[ExportTrack] = field(default_factory=list)
     playlists: list[ExportPlaylist] = field(default_factory=list)
-    #: The export's name, used for the folder its playlists are nested under.
+    #: The export's name, used for the folder its playlists are nested under
+    #: when `root_folder` is set.
     name: str = "Export"
+    #: Nest the whole playlist tree (and "Other") in one folder named `name`.
+    #: Off — the default, a Konduktor setting — the playlists sit at the
+    #: library's top level: an export is a library of its own, so a folder
+    #: saying where it came from is one more click at the gig.
+    root_folder: bool = False
     #: Called by a writer before each slow step (e.g. decoding a track for its
     #: waveform) with a message for the status bar, and — for a per-track loop —
     #: `step` of `of`, which drives the progress bar. RAISES when the user has

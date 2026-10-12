@@ -381,7 +381,8 @@ class OneLibraryExporter:
     # ---- playlists -----------------------------------------------------------
 
     def _write_playlists(self, con, payload: ExportPayload, by_source: dict) -> None:
-        """One folder named after the export, with the tree preserved under it.
+        """The tree preserved — at the top level (parent NULL), or with
+        `payload.root_folder` under one folder named after the export.
 
         `playlist` is a flat table with `playlist_id_parent`, so folders and
         playlists are the same row kind told apart by `attribute` (1 = folder).
@@ -397,8 +398,8 @@ class OneLibraryExporter:
             )
             return next_id[0]
 
-        root = add(payload.name, None, folder=True)
-        folders: dict[tuple[str, ...], int] = {(): root}
+        root = add(payload.name, None, folder=True) if payload.root_folder else None
+        folders: dict[tuple[str, ...], int | None] = {(): root}
 
         for playlist in payload.playlists:
             parent = root
