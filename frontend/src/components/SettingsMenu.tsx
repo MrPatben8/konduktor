@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api'
+import { AppSettings } from './AppSettings'
 import { useCaps } from '../lib/capabilities'
 import { RemoteCacheSettings } from './RemoteCacheSettings'
 import { ShortcutsDialog } from './ShortcutsDialog'
@@ -12,14 +13,15 @@ interface Props {
   up?: boolean
 }
 
-/** Overflow menu for low-frequency, collection-level settings. Currently holds
- * path remapping, Stems and the shortcut list; the natural home for future advanced
- * settings. The shortcuts dialog is owned here, since nothing else opens it. */
+/** Overflow menu for low-frequency settings: the app's own (Konduktor
+ * settings), path remapping, Stems and the shortcut list. The dialogs are owned
+ * here, since nothing else opens them. */
 export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
   const [open, setOpen] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [showStems, setShowStems] = useState(false)
   const [showCache, setShowCache] = useState(false)
+  const [showApp, setShowApp] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   // Path remapping is a library on THIS computer's business; a remote's
   // mapping is its server's configuration.
@@ -66,6 +68,16 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
             up ? 'bottom-full mb-1' : 'mt-1'
           }`}
         >
+          <button
+            onClick={() => {
+              setShowApp(true)
+              setOpen(false)
+            }}
+            className={item}
+          >
+            <span className="text-sm text-text">Konduktor Settings…</span>
+            <span className="text-[11px] text-faint">How the app behaves, whatever library is open</span>
+          </button>
           {remappable && (
           <button
             onClick={() => {
@@ -117,6 +129,7 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
       {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}
       {showStems && <StemsSettings onClose={() => setShowStems(false)} />}
       {showCache && <RemoteCacheSettings onClose={() => setShowCache(false)} />}
+      {showApp && <AppSettings onClose={() => setShowApp(false)} />}
     </div>
   )
 }
