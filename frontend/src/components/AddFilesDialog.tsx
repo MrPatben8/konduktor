@@ -1,7 +1,7 @@
 import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type FolderAddPreview, type FolderAddRequest, type JobStatus } from '../api'
+import { api, isServerPath, type FolderAddPreview, type FolderAddRequest, type JobStatus } from '../api'
 import { useCaps } from '../lib/capabilities'
 import { placedAudioSummary } from '../lib/platformCopy'
 import { FolderPicker } from './FolderPicker'
@@ -20,7 +20,10 @@ import { FolderPicker } from './FolderPicker'
  *
  * A library held by a server (`tracks.audio_destination === 'library'`) is the
  * other exception: it cannot see this computer's files, so the only choice is
- * which folder ON THE SERVER they are uploaded into.
+ * which folder ON THE SERVER they are uploaded into — unless the files were
+ * browsed in that server's own content folder: they are already where the
+ * library can reach them, so they are added in place, uploaded nowhere and
+ * nothing asked (decided 2026-10-10).
  *
  * A playlist or export target still needs the files in the collection first —
  * both hold collection track ids — so the dialog says so rather than doing it
@@ -57,11 +60,15 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
   // decides copy vs in place itself, so there is nothing to ask.
   const caps = useCaps()
   const places = caps.tracks.places_audio
+  // Already in the server's content folder: added where they are.
+  const onServer = trackIds.length > 0 && trackIds.every(isServerPath)
   // Uploaded into a folder on the server: nothing to ask but where.
-  const uploads = !places && caps.tracks.audio_destination === 'library'
-  const [mode, setMode] = useState<'copy' | 'reference' | null>(uploads ? 'copy' : null)
+  const uploads = !places && !onServer && caps.tracks.audio_destination === 'library'
+  const [mode, setMode] = useState<'copy' | 'reference' | null>(
+    onServer ? 'reference' : uploads ? 'copy' : null,
+  )
   const [folder, setFolder] = useState('')
-  const remote = useServerImportFolder(uploads)
+  const remote = useServerImportFolder(uploads || onServer)
   const [browsing, setBrowsing] = useState(false)
   const [job, setJob] = useState<JobStatus | null>(null)
   const [starting, setStarting] = useState(false)
@@ -251,7 +258,14 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
                   </div>
                 )}
 
-                {!places && !uploads && (
+                {onServer && (
+                  <div className="rounded well px-3 py-2 text-xs text-muted">
+                    Already on {remote.serverName}, so your collection points at them where they
+                    are. Nothing is uploaded or copied.
+                  </div>
+                )}
+
+                {!places && !uploads && !onServer && (
                 <div className="space-y-1">
                   {option(
                     'copy',

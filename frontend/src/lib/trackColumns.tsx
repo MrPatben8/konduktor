@@ -29,6 +29,10 @@ declare module '@tanstack/react-table' {
      *  platforms genuinely differ in WHICH fields they accept. Undefined means
      *  "not gated" — every field with a handler stays editable. */
     editableFields?: ReadonlySet<string>
+    /** Asked before an inline editor opens on a row; false keeps it closed.
+     *  A view mixing editable rows with others (a folder: collection tracks
+     *  beside loose files) answers per row — and says why itself. */
+    mayEdit?: (track: Track) => boolean
   }
 }
 
@@ -42,6 +46,7 @@ function InlineEdit({
   onCommit,
   className = 'w-full min-w-0 truncate text-muted',
   readOnly = false,
+  onBegin,
 }: {
   value: string | null
   display?: ReactNode
@@ -49,6 +54,8 @@ function InlineEdit({
   className?: string
   /** Render the value without offering an editor. */
   readOnly?: boolean
+  /** Asked on double-click; false keeps the editor closed. */
+  onBegin?: () => boolean
 }) {
   const [editing, setEditing] = useState(false)
   const [val, setVal] = useState('')
@@ -91,6 +98,7 @@ function InlineEdit({
     <div
       onDoubleClick={(e) => {
         e.stopPropagation()
+        if (onBegin && !onBegin()) return
         setVal(value ?? '')
         setEditing(true)
       }}
@@ -100,6 +108,11 @@ function InlineEdit({
       {display ?? (value?.trim() ? value : <span className="text-faint">—</span>)}
     </div>
   )
+}
+
+/** Whether this row's editor may open (`TableMeta.mayEdit`). */
+function mayBegin(c: CellContext<Track, unknown>): boolean {
+  return c.table.options.meta?.mayEdit?.(c.row.original) ?? true
 }
 
 /** Whether this table may edit `field`, per the platform's capabilities. */
@@ -116,6 +129,7 @@ function editable(field: keyof Track, className?: string) {
       value={c.getValue() as string | null}
       className={className}
       readOnly={!canEdit(c, field)}
+      onBegin={() => mayBegin(c)}
       onCommit={(v) => c.table.options.meta?.onEditField?.(c.row.original, field, v)}
     />
   )
@@ -137,12 +151,14 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
             display={title || <span className="text-faint">Untitled</span>}
             className="w-full min-w-0 truncate font-medium text-text group-data-[active]:text-accent"
             readOnly={!canEdit(c, 'title')}
+            onBegin={() => mayBegin(c)}
             onCommit={(v) => edit?.(r, 'title', v)}
           />
           <InlineEdit
             value={r.artist}
             className="w-full min-w-0 truncate text-xs text-muted"
             readOnly={!canEdit(c, 'artist')}
+            onBegin={() => mayBegin(c)}
             onCommit={(v) => edit?.(r, 'artist', v)}
           />
         </div>
@@ -310,6 +326,7 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
         value={c.getValue() as string | null}
         display={<span className="tabular-nums text-muted">{formatDate(c.getValue() as string | null)}</span>}
         readOnly={!canEdit(c, 'release_date')}
+        onBegin={() => mayBegin(c)}
         onCommit={(v) => c.table.options.meta?.onEditField?.(c.row.original, 'release_date', v)}
       />
     ),

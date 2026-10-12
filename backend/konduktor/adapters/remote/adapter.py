@@ -30,6 +30,7 @@ from ... import remote_protocol as rp
 from ...core.adapter import (
     AudioFacts,
     FileTagResult,
+    NotFound,
     SaveOutcome,
     Unavailable,
     Unsupported,
@@ -39,6 +40,7 @@ from ...core.query import TrackIndex
 from .cache import RemoteAudioCache, StaleFacts
 from .cache import shared as shared_cache
 from .client import RemoteClient, SessionLost
+from .folder import ServerFile, ServerFiles
 from .session import RemoteSession
 
 _NOT_HERE = "A remote library's paths are the server's configuration"
@@ -60,6 +62,13 @@ class RemoteAdapter:
         self._facts: dict[str, AudioFacts] = {}
         #: Server path of an upload → (the local file it came from, its analysis lead).
         self._uploads: dict[str, tuple[Path, float | None]] = {}
+        #: Content-folder files a listing returned, by their server path.
+        self._listed: dict[str, ServerFile] = {}
+        #: `str(Path(p))` → `p` for every server path this side has turned into
+        #: a `Path` (an upload's target, a listed file): on Windows that
+        #: conversion rewrites the separators, and the server must get its own
+        #: spelling back.
+        self._server_paths: dict[str, str] = {}
         self._dirty = bool(hello.get("dirty"))
         self._load()
 
@@ -260,6 +269,7 @@ class RemoteAdapter:
             self.session.lost(ex.holder)
             raise
         self._uploads[landed["path"]] = (Path(source), landed.get("analysis_lead"))
+        self._server_paths[str(Path(landed["path"]))] = landed["path"]
         return Path(landed["path"])
 
     def free_space(self, path: str) -> int:
@@ -268,8 +278,13 @@ class RemoteAdapter:
 
     def delete_upload(self, path) -> None:
         """Undo `upload_audio` (a cancelled or failed import)."""
-        self._uploads.pop(str(path), None)
-        self.client.delete_upload(str(path))
+        key = self._server_key(path)
+        self._uploads.pop(key, None)
+        self.client.delete_upload(key)
+
+    def _server_key(self, path) -> str:
+        text = str(path)
+        return self._server_paths.get(text, text)
 
     def add_tracks(self, items, *, checkpoint=None):
         """Add uploaded files. Where the platform analyses what it adds (the
@@ -279,10 +294,20 @@ class RemoteAdapter:
 
         wire = []
         total = len(items)
-        for n, item in enumerate(items, start=1):
-            key = str(item.audio_path)
+        keys = [self._server_key(item.audio_path) for item in items]
+        # Files already in the content folder (added in place): the server says
+        # whether the platform analyses, and only then is the file fetched.
+        in_place = [k for k, item in zip(keys, items)
+                    if item.analysis is None and k not in self._uploads and k in self._listed]
+        leads = self.client.folder_leads(in_place) if in_place else {}
+        for n, (item, key) in enumerate(zip(items, keys), start=1):
             source, lead = self._uploads.get(key, (None, None))
             analysis = item.analysis
+            if analysis is None and source is None and leads.get(key) is not None:
+                lead = leads[key]
+                if checkpoint is not None:
+                    checkpoint(f"Downloading {item.track.title or Path(key).name} ({n}/{total})", step=n, of=total)
+                source = self.folder_audio(key)
             if analysis is None and lead is not None and source is not None:
                 if checkpoint is not None:
                     checkpoint(f"Analysing {item.track.title or source.name} ({n}/{total})", step=n, of=total)
@@ -302,8 +327,8 @@ class RemoteAdapter:
             self.session.lost(ex.holder)
             raise
         self._apply(envelope)
-        for item in items:
-            self._uploads.pop(str(item.audio_path), None)
+        for key in keys:
+            self._uploads.pop(key, None)
         return envelope["result"]
 
     def apply_stem_swaps(self, swaps, *, add_to_playlist=None):
@@ -392,6 +417,46 @@ class RemoteAdapter:
         """The local copy if there already is one — never downloads."""
         facts = self.audio_facts([track_id]).get(track_id)
         return self.cache.get(facts) if facts else None
+
+    # ---- the content folder, browsed --------------------------------------------------
+    def folder_listing(self, path: str | None) -> ServerFiles:
+        """The audio directly inside a content folder (None: the folder itself),
+        as the server lists it — and remembered, so a file can then be played
+        or added by its path."""
+        listing = ServerFiles.from_wire(self, self.client.folder_tracks(path))
+        with self._lock:
+            self._listed = {k: f for k, f in self._listed.items() if f.folder != listing.path}
+            self._listed.update(listing.files)
+            self._server_paths.update({str(Path(k)): k for k in listing.files})
+        return listing
+
+    def listed_files(self, paths) -> ServerFiles | None:
+        """The listed files among `paths` as one source (they may come from
+        several folders); None when none of them was listed."""
+        with self._lock:
+            found = [self._listed[p] for p in paths if p in self._listed]
+        return ServerFiles(self, found[0].folder, found) if found else None
+
+    def folder_audio(self, path: str, *, progress=None) -> Path:
+        """A local copy of a listed file, downloaded into the shared cache —
+        keyed by the same facts as a library track's, so a file that is both
+        downloads once."""
+        for attempt in range(2):
+            with self._lock:
+                found = self._listed.get(path)
+            if found is None:
+                raise NotFound("File not found — browse to its folder first")
+            cached = self.cache.get(found.facts)
+            if cached is not None:
+                return cached
+            try:
+                return self.cache.fetch(
+                    found.facts, lambda partial: self.client.folder_download(path, partial, progress=progress))
+            except StaleFacts:
+                if attempt:
+                    raise
+                self.folder_listing(found.folder)  # changed on the server: re-read it
+        raise NotFound(path)
 
     # ---- paths: the server's business ------------------------------------------------
     def set_path_mapping(self, mapping):

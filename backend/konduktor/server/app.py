@@ -44,6 +44,7 @@ from ..core.adapter import (
     NotFound,
     Unsupported,
 )
+from ..core.folder import FolderScanner
 from ..core.places import is_os_housekeeping
 from .config import ConfigError, ServerConfig
 from .session import InUse, Lost, SessionLock
@@ -65,6 +66,10 @@ class Server:
         self.lock = lock or SessionLock()
         self.rev = 0
         self._rev_lock = threading.Lock()
+        #: The content folder's audio as browsed from a client's Files tree —
+        #: tags read once per folder state, and the gatekeeper for streaming
+        #: one of those files (only a file a listing found is served).
+        self.folders = FolderScanner()
 
     # ---- opening ---------------------------------------------------------------
     def open(self) -> None:
@@ -387,6 +392,73 @@ def create_app(server: Server) -> FastAPI:
             "root": str(root),
             "entries": entries,
         }
+
+    @app.get("/v1/folder/tracks")
+    def folder_tracks(path: str | None = None) -> dict:
+        """The audio directly inside a content folder, projected as tracks — the
+        client's Files tree for the server, like `/api/folder/tracks` for a
+        drive of its own. Tags only (no decoding). `held` maps each file the
+        library already points at to the library's id for it, so the client
+        can tick it off and add it to a playlist without adding it twice."""
+        from .. import importer
+
+        folder = server.confine(path)
+        if not folder.is_dir():
+            raise HTTPException(404, f"Not a folder: {folder}")
+        adapter = server.adapter
+        source = server.folders.scan(folder, adapter.capabilities().tracks.audio_formats)
+        library = importer._existing_files(adapter)
+        files, held = {}, {}
+        for track in source.tracks:
+            try:
+                st = Path(track.id).stat()
+            except OSError:
+                continue
+            files[track.id] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
+            known = library.get(importer._key(Path(track.id)))
+            if known is not None:
+                held[track.id] = known
+        return {
+            "path": str(folder),
+            "tracks": [t.model_dump(mode="json") for t in source.tracks if t.id in files],
+            "files": files,
+            "held": held,
+        }
+
+    def listed_file(path: str) -> Path:
+        # Confined (a symlink in a listing cannot lead out of the content
+        # folder), and only a file a listing found: this is not a way to read
+        # any path on the server.
+        server.confine(path)
+        source = server.folders.source_for_file(path)
+        if source is None:
+            raise HTTPException(404, "File not found — list its folder first")
+        target = Path(path)
+        if not target.is_file():
+            raise HTTPException(404, "The audio file is missing")
+        return target
+
+    @app.get("/v1/folder/audio")
+    def folder_audio(path: str):
+        target = listed_file(path)
+        st = target.stat()
+        media = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        return FileResponse(target, media_type=media, headers={
+            "X-Konduktor-Size": str(st.st_size),
+            "X-Konduktor-Mtime-Ns": str(st.st_mtime_ns),
+        })
+
+    @app.post("/v1/folder/leads")
+    def folder_leads(body: dict = Body(...)) -> dict:
+        """The analysis lead of each listed file, as an upload reports it: what
+        a client adding these files IN PLACE measures with. None for every file
+        when the platform does not analyse what it adds."""
+        lead = getattr(server.adapter, "analysis_lead", None)
+        out = {}
+        for path in body.get("paths") or []:
+            target = listed_file(str(path))
+            out[str(path)] = lead(target) if lead else None
+        return {"leads": out}
 
     @app.get("/v1/fs/space")
     def fs_space(path: str | None = None) -> dict:

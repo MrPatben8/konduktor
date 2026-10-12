@@ -478,17 +478,28 @@ export interface ImportPreview {
 export interface Drive {
   name: string
   path: string
-  /** `local` = boot disk or a drive built in; anything uncertain is external. */
-  kind: 'local' | 'external'
+  /** `local` = boot disk or a drive built in; anything uncertain is external.
+   *  `server` = a remote library's content folder (path `server:`). */
+  kind: 'local' | 'external' | 'server'
   /** The OneLibrary library on this drive, if it carries one. */
   library: SourceCandidate | null
 }
 
+/** A path in a remote library's content folder, as the Files routes take it:
+ *  `server:` + the path ON THE SERVER, so it cannot be taken for the same
+ *  path on this computer. Such files are already where the library can reach
+ *  them, so adding one never copies or uploads it. */
+export const isServerPath = (path: string) => path.startsWith('server:')
+
 export interface FolderTracks {
   path: string
   tracks: Track[]
-  /** Ids of the files the collection already points at. */
+  /** Collection ids of the rows that ARE collection tracks: a file the
+   *  collection holds is listed as its track (id, key, rating, cues…), so it
+   *  plays, edits and drags as one. Any other file is its own tags, id = path. */
   in_collection: string[]
+  /** Those rows' collection id → the file's folder id, which adding takes. */
+  files: Record<string, string>
   /** On an external drive — referencing in place would go missing on unplug. */
   removable: boolean
 }

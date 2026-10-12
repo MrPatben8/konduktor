@@ -568,7 +568,11 @@ Two independent apps that talk over HTTP:
       / `removed`), `audio` (Range), `art`, `upload` (into a folder CONFINED
       to the content folder — resolve then `is_relative_to`, so neither `..`
       nor a symlink escapes — never overwriting, `-2` suffixes, per-session
-      so a cancel deletes only its own), `fs/list|space`, `save`, `discard`,
+      so a cancel deletes only its own), `fs/list|space`, `folder/tracks|audio|leads`
+      (the content folder as a Files tree: tags via the shared `FolderScanner`,
+      file facts, `held` = file → the library's id; audio only for a file a
+      listing returned, confined; `leads` = the analysis lead per file, None
+      unless the platform analyses), `save`, `discard`,
       `history`, `export-sets`, and the stems routes below. Capabilities are
       the adapter's plus `tracks.audio_destination="library"`,
       `reference=False`, `paths.remappable=False`, `overwrite_risk="none"`.
@@ -617,6 +621,21 @@ Two independent apps that talk over HTTP:
       Rekordbox's add analysis — waveform, grid AND key — is computed HERE
       (`core/add_analysis.prepare` with the lead the upload reports, sent as
       `NewTrack.analysis`).
+      **The content folder browsed like a drive** (decided 2026-10-10,
+      `folder.py`): `/api/fs/drives` lists the server FIRST (`kind:
+      "server"`, path `server:`) while a remote is open, and the ordinary
+      Files routes (`/api/fs/folders`, `/api/folder/*`) take `server:` +
+      the path ON THE SERVER — so the folder view, deck and add dialog need no
+      second set of routes, and a server path is never taken for the same path
+      here. `RemoteAdapter.folder_listing` remembers what was listed
+      (`ServerFiles`, a read-only source); `folder_audio` downloads into the
+      shared cache by the same facts as a library track's. Adding one is IN
+      PLACE (`on_library_host` → `importer.plan_on_host` + `run(reference=True)`):
+      nothing uploaded, nothing asked; files the library holds map to their
+      ids; where the server reports a lead the file is fetched and analysed
+      here, as an upload is. Server paths go back to the server in its own
+      spelling (`_server_paths`), never `str(Path(…))`, which rewrites them on
+      Windows.
       **Convert to Stems** (`stems/remote_convert.py`): the server plans
       (`/v1/stems/plan`, its `convert.plan`), this computer downloads,
       separates and encodes, uploads each verified file (`/v1/stems/stage`,
@@ -791,9 +810,17 @@ Two independent apps that talk over HTTP:
     expandable Local Storage. A drive carrying a OneLibrary library opens as a
     device as before, and EVERY drive has a lazily-fetched **Files** tree;
     clicking a folder is the `folder` source kind — its audio in the ordinary
-    table, read-only via `readonly_cause: 'not_in_library'`, with files the
-    collection already holds checked off in the # column (`TrackTable`'s
-    `marked`). A browsed device is read-only (cause `browsing`); **"Open for
+    table, with files the collection already holds checked off in the #
+    column (`TrackTable`'s `marked`). **A held file's row IS the collection
+    track** (decided 2026-10-10: `main._folder_rows`; `FolderTracks.files` maps
+    its collection id back to the folder id that adding takes): it shows the
+    collection's key/rating/cues/plays, loads into the deck as origin
+    `collection` (`loadTrack`), edits inline and from the menu, and drops onto
+    a playlist directly. The table runs on the COLLECTION's capabilities; a
+    LOOSE row's edit — inline (`TableMeta.mayEdit`, asked before the editor
+    opens), rating, Edit Tags / Analyze / Auto Hotcues / Stems — asks to add
+    it first (`askToAdd`), and in the deck it stays read-only
+    (`not_in_library`). A browsed device is read-only (cause `browsing`); **"Open for
     editing…"** — the drive row's right-click menu, and a button while browsing
     a device whose caps say `browsing` — opens it as THE library via App's
     `openForEditing` (unsaved-edits confirm, source closed, library opened).
@@ -1413,7 +1440,11 @@ serialization path.** It enforces:
   only the edited `<ENTRY>` THROUGH the trip, one download per file, Analyze
   on the cached copy, export (and a re-export copying nothing), an upload
   stored in the mapping's stored form, takeover → read-only at once,
-  reopening names the holder and the edits left, leaving releases.
+  reopening names the holder and the edits left, leaving releases. And the
+  content folder as a drive: listed first, confined, held files ticked off,
+  auditioned with one download, an add IN PLACE (no upload, the held one not
+  added twice, both into the playlist, analysed here when the server reports
+  a lead).
 - `test_remote_stems.py` — Convert to Stems on a remote with the FAKE engine:
   the plan's transfer and two-machine space, Replace parks and swaps ON THE
   SERVER (saved file untouched until Save, which deletes the parked
