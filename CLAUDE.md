@@ -1475,14 +1475,18 @@ frontend at `http://localhost:5173`.
 
 1. **`traktor-nml-utils` MUST come from GitHub, not PyPI.** PyPI's `3.1.0` is
    stale and **cannot parse Traktor Pro 4 (NML v20)** files — its strict parser
-   dies on the v4 `<GRID>` element inside `CUE_V2`. `requirements.txt` pins the
-   GitHub `master` (v4.0.0). Do not "simplify" this to a plain PyPI pin.
+   dies on the v4 `<GRID>` element inside `CUE_V2`. `requirements.txt` pins a
+   GitHub commit (v4.0.0). Do not "simplify" this to a plain PyPI pin.
    **`pyrekordbox` is now the same situation**: PyPI's latest (0.4.4) has no
-   `devicelib_plus`, which is the OneLibrary (`exportLibrary.db`) reader, so
-   `requirements.txt` pins the GitHub master. That upgrade renamed `db6` →
-   `masterdb` and `tables` → `models` and moved `BLOB` out of `db6.database`;
-   the Rekordbox adapter uses the new names. `db6` still works as a deprecated
-   alias and is **removed in 0.6.0**.
+   `onelibrary` module, which is the OneLibrary (`exportLibrary.db`) reader
+   (`OneLibrary` class; `devicelib_plus` / `DeviceLibraryPlus` before upstream's
+   rename), nor `masterdb` (formerly `db6`, now removed upstream; `tables` →
+   `models`, `BLOB` in `masterdb.database`).
+   **Both GitHub deps are pinned to a COMMIT, never bare master**: the
+   `devicelib_plus` → `onelibrary` rename reached CI's fresh install while dev
+   venvs kept the old commit, and a release shipped that could not export or
+   read OneLibrary while every local test passed. Move a pin on purpose, with
+   `./run_tests.sh`.
    **PyAV: open files for reading through `core/pyav.open_input`, never
    `av.open` directly.** PyAV 18 refuses a file with non-UTF-8 tags unless
    given `metadata_errors="ignore"`; PyAV 19 removed that keyword. CI installs
@@ -1814,7 +1818,7 @@ that number and nothing else — everything derives from it:
     deliberately NOT in the fixture, since they carry the machine's name and
     UUIDs; those are generated fresh per export.
   - **The two Pioneer key blobs are different.** `masterdb`'s key and
-    `devicelib_plus`'s are not the same string; mixing them up yields a database
+    `onelibrary`'s are not the same string; mixing them up yields a database
     Rekordbox cannot open.
   `adapters/onelibrary/export.py` writes a whole drive (`PIONEER/rekordbox/
   exportLibrary.db` from the checked-in DDL, plus ANLZ under `PIONEER/USBANLZ/`,

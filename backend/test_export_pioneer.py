@@ -504,7 +504,7 @@ print("\n== content.contentLink is what rekordbox writes ==")
 # row's song-list preview plain blue and put a "?" beside CUE — exactly what
 # every row of Konduktor's exports showed while it was NULL.
 import sqlcipher3.dbapi2 as _sq  # noqa: E402
-from pyrekordbox.devicelib_plus.database import BLOB as _BLOB  # noqa: E402
+from pyrekordbox.onelibrary.database import BLOB as _BLOB  # noqa: E402
 from pyrekordbox.utils import deobfuscate as _deob  # noqa: E402
 
 _con = _sq.connect(str(art_written.library))

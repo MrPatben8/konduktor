@@ -18,19 +18,22 @@ librosa>=0.11
 scikit-learn>=1.5
 # Traktor Pro 4 (NML v20) support requires the GitHub master (v4.0.0),
 # NOT the stale PyPI release (3.1.0), which cannot parse v4 files.
-traktor-nml-utils @ git+https://github.com/MrPatben8/traktor-nml-utils.git
+#
+# Both GitHub dependencies are PINNED TO A COMMIT. Unpinned, a fresh install
+# (CI's release build) takes whatever master is that day while a dev venv keeps
+# what it had: pyrekordbox renamed `devicelib_plus` to `onelibrary` upstream,
+# every local test passed, and the released app could not export or read a
+# OneLibrary stick. Move a pin deliberately, with ./run_tests.sh.
+traktor-nml-utils @ git+https://github.com/MrPatben8/traktor-nml-utils.git@39a9c15f29d6b0ea2ce61cd7d548501eea38319d
 # Rekordbox (master.db is SQLCipher-encrypted SQLite + per-track ANLZ analysis
 # files). Both ship prebuilt Python 3.14 wheels — no Rust/OpenSSL source build.
 #
 # FROM GITHUB, NOT PyPI — the same situation as traktor-nml-utils above, and for
-# the same kind of reason. PyPI's latest (0.4.4) has no `devicelib_plus`, which
-# is the OneLibrary (`exportLibrary.db`) reader the OneLibrary adapter is built
-# on; it exists only on master. Do not "simplify" this back to a version pin.
-#
-# The upgrade also renames `db6` to `masterdb`. `db6` still works as a
-# deprecated alias and is removed in 0.6.0, so the Rekordbox adapter keeps
-# running as-is — but that rename is the thing to fix before taking 0.6.
-pyrekordbox @ git+https://github.com/dylanljones/pyrekordbox.git
+# the same kind of reason. PyPI's latest (0.4.4) has no `onelibrary` module
+# (`exportLibrary.db`, which the OneLibrary adapter is built on; it was called
+# `devicelib_plus` before the rename) and no `masterdb` (formerly `db6`, now
+# removed). Do not "simplify" this back to a version pin.
+pyrekordbox @ git+https://github.com/dylanljones/pyrekordbox.git@43137cb91f8297c768d2a8bdce5b27b2225f0a2d
 # The stem engine and its weights are downloaded over HTTPS by the sidecar; a
 # frozen Python on macOS has no system CA bundle of its own.
 certifi>=2024.7

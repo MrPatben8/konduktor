@@ -49,7 +49,7 @@ class OneLibraryDriver:
     def _has_onelibrary_schema(path: Path) -> bool:
         try:
             import sqlcipher3.dbapi2 as sqlcipher
-            from pyrekordbox.devicelib_plus.database import BLOB
+            from pyrekordbox.onelibrary.database import BLOB
             from pyrekordbox.utils import deobfuscate
         except ImportError:  # pragma: no cover — dependency missing
             return False

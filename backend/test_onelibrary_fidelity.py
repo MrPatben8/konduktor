@@ -60,7 +60,7 @@ def dump(db: Path) -> dict:
     """Every row of every table; keyed by primary key, or by the whole row for
     the link tables, which have none."""
     import sqlcipher3.dbapi2 as sqlcipher
-    from pyrekordbox.devicelib_plus.database import BLOB
+    from pyrekordbox.onelibrary.database import BLOB
     from pyrekordbox.utils import deobfuscate
 
     con = sqlcipher.connect(str(db))

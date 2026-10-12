@@ -121,7 +121,7 @@ class OneLibraryExporter:
 
     def write(self, payload: ExportPayload, destination: Path) -> WrittenLibrary:
         import sqlcipher3.dbapi2 as sqlcipher
-        from pyrekordbox.devicelib_plus.database import BLOB
+        from pyrekordbox.onelibrary.database import BLOB
         from pyrekordbox.utils import deobfuscate
 
         root = Path(destination)
@@ -428,8 +428,10 @@ class OneLibraryExporter:
                 )
 
 
-#: rekordbox's `fileType` codes, as `pyrekordbox.devicelib_plus.FileType` has them.
-#: `.stem.m4a` (a Traktor STEM) is an M4A to a Pioneer player.
+#: rekordbox's `fileType` codes. `.stem.m4a` (a Traktor STEM) is an M4A to a
+#: Pioneer player. `pyrekordbox.onelibrary.FileType` now also lists MP4 = 3 (the
+#: `.mp4` container) and ALAC = 6 (an ALAC `.m4a`); neither is measured here, so
+#: both still write 4.
 _FILE_TYPES = {".mp3": 1, ".m4a": 4, ".mp4": 4, ".aac": 4, ".flac": 5, ".wav": 11,
                ".aif": 12, ".aiff": 12}
 

@@ -125,7 +125,7 @@ class RekordboxExporter:
         )
 
     def write(self, payload: ExportPayload, destination: Path) -> WrittenLibrary:
-        # `masterdb`'s OWN key blob. `devicelib_plus` has a different one — a
+        # `masterdb`'s OWN key blob. `onelibrary` has a different one — a
         # OneLibrary drive uses a universal key shared across vendors, and
         # master.db does not. Mixing them up produces a database Rekordbox
         # cannot open, and pyrekordbox rejects the wrong one outright.

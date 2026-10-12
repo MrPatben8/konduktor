@@ -1,6 +1,6 @@
 """OneLibrary rows -> the generic projection.
 
-The only place a ``devicelib_plus`` ORM object becomes a generic `Track` /
+The only place a ``pyrekordbox.onelibrary`` ORM object becomes a generic `Track` /
 `TrackCues`. Everything above this file sees generic types exclusively.
 
 Field conventions are read off a real rekordbox 7 export rather than guessed:
