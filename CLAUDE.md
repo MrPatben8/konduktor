@@ -1473,6 +1473,13 @@ frontend at `http://localhost:5173`.
    `masterdb` and `tables` → `models` and moved `BLOB` out of `db6.database`;
    the Rekordbox adapter uses the new names. `db6` still works as a deprecated
    alias and is **removed in 0.6.0**.
+   **PyAV: open files for reading through `core/pyav.open_input`, never
+   `av.open` directly.** PyAV 18 refuses a file with non-UTF-8 tags unless
+   given `metadata_errors="ignore"`; PyAV 19 removed that keyword. CI installs
+   fresh (it got 19) while a dev venv keeps what it had (18), so code passing
+   the keyword passed every local test and shipped a release whose deck played
+   every stem track as the mix. `requirements.txt` caps `av<20`: check
+   `pyav.py` before raising it.
 2. **The collection is real, irreplaceable data — protect it.** Every save
    writes a timestamped `.bak` first (into a `backups/` folder next to the
    collection). When testing writes, point `KONDUKTOR_NML` at a COPY. Warn the

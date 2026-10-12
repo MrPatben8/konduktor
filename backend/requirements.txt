@@ -4,7 +4,7 @@ fastapi>=0.115
 uvicorn[standard]>=0.34
 pydantic>=2.11
 mutagen>=1.47  # embedded audio-file tag read/write (ID3/MP4/FLAC/AIFF)
-av>=18.1  # PyAV: FFmpeg's decoders in the wheel — waveforms for export, AAC on every OS
+av>=18.1,<20  # PyAV: FFmpeg's decoders in the wheel — waveforms for export, AAC on every OS. Before allowing a new major, check core/pyav.py (19 broke av.open)
 Pillow>=11  # cover art -> the 80/240 px JPEGs a Pioneer export carries
 python-multipart>=0.0.9  # multipart form parsing for cover-art upload
 # Version-history backups: a self-contained git impl (no system git needed;

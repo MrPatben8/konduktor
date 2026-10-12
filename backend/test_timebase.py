@@ -33,7 +33,7 @@ import numpy as np  # noqa: E402
 from konduktor.adapters.traktor import timebase  # noqa: E402
 from konduktor.adapters.traktor.adapter import TraktorAdapter  # noqa: E402
 from konduktor.adapters.traktor.export import SKELETON  # noqa: E402
-from konduktor.core import mp3_gapless  # noqa: E402
+from konduktor.core import mp3_gapless, pyav  # noqa: E402
 from konduktor.core.adapter import NewTrack  # noqa: E402
 from konduktor.core.model import Track  # noqa: E402
 
@@ -197,7 +197,7 @@ else:
         pad8 = re.search(r'<CUE_V2 [^>]*START="([^"]*)"[^>]*HOTCUE="7"', e)
         if not pad8 or not (KIT / name).is_file():
             continue
-        with av.open(str(KIT / name), metadata_errors="ignore") as c:
+        with pyav.open_input(KIT / name) as c:
             st = c.streams.audio[0]
             sr = st.rate
             y = np.concatenate([f.to_ndarray()[0] for f in c.decode(st)]).astype(np.float64)
@@ -258,7 +258,7 @@ else:
             name = c.Content.FileNameL if c.Content else ""
             if not name.startswith("K4-") or c.Kind != 9 or not (KIT / name).is_file():
                 continue  # pad H: the ones placed by hand
-            with av.open(str(KIT / name), metadata_errors="ignore") as con:
+            with pyav.open_input(KIT / name) as con:
                 st = con.streams.audio[0]
                 sr = st.rate
                 y = np.concatenate([f.to_ndarray()[0] for f in con.decode(st)]).astype(np.float64)
