@@ -1,256 +1,141 @@
-# Konduktor
+<p align="center">
+  <img src="design/konduktor-icon.svg" width="96" alt="Konduktor icon">
+</p>
 
-**A fast, modern home for your Traktor collection.**
+<h1 align="center">Konduktor</h1>
 
-Konduktor is a lightweight desktop-style app for DJs who run **Native
-Instruments Traktor** (Pro 4 / NML v20). It opens your existing
-`collection.nml`, gives you a beautiful dark library to explore, and lets you
-build playlists and prep tracks — without launching the whole heavyweight
-Traktor app just to tidy up your tags or drop a few cue points.
+<p align="center">
+  <b>Prep your tracks and run your DJ libraries in one fast app.</b><br>
+  Traktor, Rekordbox, or the USB stick in your pocket.
+</p>
 
-Your collection stays exactly where it is. Konduktor reads and writes the same
-file Traktor uses, so everything you do shows up next time you open Traktor.
+<p align="center">
+  <a href="https://github.com/MrPatben8/konduktor/releases"><b>Download for macOS & Windows</b></a>
+</p>
 
----
+![Konduktor: the prep deck with a track loaded, above a playlist](docs/screenshots/library.png)
 
-## Why you'll like it
-
-- **Instant, searchable library.** Your whole collection loads into a snappy,
-  virtualized grid. Search, filter by genre / key / BPM / rating, and sort by
-  any column — all instant, no waiting.
-- **Make it yours.** Show only the columns you care about, drag them into the
-  order you like, and resize them to fit. Your layout is remembered.
-- **Edit tags without the ceremony.** Double-click any field to fix a title or
-  genre on the spot, click the stars to rate a track, or right-click for a full
-  tag + cover-art editor. Great for quick one-off fixes.
-- **Playlists, the easy way.** Create, rename, and delete playlists, then
-  drag-and-drop to reorder or add tracks.
-- **A real prep deck.** Load any track into the deck at the top and:
-  - play it with a **frequency-colored waveform** (Traktor-style Spectrum look),
-    scrolling under a fixed playhead with zoom in/out
-  - scratch it by dragging the waveform
-  - see and adjust the **beatgrid** and BPM
-  - set, jump to, and delete **hotcues** (with a color-coded 8-slot bar)
-  - build **loops** in fixed beat sizes, tied into the hotcue system
-  - use keyboard shortcuts: **Space** to play/pause, **1–8** to fire hotcues,
-    **Shift+1–8** to clear them
-- **Your data is safe.** Every save makes a timestamped backup first, and only
-  ever touches the parts you changed — the rest of the file stays byte-for-byte
-  identical.
+Konduktor opens the library you already have, in the format it already uses.
+You can tidy tags, build playlists, set grids and cues, and pack a USB stick
+for the gig without launching your full DJ software. When you open your DJ
+software again, everything you changed is there.
 
 ---
 
-## Getting started
+## One app for every library
 
-Konduktor runs as two small local servers (a Python backend and a web
-frontend). Do the one-time setup, then start them — the same steps work on
-macOS, Linux, and Windows.
+<img src="docs/screenshots/platforms.png" align="right" width="420" alt="Choosing a platform: Rekordbox, Traktor, OneLibrary or Remote">
 
-### 1. Install (once)
+- **Traktor** collections.
+- **Rekordbox** libraries.
+- **OneLibrary** USB sticks, the format CDJs read. Plug one in to browse it,
+  preview tracks off it, import them, or edit the stick directly.
+- **Remote** libraries: keep your whole library and music on a home server and
+  open it from any laptop ([set up a server](docs/REMOTE-SERVER.md)).
+- **Any folder or drive**: browse loose audio files, preview them, and add
+  them to your library.
 
-**Backend** — needs Python 3.11+. Create a virtual environment and install the
-dependencies:
+Your library is never converted into a Konduktor database. Saves write back to
+the original file and change only what you edited.
 
-```bash
-cd backend
-python3 -m venv .venv          # Windows: python -m venv .venv
-```
+<br clear="right">
 
-Activate it, then install:
+## A real prep deck
 
-```bash
-source .venv/bin/activate      # Windows (PowerShell): .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-cd ..
-```
+![The prep deck in beatgrid editing mode](docs/screenshots/deck.png)
 
-**Frontend** — needs Node 18+ (same on every platform):
+- A scrolling waveform, coloured by frequency, with zoom, scratching and an
+  overview of the whole track.
+- Eight hotcue pads with names, types and colours, plus beat loops, beat jump
+  and tap tempo.
+- **Beatgrid editing**, including grids with tempo changes. Nudge, retempo,
+  halve or double without opening your DJ software.
+- Keyboard shortcuts for the whole deck: Space to play, 1–8 for hotcues,
+  arrow keys to jump or move a loop.
 
-```bash
-cd frontend
-npm install
-cd ..
-```
+## Stems, built in
 
-### 2. Run it (development)
+![A stem file in the deck: drums, bass, synths and vocals each in their own lane](docs/screenshots/stems.png)
 
-Konduktor runs as two local servers (backend on `:8000`, frontend on `:5173`).
+**Play stem files as stems.** Load a stem file and the deck splits into
+drums, bass, synths and vocals, each drawn in its own lane. Click a lane's
+button to mute it, Alt/Option-click to solo it, or use Q W E R.
 
-**macOS / Linux** — one command starts both:
+**Convert to Stems.** In a Traktor collection, right-click any tracks and
+choose Convert to Stems. They come back as standard Traktor stem files with their tags, cover art, cues and
+beatgrid intact.
 
-```bash
-./dev.sh
-```
+- The separation runs on your own computer, so your music isn't sent to an
+  online service.
+- Replace the originals, or save the stems to a folder and add them as new
+  tracks.
+- Convert a whole playlist in one go.
 
-**Windows** — start each server in its own terminal:
+## Let it do the boring parts
 
-```powershell
-# Terminal 1 — backend
-cd backend; .\.venv\Scripts\Activate.ps1; uvicorn konduktor.main:app --reload --port 8000
+| Auto Hotcues | Analyze |
+|:---:|:---:|
+| ![Auto Hotcues: choose an event for each pad](docs/screenshots/auto-hotcues.png) | ![Analyze: BPM, grid and key](docs/screenshots/analyze.png) |
+| Pick an event for each pad (first beat, build, drop, breakdown, outro). Konduktor finds them in the track and places the cues. Run it on one track or a whole playlist. | Detects tempo, beatgrid and musical key, for one track or hundreds. |
 
-# Terminal 2 — frontend
-cd frontend; npm run dev
-```
+## Export to USB for CDJs, or other platforms
 
-Either way, open **http://localhost:5173** in your browser (`Ctrl-C` stops a
-server). This is the fastest way to try Konduktor or hack on it — the frontend
-hot-reloads as you edit. To package a real double-clickable app instead, see
-[Build a standalone app](#build-a-standalone-app-production) below.
+<img src="docs/screenshots/export.png" align="right" width="380" alt="An export set for OneLibrary, Traktor and Rekordbox">
 
-### 3. Open your collection
+Make an **export** in the sidebar, drag playlists onto it, and press Export.
+One stick can carry a Traktor collection, a OneLibrary library for current
+CDJs and a Rekordbox Device Library for older players, all sharing **one copy
+of the audio**.
 
-On launch, Konduktor offers to:
+- Hotcues, memory cues, loops, grids, keys and cover art are converted for
+  each platform.
+- Playlists stay linked: edit a playlist, re-export, and the stick catches up.
+- Re-exports copy only what changed, so updating a stick is quick.
+- Konduktor only ever clears a folder that it wrote itself.
 
-- **Automatically** open the collection from your latest installed Traktor,
-- reopen the **last collection** you used, or
-- **browse** for a `collection.nml` yourself.
+<br clear="right">
 
-That's it — you're in.
+## Your library is safe
 
----
+- **Saves are surgical.** A Traktor save changes only the entries you edited.
+  The rest of the file stays byte-for-byte identical.
+- **Backups and history.** Every Traktor save makes a backup first and is kept
+  in a version history that you can restore from in the app.
+- **Nothing is written until you press Save.** Discard changes throws away
+  everything you did since your last save.
+- Tag edits are also written into the audio files themselves, so other apps
+  see them too.
 
-## Build a standalone app (production)
+## And also
 
-Prefer a real double-clickable app over running the dev servers? Konduktor
-packages into a native desktop app (via **Tauri**) that bundles the Python
-backend as a sidecar — no terminal, no servers to start by hand.
-
-### Extra prerequisites
-
-On top of the Python 3.11+ and Node 18+ from above:
-
-- **Rust** — install from <https://rustup.rs> (the app shell is Tauri/Rust).
-- **PyInstaller** — into the backend venv:
-  `pip install -r backend/requirements-build.txt`
-- **Windows only:** also the MSVC C++ build tools and the WebView2 runtime — see
-  [BUILDING-WINDOWS.md](BUILDING-WINDOWS.md) for the one-time toolchain setup.
-
-The build is a two-step recipe on both platforms: **freeze the backend into a
-sidecar folder**, then **build the app**. The only difference is which sidecar
-script you run — `.sh` on macOS/Linux, `.ps1` on Windows. Each build runs on its
-own OS (the app can't be cross-compiled).
-
-### macOS / Linux
-
-```bash
-# 1) Freeze the backend into a sidecar folder (from the activated backend venv)
-cd backend && source .venv/bin/activate && ./build_sidecar.sh && cd ..
-
-# 2) Build the app
-cd frontend && npx tauri build
-```
-
-The installer lands at
-`frontend/src-tauri/target/release/bundle/dmg/Konduktor_<version>_aarch64.dmg`
-(with the `.app` beside it).
-
-### Windows
-
-```powershell
-# 1) Freeze the backend into a sidecar folder (from the activated backend venv)
-cd backend; .\.venv\Scripts\Activate.ps1; .\build_sidecar.ps1; cd ..
-
-# 2) Build the app
-cd frontend; npx tauri build
-```
-
-The installers land in `frontend\src-tauri\target\release\bundle\` (an `.msi` and
-an NSIS `-setup.exe`). See [BUILDING-WINDOWS.md](BUILDING-WINDOWS.md) for the full
-walkthrough and Windows-specific notes.
-
-> **First launch — getting past the OS security prompt.** Builds are
-> **ad-hoc signed, not notarized** (no paid Apple/Windows developer cert yet), so
-> the OS flags them the first time. This is expected — the app isn't damaged.
->
-> - **macOS:** right-click the app → **Open** → **Open** (or System Settings →
->   Privacy & Security → **Open Anyway** after the first blocked attempt). If it
->   still refuses — common for a `.dmg` downloaded via a browser, which macOS
->   quarantines — clear the quarantine flag once from Terminal:
->   ```bash
->   xattr -cr /Applications/Konduktor.app
->   ```
-> - **Windows:** click **More info → Run anyway** past SmartScreen.
->
-> The macOS `.dmg` is Apple-Silicon (`aarch64`) only.
-
-> **Faster local builds:** `npx tauri build --debug --bundles app` skips the
-> optimizer and the installer, giving you a runnable app in seconds — handy while
-> iterating.
-
-### Rebuilding after changes
-
-Changed **backend** Python? Re-run the sidecar script for your OS
-(`./build_sidecar.sh` or `.\build_sidecar.ps1`), then `npx tauri build`.
-Frontend-only change? Just `npx tauri build` — it rebuilds the web app for you.
+- A fast library with search, filters, sorting and columns you can rearrange,
+  even with thousands of tracks.
+- Edit tags inline or in a full tag and cover-art editor.
+- Drag and drop tracks onto playlists, exports or the deck, and drag playlists
+  to reorganise them.
+- If you open a Traktor collection on a different computer or drive,
+  Konduktor finds the missing files for you.
 
 ---
 
-## Saving back to Traktor
+## Get Konduktor
 
-Playlist edits, tag changes, and prep tweaks all apply live in the app. When
-you're happy, hit **Save to Traktor** to write them to `collection.nml`.
+Download the latest build from
+[**Releases**](https://github.com/MrPatben8/konduktor/releases):
+a `.dmg` for macOS (Apple Silicon) and a `-setup.exe` for Windows.
 
-> ⚠️ **Close Traktor before saving.** Traktor rewrites `collection.nml` when it
-> quits, so if it's open it will overwrite your changes. Konduktor always writes
-> a backup first (into a `backups/` folder next to your collection), but closing
-> Traktor first is the safe habit.
+> **First launch:** builds aren't notarised yet, so your OS will warn you the
+> first time.
+> **macOS:** right-click the app, choose **Open**, then **Open** again. If it
+> still refuses, run `xattr -cr /Applications/Konduktor.app` once.
+> **Windows:** click **More info → Run anyway**.
 
-Want to experiment risk-free? Point Konduktor at a *copy* of your collection and
-play around.
+> **Using Traktor?** Close it before saving in Konduktor. Traktor rewrites
+> `collection.nml` when it quits, which would overwrite your changes.
 
----
+Want to run it from source or build it yourself? See
+[docs/BUILDING.md](docs/BUILDING.md).
 
-## A remote library (Konduktor server on a NAS)
+## License
 
-Keep your whole library — the collection file and the music — on a server, and
-open it from any computer with Konduktor. Prep tracks, edit playlists, and
-export sticks for your gigs without the music ever living on your performance
-laptop.
-
-The server is a small container (`server/`). It holds the library and saves it.
-Playback, analysis and stem separation run on the computer you open it from,
-on copies it downloads, so the server needs no GPU and does very little work.
-
-**On the server (e.g. TrueNAS SCALE):**
-
-1. Copy `server/compose.yaml` and `server/.env.example` (renamed to `.env`)
-   onto the NAS. Point the volumes at your datasets, and fill in `.env`: the
-   platform (`traktor` or `rekordbox`), the library file, the music folder, a
-   username and password, and — for a collection made on a Mac — the path
-   mapping (`/Users/you/Music => /music`).
-2. Install it: on TrueNAS, **Apps → Discover Apps → ⋮ → Install via YAML** and
-   paste the compose file; anywhere else, `docker compose up -d`. A bad setting
-   stops the container with one clear line in its log.
-
-**In the app:** choose **Remote** on the platform screen → **Add a remote
-library** → enter the server's address (and a fallback, such as its Tailscale
-address, for when you're away from home), the username and the password.
-Konduktor checks the server before it saves the remote, and keeps the
-password in your keychain.
-
-Good to know:
-
-- **One computer at a time.** If another computer has the library open,
-  Konduktor says who has it and offers to take over. Edits that computer
-  hadn't saved stay with the library, and you're asked to save or discard
-  them.
-- **Plain HTTP.** Reach the server over your home network or a VPN
-  (Tailscale / WireGuard). Don't expose its port to the internet.
-- **Unsaved edits live on the server** until you save. Restarting the
-  container drops them.
-- Downloaded tracks are cached on your computer (Settings → **Remote audio**
-  sets the size), so a track you've prepped and then export is fetched once.
-
----
-
-## Good to know
-
-- Konduktor is built on [`traktor-nml-utils`](https://github.com/MrPatben8/traktor-nml-utils)
-  and speaks Traktor's real file format — no import/export, no separate database.
-- Run it in your browser from source, or package it into a native desktop app
-  (macOS `.dmg` / Windows `.msi`) that bundles the backend — see
-  [Build a standalone app](#build-a-standalone-app-production). A mobile version
-  is on the horizon.
-- Under the hood: **FastAPI** (Python) backend + **React / TypeScript / Vite**
-  frontend. Curious about internals or contributing? See
-  [CLAUDE.md](CLAUDE.md) for the architecture and conventions.
+[AGPL-3.0](LICENSE)
