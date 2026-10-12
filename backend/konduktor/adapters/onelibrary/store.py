@@ -1,7 +1,7 @@
 """The retained native model for a OneLibrary drive.
 
 Owns the drive's ``exportLibrary.db`` and the layout around it, and is the only
-place a ``pyrekordbox.devicelib_plus`` row or an ANLZ tag is touched.
+place a ``pyrekordbox.onelibrary`` row or an ANLZ tag is touched.
 
 The database is SQLCipher-encrypted SQLite, like Rekordbox's ``master.db``, but
 with a **different and universal key**: every OneLibrary drive from every vendor
@@ -170,10 +170,10 @@ class OneLibraryStore(ReplaceGridCommands):
     def _load(self) -> None:
         """Copy the drive's database into app-data and open the copy."""
         try:
-            from pyrekordbox.devicelib_plus import DeviceLibraryPlus
+            from pyrekordbox.onelibrary import OneLibrary
         except ImportError as ex:  # pragma: no cover — dependency missing
             raise LibraryNotSupported(
-                "Reading OneLibrary drives needs pyrekordbox with devicelib_plus"
+                "Reading OneLibrary drives needs pyrekordbox with its onelibrary module"
             ) from ex
         _clear_stale_work()
         work = Path(tempfile.mkdtemp(prefix="drive-", dir=_work_root()))
@@ -186,7 +186,7 @@ class OneLibraryStore(ReplaceGridCommands):
                 sidecar = self.path.with_name(self.path.name + suffix)
                 if sidecar.is_file() and sidecar.stat().st_size:
                     shutil.copyfile(sidecar, working.with_name(working.name + suffix))
-            db = DeviceLibraryPlus(str(working))
+            db = OneLibrary(str(working))
         except Exception as ex:  # noqa: BLE001 — surfaced as a clean 4xx
             shutil.rmtree(work, ignore_errors=True)
             raise LibraryNotSupported(f"Could not open OneLibrary database: {ex}") from ex
@@ -206,7 +206,7 @@ class OneLibraryStore(ReplaceGridCommands):
         """Release the working copy and delete it.
 
         The drive itself is never held open (see the module docstring); the copy
-        is, and `DeviceLibraryPlus.close()` only unregisters events, so the
+        is, and `OneLibrary.close()` only unregisters events, so the
         session and engine are closed here explicitly.
         """
         db, self._db = self._db, None
@@ -316,7 +316,7 @@ class OneLibraryStore(ReplaceGridCommands):
         image_id = getattr(self.content(track_id), "image_id", None)
         if not image_id:
             return None
-        from pyrekordbox.devicelib_plus import models
+        from pyrekordbox.onelibrary import models
 
         row = self._require_db().query(models.Image).filter_by(image_id=image_id).one_or_none()
         small = self.layout.resolve(getattr(row, "path", None)) if row is not None else None
@@ -456,7 +456,7 @@ class OneLibraryStore(ReplaceGridCommands):
         """
         if not name:
             return None
-        from pyrekordbox.devicelib_plus import models
+        from pyrekordbox.onelibrary import models
 
         model = getattr(models, model_name)
         pk = f"{model.__tablename__}_id"
@@ -497,7 +497,7 @@ class OneLibraryStore(ReplaceGridCommands):
         stick already has. A new key gets rekordbox's own spelling."""
         if wheel is None or mode is None:
             return None
-        from pyrekordbox.devicelib_plus import models
+        from pyrekordbox.onelibrary import models
 
         from ..rekordbox.projection import parse_key, render_key
 
@@ -567,7 +567,7 @@ class OneLibraryStore(ReplaceGridCommands):
 
     # ---- writes: playlists --------------------------------------------------
     def _playlist(self, node_id: str):
-        from pyrekordbox.devicelib_plus import models
+        from pyrekordbox.onelibrary import models
 
         try:
             pid = int(node_id)
@@ -579,14 +579,14 @@ class OneLibraryStore(ReplaceGridCommands):
         return row
 
     def _siblings(self, parent_id: int, *, excluding: int | None = None) -> list:
-        from pyrekordbox.devicelib_plus import models
+        from pyrekordbox.onelibrary import models
 
         rows = self._require_db().query(models.Playlist).filter_by(playlist_id_parent=parent_id).all()
         rows = [r for r in rows if r.playlist_id != excluding]
         return sorted(rows, key=lambda r: (int(r.sequenceNo or 0), int(r.playlist_id)))
 
     def _create_node(self, name: str, parent_id: str | None, attribute: int) -> str:
-        from pyrekordbox.devicelib_plus import models
+        from pyrekordbox.onelibrary import models
 
         name = (name or "").strip()
         noun = "folder" if attribute == ATTRIBUTE_FOLDER else "playlist"
@@ -631,7 +631,7 @@ class OneLibraryStore(ReplaceGridCommands):
     def delete_playlist(self, node_id: str) -> None:
         """Delete a playlist, or a folder WITH everything in it, and close the gap
         its `sequenceNo` leaves among its siblings."""
-        from pyrekordbox.devicelib_plus import models
+        from pyrekordbox.onelibrary import models
 
         db = self._require_db()
         row = self._playlist(node_id)
@@ -693,7 +693,7 @@ class OneLibraryStore(ReplaceGridCommands):
 
     def set_playlist_entries(self, node_id: str, track_ids: list[str]) -> int:
         """Replace a playlist's contents, in order, numbered from 1 (measured)."""
-        from pyrekordbox.devicelib_plus import models
+        from pyrekordbox.onelibrary import models
 
         db = self._require_db()
         playlist = self._playlist(node_id)
@@ -1378,9 +1378,9 @@ class OneLibraryStore(ReplaceGridCommands):
         return SaveOutcome(summary=summary, snapshot=None, tag_results=tag_results)
 
     def _reopen_working(self, work: Path) -> None:
-        from pyrekordbox.devicelib_plus import DeviceLibraryPlus
+        from pyrekordbox.onelibrary import OneLibrary
 
-        self._db, self._work = DeviceLibraryPlus(str(work / self.path.name)), work
+        self._db, self._work = OneLibrary(str(work / self.path.name)), work
         self._content_cache = None
         self._by_id = None
 

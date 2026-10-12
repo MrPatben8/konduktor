@@ -65,7 +65,7 @@ def fingerprint(root: Path) -> str:
 
 def rows(root: Path, sql: str):
     import sqlcipher3.dbapi2 as sqlcipher
-    from pyrekordbox.devicelib_plus.database import BLOB
+    from pyrekordbox.onelibrary.database import BLOB
     from pyrekordbox.utils import deobfuscate
 
     con = sqlcipher.connect(str(root / "PIONEER" / "rekordbox" / "exportLibrary.db"))
