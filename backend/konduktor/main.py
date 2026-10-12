@@ -120,8 +120,12 @@ app.add_middleware(
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         # Packaged desktop app: the webview's origin when Tauri loads the built
-        # frontend (macOS uses tauri://, Windows/Linux use https://tauri.localhost).
+        # frontend. macOS uses tauri://; Windows/Linux default to
+        # https://tauri.localhost, but lib.rs forces the http scheme
+        # (use_https_scheme(false)) so the sidecar is not mixed content —
+        # without the http origin here, the Windows app reaches no API at all.
         "tauri://localhost",
+        "http://tauri.localhost",
         "https://tauri.localhost",
     ],
     allow_methods=["*"],

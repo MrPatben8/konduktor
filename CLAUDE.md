@@ -1098,6 +1098,7 @@ Two independent apps that talk over HTTP:
 
 ```bash
 ./dev.sh                       # start both servers (see README for one-time setup)
+.\dev.ps1                      # the same on Windows (BUILDING-WINDOWS.md)
 
 # Backend
 cd backend && source .venv/bin/activate

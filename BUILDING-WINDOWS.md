@@ -33,6 +33,18 @@ npm install
 cd ..
 ```
 
+## Develop (no build)
+
+```powershell
+.\dev.ps1     # backend on :8000 + Vite on :5173, both reloading; Ctrl-C stops both
+```
+
+Then open <http://localhost:5173> in a browser. This is `dev.sh` for Windows.
+It runs the Python source, not the frozen sidecar, so it cannot show
+desktop-shell behaviour (startup screen, quit prompt, WebView2). For that, use
+`npx tauri dev` in `frontend` — but note it still spawns the FROZEN sidecar from
+`src-tauri\binaries\`, so backend changes need `build_sidecar.ps1` first.
+
 ## Build
 
 ```powershell
