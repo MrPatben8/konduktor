@@ -82,6 +82,8 @@ interface Props {
   onHeaderContextMenu?: (x: number, y: number) => void
   onPlay?: (track: Track) => void
   onEditField?: (track: Track, field: keyof Track, value: string | number) => void
+  /** Per-row gate on opening an inline editor (`TableMeta.mayEdit`). */
+  mayEdit?: (track: Track) => boolean
   activeTrackId?: string | null
   /** Whether the deck is playing `activeTrackId` (vs. loaded but paused). */
   activePlaying?: boolean
@@ -287,6 +289,7 @@ export function TrackTable({
   onHeaderContextMenu,
   onPlay,
   onEditField,
+  mayEdit,
   activeTrackId,
   activePlaying = false,
 }: Props) {
@@ -299,7 +302,7 @@ export function TrackTable({
     data,
     columns: TRACK_COLUMNS,
     state: { sorting, columnVisibility, columnOrder, columnSizing },
-    meta: { onEditField, editableFields },
+    meta: { onEditField, editableFields, mayEdit },
     onSortingChange: (updater) =>
       onSortingChange(typeof updater === 'function' ? updater(sorting) : updater),
     onColumnSizingChange: (updater) =>

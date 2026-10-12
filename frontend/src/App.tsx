@@ -8,6 +8,7 @@ import { addTracksToPlaylist } from './lib/addTracks'
 import { useDropTarget } from './lib/drag'
 import { api, type AnalyzeOptions, type AnalyzeResult, type CueBatchResult, type AutoCueSlot, type PlaylistNode, type StemBatchResult, type Track, type TrackOrigin } from './api'
 import { confirmDiscardUnsaved } from './lib/unsaved'
+import { askConfirm } from './lib/confirm'
 import {
   COLUMN_MENU,
   DEFAULT_COLUMN_ORDER,
@@ -80,6 +81,9 @@ export default function App() {
   const [prepOrigin, setPrepOrigin] = useState<TrackOrigin>('collection')
   // The view's origin, read by the load callbacks below (defined before it).
   const viewOriginRef = useRef<TrackOrigin>('collection')
+  // The browsed folder's rows that ARE collection tracks: collection id → the
+  // file's folder id. A ref, for the callbacks below that outlive a render.
+  const folderFilesRef = useRef<Record<string, string>>({})
   // Browsed files being added to the collection (and maybe a playlist/export).
   const [adding, setAdding] = useState<{ ids: string[]; target: AddTarget | null } | null>(null)
   const [playRequest, setPlayRequest] = useState(0) // bump → deck loads & auto-plays
@@ -108,7 +112,9 @@ export default function App() {
 
   const loadTrack = useCallback((t: Track, origin: TrackOrigin = viewOriginRef.current) => {
     setPrepTrack(t)
-    setPrepOrigin(origin)
+    // A folder row the collection holds IS the collection track, so the deck
+    // loads it as one: its cues and grid, and editable (decided 2026-10-10).
+    setPrepOrigin(origin === 'folder' && folderFilesRef.current[t.id] ? 'collection' : origin)
   }, [])
   const playTrack = useCallback(
     (t: Track) => {
@@ -307,6 +313,11 @@ export default function App() {
     () => new Set(folderView.data?.in_collection ?? []),
     [folderView.data],
   )
+  const folderFiles = useMemo(() => folderView.data?.files ?? {}, [folderView.data])
+  folderFilesRef.current = viewingFolder ? folderFiles : {}
+  // Adding speaks in FOLDER ids; a row the collection holds carries its
+  // collection id, and maps back (the add dialog then reports it as held).
+  const toFolderIds = (ids: string[]) => ids.map((id) => folderFiles[id] ?? id)
   viewOriginRef.current = viewingDevice ? 'device' : viewingFolder ? 'folder' : 'collection'
   // Tracks in view belong to ANOTHER library (a device) or to none (a folder),
   // so no collection command may be offered on them: their ids mean nothing to
@@ -368,10 +379,16 @@ export default function App() {
   // asked (decided 2026-10-06).
   const addForeign = useCallback(
     (origin: TrackOrigin, ids: string[], target: AddTarget) => {
-      if (origin === 'folder') setAdding({ ids, target })
-      else if (origin === 'device') setImportDrop({ ids, target })
+      if (origin === 'folder') {
+        const files = folderFilesRef.current
+        // Rows that are all collection tracks already: nothing to add first.
+        if (ids.every((id) => files[id])) {
+          if (target.kind === 'playlist') void addToPlaylist(target.id, ids)
+          else void addToExport(target.id, ids)
+        } else setAdding({ ids: ids.map((id) => files[id] ?? id), target })
+      } else if (origin === 'device') setImportDrop({ ids, target })
     },
-    [],
+    [addToPlaylist, addToExport],
   )
   const [deckDropRef, deckOver] = useDropTarget<true>({
     hint: (p) => (p.kind === 'tracks' ? true : null),
@@ -407,7 +424,10 @@ export default function App() {
       : origin === 'folder'
         ? (folderCaps.data ?? readOnlyCaps('not_in_library'))
         : capabilities.data!
-  const viewCaps = capsFor(viewOriginRef.current)
+  // A folder's table runs on the COLLECTION's: the rows it holds are collection
+  // tracks and edit as such, and a loose row asks to be added first
+  // (`folderMayEdit`) rather than rendering inert.
+  const viewCaps = viewingFolder ? capabilities.data! : capsFor(viewOriginRef.current)
   // The deck follows its TRACK's library, not the view's.
   const deckCaps = capsFor(prepOrigin)
 
@@ -443,9 +463,12 @@ export default function App() {
   // PrepStrip keys its audio on the id, so a new object for the same id
   // reloads nothing.
   useEffect(() => {
-    if (!prepTrack || viewOriginRef.current !== prepOrigin) return
+    if (!prepTrack) return
     const fresh = tracks.find((t) => t.id === prepTrack.id)
-    if (fresh && JSON.stringify(fresh) !== JSON.stringify(prepTrack)) setPrepTrack(fresh)
+    if (!fresh) return
+    const origin =
+      viewOriginRef.current === 'folder' && folderFilesRef.current[fresh.id] ? 'collection' : viewOriginRef.current
+    if (origin === prepOrigin && JSON.stringify(fresh) !== JSON.stringify(prepTrack)) setPrepTrack(fresh)
     // Only a refetch of the list matters; prepTrack is read, not tracked.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tracks])
@@ -636,7 +659,7 @@ export default function App() {
   }
 
   // ---- Convert to Stems ------------------------------------------------------
-  const canStems = canEdit && !viewForeign && !!capabilities.data?.tracks.stem_convertible
+  const canStems = canEdit && !viewingDevice && !!capabilities.data?.tracks.stem_convertible
   const finishStemBatch = (state: string, r: StemBatchResult | null, error: string | null) => {
     qc.invalidateQueries({ queryKey: ['state'] })
     if (state === 'failed' || !r) {
@@ -788,7 +811,7 @@ export default function App() {
   // the rest with a reason.
   const canAnalyzeGrid = !!capabilities.data?.grid.editable
   const canAnalyzeKey = !!capabilities.data?.tracks.key_writable
-  const canAnalyze = canEdit && !viewForeign && (canAnalyzeGrid || canAnalyzeKey)
+  const canAnalyze = canEdit && !viewingDevice && (canAnalyzeGrid || canAnalyzeKey)
 
   const startCueBatch = (ids: string[]) => {
     const byId = new Map(tracks.map((t) => [t.id, t]))
@@ -801,7 +824,7 @@ export default function App() {
     setBatchCancelling(false)
     setBatchJob({ id: job.id, kind: 'cues' })
   }
-  const canAutoCue = canEdit && !viewForeign && (capabilities.data?.cues.hotcue_slots ?? 0) > 0
+  const canAutoCue = canEdit && !viewingDevice && (capabilities.data?.cues.hotcue_slots ?? 0) > 0
 
 
   // ---- Remove ▸ -----------------------------------------------------------
@@ -934,12 +957,48 @@ export default function App() {
         }),
     })
 
-  const canClearGrids = canEdit && !viewForeign && !!capabilities.data?.grid.editable
+  const canClearGrids = canEdit && !viewingDevice && !!capabilities.data?.grid.editable
   const canClearCues = canAutoCue
-  const canRemoveTracks = canEdit && !viewForeign && !!capabilities.data?.tracks.removable
+  const canRemoveTracks = canEdit && !viewingDevice && !!capabilities.data?.tracks.removable
   // The COLLECTION's capabilities, deliberately: adding happens while a folder
   // or device is on screen, whose own capabilities are read-only.
   const canAddTracks = canEdit && !!capabilities.data?.tracks.addable
+
+  // In a folder, only the rows the collection holds can be edited. Anything
+  // that would edit a loose file says so and offers to add it, rather than
+  // being absent or silently inert (decided 2026-10-10).
+  const askToAdd = async (ids: string[]) => {
+    const loose = ids.filter((id) => !folderFiles[id])
+    if (!loose.length) return
+    const first = tracks.find((t) => t.id === loose[0])
+    const what =
+      loose.length === 1
+        ? `“${first?.title || 'This file'}” is not in your collection`
+        : `${loose.length} of these files are not in your collection`
+    if (!canAddTracks) {
+      notify('error', `${what}, and tracks cannot be added to this library.`)
+      return
+    }
+    const add = await askConfirm({
+      title: 'Add to your collection first',
+      body: `${what} yet. Add ${loose.length === 1 ? 'it' : 'them'} to edit tags, cues or the beatgrid.`,
+      confirmLabel: 'Add to Collection…',
+      tone: 'primary',
+    })
+    if (add) setAdding({ ids: loose, target: null })
+  }
+  const folderEditField = (track: Track, field: keyof Track, value: string | number) => {
+    if (folderFiles[track.id]) editField(track, field, value)
+    else void askToAdd([track.id])
+  }
+  const folderMayEdit = (track: Track) => {
+    if (folderFiles[track.id]) return true
+    void askToAdd([track.id])
+    return false
+  }
+  // The open menu's loose files: every editing item then asks to add them.
+  const menuLoose = menu && viewingFolder ? menu.ids.filter((id) => !folderFiles[id]) : []
+  const gated = (fn: () => void) => (menuLoose.length ? () => void askToAdd(menuLoose) : fn)
   const exportRootId =
     source.kind === 'export' ? source.id : source.kind === 'export-other' ? source.exportId : null
   const removeItems = (ids: string[]): MenuItem[] => [
@@ -1023,8 +1082,8 @@ export default function App() {
               : []),
             // Offering "Edit Tags…" on a read-only library would open a dialog
             // whose every save is refused, so it is not offered at all.
-            ...(canEdit && !viewForeign && menu.ids.length === 1
-              ? [{ label: 'Edit Tags…', onClick: () => setEditing(menu.track) }]
+            ...(canEdit && !viewingDevice && menu.ids.length === 1
+              ? [{ label: 'Edit Tags…', onClick: gated(() => setEditing(menu.track)) }]
               : []),
             ...(canAnalyze
               ? [
@@ -1032,7 +1091,7 @@ export default function App() {
                     label: 'Analyze…',
                     hint: batchJob ? 'busy' : menu.ids.length > 1 ? String(menu.ids.length) : undefined,
                     disabled: !!batchJob,
-                    onClick: () => setAnalyzing(menu.ids),
+                    onClick: gated(() => setAnalyzing(menu.ids)),
                   },
                 ]
               : []),
@@ -1044,20 +1103,20 @@ export default function App() {
                     label: 'Auto Hotcues…',
                     hint: batchJob ? 'busy' : menu.ids.length > 1 ? String(menu.ids.length) : undefined,
                     disabled: !!batchJob,
-                    onClick: () => startCueBatch(menu.ids),
+                    onClick: gated(() => startCueBatch(menu.ids)),
                   },
                 ]
               : []),
             // Shown disabled WITH a reason where the platform cannot play stem
             // files as stems, rather than hidden: a missing item reads as a bug.
-            ...(canEdit && !viewForeign
+            ...(canEdit && !viewingDevice
               ? [
                   canStems
                     ? {
                         label: 'Convert to Stems…',
                         hint: batchJob ? 'busy' : menu.ids.length > 1 ? String(menu.ids.length) : undefined,
                         disabled: !!batchJob,
-                        onClick: () => setStemDialog(menu.ids),
+                        onClick: gated(() => setStemDialog(menu.ids)),
                       }
                     : {
                         label: 'Convert to Stems…',
@@ -1070,12 +1129,14 @@ export default function App() {
             // A device's track ids belong to the stick, not the collection, so
             // there is nothing they could be added to. A folder's files CAN be
             // added — through the add dialog, which puts them in the
-            // collection first.
+            // collection first; rows it already holds are collection tracks.
             ...(viewingFolder
-              ? canAddTracks
+              ? !menuLoose.length
+                ? [{ label: 'Add to', submenu: addToItems(menu.ids) }]
+                : canAddTracks
                 ? [
-                    { label: 'Add to Collection…', onClick: () => setAdding({ ids: menu.ids, target: null }) },
-                    { label: 'Add to', submenu: folderAddToItems(menu.ids) },
+                    { label: 'Add to Collection…', onClick: () => setAdding({ ids: menuLoose, target: null }) },
+                    { label: 'Add to', submenu: folderAddToItems(toFolderIds(menu.ids)) },
                   ]
                 : [{
                     label: 'Add to Collection…',
@@ -1092,7 +1153,7 @@ export default function App() {
               ? [{ label: 'Set Position…', onClick: () => setPositioning(menu.ids) }]
               : []),
             ...(() => {
-              const items = removeItems(menu.ids)
+              const items = menuLoose.length ? [] : removeItems(menu.ids)
               return items.length ? [{ label: 'Remove', submenu: items }] : []
             })(),
           ]}
@@ -1315,9 +1376,11 @@ export default function App() {
                   {' · this folder only'}
                 </span>
                 <span className="ml-auto flex items-center gap-2">
-                  <span className="rounded-full bg-gold/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gold shadow-[inset_0_0_0_1px_rgb(255_200_97/0.3)]">
-                    Not in collection
-                  </span>
+                  {tracks.length > heldInFolder.size && (
+                    <span className="rounded-full bg-gold/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gold shadow-[inset_0_0_0_1px_rgb(255_200_97/0.3)]">
+                      Not in collection
+                    </span>
+                  )}
                   {tracks.length > 0 && canAddTracks && (
                     <button
                       onClick={() =>
@@ -1325,7 +1388,7 @@ export default function App() {
                           // The selection when there is one, else everything in
                           // view that the collection does not already hold.
                           ids: selected.size
-                            ? filtered.filter((t) => selected.has(t.id)).map((t) => t.id)
+                            ? toFolderIds(filtered.filter((t) => selected.has(t.id)).map((t) => t.id))
                             : filtered.filter((t) => !heldInFolder.has(t.id)).map((t) => t.id),
                           target: null,
                         })
@@ -1459,6 +1522,8 @@ export default function App() {
                 onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
+                onEditField={canEdit ? folderEditField : undefined}
+                mayEdit={folderMayEdit}
                 activeTrackId={prepTrack?.id ?? null}
                 activePlaying={deckPlaying}
                 columnVisibility={columnVisibility}

@@ -11,6 +11,8 @@ const TRACK_LIST_KEYS = [
   ['export-tracks'],
   ['export-playlist-tracks'],
   ['export-loose'],
+  // A folder lists the files the collection holds AS collection tracks.
+  ['folder-tracks'],
 ] as const
 
 /** Refetch every collection track list, plus the unsaved-edits state. */

@@ -191,6 +191,30 @@ def plan(source, dest, destination: Path | None, *, track_ids=None, playlist_ids
     return plan
 
 
+def plan_on_host(source, track_ids) -> ImportPlan:
+    """A plan for files that are already on the machine holding the library — a
+    remote library's content folder, browsed from this computer
+    (`source.on_library_host`). Nothing is checked on THIS disk, where those
+    paths mean nothing: the source says each file's size and which ones the
+    library already holds. Added in place (`run(reference=True)`), so there is
+    no destination and nothing to copy.
+    """
+    plan = ImportPlan(destination=None)
+    for track_id in dict.fromkeys(track_ids):
+        track = source.track(track_id)
+        if track is None:
+            continue
+        name = track_id.replace("\\", "/").rsplit("/", 1)[-1]
+        plan.tracks.append(PlannedTrack(
+            track_id=track_id,
+            title=track.title or name,
+            source_path=Path(track_id),
+            size=source.size(track_id),
+            existing_id=source.held(track_id),
+        ))
+    return plan
+
+
 def _playlist_name(source, node_id: str) -> str | None:
     for nid, name in _all_playlists(source):
         if nid == node_id:
@@ -321,7 +345,7 @@ def run(
     # a folder on the server, instead of copied here. Nothing can be left in
     # place — the server cannot see this computer's files.
     uploads = not places and uploads_audio(dest)
-    if uploads and reference:
+    if uploads and reference and not getattr(source, "on_library_host", False):
         raise ValueError("A remote library cannot reference files on this computer")
     if not reference and not places and not uploads:
         assert destination is not None

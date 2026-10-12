@@ -383,9 +383,12 @@ class RekordboxExporter:
     # ---- playlists ---------------------------------------------------------------
 
     def _write_playlists(self, db, payload: ExportPayload, rows: dict) -> None:
-        """The tree, under one folder named after the export."""
-        root = db.create_playlist_folder(payload.name)
-        db.flush()
+        """The tree — at the top level, or with `payload.root_folder` under one
+        folder named after the export (None = the top level)."""
+        root = None
+        if payload.root_folder:
+            root = db.create_playlist_folder(payload.name)
+            db.flush()
         folders: dict[tuple[str, ...], object] = {(): root}
 
         for playlist in payload.playlists:

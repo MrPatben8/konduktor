@@ -568,7 +568,11 @@ Two independent apps that talk over HTTP:
       / `removed`), `audio` (Range), `art`, `upload` (into a folder CONFINED
       to the content folder — resolve then `is_relative_to`, so neither `..`
       nor a symlink escapes — never overwriting, `-2` suffixes, per-session
-      so a cancel deletes only its own), `fs/list|space`, `save`, `discard`,
+      so a cancel deletes only its own), `fs/list|space`, `folder/tracks|audio|leads`
+      (the content folder as a Files tree: tags via the shared `FolderScanner`,
+      file facts, `held` = file → the library's id; audio only for a file a
+      listing returned, confined; `leads` = the analysis lead per file, None
+      unless the platform analyses), `save`, `discard`,
       `history`, `export-sets`, and the stems routes below. Capabilities are
       the adapter's plus `tracks.audio_destination="library"`,
       `reference=False`, `paths.remappable=False`, `overwrite_risk="none"`.
@@ -617,6 +621,21 @@ Two independent apps that talk over HTTP:
       Rekordbox's add analysis — waveform, grid AND key — is computed HERE
       (`core/add_analysis.prepare` with the lead the upload reports, sent as
       `NewTrack.analysis`).
+      **The content folder browsed like a drive** (decided 2026-10-10,
+      `folder.py`): `/api/fs/drives` lists the server FIRST (`kind:
+      "server"`, path `server:`) while a remote is open, and the ordinary
+      Files routes (`/api/fs/folders`, `/api/folder/*`) take `server:` +
+      the path ON THE SERVER — so the folder view, deck and add dialog need no
+      second set of routes, and a server path is never taken for the same path
+      here. `RemoteAdapter.folder_listing` remembers what was listed
+      (`ServerFiles`, a read-only source); `folder_audio` downloads into the
+      shared cache by the same facts as a library track's. Adding one is IN
+      PLACE (`on_library_host` → `importer.plan_on_host` + `run(reference=True)`):
+      nothing uploaded, nothing asked; files the library holds map to their
+      ids; where the server reports a lead the file is fetched and analysed
+      here, as an upload is. Server paths go back to the server in its own
+      spelling (`_server_paths`), never `str(Path(…))`, which rewrites them on
+      Windows.
       **Convert to Stems** (`stems/remote_convert.py`): the server plans
       (`/v1/stems/plan`, its `convert.plan`), this computer downloads,
       separates and encodes, uploads each verified file (`/v1/stems/stage`,
@@ -791,9 +810,17 @@ Two independent apps that talk over HTTP:
     expandable Local Storage. A drive carrying a OneLibrary library opens as a
     device as before, and EVERY drive has a lazily-fetched **Files** tree;
     clicking a folder is the `folder` source kind — its audio in the ordinary
-    table, read-only via `readonly_cause: 'not_in_library'`, with files the
-    collection already holds checked off in the # column (`TrackTable`'s
-    `marked`). A browsed device is read-only (cause `browsing`); **"Open for
+    table, with files the collection already holds checked off in the #
+    column (`TrackTable`'s `marked`). **A held file's row IS the collection
+    track** (decided 2026-10-10: `main._folder_rows`; `FolderTracks.files` maps
+    its collection id back to the folder id that adding takes): it shows the
+    collection's key/rating/cues/plays, loads into the deck as origin
+    `collection` (`loadTrack`), edits inline and from the menu, and drops onto
+    a playlist directly. The table runs on the COLLECTION's capabilities; a
+    LOOSE row's edit — inline (`TableMeta.mayEdit`, asked before the editor
+    opens), rating, Edit Tags / Analyze / Auto Hotcues / Stems — asks to add
+    it first (`askToAdd`), and in the deck it stays read-only
+    (`not_in_library`). A browsed device is read-only (cause `browsing`); **"Open for
     editing…"** — the drive row's right-click menu, and a button while browsing
     a device whose caps say `browsing` — opens it as THE library via App's
     `openForEditing` (unsaved-edits confirm, source closed, library opened).
@@ -848,8 +875,18 @@ Two independent apps that talk over HTTP:
     shell quits anyway after ~2 s without one, so a hung page cannot trap the
     user), quits (`quit_now`) when nothing is unsaved, else asks Save · Discard
     · Cancel; the sidecar is killed only at `RunEvent::Exit`, after the answer;
-    browser dev gets `beforeunload`), `SaveBar` (+ "Discard changes…" when
-    dirty, and the settings gear beside it, whose menu opens `ShortcutsDialog` — the shortcut list is written out BY HAND, so a new or changed shortcut in `PrepStrip` / `TrackTable` must be added there too), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
+    browser dev gets `beforeunload`), `StartupGate` (mounted in `main.tsx`
+    around everything but `AmbientBackdrop`: the shell opens the window AT ONCE
+    and starts the sidecar beside it, so nothing that calls the API mounts
+    until `backend_status` / `konduktor://backend` says ready, which is when
+    `setApiBase` gets the sidecar's address. Meanwhile `StartupScreen` shows
+    the icon with a generated waveform scrolling under a fixed playhead, a
+    "first launch takes longer" note after 6 s, Quit / Keep waiting after 90 s,
+    and if the sidecar exits its last 30 output lines with Copy details / Quit
+    / Try again (`backend_restart`). The shell has no timeout of its own. Before
+    ready it answers quit requests itself — nothing can be unsaved — and stops
+    at ready so it never races `QuitGuard`), `SaveBar` (+ "Discard changes…" when
+    dirty, and the settings gear beside it, whose menu opens `ShortcutsDialog` — the shortcut list is written out BY HAND, so a new or changed shortcut in `PrepStrip` / `TrackTable` must be added there too — and `AppSettings` ("Konduktor Settings…": app-level prefs, each with its default in `APP_SETTING_DEFAULTS` and read through `useAppSetting`; today `expandPlaylistFolders` and `exportRootFolder`, both default off — the latter read by the backend at `run_export` and passed down as `ExportPayload.root_folder`. The Sidebar holds folder open state as per-id overrides of that setting, reset on a new library or a change of the setting, and carried to the new ids when a rename/move changes a folder's path id)), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
     `TrackTable` (**the one track list** — All Tracks, playlists, exports and
     devices. TanStack Table + **virtualized** grid; per-row play button,
     configurable columns, header sorting, inline double-click editing, and
@@ -1413,7 +1450,11 @@ serialization path.** It enforces:
   only the edited `<ENTRY>` THROUGH the trip, one download per file, Analyze
   on the cached copy, export (and a re-export copying nothing), an upload
   stored in the mapping's stored form, takeover → read-only at once,
-  reopening names the holder and the edits left, leaving releases.
+  reopening names the holder and the edits left, leaving releases. And the
+  content folder as a drive: listed first, confined, held files ticked off,
+  auditioned with one download, an add IN PLACE (no upload, the held one not
+  added twice, both into the playlist, analysed here when the server reports
+  a lead).
 - `test_remote_stems.py` — Convert to Stems on a remote with the FAKE engine:
   the plan's transfer and two-machine space, Replace parks and swaps ON THE
   SERVER (saved file untouched until Save, which deletes the parked
@@ -1442,6 +1483,13 @@ frontend at `http://localhost:5173`.
    `masterdb` and `tables` → `models` and moved `BLOB` out of `db6.database`;
    the Rekordbox adapter uses the new names. `db6` still works as a deprecated
    alias and is **removed in 0.6.0**.
+   **PyAV: open files for reading through `core/pyav.open_input`, never
+   `av.open` directly.** PyAV 18 refuses a file with non-UTF-8 tags unless
+   given `metadata_errors="ignore"`; PyAV 19 removed that keyword. CI installs
+   fresh (it got 19) while a dev venv keeps what it had (18), so code passing
+   the keyword passed every local test and shipped a release whose deck played
+   every stem track as the mix. `requirements.txt` caps `av<20`: check
+   `pyav.py` before raising it.
 2. **The collection is real, irreplaceable data — protect it.** Every save
    writes a timestamped `.bak` first (into a `backups/` folder next to the
    collection). When testing writes, point `KONDUKTOR_NML` at a COPY. Warn the
@@ -1451,6 +1499,21 @@ frontend at `http://localhost:5173`.
    render is the library's own pipeline (see "Write path"), which reproduces
    Traktor's byte-exact layout so a no-op save is byte-identical and only edited
    objects diff. `test_save_fidelity.py` enforces this.
+4. **The desktop sidecar is a PyInstaller ONEDIR folder — never go back to
+   onefile.** A onefile binary unpacked ~390 native libraries into a NEW temp
+   folder on every launch, and macOS (XProtect / syspolicyd) checks each library
+   it has not seen before as it is dlopen()ed, keyed per FILE: the window
+   appeared only after ~10 s on every launch (measured 2026-10-12: 95 s to load
+   them all fresh, 1 s once seen). As a folder in the app they are checked
+   once; a launch is ~0.5 s. `build_sidecar.*` stages
+   `src-tauri/binaries/konduktor-sidecar/`; `lib.rs` spawns
+   `<resources>/sidecar/konduktor-sidecar[.exe]`. On macOS it is bundled by
+   `tauri.macos.conf.json`'s `bundle.macOS.files`, NOT `bundle.resources`:
+   the resource copier follows symlinks, turning PyInstaller's 37 library
+   aliases (`_internal/libavcodec… -> av/.dylibs/…`, `Python.framework`'s
+   `Versions/Current`) into second copies a library could be loaded twice
+   from. Windows has no such links and uses `resources`
+   (`tauri.windows.conf.json`).
 
 ## Data model notes
 
@@ -1716,7 +1779,11 @@ that number and nothing else — everything derives from it:
   **volume-relative** `DIR`, never a host path — so a USB export is portable by
   construction, and the `.nml` cannot be written until the destination is known.
   Also settled: loose tracks land in an **"Other" playlist**, playlist folders
-  are preserved, and the export is a **standalone `collection.nml`** the user
+  are preserved — at the exported library's TOP LEVEL by default; the
+  `exportRootFolder` setting (`ExportPayload.root_folder`) nests the whole
+  tree, Other included, in one folder named after the export, in all four
+  writers (decided 2026-10-12: the export is a library of its own, so the
+  wrapper was one more click at the gig), and the export is a **standalone `collection.nml`** the user
   swaps into a Traktor install — so it needs the full skeleton, verified from the
   real file: `<NML VERSION="20">`, `<HEAD>`, `<COLLECTION ENTRIES>`,
   `<SETS ENTRIES="0">`, `<PLAYLISTS>` wrapping a `$ROOT` FOLDER node with a

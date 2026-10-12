@@ -433,8 +433,12 @@ def _folder_paths(adapter) -> dict[str, list[str]]:
 # ---- running -----------------------------------------------------------------
 
 
-def run(adapter, export_set, built: ExportPlan, handle: JobHandle) -> dict:
+def run(adapter, export_set, built: ExportPlan, handle: JobHandle, *,
+        root_folder: bool = False) -> dict:
     """Copy what changed, then write every target's library over the audio.
+
+    `root_folder` nests the playlists in a folder named after the export (the
+    "Put exported playlists in a folder" setting); otherwise they sit at the top.
 
     Rolls back EVERYTHING this run wrote on cancel or on any failure —
     including the libraries of targets that had already been written when a
@@ -545,6 +549,7 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle) -> dict:
 
         payload = ExportPayload(
             name=export_set.name,
+            root_folder=root_folder,
             tracks=payload_tracks,
             playlists=built.playlists,
             checkpoint=checkpoint,

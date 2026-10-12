@@ -293,6 +293,91 @@ with tempfile.TemporaryDirectory() as d:
     check("…and to the mirror here", any((tr.filepath or "").endswith("Brand New.mp3")
                                         for tr in main.require_adapter().tracks))
 
+    print("== the content folder, browsed like a drive ==")
+    loose = make_mp3(content / "Crate" / "Loose One.mp3", seconds=3, seed=11)
+    drives = c.get("/api/fs/drives").json()
+    check("the server is listed first among the drives, under the remote's name",
+          drives and drives[0] == {"name": "NAS", "path": "server:", "kind": "server", "library": None},
+          drives[:1])
+    tops = c.get("/api/fs/folders", params={"path": "server:"}).json()
+    check("its Files tree starts at the content folder",
+          {e["name"] for e in tops} >= {"Crate", "Mapped"}
+          and all(e["path"].startswith("server:") for e in tops), tops)
+    r = c.get("/api/folder/tracks", params={"path": f"server:{content}/Mapped"})
+    listed = r.json()
+    check("a folder's files the library holds are listed AS its tracks, ticked off",
+          r.status_code == 200 and sorted(tr["id"] for tr in listed["tracks"]) == sorted(ids)
+          and sorted(listed["in_collection"]) == sorted(ids) and not listed["removable"]
+          and all(v.startswith("server:") for v in listed["files"].values()), r.text[:300])
+    check("…with the collection's data, not the file's tags",
+          next(tr for tr in listed["tracks"] if tr["id"] == target)["genre"] == "Remote Edit")
+    r = c.get("/api/folder/tracks", params={"path": "server:/etc"})
+    check("…and nothing outside the content folder is listed", r.status_code == 400, r.text[:200])
+    crate = c.get("/api/folder/tracks", params={"path": f"server:{content}/Crate"}).json()
+    loose_id = f"server:{loose}"
+    check("a file the library does not hold is listed unticked",
+          [tr["id"] for tr in crate["tracks"]] == [loose_id] and crate["in_collection"] == [])
+    caps = c.get("/api/folder/capabilities", params={"path": f"server:{content}/Crate"}).json()
+    check("…read-only, like any browsed folder", not caps["writable"]
+          and caps["readonly_cause"] == "not_in_library")
+    folder_downloads = []
+    real_folder_download = adapter.client.folder_download
+    adapter.client.folder_download = lambda *a, **k: (folder_downloads.append(a[0]),
+                                                      real_folder_download(*a, **k))[1]
+    r = c.get("/api/folder/tracks/audio", params={"track_id": loose_id})
+    check("the deck can audition it", r.status_code == 200 and r.content == loose.read_bytes())
+    c.get("/api/folder/tracks/audio", params={"track_id": loose_id})
+    check("…downloaded once", folder_downloads == [str(loose)], folder_downloads)
+    r = c.get("/api/folder/tracks/audio", params={"track_id": f"server:{content}/Crate/nope.mp3"})
+    check("a file no listing returned is not served", r.status_code == 404)
+    srv_unlisted = httpx.get(f"http://127.0.0.1:{port}/v1/folder/audio",
+                             params={"path": str(work)}, auth=("dj", "secret"))
+    check("…nor, asked of the server directly, anything outside the content folder",
+          srv_unlisted.status_code == 400, srv_unlisted.text[:200])
+
+    pl = c.post("/api/playlists", json={"name": "From the server"}).json()["id"]
+    held_track = listed["in_collection"][0]
+    held_id = listed["files"][held_track]  # adding speaks in folder ids
+    add = {"track_ids": [loose_id, held_id], "mode": "reference", "playlist_id": pl}
+    r = c.post("/api/folder/add/preview", json=add)
+    pv = r.json()
+    check("(preview) one new, one already held, nothing to copy",
+          r.status_code == 200 and pv["importable"] == 1 and len(pv["existing"]) == 1
+          and pv["total_bytes"] == 0 and pv["enough_space"] is None, r.text[:300])
+    mixed = c.post("/api/folder/add/preview", json={**add, "track_ids": [loose_id, str(incoming)]})
+    check("files here and on the server are not mixed in one add", mixed.status_code == 400)
+    # Pretend the platform analyses what it adds (as Rekordbox does): the file
+    # is then fetched and analysed HERE, and the server receives the result.
+    received = []
+    real_add = server_adapter.add_tracks
+    server_adapter.add_tracks = lambda items, **k: (received.extend(items), real_add(items, **k))[1]
+    server_adapter.analysis_lead = lambda path: 0.0
+    before = sorted(p.name for p in content.rglob("*") if p.is_file())
+    job = c.post("/api/folder/add", json=add).json()
+    for _ in range(400):
+        j = c.get(f"/api/jobs/{job['id']}").json()
+        if j["state"] != "running":
+            break
+        time.sleep(0.05)
+    del server_adapter.analysis_lead
+    server_adapter.add_tracks = real_add
+    added = [tr for tr in server_adapter.tracks if server_adapter.audio_path(tr.id) == loose]
+    check("the file is added to the library WHERE IT IS", j["state"] == "done" and len(added) == 1,
+          j.get("error"))
+    check("…nothing uploaded or copied", sorted(p.name for p in content.rglob("*") if p.is_file()) == before)
+    check("…analysed here on the cached copy, the result sent along",
+          len(received) == 1 and received[0].analysis is not None and folder_downloads == [str(loose)],
+          f"{len(received)} {folder_downloads}")
+    entries = server_adapter.playlist_entries(pl) or []
+    check("…both land in the playlist, the held one not added twice",
+          added and entries == [added[0].id, held_track]
+          and len(server_adapter.tracks) == len(main.require_adapter().tracks), entries)
+    crate = c.get("/api/folder/tracks", params={"path": f"server:{content}/Crate"}).json()
+    check("…and the folder now shows it ticked off, as the collection track",
+          crate["in_collection"] == [added[0].id] and crate["files"] == {added[0].id: loose_id}
+          if added else False, crate)
+    check("the save is versioned on the server", not server_adapter.dirty)
+
     print("== another computer takes over ==")
     other = RemoteClient(remote_config.Remote(id="o", name="NAS", host=f"127.0.0.1:{port}", username="dj"), "secret")
     other.acquire("other-client", "Studio iMac", takeover=True)

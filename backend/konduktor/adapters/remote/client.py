@@ -246,6 +246,29 @@ class RemoteClient:
     def fs_list(self, path: str | None) -> dict:
         return self.request("GET", "/v1/fs/list", params={"path": path} if path else None).json()
 
+    def folder_tracks(self, path: str | None) -> dict:
+        return self.request("GET", "/v1/folder/tracks", params={"path": path} if path else None,
+                            timeout=None).json()
+
+    def folder_leads(self, paths: list[str]) -> dict[str, float | None]:
+        return self.request("POST", "/v1/folder/leads", json={"paths": paths}).json()["leads"]
+
+    def folder_download(self, path: str, target: Path, *, progress=None) -> dict:
+        """Stream a listed content-folder file into `target` (as `download`)."""
+        with self.stream("GET", "/v1/folder/audio", params={"path": path}, timeout=None) as response:
+            if response.status_code >= 400:
+                response.read()
+                self.check(response)
+            with open(target, "wb") as out:
+                for chunk in response.iter_bytes(1 << 20):
+                    out.write(chunk)
+                    if progress is not None:
+                        progress(len(chunk))
+            return {
+                "size": int(response.headers.get("X-Konduktor-Size") or 0),
+                "mtime_ns": int(response.headers.get("X-Konduktor-Mtime-Ns") or 0),
+            }
+
     def fs_space(self, path: str | None) -> int:
         return int(self.request("GET", "/v1/fs/space", params={"path": path} if path else None).json()["free"])
 

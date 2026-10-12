@@ -521,11 +521,15 @@ class Drive(BaseModel):
     candidate `/api/sources` reports, attached to the drive it lives on so the
     sidebar can show one row per drive rather than a device list and a drive
     list that disagree about what is plugged in.
+
+    `server` is a remote library's content folder (path `server:`), listed
+    first while a remote library is open — the one place its music can be
+    browsed by folder from this computer.
     """
 
     name: str
     path: str
-    kind: Literal["local", "external"]
+    kind: Literal["local", "external", "server"]
     library: SourceCandidate | None = None
 
 
@@ -533,9 +537,13 @@ class FolderTracks(BaseModel):
     """The audio files directly inside one folder, projected as tracks."""
 
     path: str
+    # A file the collection holds is listed AS the collection's track (its id,
+    # key, rating, cues…); any other file as its own tags, id = its path.
     tracks: list[Track]
-    # Ids (= absolute paths) of the files the collection already points at.
+    # Collection ids of the rows that are collection tracks.
     in_collection: list[str]
+    # Those rows' collection id → the file's folder id, which adding takes.
+    files: dict[str, str] = {}
     # On an external drive: a track referenced in place goes missing when the
     # drive is unplugged, which the add dialog has to say.
     removable: bool

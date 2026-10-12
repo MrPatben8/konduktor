@@ -1,13 +1,14 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type Drive, type PlaylistNode } from '../api'
+import { api, isServerPath, type Drive, type PlaylistNode } from '../api'
 import type { Source } from './Sidebar'
 import { Icon } from '../lib/icons'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 
 /**
  * Every drive, in the sidebar: plugged-in ones under Devices, and the computer's
- * own under an expandable Local Storage.
+ * own under an expandable Local Storage. While a remote library is open, the
+ * server holding it comes first: its content folder, browsed like any drive.
  *
  * A drive carrying a OneLibrary library opens as a device, the way rekordbox and
  * Traktor show a stick: its playlists appear under it and the ordinary track
@@ -86,13 +87,15 @@ export function DevicesSection({ source, onSelect, onError, onImport, onOpenLibr
   })
 
   const list = drives.data ?? []
+  const server = list.filter((d) => d.kind === 'server')
   const external = list.filter((d) => d.kind === 'external')
   const local = list.filter((d) => d.kind === 'local')
 
   // A drive can be physically unplugged while it is open. Nothing crashes — the
   // routes just start failing — but leaving it selected would show a library
   // that is not there, so fall back to the collection. The same goes for a
-  // folder on it being browsed.
+  // folder on it being browsed — and for a folder on the server, the remote
+  // library being closed.
   const stillPresent = !openPath || list.some((d) => d.library?.path === openPath)
   useEffect(() => {
     if (!drives.isSuccess || !openPath || stillPresent || eject.isPending) return
@@ -102,7 +105,11 @@ export function DevicesSection({ source, onSelect, onError, onImport, onOpenLibr
   const folderGone =
     source.kind === 'folder' &&
     drives.isSuccess &&
-    !list.some((d) => d.path === '/' || isInside(source.path, d.path))
+    !list.some((d) =>
+      isServerPath(source.path)
+        ? d.kind === 'server'
+        : d.path === '/' || isInside(source.path, d.path),
+    )
   useEffect(() => {
     if (folderGone) onSelect({ kind: 'all' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -137,7 +144,7 @@ export function DevicesSection({ source, onSelect, onError, onImport, onOpenLibr
       <div key={d.path}>
         <TreeRow
           depth={depth}
-          icon={<span className="text-gold"><Icon name="drive" size={15} /></span>}
+          icon={<span className="text-gold"><Icon name={d.kind === 'server' ? 'server' : 'drive'} size={15} /></span>}
           label={d.name}
           title={d.path}
           expanded={expandedHere}
@@ -212,6 +219,7 @@ export function DevicesSection({ source, onSelect, onError, onImport, onOpenLibr
       </div>
 
       <div className="mt-1 min-h-0 overflow-y-auto px-2 pb-1">
+        {server.map((d) => driveRow(d, 0))}
         {external.map((d) => driveRow(d, 0))}
 
         {local.length > 0 && (

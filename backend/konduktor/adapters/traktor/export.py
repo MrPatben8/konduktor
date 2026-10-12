@@ -106,14 +106,10 @@ class TraktorExporter:
         return WrittenLibrary(library=library)
 
     def _write_playlists(self, adapter, payload: ExportPayload, moved: dict) -> None:
-        """Recreate the tree under one folder named after the export.
-
-        Nested under the export's own name for the same reason import nests a
-        drive's playlists under the drive's name: a collection swapped onto
-        another machine should say where its playlists came from.
-        """
-        root = adapter.create_folder(payload.name)
-        folders: dict[tuple[str, ...], str] = {(): root}
+        """Recreate the tree — at the top level, or with `payload.root_folder`
+        under one folder named after the export (None = the top level)."""
+        root = adapter.create_folder(payload.name) if payload.root_folder else None
+        folders: dict[tuple[str, ...], str | None] = {(): root}
 
         for playlist in payload.playlists:
             parent = self._folder_for(adapter, folders, tuple(playlist.folders), root)
@@ -128,7 +124,7 @@ class TraktorExporter:
             adapter.set_playlist_entries(node_id, loose)
 
     @staticmethod
-    def _folder_for(adapter, folders: dict, path: tuple[str, ...], root: str) -> str:
+    def _folder_for(adapter, folders: dict, path: tuple[str, ...], root: str | None) -> str | None:
         """Create (once) the folder chain a playlist sits under, and return it."""
         for depth in range(1, len(path) + 1):
             branch = path[:depth]

@@ -3,6 +3,6 @@
 /target/
 /gen/schemas
 
-# Frozen backend sidecar — a build artifact (23MB); rebuild with
+# Frozen backend sidecar (a onedir folder) — a build artifact; rebuild with
 # backend/build_sidecar.sh. The Rust/config that reference it ARE tracked.
 /binaries/

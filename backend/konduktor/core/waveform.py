@@ -94,7 +94,9 @@ def _decode_pyav(path: Path) -> np.ndarray:
     """
     import av
 
-    with av.open(str(path)) as container:
+    from . import pyav
+
+    with pyav.open_input(path) as container:
         stream = container.streams.audio[0]
         resampler = av.AudioResampler(format="flt", layout="mono", rate=SR)
         chunks = []

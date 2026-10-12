@@ -73,6 +73,27 @@ check("a stem file lists its four stems with names and colours, in stream order"
 check("a plain MP3 has none", sf.stem_layout(plain) is None)
 check("a missing file has none (no exception)", sf.stem_layout(ROOT / "nope.stem.m4a") is None)
 
+print("== a stem file whose tags are not UTF-8 ==")
+# PyAV 18 will not open such a file unless told to ignore the bad bytes, and
+# PyAV 19 rejects the keyword that tells it (core/pyav.py). A release built on
+# 19 while dev ran 18 played every stem track as the mix: the route 500'd.
+from mutagen.mp4 import MP4  # noqa: E402
+
+bad = ROOT / "BadTag.stem.m4a"
+shutil.copy2(stem, bad)
+m = MP4(bad)
+m["\xa9nam"] = ["XéX"]
+m.save()
+raw = bad.read_bytes()
+assert raw.count("XéX".encode()) == 1
+bad.write_bytes(raw.replace("XéX".encode(), b"X\xe9\xe9X"))  # same length: no box sizes change
+check(f"it still lists its stems (PyAV {av.__version__})", sf.stem_layout(bad) == layout, str(sf.stem_layout(bad)))
+with open(ROOT / "bad-stem-1.m4a", "wb") as fp:
+    sf.extract_stream(bad, 1, fp)
+check("…a stem still extracts, bit-identical to the stream in place",
+      np.array_equal(decode(ROOT / "bad-stem-1.m4a"), decode(stem, 1)))
+check("…and it still decodes for conversion", sf.decode(bad).pcm.shape[1] > 0)
+
 print("== a temp collection pointing at them ==")
 work = ROOT / "collection.nml"
 shutil.copy2(REAL, work)

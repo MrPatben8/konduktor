@@ -154,7 +154,11 @@ with TestClient(main.app, raise_server_exceptions=False) as c:
     check("it is in the playlist", a.playlist_entries(playlist) == [added])
     check("it was saved, not left pending", not a.dirty)
     body = c.get("/api/folder/tracks", params={"path": str(music)}).json()
-    check("the folder now marks it as held", body["in_collection"] == [str(one)], str(body["in_collection"]))
+    check("the folder now marks it as held", body["in_collection"] == [added], str(body["in_collection"]))
+    row = next((t for t in body["tracks"] if t["id"] == added), None)
+    check("…its row IS the collection track (its id and data), mapped back to the file",
+          row is not None and body["files"] == {added: str(one)}
+          and row["import_date"] == a.track(added).import_date, str(body["files"]))
 
     print("== a held file is never added twice, but still reaches its target ==")
     library = STATE.library_id

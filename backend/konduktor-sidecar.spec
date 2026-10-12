@@ -1,6 +1,14 @@
 # PyInstaller spec for the Konduktor backend sidecar (Step 1 of the standalone
-# build). Produces a single-file binary that serves the FastAPI API on a free
-# loopback port. Build with:  pyinstaller konduktor-sidecar.spec  (or build_sidecar.sh)
+# build). Produces a ONEDIR build — dist/konduktor-sidecar/ holding the
+# executable plus `_internal/` — that serves the FastAPI API on a free loopback
+# port. Build with:  pyinstaller konduktor-sidecar.spec  (or build_sidecar.sh)
+#
+# Onedir, NOT onefile: a onefile binary unpacks ~300 MB (1,000+ files, ~390
+# native libraries) into a NEW temp folder on every launch, and macOS checks
+# every library it has not seen before (XProtect / syspolicyd) as it is
+# dlopen()ed, keyed per file — so every launch paid ~10 s before the window
+# appeared (measured 2026-10-12: the same libraries took 95 s fresh, 1 s once
+# seen). Installed as a folder inside the app, they are checked once.
 #
 # The tricky bits this handles:
 #  - uvicorn imports its loop/protocol backends dynamically → collect_submodules
@@ -82,9 +90,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="konduktor-sidecar",
     debug=False,
     bootloader_ignore_signals=False,
@@ -96,4 +103,13 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    name="konduktor-sidecar",
 )

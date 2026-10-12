@@ -45,7 +45,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import mp4_edit, tag_copy
+from . import mp4_edit, pyav, tag_copy
 
 SR = 44100
 FRAME = 1024  # AAC-LC frame size, for both encoders
@@ -132,7 +132,7 @@ def decode(path: Path | str) -> Source:
     """Decode the first audio stream to stereo float32 at 44.1 kHz."""
     import av
 
-    with av.open(str(path), metadata_errors="ignore") as container:
+    with pyav.open_input(path) as container:
         stream = container.streams.audio[0]
         codec = stream.codec_context.name
         bit_rate = stream.bit_rate or container.bit_rate or None
@@ -381,7 +381,7 @@ def _audio_stream_count(path: Path) -> int:
         av = None
     if av is not None:
         try:
-            with av.open(str(path), metadata_errors="ignore") as c:
+            with pyav.open_input(path) as c:
                 return len(c.streams.audio)
         except av.FFmpegError as ex:
             raise ValueError(str(ex))
@@ -453,7 +453,7 @@ def extract_stream(path: Path | str, stream: int, fp) -> None:
     """
     import av
 
-    with av.open(str(path), metadata_errors="ignore") as inp:
+    with pyav.open_input(path) as inp:
         if not 0 <= stream < len(inp.streams.audio):
             raise StemFileError(f"The file has no audio stream {stream}")
         ist = inp.streams.audio[stream]

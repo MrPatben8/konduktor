@@ -35,7 +35,8 @@ from .core.model import AutoHotcue, Track, TrackCues
 #: at least its own: minors only add. Bump the minor for an added route or
 #: method, the major for anything an older client would misread.
 #: 1.1 — `move_playlist` (sidebar drag and drop).
-API_VERSION: tuple[int, int] = (1, 1)
+#: 1.2 — `/v1/folder/*`: the content folder browsed as a Files tree.
+API_VERSION: tuple[int, int] = (1, 2)
 
 #: How long a session survives without a heartbeat, and how often the holder
 #: sends one. Long enough to ride out a Wi-Fi blip or a switch to the fallback

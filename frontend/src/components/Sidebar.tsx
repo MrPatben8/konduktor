@@ -6,6 +6,7 @@ import { useCaps } from '../lib/capabilities'
 import { SaveBar } from './SaveBar'
 import { confirmDiscardUnsaved } from '../lib/unsaved'
 import { SettingsMenu } from './SettingsMenu'
+import { useAppSetting } from './AppSettings'
 import { DevicesSection } from './DevicesSection'
 import { ExportsSection } from './ExportsSection'
 import { ConfirmDialog, type ConfirmRequest } from './ConfirmDialog'
@@ -14,7 +15,7 @@ import { Icon, type IconName } from '../lib/icons'
 import { PlatformIcon } from '../lib/platformIcons'
 import { addTracksToPlaylist } from '../lib/addTracks'
 import { useDragPayload, usePressToDrag, useDropTarget, type DragPayload } from '../lib/drag'
-import { nodeIdsUnder, playlistIdsUnder } from '../lib/playlistTree'
+import { findNode, idsAfter, nodeIdsUnder, playlistIdsUnder } from '../lib/playlistTree'
 
 /**
  * Which view the main table is showing.
@@ -99,8 +100,11 @@ type Draft = { kind: 'playlist' | 'folder'; parentId: string | null }
 /** Actions a row can ask of the sidebar. They live there, not in the row, so
  *  the right-click menu and the hover buttons run the very same code. */
 interface RowActions {
+  /** Whether a folder is open, and opening / closing it. */
+  isOpen: (node: PlaylistNode) => boolean
+  setOpen: (node: PlaylistNode, open: boolean) => void
   onContextMenu: (e: React.MouseEvent, node: PlaylistNode) => void
-  onRename: (node: PlaylistNode, name: string) => void
+  onRename: (node: PlaylistNode, name: string, parentId: string | null) => void
   onDelete: (node: PlaylistNode) => void
   onAddToExport: (node: PlaylistNode, setId: string) => void
   /** The row's export button: the export list as a menu under it. */
@@ -202,7 +206,7 @@ function NodeRow({
   exportSets: { id: string; name: string }[]
   actions: RowActions
 }) {
-  const [open, setOpen] = useState(true)
+  const open = actions.isOpen(node)
   const renaming = renamingId === node.id
   const [renameDraft, setRenameDraft] = useState(node.name)
   const isFolder = node.kind === 'folder'
@@ -278,9 +282,11 @@ function NodeRow({
   // Holding a drag over a collapsed folder opens it, so a playlist nested in
   // it can be reached without letting go.
   const opening = over?.zone === 'into' || over?.zone === 'peek'
+  const openLater = useRef(() => actions.setOpen(node, true))
+  openLater.current = () => actions.setOpen(node, true)
   useEffect(() => {
     if (!opening || expanded) return
-    const t = setTimeout(() => setOpen(true), 600)
+    const t = setTimeout(() => openLater.current(), 600)
     return () => clearTimeout(t)
   }, [opening, expanded])
   const ringed = over?.zone === 'tracks' || over?.zone === 'into'
@@ -314,7 +320,7 @@ function NodeRow({
         )}
         <button
           onClick={() => {
-            if (isFolder) setOpen((o) => !o)
+            if (isFolder) actions.setOpen(node, !open)
             else if (selectable) onSelect({ kind: 'playlist', id: node.id, name: node.name })
           }}
           className={`flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-2 text-left ${
@@ -348,7 +354,7 @@ function NodeRow({
                 if (e.key === 'Enter') {
                   setRenamingId(null)
                   if (renameDraft.trim() && renameDraft.trim() !== node.name)
-                    actions.onRename(node, renameDraft.trim())
+                    actions.onRename(node, renameDraft.trim(), parentId)
                 } else if (e.key === 'Escape') {
                   setRenamingId(null)
                 }
@@ -469,6 +475,32 @@ export function Sidebar({
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
   const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null)
 
+  // Which folders are open: the setting, except where the user has opened or
+  // closed one. Held here rather than in each row, so it survives a row
+  // remounting and can be reset — on a new library, and when the setting
+  // changes (so changing it visibly does something).
+  const expandByDefault = useAppSetting('expandPlaylistFolders')
+  const [openOverrides, setOpenOverrides] = useState<Record<string, boolean>>({})
+  useEffect(() => setOpenOverrides({}), [library?.path, expandByDefault])
+  const setFolderOpen = (id: string, open: boolean) =>
+    setOpenOverrides((o) => ({ ...o, [id]: open }))
+  // A folder's id — and so every id under it — may change when it is renamed
+  // or moved (a platform addressing folders by path), so open state follows
+  // the subtree to its new ids. Reads the tree as refetched after the edit.
+  const carryOpen = async (before: PlaylistNode, newId: string) => {
+    if (before.kind !== 'folder') return
+    await qc.refetchQueries({ queryKey: ['playlists'] })
+    const after = findNode(qc.getQueryData<PlaylistNode[]>(['playlists']) ?? [], newId)
+    if (!after) return
+    const ids = idsAfter(before, after)
+    setOpenOverrides((o) => {
+      const next = { ...o }
+      for (const [from, to] of ids) if (from !== to && from in o) delete next[from]
+      for (const [from, to] of ids) if (from !== to && from in o) next[to] = o[from]
+      return next
+    })
+  }
+
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['playlists'] })
     qc.invalidateQueries({ queryKey: ['state'] })
@@ -487,10 +519,19 @@ export function Sidebar({
   })
 
   const rename = useMutation({
-    mutationFn: ({ node, name }: { node: PlaylistNode; name: string }) =>
+    mutationFn: ({ node, name }: { node: PlaylistNode; name: string; parentId: string | null }) =>
       api.renamePlaylist(node.id, name),
-    onSuccess: (_d, { node, name }) => {
+    onSuccess: async (_d, { node, name, parentId }) => {
       invalidate()
+      // The rename does not answer the new id, so the folder is found by its
+      // new name among its siblings (a folder may not share a sibling's name).
+      if (node.kind === 'folder') {
+        await qc.refetchQueries({ queryKey: ['playlists'] })
+        const tree = qc.getQueryData<PlaylistNode[]>(['playlists']) ?? []
+        const siblings = parentId === null ? tree : (findNode(tree, parentId)?.children ?? [])
+        const renamed = siblings.find((n) => n.kind === 'folder' && n.name === name)
+        if (renamed) await carryOpen(node, renamed.id)
+      }
       if (source.kind === 'playlist' && source.id === node.id)
         onSelect({ kind: 'playlist', id: node.id, name })
     },
@@ -525,6 +566,9 @@ export function Sidebar({
 
   const startDraft = (kind: Draft['kind'], parentId: string | null) => {
     setRenamingId(null)
+    // Open the folder it goes in, or the new node would vanish into a
+    // collapsed folder once named.
+    if (parentId !== null) setFolderOpen(parentId, true)
     setDraft({ kind, parentId })
   }
 
@@ -586,8 +630,10 @@ export function Sidebar({
   }
 
   const actions: RowActions = {
+    isOpen: (node) => openOverrides[node.id] ?? expandByDefault,
+    setOpen: (node, open) => setFolderOpen(node.id, open),
     onContextMenu: (e, node) => openMenu(e, nodeItems(node)),
-    onRename: (node, name) => rename.mutate({ node, name }),
+    onRename: (node, name, parentId) => rename.mutate({ node, name, parentId }),
     onDelete: confirmDelete,
     onAddToExport: (node, setId) => addToExport.mutate({ node, setId }),
     // Opened as the shared ContextMenu rather than a popover inside the row: the
@@ -622,8 +668,9 @@ export function Sidebar({
     canMove: (node) => caps.writable && node.can_move,
     onMoveNode: async (node, parentId, index, into) => {
       try {
-        await api.movePlaylist(node.id, parentId, index)
+        const { id } = await api.movePlaylist(node.id, parentId, index)
         invalidate()
+        void carryOpen(node, id)
         // Into a COLLAPSED folder the node vanishes from view, so say where.
         if (into) onDone(`Moved “${node.name}” into ${into.name}`)
       } catch (e) {
