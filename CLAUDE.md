@@ -170,7 +170,14 @@ Two independent apps that talk over HTTP:
       file** (Convert to Stems). An `ipod` MP4 with five AAC stereo 44.1 kHz
       streams (mix, drums, bass, synths, vox), streams 1-4 `disposition` 0,
       muxed IN LOCKSTEP, plus a `moov/udta/stem` JSON box appended in place
-      (moov is last, so only two sizes change). The separation is a CALLBACK —
+      (moov is last, so only two sizes change). **Each stream encodes on its
+      own thread** (PyAV releases the GIL in FFmpeg; ~3x faster with `aac`,
+      104 → 35 s for a 5-minute track's real stems) while ONE thread muxes in
+      the single-threaded order, so the file is byte-identical; every codec is
+      opened and the header written before a worker starts, since the first
+      `mux()` would otherwise open codecs a worker is using. `aac_coder=fast`
+      was measured and rejected: 3-4x faster per stream, but it drops whole
+      8-20 kHz bands for moments (twoloop: never). The separation is a CALLBACK —
       the backend never imports torch; the engine (below) supplies it, the
       tests a fake. Measured traps: FFmpeg's resampler upmixes mono at -3 dB,
       so mono is duplicated by hand; resampling does not move time; both
@@ -1171,7 +1178,10 @@ serialization path.** It enforces:
   48 kHz resampling does not move time; MP3 and FLAC through both encoders give
   five streams with only the mix enabled, no shift (cross-correlation), the
   bitrate rule (256 floor, lossless 320), every tag + cover; `verify` refuses a
-  shifted, truncated or box-less file; a raising checkpoint cancels.
+  shifted, truncated or box-less file; a raising checkpoint cancels. The
+  threaded encode is byte-identical to a single-threaded reference (with each
+  encoder present), reports progress 0 → 1, and a cancel or a failing encoder
+  thread leaves no thread running.
 - `test_stem_swap.py` — `apply_stem_swaps` on a temp copy of the real
   collection with a generated MP3 (with header) and a real stem file: prep
   reads back at the same decoded second while its START moves by the 2257-

@@ -39,11 +39,25 @@ _BYTES_PER_SECOND = {256_000: 5 * 256_000 / 8 * 1.03, 320_000: 5 * 320_000 / 8 *
 _WORK_BYTES_PER_SECOND = 5 * 2 * 4 * sf.SR
 
 
-#: Shares of ONE track's conversion time, for the status bar's within-track
-#: progress (measured on the M3 Pro: decode ~1 s, separate ~50 s, encode +
-#: verify ~4 s for a 4-minute track).
-_DECODE_SHARE = 0.03
-_SEPARATE_SHARE = 0.90
+#: Shares of ONE track's conversion time (decode, separate; encoding + verifying
+#: take the rest), for the status bar's within-track progress, by AAC encoder.
+#: Measured: `aac_at` on the M3 Pro (4-minute track: decode ~1 s, separate
+#: ~50 s, encode + verify ~4 s); `aac` on an i7-9750H + RTX 2070 (5-minute
+#: track: decode 0.5 s, separate ~102 s, encode ~38 s on five threads, verify ~1 s).
+_SHARES = {"aac_at": (0.03, 0.90), "aac": (0.01, 0.71)}
+
+
+def track_shares(encoder: str) -> tuple[float, float]:
+    return _SHARES.get(encoder, _SHARES["aac"])
+
+
+def encode_reporter(handle, start: float, end: float = 0.99) -> Callable[[float], None]:
+    """`on_encode` for `stem_file.build`: the encode runs from `start` to `end`
+    of the track, and the ~1 s of tags + verification after it reads as such."""
+    def report(f: float) -> None:
+        frac = start + f * (end - start)
+        handle.progress(fraction=frac, status=f"{'verifying' if f >= 1 else 'encoding'} {frac * 100:.0f} %")
+    return report
 
 
 class ConvertError(Exception):
@@ -227,6 +241,7 @@ def run(handle, adapter, planned: Plan, opts: Options, pending: Pending, *,
     work = work_root() / f"batch-{id(handle):x}"
     finished: list[tuple[Planned, dict, sf.Written]] = []
     needs_engine = any(p.reuse is None for p in items)
+    encoder = sf.default_encoder()
     if needs_engine and not mgr.ready():
         raise ConvertError("The stem engine is not installed")
 
@@ -258,22 +273,22 @@ def run(handle, adapter, planned: Plan, opts: Options, pending: Pending, *,
                                      "stem": str(item.target), "state": "converting", "facts": source_facts(item.source)})
                 item.target.parent.mkdir(parents=True, exist_ok=True)
 
-                # Of a TRACK's time, separation is nearly all (~90 % on MPS);
-                # decoding before it and encoding + verifying after share the rest.
+                # Of a TRACK's time, separation is nearly all; decoding before it
+                # and encoding + verifying after share the rest.
+                decode_share, separate_share = track_shares(encoder)
+
                 def on_progress(f: float) -> None:
-                    frac = _DECODE_SHARE + f * (_SEPARATE_SHARE)
+                    frac = decode_share + f * separate_share
                     handle.progress(fraction=frac, status=f"separating {frac * 100:.0f} %")
 
                 def separate(pcm):
-                    handle.progress(fraction=_DECODE_SHARE, status=f"separating {_DECODE_SHARE * 100:.0f} %")
-                    stems = engine.separate(pcm, work, on_progress=on_progress, cancelled=lambda: handle.cancelled)
-                    done_at = _DECODE_SHARE + _SEPARATE_SHARE
-                    handle.progress(fraction=done_at, status=f"encoding {done_at * 100:.0f} %")
-                    return stems
+                    handle.progress(fraction=decode_share, status=f"separating {decode_share * 100:.0f} %")
+                    return engine.separate(pcm, work, on_progress=on_progress, cancelled=lambda: handle.cancelled)
 
                 handle.progress(status="decoding 0 %")
                 try:
-                    written = sf.build(item.source, partial, separate, checkpoint=checkpoint)
+                    written = sf.build(item.source, partial, separate, encoder=encoder, checkpoint=checkpoint,
+                                       on_encode=encode_reporter(handle, decode_share + separate_share))
                 except (_Cancel, EngineCancelled):
                     partial.unlink(missing_ok=True)
                     pending.drop([pitem])
