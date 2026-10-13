@@ -273,8 +273,8 @@ def analyse(
     if not markers:
         raise ValueError("Set a beatgrid first")
     if y is None:
-        import librosa
-        y, _ = librosa.load(audio_path, sr=_SR, mono=True)
+        from . import waveform
+        y, _ = waveform.load(audio_path, sr=_SR)
     y = np.asarray(y, dtype=np.float32)
     duration = len(y) / _SR
     beats, bar0 = grid_beats(markers, duration)

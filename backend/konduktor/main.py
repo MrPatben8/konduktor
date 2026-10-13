@@ -1666,10 +1666,10 @@ def analyze_preview(body: AnalyzeRequest) -> AnalyzePreview:
 
 def _decode_for_analysis(path: Path):
     """Mono samples at the rate BOTH detectors work at (they share one decode)."""
-    import librosa
+    from .core import waveform
 
     assert grid_detect._SR == key_detect.SR, "grid and key detection must share a sample rate"
-    return librosa.load(str(path), sr=key_detect.SR, mono=True)
+    return waveform.load(path, sr=key_detect.SR)
 
 
 def _analyse_one(a, track_id: str, body: AnalyzeRequest, result: dict) -> None:
