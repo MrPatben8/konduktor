@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type PlaylistKind, type PlaylistNode, type TrackOrigin } from '../api'
-import type { AddTarget } from './AddFilesDialog'
+import { api, type PlaylistKind, type PlaylistNode } from '../api'
+import type { AddTarget, ForeignOrigin } from './AddFilesDialog'
 import { useCaps } from '../lib/capabilities'
 import { SaveBar } from './SaveBar'
 import { confirmDiscardUnsaved } from '../lib/unsaved'
@@ -14,7 +14,7 @@ import { ContextMenu, type MenuItem } from './ContextMenu'
 import { Icon, type IconName } from '../lib/icons'
 import { PlatformIcon } from '../lib/platformIcons'
 import { addTracksToPlaylist } from '../lib/addTracks'
-import { useDragPayload, usePressToDrag, useDropTarget, type DragPayload } from '../lib/drag'
+import { useDragPayload, usePressToDrag, useDropTarget, type DragPayload, type TracksOrFiles } from '../lib/drag'
 import { findNode, idsAfter, nodeIdsUnder, playlistIdsUnder } from '../lib/playlistTree'
 
 /**
@@ -55,9 +55,10 @@ interface Props {
   /** Open a drive's library as THE library (Devices' "Open for editing…"). */
   onOpenLibrary: (path: string) => void
   onDone: (msg: string) => void
-  /** Tracks not in the collection yet (a device's, a folder's) dropped on a
-   *  playlist or export: open the dialog that adds them, target filled in. */
-  onAddForeign: (origin: TrackOrigin, ids: string[], target: AddTarget) => void
+  /** Tracks not in the collection yet (a device's, a folder's — or files
+   *  dropped from the OS, as paths) dropped on a playlist or export: open the
+   *  dialog that adds them, target filled in. */
+  onAddForeign: (origin: ForeignOrigin, ids: string[], target: AddTarget) => void
   onOpenPathMapping: () => void
   /** After unsaved edits were discarded (SaveBar). */
   onDiscarded?: () => void
@@ -111,11 +112,11 @@ interface RowActions {
   onPickExport: (e: React.MouseEvent<HTMLElement>, node: PlaylistNode) => void
   onCommitDraft: (name: string) => void
   onCancelDraft: () => void
-  /** Whether a drag of tracks may drop on this playlist. */
-  acceptsTracks: (node: PlaylistNode, p: Extract<DragPayload, { kind: 'tracks' }>) => boolean
+  /** Whether a drag of tracks (or of files from the OS) may drop on this playlist. */
+  acceptsTracks: (node: PlaylistNode, p: TracksOrFiles) => boolean
   /** Tracks dropped on a playlist; `alt` (Option) moves them out of the
    *  playlist they came from. */
-  onDropTracks: (node: PlaylistNode, p: Extract<DragPayload, { kind: 'tracks' }>, alt: boolean) => void
+  onDropTracks: (node: PlaylistNode, p: TracksOrFiles, alt: boolean) => void
   /** Whether a node may be dragged elsewhere in the tree. */
   canMove: (node: PlaylistNode) => boolean
   /** A node dropped in the tree: `index` among `parentId`'s children,
@@ -265,14 +266,14 @@ function NodeRow({
     label: (p, h, at) => {
       if (h.zone === 'tracks') {
         if (p.kind === 'tracks' && p.origin === 'device') return `Import into ${node.name}…`
-        if (p.kind === 'tracks' && p.origin === 'folder') return `Add to ${node.name}…`
+        if ((p.kind === 'tracks' && p.origin === 'folder') || p.kind === 'files') return `Add to ${node.name}…`
         return `${moves(p, at.alt) ? 'Move' : 'Add'} to ${node.name}`
       }
       if (h.zone === 'peek') return null
       return h.zone === 'into' || h.zone === 'first' ? `Move into ${node.name}` : `Move ${h.zone} ${node.name}`
     },
     onDrop: (p, h, at) => {
-      if (p.kind === 'tracks') {
+      if (p.kind !== 'node') {
         if (h.zone === 'tracks') actions.onDropTracks(node, p, at.alt)
       } else if ('parentId' in h) {
         actions.onMoveNode(p.node, h.parentId, h.index, h.zone === 'into' && !expanded ? node : null)
@@ -664,7 +665,7 @@ export function Sidebar({
     acceptsTracks: (node, p) =>
       caps.writable &&
       node.can_add_tracks &&
-      (p.origin === 'collection' ? p.fromPlaylist !== node.id : caps.tracks.addable),
+      (p.kind === 'tracks' && p.origin === 'collection' ? p.fromPlaylist !== node.id : caps.tracks.addable),
     canMove: (node) => caps.writable && node.can_move,
     onMoveNode: async (node, parentId, index, into) => {
       try {
@@ -678,6 +679,10 @@ export function Sidebar({
       }
     },
     onDropTracks: async (node, p, alt) => {
+      if (p.kind === 'files') {
+        onAddForeign('dropped', p.paths, { kind: 'playlist', id: node.id, name: node.name })
+        return
+      }
       if (p.origin !== 'collection') {
         onAddForeign(p.origin, p.ids, { kind: 'playlist', id: node.id, name: node.name })
         return

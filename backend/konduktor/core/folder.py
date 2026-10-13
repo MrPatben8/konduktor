@@ -14,7 +14,9 @@ This is opened by the folder routes and nothing else.
 Three rules:
 
   * **This folder only.** Subfolders are not scanned — the tree is how you get to
-    them — so a click on a drive root never walks the whole drive.
+    them — so a click on a drive root never walks the whole drive. A folder
+    DROPPED onto the window is the exception (`FolderScanner.dropped`): the user
+    asked for everything in it, so it recurses, capped at `MAX_DROPPED`.
   * **A track id is the file's absolute path.** It is the one identity a loose
     file has, and it is what the audio route checks a request against.
   * **Tags are read once per folder state.** Reading tags opens every file, which
@@ -26,6 +28,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .capabilities import Capabilities, SaveCapabilities, TrackCapabilities
@@ -165,17 +168,88 @@ class FolderSource:
         return capabilities_for(self.path)
 
 
+# A drop of a whole drive must not read tags for hours: past this many audio
+# files the rest are left out and the answer says so.
+MAX_DROPPED = 20_000
+
+
+@dataclass
+class Dropped:
+    """What a drop onto the window resolved to."""
+
+    tracks: list[Track] = field(default_factory=list)
+    # Dropped FILES that are not audio this library can hold (or are gone).
+    # Non-audio inside a dropped folder is not counted: an album folder's
+    # cover and cue sheet are not something the user asked to add.
+    skipped: int = 0
+    # More than MAX_DROPPED audio files: the rest were left out.
+    truncated: bool = False
+
+
 class FolderScanner:
     """Scans folders on request, caching each until its contents change.
 
     Also the gatekeeper for streaming: `source_for_file` answers only for a file
-    found by a scan, so the audio route cannot be used to read an arbitrary path
-    off the disk — only audio the user has browsed to.
+    found by a scan — or dropped onto the window by the user — so the audio
+    route cannot be used to read an arbitrary path off the disk, only audio the
+    user has browsed to or handed over.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._cache: dict[str, tuple[float, tuple[str, ...], FolderSource]] = {}
+        # Files dropped one by one: their folder was never scanned (and is not
+        # cached as if it had been — a partial listing would hide its other
+        # files from the sidebar), so each is held on its own.
+        self._files: dict[str, Track] = {}
+
+    def dropped(self, paths: list[str], formats: list[str], limit: int = MAX_DROPPED) -> Dropped:
+        """Resolve paths dropped onto the window: folders RECURSIVELY (hidden
+        and OS-housekeeping folders left out, as the tree leaves them out),
+        files as themselves. Every audio file found becomes addable and
+        playable through the folder routes, exactly as if it had been browsed."""
+        wanted = {f.lower() for f in formats}
+        out = Dropped()
+        seen: set[str] = set()
+
+        def take(tracks: list[Track]) -> bool:
+            for t in tracks:
+                if t.id in seen:
+                    continue
+                if len(out.tracks) >= limit:
+                    out.truncated = True
+                    return False
+                seen.add(t.id)
+                out.tracks.append(t)
+            return True
+
+        for raw in paths:
+            path = Path(raw).expanduser()
+            if path.is_dir():
+                for folder in _walk(path):
+                    if not audio_files(folder, formats):
+                        continue
+                    if not take(self.scan(folder, formats).tracks):
+                        return out
+            elif path.is_file() and path.suffix.lower() in wanted and not is_hidden(path):
+                track = self._file_track(path)
+                if not take([track]):
+                    return out
+            else:
+                out.skipped += 1
+        return out
+
+    def _file_track(self, path: Path) -> Track:
+        key = str(path)
+        with self._lock:
+            hit = self._cache.get(str(path.parent))
+            known = hit[2].track(key) if hit is not None else None
+        if known is not None:
+            return known
+        track = read_track(path)
+        with self._lock:
+            self._files[key] = track
+        return track
 
     def scan(self, folder: Path, formats: list[str]) -> FolderSource:
         folder = Path(folder)
@@ -198,10 +272,32 @@ class FolderScanner:
         folder = str(Path(track_id).parent)
         with self._lock:
             hit = self._cache.get(folder)
-        if hit is None or hit[2].track(track_id) is None:
-            return None
-        return hit[2]
+            loose = self._files.get(track_id)
+        if hit is not None and hit[2].track(track_id) is not None:
+            return hit[2]
+        if loose is not None:
+            return FolderSource(Path(folder), [loose])
+        return None
 
     def clear(self) -> None:
         with self._lock:
             self._cache.clear()
+            self._files.clear()
+
+
+def _walk(root: Path):
+    """`root` and every visible folder under it, depth first, sorted by name."""
+    yield root
+    try:
+        with os.scandir(root) as it:
+            subs = []
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False) and not is_hidden(entry):
+                        subs.append(Path(entry.path))
+                except OSError:
+                    continue
+    except OSError:
+        return
+    for sub in sorted(subs, key=lambda p: p.name.lower()):
+        yield from _walk(sub)

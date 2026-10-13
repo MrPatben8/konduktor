@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type ExportSet, type TrackOrigin } from '../api'
-import type { AddTarget } from './AddFilesDialog'
+import { api, type ExportSet } from '../api'
+import type { AddTarget, ForeignOrigin } from './AddFilesDialog'
 import { useCaps } from '../lib/capabilities'
 import { ExportDialog } from './ExportDialog'
 import { ExportRunDialog } from './ExportRunDialog'
@@ -31,7 +31,7 @@ interface Props {
   onSelect: (s: Source) => void
   onDone: (msg: string) => void
   onError: (msg: string) => void
-  onAddForeign: (origin: TrackOrigin, ids: string[], target: AddTarget) => void
+  onAddForeign: (origin: ForeignOrigin, ids: string[], target: AddTarget) => void
 }
 
 export function ExportsSection({ source, onSelect, onDone, onError, onAddForeign }: Props) {
@@ -151,7 +151,7 @@ function ExportRow({
   onDelete: () => void
   onDone: (msg: string) => void
   onError: (msg: string) => void
-  onAddForeign: (origin: TrackOrigin, ids: string[], target: AddTarget) => void
+  onAddForeign: (origin: ForeignOrigin, ids: string[], target: AddTarget) => void
 }) {
   const qc = useQueryClient()
   // The COLLECTION's capabilities (the sidebar sits outside the browsed view's
@@ -196,14 +196,20 @@ function ExportRow({
   const accepts = (p: DragPayload) =>
     p.kind === 'tracks'
       ? p.origin === 'collection' || (caps.writable && caps.tracks.addable)
-      : playlistIdsUnder(p.node).length > 0
+      : p.kind === 'files'
+        ? caps.writable && caps.tracks.addable
+        : playlistIdsUnder(p.node).length > 0
   const [dropRef, over] = useDropTarget<true>({
     hint: (p) => (accepts(p) ? true : null),
     label: (p) =>
       p.kind === 'tracks' && p.origin === 'device'
         ? `Import into export ${set.name}…`
-        : `Add to export ${set.name}${p.kind === 'tracks' && p.origin === 'folder' ? '…' : ''}`,
+        : `Add to export ${set.name}${(p.kind === 'tracks' && p.origin === 'folder') || p.kind === 'files' ? '…' : ''}`,
     onDrop: async (p) => {
+      if (p.kind === 'files') {
+        onAddForeign('dropped', p.paths, { kind: 'export', id: set.id, name: set.name })
+        return
+      }
       if (p.kind === 'tracks' && p.origin !== 'collection') {
         onAddForeign(p.origin, p.ids, { kind: 'export', id: set.id, name: set.name })
         return
