@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnSizingState, SortingState, VisibilityState } from '@tanstack/react-table'
 import { CapabilitiesContext, slotLabeller } from './lib/capabilities'
-import { removalNote, writeHint } from './lib/platformCopy'
+import { readOnlyNotice, removalNote, writeHint } from './lib/platformCopy'
 import { invalidateTrackLists } from './lib/trackQueries'
 import { addTracksToPlaylist } from './lib/addTracks'
-import { useDropTarget } from './lib/drag'
+import { useDragPayload, useDropTarget } from './lib/drag'
+import { useNativeFileDrop } from './lib/fileDrop'
 import { api, type AnalyzeOptions, type AnalyzeResult, type CueBatchResult, type AutoCueSlot, type PlaylistNode, type StemBatchResult, type Track, type TrackOrigin } from './api'
 import { confirmDiscardUnsaved } from './lib/unsaved'
 import { askConfirm } from './lib/confirm'
@@ -30,7 +32,7 @@ import { RelocateDialog } from './components/RelocateDialog'
 import { HistoryPanel } from './components/HistoryPanel'
 import { PrepStrip } from './components/PrepStrip'
 import { ImportDialog } from './components/ImportDialog'
-import { AddFilesDialog, type AddTarget } from './components/AddFilesDialog'
+import { AddFilesDialog, type AddTarget, type ForeignOrigin } from './components/AddFilesDialog'
 import { ConvertStemsDialog } from './components/ConvertStemsDialog'
 import { StemReportDialog } from './components/StemReportDialog'
 import { SetPositionDialog } from './components/SetPositionDialog'
@@ -84,8 +86,12 @@ export default function App() {
   // The browsed folder's rows that ARE collection tracks: collection id → the
   // file's folder id. A ref, for the callbacks below that outlive a render.
   const folderFilesRef = useRef<Record<string, string>>({})
-  // Browsed files being added to the collection (and maybe a playlist/export).
-  const [adding, setAdding] = useState<{ ids: string[]; target: AddTarget | null } | null>(null)
+  // Browsed (or dropped) files being added to the collection (and maybe a
+  // playlist/export). `note` says what a drop left out.
+  const [adding, setAdding] = useState<{ ids: string[]; target: AddTarget | null; note?: string | null } | null>(null)
+  // How many dropped items are being read (a dropped folder is searched all
+  // the way down, which can take a while): shown until the dialog opens.
+  const [readingDrop, setReadingDrop] = useState(0)
   const [playRequest, setPlayRequest] = useState(0) // bump → deck loads & auto-plays
   const [importing, setImporting] = useState(false)
   // Device tracks dropped on a collection playlist / export: Import, with
@@ -377,9 +383,78 @@ export default function App() {
   // export: they are not in the collection yet, so the drop opens the dialog
   // that adds them — with that target filled in, and copy-vs-reference still
   // asked (decided 2026-10-06).
+  // Files dragged in from Finder / Explorer (lib/fileDrop.ts). What is in them
+  // is read first — folders all the way down — and then they go where a
+  // browsed folder's files go: the add dialog, copy-vs-reference asked.
+  const readDrop = useCallback(
+    async (paths: string[]) => {
+      setReadingDrop(paths.length)
+      try {
+        return await api.folderDropped(paths)
+      } catch (e) {
+        onError((e as Error).message)
+        return null
+      } finally {
+        setReadingDrop(0)
+      }
+    },
+    [onError],
+  )
+  const dropFiles = useCallback(
+    async (paths: string[], target: AddTarget | null) => {
+      const r = await readDrop(paths)
+      if (!r) return
+      if (!r.tracks.length) {
+        onError(
+          paths.length === 1 && r.skipped
+            ? 'That is not an audio file this library can hold.'
+            : 'No audio files this library can hold were found there.',
+        )
+        return
+      }
+      const notes: string[] = []
+      if (r.skipped)
+        notes.push(
+          r.skipped === 1
+            ? '1 dropped item is not audio this library can hold and was left out.'
+            : `${r.skipped} dropped items are not audio this library can hold and were left out.`,
+        )
+      if (r.truncated) notes.push(`Only the first ${r.tracks.length.toLocaleString()} files are included.`)
+      // Files the collection holds are its tracks already: as with a folder's
+      // rows, nothing to add first — straight into the target, if there is one.
+      const held = r.tracks.filter((t) => r.files[t.id]).map((t) => t.id)
+      if (held.length === r.tracks.length) {
+        if (target?.kind === 'playlist') void addToPlaylist(target.id, held)
+        else if (target) void addToExport(target.id, held)
+        else
+          notify(
+            'success',
+            held.length === 1 ? 'Already in your collection' : `All ${held.length} are already in your collection`,
+          )
+        return
+      }
+      setAdding({ ids: r.tracks.map((t) => r.files[t.id] ?? t.id), target, note: notes.join(' ') || null })
+    },
+    [readDrop, addToPlaylist, addToExport, notify, onError],
+  )
+  // One dropped audio file on the deck: loaded to listen to, added to nothing.
+  const loadDropped = useCallback(
+    async (path: string) => {
+      const r = await readDrop([path])
+      if (!r) return
+      const t = r.tracks[0]
+      if (!t) {
+        onError('That is not an audio file this library can hold.')
+        return
+      }
+      loadTrack(t, r.files[t.id] ? 'collection' : 'folder')
+    },
+    [readDrop, loadTrack, onError],
+  )
   const addForeign = useCallback(
-    (origin: TrackOrigin, ids: string[], target: AddTarget) => {
-      if (origin === 'folder') {
+    (origin: ForeignOrigin, ids: string[], target: AddTarget) => {
+      if (origin === 'dropped') void dropFiles(ids, target)
+      else if (origin === 'folder') {
         const files = folderFilesRef.current
         // Rows that are all collection tracks already: nothing to add first.
         if (ids.every((id) => files[id])) {
@@ -388,13 +463,44 @@ export default function App() {
         } else setAdding({ ids: ids.map((id) => files[id] ?? id), target })
       } else if (origin === 'device') setImportDrop({ ids, target })
     },
-    [addToPlaylist, addToExport],
+    [addToPlaylist, addToExport, dropFiles],
   )
+  const audioFormats = capabilities.data?.tracks.audio_formats
+  const isAudioPath = (path: string) =>
+    path.lastIndexOf('.') > 0 && !!audioFormats?.includes(path.slice(path.lastIndexOf('.')).toLowerCase())
   const [deckDropRef, deckOver] = useDropTarget<true>({
-    hint: (p) => (p.kind === 'tracks' ? true : null),
+    hint: (p) =>
+      p.kind === 'tracks' || (p.kind === 'files' && p.paths.length === 1 && isAudioPath(p.paths[0])) ? true : null,
     label: (p) => (p.kind === 'tracks' && p.ids.length > 1 ? `Load “${p.lead.title || 'Untitled'}” into the deck` : 'Load into the deck'),
-    onDrop: (p) => p.kind === 'tracks' && loadTrack(p.lead, p.origin),
+    onDrop: (p) => {
+      if (p.kind === 'tracks') loadTrack(p.lead, p.origin)
+      else if (p.kind === 'files') void loadDropped(p.paths[0])
+    },
   })
+  // Files dropped anywhere no other target takes them: the collection. A
+  // library that cannot add tracks still takes the drop, to say why not —
+  // silently ignoring it would read as the feature being broken.
+  const canAddFiles = (capabilities.data?.writable ?? false) && !!capabilities.data?.tracks.addable
+  const cannotAddFiles =
+    capabilities.data && !capabilities.data.writable
+      ? (readOnlyNotice(capabilities.data) ?? 'This library is read-only.')
+      : 'Tracks cannot be added to this library.'
+  const [rootDropRef, rootOver] = useDropTarget<true>({
+    hint: (p) => (p.kind === 'files' ? true : null),
+    label: () => (canAddFiles ? 'Add to your collection…' : null),
+    onDrop: (p) => {
+      if (p.kind !== 'files') return
+      if (canAddFiles) void dropFiles(p.paths, null)
+      else notify('error', cannotAddFiles)
+    },
+  })
+  const draggingFiles = useDragPayload()?.kind === 'files'
+  useNativeFileDrop(loaded && !forcePicker, () =>
+    notify(
+      'warning',
+      'Dropping files works in the Konduktor app, not in a browser (it cannot tell the page where a file is). Browse to it under Files in the sidebar instead.',
+    ),
+  )
   const removeFromExport = useCallback(
     async (id: string, ids: string[]) => {
       try {
@@ -1066,8 +1172,26 @@ export default function App() {
     <CapabilitiesContext.Provider value={capabilities.data!}>
     {/* Floating glass panels with gaps between them: the ambient backdrop
         (main.tsx) shows through the gutters as well as through the glass. */}
-    <div className="flex h-screen w-screen flex-col gap-3 overflow-hidden p-3">
+    <div ref={rootDropRef} className="flex h-screen w-screen flex-col gap-3 overflow-hidden p-3">
       <Toast toast={toast} onClose={() => setToast(null)} />
+      {draggingFiles && rootOver &&
+        createPortal(
+          <div aria-hidden className="pointer-events-none fixed inset-0 z-[85] flex items-center justify-center">
+            <div className="absolute inset-1.5 rounded-[26px] ring-2 ring-accent" />
+            <div className="glass-overlay flex items-center gap-2.5 overflow-hidden rounded-2xl px-5 py-3 text-sm text-text shadow-lg">
+              <Icon name="music" size={15} className={canAddFiles ? 'text-accent' : 'text-pink'} />
+              {canAddFiles ? 'Drop to add to your collection' : cannotAddFiles}
+            </div>
+          </div>,
+          document.body,
+        )}
+      {readingDrop > 0 &&
+        createPortal(
+          <div className="glass-overlay pointer-events-none fixed bottom-14 left-1/2 z-[80] -translate-x-1/2 overflow-hidden rounded-full px-4 py-2 text-xs text-muted shadow-lg">
+            Looking for audio in {readingDrop === 1 ? 'the dropped item' : `${readingDrop} dropped items`}…
+          </div>,
+          document.body,
+        )}
       {menu && (
         <ContextMenu
           // Remount per opening: a right-click on another row while a menu is
@@ -1280,6 +1404,7 @@ export default function App() {
         <AddFilesDialog
           trackIds={adding.ids}
           target={adding.target}
+          note={adding.note}
           onClose={() => setAdding(null)}
           onDone={(msg) => {
             setAdding(null)

@@ -28,14 +28,36 @@ def _watch_parent_and_exit() -> None:
     shut down, so the backend can never be orphaned (the Rust-side kill-on-exit
     only covers the graceful path). When run standalone from a terminal, stdin is
     a TTY and this blocks harmlessly forever.
+
+    NOT on Windows: there a read left pending on the stdin pipe stalls loading
+    scipy's OpenBLAS DLL in any other thread, forever — so the first analysis
+    hung the packaged app (dev runs no watcher). Measured 2026-10-12 with plain
+    Python, through the CRT and through kernel32.ReadFile alike. Windows waits
+    on the parent PROCESS instead, which also covers a crash.
     """
-    try:
-        while sys.stdin.buffer.read(1):
+    if sys.platform == "win32":
+        _wait_for_parent_process()
+    else:
+        try:
+            while sys.stdin.buffer.read(1):
+                pass
+        except Exception:
             pass
-    except Exception:
-        pass
     _release_remote()
     os._exit(0)
+
+
+def _wait_for_parent_process() -> None:
+    """Block until the process that started us exits (Windows only)."""
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+    synchronize, infinite = 0x00100000, 0xFFFFFFFF
+    handle = kernel32.OpenProcess(synchronize, False, os.getppid())
+    if handle:  # None: the parent is already gone
+        kernel32.WaitForSingleObject(handle, infinite)
 
 
 def _release_remote() -> None:

@@ -16,7 +16,12 @@ Set-Location $Root
 $Py = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $Py)) { $Py = "python" }
 
-& $Py -m PyInstaller --noconfirm --clean konduktor-sidecar.spec
+# PyInstaller logs to stderr. Windows PowerShell 5.1 (unlike pwsh 7) turns a
+# native command's stderr into an error record, which "Stop" makes fatal on the
+# first INFO line — so relax it for this call and judge by the exit code.
+$ErrorActionPreference = "Continue"
+& $Py -m PyInstaller --noconfirm --clean konduktor-sidecar.spec 2>&1 | ForEach-Object { "$_" }
+$ErrorActionPreference = "Stop"
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed ($LASTEXITCODE)" }
 Write-Host "Built: $Root\dist\konduktor-sidecar\"
 

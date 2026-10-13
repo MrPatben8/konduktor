@@ -84,8 +84,8 @@ class Analysis:
         return self.columns.duration
 
 
-def _decode_pyav(path: Path) -> np.ndarray:
-    """Mono float32 at `SR`, via PyAV — FFmpeg's decoders, bundled in its wheel.
+def _decode_pyav(path: Path, sr: int = SR) -> np.ndarray:
+    """Mono float32 at `sr`, via PyAV — FFmpeg's decoders, bundled in its wheel.
 
     The reason it is first: it decodes AAC (every Traktor `.stem.m4a`) on EVERY
     OS, where librosa needs CoreAudio (macOS only) or a system ffmpeg. Measured
@@ -98,7 +98,7 @@ def _decode_pyav(path: Path) -> np.ndarray:
 
     with pyav.open_input(path) as container:
         stream = container.streams.audio[0]
-        resampler = av.AudioResampler(format="flt", layout="mono", rate=SR)
+        resampler = av.AudioResampler(format="flt", layout="mono", rate=sr)
         chunks = []
         for frame in container.decode(stream):
             for out in resampler.resample(frame):
@@ -122,16 +122,24 @@ def even_slices(n: int, k: int) -> list[slice]:
     return [slice(int(a), int(max(b, a + 1)) if n else 0) for a, b in zip(edges[:-1], edges[1:])]
 
 
-def _decode(path: Path) -> np.ndarray | None:
+def load(path: Path | str, sr: int = SR) -> tuple[np.ndarray, int]:
+    """Mono float32 at `sr` as `(y, sr)` — `librosa.load`'s shape, raising as it
+    does. EVERY analysis decode goes through here, never `librosa.load` itself:
+    librosa reads AAC only through CoreAudio or a system ffmpeg, so on Windows
+    a `.stem.m4a` failed with "Format not recognised"."""
     try:
-        return _decode_pyav(path)
+        return _decode_pyav(Path(path), sr), sr
     except Exception as ex:  # PyAV missing, or a file FFmpeg cannot open
         log.debug("PyAV could not decode %s (%s); trying librosa", path, ex)
-    try:
-        import librosa
+    import librosa
 
-        y, _ = librosa.load(str(path), sr=SR, mono=True)
-        return y
+    y, _ = librosa.load(str(path), sr=sr, mono=True)
+    return y, sr
+
+
+def _decode(path: Path) -> np.ndarray | None:
+    try:
+        return load(path)[0]
     except Exception as ex:  # any decoder failure: no waveform, not a failed export
         log.warning("could not decode %s for a waveform: %s", path, ex)
         return None

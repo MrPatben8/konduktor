@@ -69,6 +69,8 @@ from .schemas import (
     ExportSetOut,
     ExportPreview,
     Drive,
+    DroppedFiles,
+    DroppedPaths,
     FolderAddRequest,
     FolderTracks,
     FsEntry,
@@ -120,8 +122,12 @@ app.add_middleware(
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         # Packaged desktop app: the webview's origin when Tauri loads the built
-        # frontend (macOS uses tauri://, Windows/Linux use https://tauri.localhost).
+        # frontend. macOS uses tauri://; Windows/Linux default to
+        # https://tauri.localhost, but lib.rs forces the http scheme
+        # (use_https_scheme(false)) so the sidecar is not mixed content —
+        # without the http origin here, the Windows app reaches no API at all.
         "tauri://localhost",
+        "http://tauri.localhost",
         "https://tauri.localhost",
     ],
     allow_methods=["*"],
@@ -1662,10 +1668,10 @@ def analyze_preview(body: AnalyzeRequest) -> AnalyzePreview:
 
 def _decode_for_analysis(path: Path):
     """Mono samples at the rate BOTH detectors work at (they share one decode)."""
-    import librosa
+    from .core import waveform
 
     assert grid_detect._SR == key_detect.SR, "grid and key detection must share a sample rate"
-    return librosa.load(str(path), sr=key_detect.SR, mono=True)
+    return waveform.load(path, sr=key_detect.SR)
 
 
 def _analyse_one(a, track_id: str, body: AnalyzeRequest, result: dict) -> None:
@@ -2317,6 +2323,18 @@ def folder_tracks(path: str) -> FolderTracks:
     )
 
 
+@app.post("/api/folder/dropped", response_model=DroppedFiles)
+def folder_dropped(body: DroppedPaths) -> DroppedFiles:
+    """Files and folders dropped onto the window. Folders are searched all the
+    way down; every audio file found is then addable and playable through the
+    folder routes, as if it had been browsed to in the sidebar."""
+    dest = require_adapter()
+    dropped = FOLDERS.dropped(body.paths, _formats())
+    held = importer._existing_files(dest)
+    rows, files = _folder_rows(dest, dropped.tracks, lambda t: held.get(importer._key(Path(t.id))))
+    return DroppedFiles(tracks=rows, files=files, skipped=dropped.skipped, truncated=dropped.truncated)
+
+
 def _folder_track(track_id: str) -> FolderSource:
     # Only a file a scan found. This is what keeps the audio route from being a
     # way to read any path on the disk.
@@ -2443,8 +2461,28 @@ def folder_add_preview(body: FolderAddRequest) -> dict:
     elif body.mode == "reference":
         # Nothing is copied, so there is no size to fit anywhere.
         out.update(total_bytes=0, free_bytes=None, enough_space=None)
-    drive = _drive_of(Path(body.track_ids[0]), places.drives()) if body.track_ids else None
-    out["removable"] = drive is None or drive["kind"] == "external"
+    elif destination is not None:
+        # Copying a file that is already in the import folder makes a second
+        # copy beside it — legal, but rarely meant, so the dialog says so.
+        home = destination.resolve()
+        out["in_destination"] = sum(
+            1 for t in plan.importable
+            if t.source_path is not None and t.source_path.resolve().is_relative_to(home)
+        )
+    # Per FILE, not per request: a drop can mix the computer's own disk with a
+    # stick, and only the files on the stick go missing when it is unplugged.
+    drives = places.drives()
+    external: dict[str, int] = {}
+    for t in plan.importable:
+        if t.source_path is None:
+            continue
+        drive = _drive_of(t.source_path, drives)
+        if drive is None or drive["kind"] == "external":
+            name = drive["name"] if drive else str(t.source_path.anchor or t.source_path.parent)
+            external[name] = external.get(name, 0) + 1
+    out["removable"] = bool(external)
+    out["removable_count"] = sum(external.values())
+    out["removable_drives"] = sorted(external)
     return out
 
 

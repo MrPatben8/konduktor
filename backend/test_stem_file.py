@@ -262,11 +262,71 @@ def stop_in_encode():
         raise Stop()
 
 
+def encoder_threads():
+    import threading
+
+    return [t.name for t in threading.enumerate() if t.name.startswith("stem-encode-")]
+
+
 try:
     sf.build(MP3, tmp / "cancelled.partial", fake_separate, encoder="aac", checkpoint=stop_in_encode)
     check("a checkpoint that raises stops the build", False, "it finished")
 except Stop:
     check("a checkpoint that raises stops the build", True)
+check("…and no encoder thread outlives it", not encoder_threads(), str(encoder_threads()))
+
+print("== 6. the encode runs on one thread per stream ==")
+
+
+def encode_single_threaded(fp, tracks, *, bit_rate, encoder):
+    """The encode as it was before it was threaded: the reference for the bytes."""
+    tb = fractions.Fraction(1, SR)
+    c = av.open(fp, "w", format="ipod")
+    try:
+        streams = []
+        for k in range(len(tracks)):
+            s = c.add_stream(encoder, rate=SR, layout="stereo")
+            s.bit_rate = bit_rate
+            if k:
+                s.disposition = 0
+            streams.append(s)
+        for offset in range(0, tracks[0].shape[1], sf.FRAME):
+            for s, x in zip(streams, tracks):
+                f = av.AudioFrame.from_ndarray(np.ascontiguousarray(x[:, offset:offset + sf.FRAME]),
+                                               format="fltp", layout="stereo")
+                f.sample_rate, f.pts, f.time_base = SR, offset, tb
+                for p in s.encode(f):
+                    c.mux(p)
+        for s in streams:
+            for p in s.encode(None):
+                c.mux(p)
+    finally:
+        c.close()
+
+
+source = sf.decode(MP3)
+# A length that is not a whole number of frames, and stems that differ from the mix.
+five = [np.ascontiguousarray(t[:, :-333]) for t in (source.pcm, *fake_separate(source.pcm))]
+for enc in encoders:
+    ref, par = tmp / f"ref.{enc}.m4a", tmp / f"par.{enc}.m4a"
+    with open(ref, "wb") as fp:
+        encode_single_threaded(fp, five, bit_rate=320_000, encoder=enc)
+    seen = []
+    with open(par, "wb") as fp:
+        sf._encode(fp, five, bit_rate=320_000, encoder=enc, checkpoint=None, progress=seen.append)
+    check(f"{enc}: the threaded encode is byte-identical to the single-threaded one",
+          ref.read_bytes() == par.read_bytes(), f"{ref.stat().st_size} vs {par.stat().st_size} bytes")
+    check(f"{enc}: progress runs 0 -> 1, never backwards",
+          len(seen) >= 3 and seen[0] == 0 and seen[-1] == 1.0 and seen == sorted(seen), str(seen))
+
+try:
+    with open(tmp / "broken.m4a", "wb") as fp:
+        # A mono array in a stereo stream: that stream's thread fails on its first frame.
+        sf._encode(fp, [five[0], five[1][:1], *five[2:]], bit_rate=320_000, encoder="aac", checkpoint=None)
+    check("a failing encoder thread fails the encode", False, "it finished")
+except Exception as ex:  # noqa: BLE001
+    check("a failing encoder thread fails the encode, with its own error", not isinstance(ex, Stop), repr(ex))
+check("…and no encoder thread outlives it", not encoder_threads(), str(encoder_threads()))
 
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

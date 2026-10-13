@@ -153,13 +153,12 @@ def run(handle, adapter, planned: RemotePlan, opts: convert.Options, *, still_cu
 
                 def separate(pcm):
                     handle.progress(fraction=0.05, status="separating 5 %")
-                    stems = engine.separate(pcm, work, on_progress=on_progress, cancelled=lambda: handle.cancelled)
-                    handle.progress(fraction=0.85, status="encoding 85 %")
-                    return stems
+                    return engine.separate(pcm, work, on_progress=on_progress, cancelled=lambda: handle.cancelled)
 
                 partial = work / f"{n}.stem.m4a"
                 try:
-                    written = sf.build(local, partial, separate, checkpoint=checkpoint)
+                    written = sf.build(local, partial, separate, checkpoint=checkpoint,
+                                       on_encode=convert.encode_reporter(handle, 0.85, 0.9))
                 except (convert._Cancel, EngineCancelled):
                     partial.unlink(missing_ok=True)
                     raise

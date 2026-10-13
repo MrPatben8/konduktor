@@ -235,8 +235,8 @@ def detect_grid(
     if bpm is not None and not (20.0 <= bpm <= 400.0):
         raise ValueError(f"Not a usable BPM: {bpm}")
     if y is None:
-        import librosa
-        y, sr = librosa.load(audio_path, sr=sr, mono=True)
+        from . import waveform
+        y, sr = waveform.load(audio_path, sr=sr)
     y = np.asarray(y, dtype=np.float32)
     duration = len(y) / sr
     if duration < 1.5:

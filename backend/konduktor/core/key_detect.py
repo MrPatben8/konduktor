@@ -178,7 +178,7 @@ def with_detected_key(track, y: np.ndarray | None, sr: int):
 
 
 def detect_key(audio_path: str) -> KeyResult | None:
-    import librosa
+    from . import waveform
 
-    y, sr = librosa.load(audio_path, sr=SR, mono=True)
+    y, sr = waveform.load(audio_path, sr=SR)
     return detect_key_samples(y, sr)

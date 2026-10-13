@@ -170,7 +170,14 @@ Two independent apps that talk over HTTP:
       file** (Convert to Stems). An `ipod` MP4 with five AAC stereo 44.1 kHz
       streams (mix, drums, bass, synths, vox), streams 1-4 `disposition` 0,
       muxed IN LOCKSTEP, plus a `moov/udta/stem` JSON box appended in place
-      (moov is last, so only two sizes change). The separation is a CALLBACK —
+      (moov is last, so only two sizes change). **Each stream encodes on its
+      own thread** (PyAV releases the GIL in FFmpeg; ~3x faster with `aac`,
+      104 → 35 s for a 5-minute track's real stems) while ONE thread muxes in
+      the single-threaded order, so the file is byte-identical; every codec is
+      opened and the header written before a worker starts, since the first
+      `mux()` would otherwise open codecs a worker is using. `aac_coder=fast`
+      was measured and rejected: 3-4x faster per stream, but it drops whole
+      8-20 kHz bands for moments (twoloop: never). The separation is a CALLBACK —
       the backend never imports torch; the engine (below) supplies it, the
       tests a fake. Measured traps: FFmpeg's resampler upmixes mono at -3 dB,
       so mono is duplicated by hand; resampling does not move time; both
@@ -927,6 +934,21 @@ Two independent apps that talk over HTTP:
     could not be dropped on. Targets: playlist + export rows (Sidebar,
     ExportsSection), the tree's zones, the table's reorder, and the DECK
     (App), which loads the grabbed row paused, in its own origin.
+    **Files from Finder / Explorer** (decided 2026-10-13) ride the same store
+    as a `files` payload: `lib/fileDrop.ts` feeds Tauri's `onDragDropEvent`
+    (real paths; a plain browser has none, so no file drop there) through
+    `nativeDragStart`/`Move`/`End`, refused at enter while an `aria-modal`
+    dialog is open or no library is loaded. A playlist/export row opens
+    `AddFilesDialog` with its target, ONE audio file on the deck loads it to
+    listen to, anywhere else (App's root target, with a window overlay) adds
+    to the collection — or says why the library cannot. `POST
+    /api/folder/dropped` resolves the paths first (`FolderScanner.dropped`:
+    folders RECURSIVELY, capped at `MAX_DROPPED`; single files held apart
+    from the folder cache so a partial listing never hides a folder's other
+    files from the sidebar) and makes each file addable and playable through
+    the folder routes. Copy vs in place is asked as for a browsed folder; the
+    add preview counts external-drive files PER FILE (`removable_count` /
+    `removable_drives`, a drop can mix drives) and `in_destination`.
     `ConvertStemsDialog` (**Convert to Stems**, one dialog — decided: Where =
     Replace the originals (its option STATES that Save deletes them, since
     the choice is remembered and may be preselected) or Save to a folder; In
@@ -1098,6 +1120,7 @@ Two independent apps that talk over HTTP:
 
 ```bash
 ./dev.sh                       # start both servers (see README for one-time setup)
+.\dev.ps1                      # the same on Windows (BUILDING-WINDOWS.md)
 
 # Backend
 cd backend && source .venv/bin/activate
@@ -1170,7 +1193,10 @@ serialization path.** It enforces:
   48 kHz resampling does not move time; MP3 and FLAC through both encoders give
   five streams with only the mix enabled, no shift (cross-correlation), the
   bitrate rule (256 floor, lossless 320), every tag + cover; `verify` refuses a
-  shifted, truncated or box-less file; a raising checkpoint cancels.
+  shifted, truncated or box-less file; a raising checkpoint cancels. The
+  threaded encode is byte-identical to a single-threaded reference (with each
+  encoder present), reports progress 0 → 1, and a cancel or a failing encoder
+  thread leaves no thread running.
 - `test_stem_swap.py` — `apply_stem_swaps` on a temp copy of the real
   collection with a generated MP3 (with header) and a real stem file: prep
   reads back at the same decoded second while its START moves by the 2257-
@@ -1367,7 +1393,11 @@ serialization path.** It enforces:
   scan did not find; **a file the collection already points at is never added
   twice** (on Traktor that would be two ENTRYs sharing a primary key — a corrupt
   collection) but still reaches the playlist/export it was headed for; "copy"
-  points the entry at the copy and "reference" at the original.
+  points the entry at the copy and "reference" at the original. And a DROP
+  (`/api/folder/dropped`): folders recursively minus hidden ones, dropped
+  non-audio counted as skipped, only what was dropped becomes streamable, the
+  folder's own listing stays whole, the cap, held files as their collection
+  track, and the preview's per-file external-drive count and `in_destination`.
 - `test_picker.py` — the picker's routes. Pins the scoping, because the bug it
   replaced was invisible: `/api/library/options` flattened every driver's
   detections and returned `[0]`, so a plugged-in USB stick could be offered as

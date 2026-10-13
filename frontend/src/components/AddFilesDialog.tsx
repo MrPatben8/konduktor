@@ -1,7 +1,7 @@
 import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, isServerPath, type FolderAddPreview, type FolderAddRequest, type JobStatus } from '../api'
+import { api, isServerPath, type FolderAddPreview, type FolderAddRequest, type JobStatus, type TrackOrigin } from '../api'
 import { useCaps } from '../lib/capabilities'
 import { placedAudioSummary } from '../lib/platformCopy'
 import { FolderPicker } from './FolderPicker'
@@ -25,6 +25,10 @@ import { FolderPicker } from './FolderPicker'
  * library can reach them, so they are added in place, uploaded nowhere and
  * nothing asked (decided 2026-10-10).
  *
+ * Files dropped onto the window from the OS (`lib/fileDrop.ts`) arrive here
+ * too, so a drop asks exactly what the sidebar's Add to Collection asks. A
+ * drop can mix drives, so the external-drive warning counts files per drive.
+ *
  * A playlist or export target still needs the files in the collection first —
  * both hold collection track ids — so the dialog says so rather than doing it
  * silently. Files the collection already holds are not added again, but still
@@ -45,15 +49,32 @@ export interface AddTarget {
   name: string
 }
 
+/** Where tracks headed for the collection come from: another library's or a
+ *  folder's track ids, or — `dropped` — paths dragged in from the OS. */
+export type ForeignOrigin = TrackOrigin | 'dropped'
+
 interface Props {
   trackIds: string[]
   target: AddTarget | null
+  /** A line about what was left out before the dialog (a drop's non-audio files). */
+  note?: string | null
   onClose: () => void
   onDone: (msg: string) => void
   onError: (msg: string) => void
 }
 
-export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: Props) {
+/** The leave-in-place warning, per drive: a drop can mix the computer's own
+ *  disk with a stick, and only the stick's files go missing on unplug. */
+function removableWarning(p: FolderAddPreview, newCount: number): string {
+  const count = p.removable_count ?? newCount
+  const drives = p.removable_drives ?? []
+  const where = drives.length === 1 ? `${drives[0]}, an external drive` : 'external drives'
+  const what = count >= newCount ? 'These files are' : `${count} of these files are`
+  const unplugged = drives.length === 1 ? 'it is' : 'they are'
+  return `${what} on ${where}. They will go missing from your collection whenever ${unplugged} unplugged.`
+}
+
+export function AddFilesDialog({ trackIds, target, note, onClose, onDone, onError }: Props) {
   const qc = useQueryClient()
   // The LIBRARY's capabilities (this dialog is mounted outside the browsed
   // view's swapped context). A library that places its own audio — a stick —
@@ -177,9 +198,12 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
   const newCount = p?.importable ?? 0
   const shown = places ? 'placed' : mode
   const libraryName = places ? caps.save.app_name : 'your collection'
+  // Every file is held already: nothing is copied or referenced, so there is
+  // nothing to ask — only the target to fill.
+  const nothingNew = !!p && newCount === 0 && p.existing.length > 0
   const canAdd =
-    !starting && shown !== null && !!p && (newCount > 0 || (!!target && p.existing.length > 0)) &&
-    p.enough_space !== false
+    !starting && (shown !== null || nothingNew) && !!p &&
+    (newCount > 0 || (!!target && p.existing.length > 0)) && p.enough_space !== false
 
   const title = target
     ? `Add ${n} track${n === 1 ? '' : 's'} to ${target.name}`
@@ -265,7 +289,9 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
                   </div>
                 )}
 
-                {!places && !uploads && !onServer && (
+                {note && <div className="text-xs text-muted">{note}</div>}
+
+                {!places && !uploads && !onServer && !nothingNew && (
                 <div className="space-y-1">
                   {option(
                     'copy',
@@ -296,9 +322,14 @@ export function AddFilesDialog({ trackIds, target, onClose, onDone, onError }: P
                 )}
 
                 {mode === 'reference' && p?.removable && (
+                  <div className="rounded well px-3 py-2 text-xs text-gold">{removableWarning(p, newCount)}</div>
+                )}
+
+                {mode === 'copy' && !!p?.in_destination && (
                   <div className="rounded well px-3 py-2 text-xs text-gold">
-                    These files are on an external drive. They will go missing from your
-                    collection whenever the drive is unplugged.
+                    {p.in_destination === newCount ? 'These files are' : `${p.in_destination} of these files are`}{' '}
+                    already in your import folder. Copying makes a second copy beside{' '}
+                    {p.in_destination === 1 ? 'it' : 'them'}.
                   </div>
                 )}
 

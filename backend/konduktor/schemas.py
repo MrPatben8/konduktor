@@ -549,6 +549,25 @@ class FolderTracks(BaseModel):
     removable: bool
 
 
+class DroppedPaths(BaseModel):
+    """Files and folders dropped onto the window from Finder / Explorer."""
+
+    paths: list[str]
+
+
+class DroppedFiles(BaseModel):
+    """What a drop resolved to: the audio in it, as a folder lists its files."""
+
+    tracks: list[Track]
+    # As FolderTracks: rows the collection holds are its tracks, and this maps
+    # their collection id back to the file's folder id, which adding takes.
+    files: dict[str, str] = {}
+    # Dropped files that are not audio the library can hold, or are gone.
+    skipped: int = 0
+    # Too many files: only the first MAX_DROPPED are here.
+    truncated: bool = False
+
+
 class FolderAddRequest(BaseModel):
     """Add browsed files to the collection, and optionally to a playlist/export.
 

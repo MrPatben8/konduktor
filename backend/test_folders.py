@@ -197,6 +197,82 @@ with TestClient(main.app, raise_server_exceptions=False) as c:
           c.post("/api/folder/add/preview",
                  json={"track_ids": ["/etc/passwd"], "mode": "reference"}).status_code == 404)
 
+    print("== a drop onto the window: folders all the way down, files as themselves ==")
+    drop = Path(tempfile.mkdtemp()) / "Dropped"
+    d_a = flac(drop / "Album" / "a.flac", title="Dropped A")
+    d_b = flac(drop / "Album" / "CD2" / "b.flac")
+    (drop / "Album" / "cover.jpg").write_bytes(b"not audio")
+    flac(drop / "Album" / ".cache" / "h.flac")
+    single = flac(drop / "Loose" / "single.flac", title="Single")
+    sibling = flac(drop / "Loose" / "sibling.flac")
+    (drop / "Loose" / "readme.txt").write_text("not audio")
+    r = c.post("/api/folder/dropped", json={"paths": [
+        str(drop / "Album"), str(single), str(drop / "Loose" / "readme.txt"),
+        str(drop / "gone.flac"), str(single), str(d_a),
+    ]})
+    check("answers 200", r.status_code == 200, r.text[:300])
+    body = r.json()
+    ids = [t["id"] for t in body["tracks"]]
+    check("the folder's audio, subfolders included, then the file — each once",
+          ids == [str(d_a), str(d_b), str(single)], str(ids))
+    check("a hidden folder inside is left out", str(drop / "Album" / ".cache" / "h.flac") not in ids)
+    check("a dropped non-audio file and a missing one are counted as skipped",
+          body["skipped"] == 2, str(body["skipped"]))
+    check("non-audio INSIDE a dropped folder is not counted", body["skipped"] == 2)
+    check("tags are read", body["tracks"][0]["title"] == "Dropped A")
+    check("not truncated", body["truncated"] is False)
+    check("a dropped file streams",
+          c.get("/api/folder/tracks/audio", params={"track_id": str(single)}).status_code == 200)
+    check("so does one found inside a dropped folder",
+          c.get("/api/folder/tracks/audio", params={"track_id": str(d_b)}).status_code == 200)
+    check("but not its undropped sibling",
+          c.get("/api/folder/tracks/audio", params={"track_id": str(sibling)}).status_code == 404)
+    listed = [t["id"] for t in c.get("/api/folder/tracks", params={"path": str(drop / "Loose")}).json()["tracks"]]
+    check("browsing that folder afterwards still lists ALL of it",
+          listed == [str(sibling), str(single)], str(listed))
+    r = c.post("/api/folder/dropped", json={"paths": [str(drop / "Loose" / "readme.txt")]})
+    check("a non-audio file is never made streamable",
+          r.json()["tracks"] == [] and c.get("/api/folder/tracks/audio", params={
+              "track_id": str(drop / "Loose" / "readme.txt")}).status_code == 404)
+    capped = main.FOLDERS.dropped([str(drop / "Album")], main._formats(), limit=1)
+    check("past the cap the rest are left out, and it says so",
+          len(capped.tracks) == 1 and capped.truncated)
+
+    body = c.post("/api/folder/dropped", json={"paths": [str(one)]}).json()
+    check("a dropped file the collection holds IS its collection track",
+          [t["id"] for t in body["tracks"]] == [added] and body["files"] == {added: str(one)},
+          str(body))
+
+    req = {"track_ids": [str(d_b)], "mode": "copy", "destination": str(drop / "Album")}
+    p = c.post("/api/folder/add/preview", json=req).json()
+    check("copying into the folder they are already in is flagged", p.get("in_destination") == 1, str(p))
+    req["destination"] = str(Path(tempfile.mkdtemp()))
+    p = c.post("/api/folder/add/preview", json=req).json()
+    check("…and not elsewhere", p.get("in_destination") == 0, str(p))
+
+    real_drives = main.places.drives
+    main.places.drives = lambda: [
+        {"name": "Computer", "path": drop.anchor, "kind": "local"},
+        {"name": "Stick", "path": str(drop / "Album"), "kind": "external"},
+    ]
+    try:
+        req = {"track_ids": [str(d_a), str(single)], "mode": "reference"}
+        p = c.post("/api/folder/add/preview", json=req).json()
+        check("the external-drive warning counts files per drive, not by the first",
+              p["removable"] is True and p["removable_count"] == 1 and p["removable_drives"] == ["Stick"],
+              str(p))
+        p = c.post("/api/folder/add/preview", json={"track_ids": [str(single), str(d_a)],
+                                                    "mode": "reference"}).json()
+        check("…whichever file comes first", p["removable_count"] == 1, str(p))
+    finally:
+        main.places.drives = real_drives
+
+    n = len(a.tracks)
+    job = wait(c, c.post("/api/folder/add", json={"track_ids": [str(d_a), str(single)],
+                                                  "mode": "reference"}).json())
+    check("dropped files are added like browsed ones", job["state"] == "done" and len(a.tracks) == n + 2,
+          str(job))
+
     print("== Rekordbox: the same route adds to a master.db ==")
     from konduktor.adapters.rekordbox import discovery as rb_discovery
 

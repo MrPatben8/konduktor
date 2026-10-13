@@ -18,6 +18,11 @@ import { Icon } from './icons'
  * events for its own file drop on Windows, so HTML5 DnD silently dies in the
  * packaged app.
  *
+ * Files dragged in from Finder / Explorer ride the same store as a `files`
+ * payload: Tauri reports that drag (with real paths) instead of the webview,
+ * and `lib/fileDrop.ts` feeds it in through `nativeDragStart` / `Move` / `End`,
+ * so the same targets light up and the same ghost names what a drop would do.
+ *
  * The state lives in a module-level store read through useSyncExternalStore
  * with narrow selectors, so a pointer move re-renders only the target under it
  * (and the ghost) — never the table.
@@ -39,6 +44,12 @@ export type DragPayload =
       source: object
     }
   | { kind: 'node'; node: PlaylistNode; parentId: string | null }
+  /** Files and folders from the OS, as absolute paths. Not yet tracks: a
+   *  target hands them to the drop resolver, which reads what is in them. */
+  | { kind: 'files'; paths: string[] }
+
+/** What a playlist or export row takes: track rows, or files from the OS. */
+export type TracksOrFiles = Exclude<DragPayload, { kind: 'node' }>
 
 export interface DropPoint {
   x: number
@@ -117,44 +128,26 @@ function evaluate() {
 
 let detach: (() => void) | null = null
 
-/** Start a drag. Call it once the press has moved past the source's threshold. */
-export function beginDrag(payload: DragPayload, at: { x: number; y: number; alt: boolean }) {
+/** End the drag in progress, dropping on the target under the pointer if `drop`. */
+function finish(drop: boolean) {
+  const { payload: p, target, hint, x, y, alt } = state
+  detach?.()
+  if (!drop || !p || !target) return
+  const spec = targets.get(target)
+  try {
+    spec?.current.onDrop(p, hint, { x, y, alt })
+  } catch (err) {
+    console.error('drop failed', err)
+  }
+}
+
+/** Publish a new drag and start edge auto-scroll. Returns what undoes both. */
+function open(payload: DragPayload, at: { x: number; y: number; alt: boolean }): () => void {
   detach?.()
   set({ ...IDLE, payload, ...at })
   document.documentElement.classList.add('is-dragging')
   window.getSelection()?.removeAllRanges()
 
-  const onMove = (e: PointerEvent) => {
-    // One notification per move: evaluate() publishes the position with the hint.
-    state = { ...state, x: e.clientX, y: e.clientY, alt: e.altKey }
-    evaluate()
-  }
-  const finish = (drop: boolean) => {
-    const { payload: p, target, hint, x, y, alt } = state
-    detach?.()
-    if (!drop || !p || !target) return
-    const spec = targets.get(target)
-    try {
-      spec?.current.onDrop(p, hint, { x, y, alt })
-    } catch (err) {
-      console.error('drop failed', err)
-    }
-  }
-  const onUp = () => finish(true)
-  const onCancel = () => finish(false)
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape' && e.type === 'keydown') {
-      // Before every other Esc handler: cancelling the drag is all Esc does.
-      e.preventDefault()
-      e.stopImmediatePropagation()
-      finish(false)
-      return
-    }
-    if (e.key === 'Alt' && state.alt !== (e.type === 'keydown')) {
-      set({ alt: e.type === 'keydown' })
-      evaluate()
-    }
-  }
   // Hold near the edge of a `data-drag-scroll` element to scroll it. Its
   // value is the height covered at the top (a sticky header). The edge is
   // thinner than a row and must be HELD for a moment first: otherwise the
@@ -187,6 +180,37 @@ export function beginDrag(payload: DragPayload, at: { x: number; y: number; alt:
   }
   raf = requestAnimationFrame(autoScroll)
 
+  return () => {
+    cancelAnimationFrame(raf)
+    document.documentElement.classList.remove('is-dragging')
+    set(IDLE)
+  }
+}
+
+/** Start a drag. Call it once the press has moved past the source's threshold. */
+export function beginDrag(payload: DragPayload, at: { x: number; y: number; alt: boolean }) {
+  const close = open(payload, at)
+
+  const onMove = (e: PointerEvent) => {
+    // One notification per move: evaluate() publishes the position with the hint.
+    state = { ...state, x: e.clientX, y: e.clientY, alt: e.altKey }
+    evaluate()
+  }
+  const onUp = () => finish(true)
+  const onCancel = () => finish(false)
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && e.type === 'keydown') {
+      // Before every other Esc handler: cancelling the drag is all Esc does.
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      finish(false)
+      return
+    }
+    if (e.key === 'Alt' && state.alt !== (e.type === 'keydown')) {
+      set({ alt: e.type === 'keydown' })
+      evaluate()
+    }
+  }
   window.addEventListener('pointermove', onMove)
   window.addEventListener('pointerup', onUp)
   window.addEventListener('pointercancel', onCancel)
@@ -195,14 +219,12 @@ export function beginDrag(payload: DragPayload, at: { x: number; y: number; alt:
   window.addEventListener('blur', onCancel)
   detach = () => {
     detach = null
-    cancelAnimationFrame(raf)
     window.removeEventListener('pointermove', onMove)
     window.removeEventListener('pointerup', onUp)
     window.removeEventListener('pointercancel', onCancel)
     window.removeEventListener('keydown', onKey, true)
     window.removeEventListener('keyup', onKey, true)
     window.removeEventListener('blur', onCancel)
-    document.documentElement.classList.remove('is-dragging')
     // The pointerup that ended the drag is followed by a click on whatever
     // is under it; that click is part of the drop, not a click of its own.
     const swallow = (e: MouseEvent) => {
@@ -211,9 +233,32 @@ export function beginDrag(payload: DragPayload, at: { x: number; y: number; alt:
     }
     window.addEventListener('click', swallow, true)
     setTimeout(() => window.removeEventListener('click', swallow, true), 0)
-    set(IDLE)
+    close()
   }
   evaluate()
+}
+
+/** A drag the OS owns (files from Finder / Explorer): it enters the window… */
+export function nativeDragStart(payload: DragPayload, at: { x: number; y: number }) {
+  const close = open(payload, { ...at, alt: false })
+  detach = () => {
+    detach = null
+    close()
+  }
+  evaluate()
+}
+
+/** …moves over it (window coordinates, CSS pixels)… */
+export function nativeDragMove(at: { x: number; y: number }) {
+  if (!state.payload) return
+  state = { ...state, ...at }
+  evaluate()
+}
+
+/** …and is dropped (or leaves the window: `drop` false). */
+export function nativeDragEnd(drop: boolean, at?: { x: number; y: number }) {
+  if (drop && at) nativeDragMove(at)
+  finish(drop)
 }
 
 /** A pointerdown handler that starts a drag once the press moves 6 px. A plain
@@ -273,6 +318,10 @@ export function useDropTarget<H>(spec: DropSpec<H>): [(el: HTMLElement | null) =
 function describe(p: DragPayload): { icon: 'music' | 'playlist' | 'folder' | 'smart'; text: string } {
   if (p.kind === 'node')
     return { icon: p.node.kind === 'folder' ? 'folder' : p.node.kind === 'smart' ? 'smart' : 'playlist', text: p.node.name }
+  if (p.kind === 'files')
+    return p.paths.length === 1
+      ? { icon: 'music', text: p.paths[0].split(/[\\/]/).filter(Boolean).pop() ?? p.paths[0] }
+      : { icon: 'music', text: `${p.paths.length} items` }
   if (p.ids.length === 1) {
     const t = p.tracks[0]
     return { icon: 'music', text: t ? [t.artist, t.title].filter(Boolean).join(' – ') || 'Untitled' : '1 track' }

@@ -514,7 +514,27 @@ export interface FolderAddRequest {
 }
 
 export interface FolderAddPreview extends ImportPreview {
+  /** Some of the files to add are on an external drive. */
   removable: boolean
+  /** How many, and on which drives — per FILE, since a drop can mix drives. */
+  removable_count?: number
+  removable_drives?: string[]
+  /** Copy mode: files already inside the import folder (copying makes a
+   *  second copy beside them). */
+  in_destination?: number
+}
+
+/** What files dropped onto the window from the OS resolved to: the audio in
+ *  them (folders searched all the way down), listed as a folder lists its
+ *  files — a file the collection holds is its collection track. */
+export interface DroppedFiles {
+  tracks: Track[]
+  /** Collection id → the file's folder id (= its path), for held rows. */
+  files: Record<string, string>
+  /** Dropped files that are not audio this library can hold, or are gone. */
+  skipped: number
+  /** Too many files: only the first 20,000 are included. */
+  truncated: boolean
 }
 
 export type JobState = 'running' | 'done' | 'failed' | 'cancelled'
@@ -1177,6 +1197,7 @@ export const api = {
   folderAddPreview: (body: FolderAddRequest) =>
     send<FolderAddPreview>('POST', '/api/folder/add/preview', body),
   folderAdd: (body: FolderAddRequest) => send<JobStatus>('POST', '/api/folder/add', body),
+  folderDropped: (paths: string[]) => send<DroppedFiles>('POST', '/api/folder/dropped', { paths }),
   // ---- import ----
   importPreview: (body: ImportRequest) => send<ImportPreview>('POST', '/api/import/preview', body),
   /** Starts the job and returns immediately — poll `job()` for progress. */
