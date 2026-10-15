@@ -870,7 +870,7 @@ Two independent apps that talk over HTTP:
     too, so nested playlists are reachable). Tracks dropped on a playlist go
     through `lib/addTracks.ts` — shared with the context menu's "Add to" —
     which ASKS about duplicates where the platform can hold them (decided:
-    ask each time), and Option/Alt moves them out of the editable playlist
+    ask each time), and Cmd (Ctrl on Windows; `lib/modKey.ts`) moves them out of the editable playlist
     they came from. A device's or Files folder's tracks open `ImportDialog`
     (`trackIds` + `target`) / `AddFilesDialog` with the target filled in
     (`onAddForeign`), so copy-vs-reference is still asked. Export rows take the
@@ -893,7 +893,7 @@ Two independent apps that talk over HTTP:
     / Try again (`backend_restart`). The shell has no timeout of its own. Before
     ready it answers quit requests itself — nothing can be unsaved — and stops
     at ready so it never races `QuitGuard`), `SaveBar` (+ "Discard changes…" when
-    dirty, and the settings gear beside it, whose menu (or `?` anywhere) opens `ShortcutsDialog` — a KEYBOARD MAP (decided 2026-10-15): keys lit in the colour of what they do, a caption explaining the key pointed at or pressed (pressing explains, it never acts: a capture-phase listener keeps the deck's and table's keys from firing), holding or picking ⇧ / Cmd-Ctrl / Alt relights it with that layer, mouse gestures listed beneath. It shrinks to fit the dialog and drops the words on the keys when too small. Its content is `lib/shortcuts.ts`, written out BY HAND, so a new or changed shortcut in `PrepStrip` / `TrackTable` must be added there too — and `AppSettings` ("Konduktor Settings…": app-level prefs, each with its default in `APP_SETTING_DEFAULTS` and read through `useAppSetting`; today `expandPlaylistFolders` and `exportRootFolder`, both default off — the latter read by the backend at `run_export` and passed down as `ExportPayload.root_folder`. The Sidebar holds folder open state as per-id overrides of that setting, reset on a new library or a change of the setting, and carried to the new ids when a rename/move changes a folder's path id)), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
+    dirty, and the settings gear beside it, whose menu (or `?` anywhere) opens `ShortcutsDialog` — a KEYBOARD MAP (decided 2026-10-15): keys lit in the colour of what they do, a caption explaining the key pointed at or pressed (pressing explains, it never acts: a capture-phase listener keeps the deck's and table's keys from firing), holding or picking ⇧ / Cmd-Ctrl relights it with that layer, mouse gestures listed beneath. It shrinks to fit the dialog and drops the words on the keys when too small. Its content is `lib/shortcuts.ts`, written out BY HAND, so a new or changed shortcut in `PrepStrip` / `TrackTable` must be added there too — and `AppSettings` ("Konduktor Settings…": app-level prefs, each with its default in `APP_SETTING_DEFAULTS` and read through `useAppSetting`; today `expandPlaylistFolders` and `exportRootFolder`, both default off — the latter read by the backend at `run_export` and passed down as `ExportPayload.root_folder`. The Sidebar holds folder open state as per-id overrides of that setting, reset on a new library or a change of the setting, and carried to the new ids when a rename/move changes a folder's path id)), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
     `TrackTable` (**the one track list** — All Tracks, playlists, exports and
     devices. TanStack Table + **virtualized** grid; per-row play button,
     configurable columns, header sorting, inline double-click editing, and
@@ -915,7 +915,7 @@ Two independent apps that talk over HTTP:
     pointer-y / ROW_HEIGHT. dnd-kit still reorders the header's columns.
     Every table's rows are a DRAG SOURCE through `lib/drag.tsx` (a selected row
     carries the selection, the payload's `lead` is the row grabbed, `dragFrom`
-    says whose ids they are and which editable playlist an Option-drag leaves);
+    says whose ids they are and which editable playlist a Cmd/Ctrl-drag leaves — a Cmd/Ctrl press arms a drag, and stays a toggle-click if it never moves);
     the in-table reorder is just the table's own drop target.)
     **`lib/drag.tsx` — drag and drop across the window** (decided 2026-10-06,
     [the discussion](.claude/discussions/discuss-drag-and-drop-2026-10-06.md)):
@@ -1029,7 +1029,7 @@ Two independent apps that talk over HTTP:
     one amplitude lane per stem, each normalised to its own 99.5th percentile
     but never below 5% of the loudest (a silent stem stays silent).
     `MainWaveform` draws the lanes in the file's own colours with a mute
-    button at each lane's left edge (click = mute, Alt/Option-click = solo);
+    button at each lane's left edge (click = mute, Cmd/Ctrl-click = solo);
     Q W E R mute stems 1-4, Shift+ solos. **Solo is not a mode**: it SETS the
     mutes (every other stem muted), so each stem stays freely mutable after
     it; soloing the one stem still playing unmutes all. Mutes reset per track. Memory is

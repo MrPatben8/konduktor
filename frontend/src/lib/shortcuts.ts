@@ -2,21 +2,20 @@
 // Written out BY HAND, not derived from the handlers: keep it in step with
 // `PrepStrip` (deck), `TrackTable` (track list) and `SettingsMenu` (`?`).
 import { cueTypeColor, GRID_MARKER_ACTIVE_COLOR } from './cues'
-
-export const IS_MAC = /Mac|iPhone|iPad/.test(navigator.userAgent)
+import { IS_MAC } from './modKey'
 
 /** A modifier layer of the keyboard. `mod` is Cmd on macOS, Ctrl elsewhere —
  *  the handlers accept either, but the map names your key. */
-export type Layer = 'base' | 'shift' | 'mod' | 'alt'
-export const LAYERS: Layer[] = ['base', 'shift', 'mod', 'alt']
+export type Layer = 'base' | 'shift' | 'mod'
+export const LAYERS: Layer[] = ['base', 'shift', 'mod']
 
 export const MODIFIER_KEY: Record<Exclude<Layer, 'base'>, string> = IS_MAC
-  ? { shift: '⇧', mod: '⌘', alt: '⌥' }
-  : { shift: 'Shift', mod: 'Ctrl', alt: 'Alt' }
+  ? { shift: '⇧', mod: '⌘' }
+  : { shift: 'Shift', mod: 'Ctrl' }
 
 export const LAYER_NAMES: Record<Layer, string> = IS_MAC
-  ? { base: 'No modifier', shift: '⇧ Shift', mod: '⌘ Command', alt: '⌥ Option' }
-  : { base: 'No modifier', shift: 'Shift', mod: 'Ctrl', alt: 'Alt' }
+  ? { base: 'No modifier', shift: '⇧ Shift', mod: '⌘ Command' }
+  : { base: 'No modifier', shift: 'Shift', mod: 'Ctrl' }
 
 /** Where a shortcut acts. The colour lights its key on the map. */
 export type Area = 'deck' | 'list' | 'any'
@@ -62,7 +61,7 @@ export function padRange(slots: number): string {
 }
 
 export function bindings(slots: number): Bindings {
-  const b: Bindings = { base: {}, shift: {}, mod: {}, alt: {} }
+  const b: Bindings = { base: {}, shift: {}, mod: {} }
   const pad = cueTypeColor('cue')
   padCodes(slots).forEach((code, i) => {
     const n = i + 1
@@ -142,7 +141,7 @@ export const MOUSE: { title: string; rows: MouseGesture[] }[] = [
       { gesture: 'Drag', on: 'waveform', text: 'Scratch' },
       { mod: 'mod', gesture: 'Scroll', on: 'waveform', text: 'Zoom in and out' },
       { gesture: 'Click', on: 'stem button', text: 'Mute or unmute that stem' },
-      { mod: 'alt', gesture: 'Click', on: 'stem button', text: 'Solo that stem' },
+      { mod: 'mod', gesture: 'Click', on: 'stem button', text: 'Solo that stem' },
       { gesture: 'Right-click', on: 'pad', text: 'Hotcue type, colour, rename, delete' },
     ],
   },
@@ -155,7 +154,7 @@ export const MOUSE: { title: string; rows: MouseGesture[] }[] = [
       { gesture: 'Double-click', on: 'cell', text: 'Edit it in place' },
       { gesture: 'Right-click', text: 'Track menu. On the header: choose columns' },
       { gesture: 'Drag', on: 'rows', text: 'Onto a playlist or export to add, onto the deck to load, within a playlist to reorder' },
-      { mod: 'alt', gesture: 'Drag', on: 'rows', text: 'Move them out of this playlist into another' },
+      { mod: 'mod', gesture: 'Drag', on: 'rows', text: 'Move them out of this playlist into another' },
     ],
   },
   {
@@ -200,18 +199,18 @@ export const KEY_ROWS: KeyDef[][] = (() => {
     ? [
         key('Fn', 'fn'),
         key('ControlLeft', 'control', 1.25, undefined, 'ctrl'),
-        key('AltLeft', 'option ⌥', 1.25, 'alt', '⌥'),
+        key('AltLeft', 'option ⌥', 1.25, undefined, '⌥'),
         key('MetaLeft', 'command ⌘', 1.5, 'mod', '⌘'),
         key('Space', 'space', 6.75),
         key('MetaRight', 'command ⌘', 1.5, 'mod', '⌘'),
-        key('AltRight', 'option ⌥', 1.25, 'alt', '⌥'),
+        key('AltRight', 'option ⌥', 1.25, undefined, '⌥'),
       ]
     : [
         key('ControlLeft', 'Ctrl', 1.25, 'mod'),
         key('MetaLeft', 'Win', 1.25),
-        key('AltLeft', 'Alt', 1.25, 'alt'),
+        key('AltLeft', 'Alt', 1.25),
         key('Space', 'space', 6.75),
-        key('AltRight', 'Alt', 1.25, 'alt'),
+        key('AltRight', 'Alt', 1.25),
         key('MetaRight', 'Win', 1.25),
         key('ControlRight', 'Ctrl', 1.5, 'mod'),
       ]
@@ -246,7 +245,6 @@ export const KEYS_BY_CODE: Record<string, KeyDef> = Object.fromEntries(
 /** The modifier layer a physical key holds, if it is one. */
 export function modifierLayer(code: string): Exclude<Layer, 'base'> | null {
   if (code === 'ShiftLeft' || code === 'ShiftRight') return 'shift'
-  if (code === 'AltLeft' || code === 'AltRight') return 'alt'
   const mod = IS_MAC ? ['MetaLeft', 'MetaRight'] : ['ControlLeft', 'ControlRight']
   return mod.includes(code) ? 'mod' : null
 }

@@ -55,7 +55,7 @@ export function ShortcutsDialog({ onClose }: Props) {
   const [pressed, setPressed] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [areas, setAreas] = useState<ReadonlySet<Area>>(new Set(ALL_AREAS))
-  const layer: Layer = held.has('mod') ? 'mod' : held.has('alt') ? 'alt' : held.has('shift') ? 'shift' : sticky
+  const layer: Layer = held.has('mod') ? 'mod' : held.has('shift') ? 'shift' : sticky
   const q = query.trim().toLowerCase()
 
   // ---- fit: one key unit from the width the map has ----
@@ -430,8 +430,8 @@ function Caption({
     <>
       <span className="text-text">Point at a key, or press it, to see what it does.</span>
       <span className="text-xs">
-        Hold <Kbd>{MODIFIER_KEY.shift}</Kbd> <Kbd>{MODIFIER_KEY.mod}</Kbd> or <Kbd>{MODIFIER_KEY.alt}</Kbd>, or pick
-        one above, to see what each modifier changes.
+        Hold <Kbd>{MODIFIER_KEY.shift}</Kbd> or <Kbd>{MODIFIER_KEY.mod}</Kbd>, or pick one above, to see what each
+        modifier changes.
       </span>
       <span className="text-xs">
         {padRange(slots)} are this library's {slots} hotcue pads; Q W E R are the stems of a stem track.

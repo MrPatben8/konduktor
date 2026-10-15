@@ -13,7 +13,7 @@ const plural = (n: number) => `${n} track${n === 1 ? '' : 's'}`
  * elsewhere they are skipped and the message says so. Nothing is asked when
  * there are none.
  *
- * `moveFrom` is an Option-drag out of another (editable) playlist: once the
+ * `moveFrom` is a Cmd/Ctrl-drag out of another (editable) playlist: once the
  * tracks are in the target they leave the source. Cancelling the duplicates
  * question cancels the move too.
  *

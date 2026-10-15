@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { CuePoint } from '../api'
 import type { BeatGrid } from '../lib/beatgrid'
 import { Icon } from '../lib/icons'
+import { hasMod, MOD_NAME } from '../lib/modKey'
 import { drawBeatgrid, drawCuePoint, drawCues, drawLoop, drawLoopIn, drawPlayhead } from '../lib/cues'
 import { laneScales, makeSpans, paintRaw, rawSpans, tintAt, type RawWave } from '../lib/rawWave'
 import { paintLane, paintWave, type WaveColumn } from '../lib/waveform'
@@ -38,7 +39,7 @@ interface Props {
   onScratchEnd: (t: number) => void
   /** A stem track: one lane per stem instead of the three-band mix view. */
   lanes?: StemLane[] | null
-  /** Click = mute toggle; Alt/Option-click = solo (mute all the others). */
+  /** Click = mute toggle; Cmd/Ctrl-click = solo (mute all the others). */
   onStemToggle?: (index: number, solo: boolean) => void
 }
 
@@ -55,8 +56,6 @@ export interface StemLane {
   /** Its keyboard shortcut, for the tooltip ("Q"). */
   shortcut: string
 }
-
-const ALT = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? 'Option' : 'Alt'
 
 const DRAG_THRESHOLD = 3 // px before a press becomes a scratch (vs a click-seek)
 
@@ -277,8 +276,8 @@ export function MainWaveform({
             <div key={k} className="flex flex-1 items-center">
               <button
                 onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => onStemToggle?.(k, e.altKey)}
-                title={`${lane.name} — click to mute, ${ALT}-click to mute all the others (${lane.shortcut})`}
+                onClick={(e) => onStemToggle?.(k, hasMod(e))}
+                title={`${lane.name} — click to mute, ${MOD_NAME}-click to mute all the others (${lane.shortcut})`}
                 aria-pressed={lane.audible}
                 className={`flex h-5 min-w-5 items-center justify-center rounded-md px-1 font-mono text-[10px] font-semibold backdrop-blur-md transition-opacity ${
                   lane.audible ? '' : 'opacity-40'
