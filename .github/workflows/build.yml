@@ -169,6 +169,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write   # required to create the tag + release
+      pull-requests: read   # to read the merged PR's patch notes
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -188,12 +189,50 @@ jobs:
           pattern: konduktor-*
           path: artifacts   # → artifacts/konduktor-macOS/…, artifacts/konduktor-Windows/…
 
+      # Release notes from the "Patch notes" section of the PR that merged this
+      # commit into main (dev → main merges carry many features in one PR, so
+      # its title alone says little). Written under "What's Changed", the
+      # heading the app's update dialog reads. No PR (a manual run, a direct
+      # push) or no such section → GitHub's generated notes, as before.
+      - name: Patch notes from the merged PR
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" \
+            --jq '[.[] | select(.base.ref == "main" and .merged_at != null)][0].body // ""' \
+            > pr-body.md || : > pr-body.md
+          python3 - <<'EOF'
+          import os, re
+          body = open("pr-body.md", encoding="utf-8").read().replace("\r\n", "\n")
+          body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+          section, level = [], None
+          for line in body.split("\n"):
+              m = re.match(r"^(#{1,6})\s+(.*?)\s*#*\s*$", line)
+              if level is None:
+                  if m and re.fullmatch(r"patch[\s-]?notes:?", m.group(2), re.I):
+                      level = len(m.group(1))
+              elif m and len(m.group(1)) <= level:
+                  break
+              else:
+                  section.append(line)
+          notes = "\n".join(section).strip()
+          found = bool(notes)
+          if found:
+              with open("release-notes.md", "w", encoding="utf-8") as f:
+                  f.write("## What's Changed\n\n" + notes + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"found={'true' if found else 'false'}\n")
+          print("Using the PR's patch notes." if found else "No patch notes section; using generated notes.")
+          EOF
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}-b${{ github.run_number }}
           name: Konduktor v${{ steps.version.outputs.version }}-b${{ github.run_number }}
           target_commitish: ${{ github.sha }}
-          generate_release_notes: true   # auto changelog from commits/PRs since last release
+          body_path: ${{ steps.notes.outputs.found == 'true' && 'release-notes.md' || '' }}
+          generate_release_notes: ${{ steps.notes.outputs.found != 'true' }}
           fail_on_unmatched_files: true
           files: artifacts/**/*
