@@ -35,6 +35,7 @@ import { HotcueBar } from './HotcueBar'
 import { LoopControls, LOOP_SIZES, type LoopMode } from './LoopControls'
 import { MainWaveform, MIN_SEC, MAX_SEC, DEFAULT_SEC, type StemLane } from './MainWaveform'
 import { OverviewWaveform } from './OverviewWaveform'
+import { useAppSetting } from './AppSettings'
 import { usePrefsWriter } from '../lib/prefs'
 
 /** Keys that mute stems 1-4 (Shift = solo), by `KeyboardEvent.code`. */
@@ -66,13 +67,19 @@ interface Props {
   onEditTags?: (track: Track) => void
 }
 
-/** m:ss.t — the deck's readouts show tenths, as a CDJ does. */
-function fmtTenths(secs: number): string {
+/** mm:ss.f — tenths by default, as a CDJ does; `places` is the
+ *  `timeReadoutDecimals` setting (0 drops the fraction). Truncates, never
+ *  rounds, so the readout never shows a second before it has been reached. */
+function fmtTime(secs: number, places: number): string {
   if (!isFinite(secs) || secs < 0) secs = 0
-  const tenths = Math.floor(secs * 10)
-  const m = Math.floor(tenths / 600)
-  const s = Math.floor((tenths % 600) / 10)
-  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${tenths % 10}`
+  const scale = 10 ** places
+  // The epsilon keeps e.g. 0.3 s from reading 0.299 at 3 places.
+  const units = Math.floor(secs * scale + 1e-6)
+  const whole = Math.floor(units / scale)
+  const m = Math.floor(whole / 60)
+  const s = whole % 60
+  const frac = places > 0 ? `.${(units % scale).toString().padStart(places, '0')}` : ''
+  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}${frac}`
 }
 
 /**
@@ -117,6 +124,7 @@ export function PrepStrip({
   // which the pointer's :active alone cannot, since the key never touches it.
   const [cueHeld, setCueHeld] = useState(false)
   const [current, setCurrent] = useState(0)
+  const timeDecimals = useAppSetting('timeReadoutDecimals')
   const [duration, setDuration] = useState(0)
   const [ready, setReady] = useState(false)
   const [cols, setCols] = useState<WaveColumn[] | null>(null)
@@ -1338,12 +1346,12 @@ export function PrepStrip({
         <div className="well flex h-11 shrink-0 items-stretch rounded-xl">
           <div className="flex flex-col justify-center gap-px px-4">
             <span className="text-[10px] tracking-[0.08em] text-faint">ELAPSED</span>
-            <span className="font-mono text-[17px] font-medium">{fmtTenths(current)}</span>
+            <span className="font-mono text-[17px] font-medium">{fmtTime(current, timeDecimals)}</span>
           </div>
           <span aria-hidden className="my-2 w-px bg-line" />
           <div className="flex flex-col justify-center gap-px px-4">
             <span className="text-[10px] tracking-[0.08em] text-faint">REMAIN</span>
-            <span className="font-mono text-[17px] font-medium">−{fmtTenths(Math.max(0, duration - current))}</span>
+            <span className="font-mono text-[17px] font-medium">−{fmtTime(Math.max(0, duration - current), timeDecimals)}</span>
           </div>
           <span aria-hidden className="my-2 w-px bg-line" />
           <div className="flex flex-col justify-center gap-px px-4">
