@@ -14,6 +14,8 @@ export const APP_SETTING_DEFAULTS = {
   expandPlaylistFolders: false,
   /** Read by the backend when an export runs (`main.run_export`). */
   exportRootFolder: false,
+  /** Decimal places on the deck's ELAPSED / REMAIN readouts (0–3). */
+  timeReadoutDecimals: 1,
 }
 
 type AppSettingKey = keyof typeof APP_SETTING_DEFAULTS
@@ -29,6 +31,7 @@ export function AppSettings({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient()
   const expandFolders = useAppSetting('expandPlaylistFolders')
   const exportRootFolder = useAppSetting('exportRootFolder')
+  const timeDecimals = useAppSetting('timeReadoutDecimals')
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -93,6 +96,28 @@ export function AppSettings({ onClose }: { onClose: () => void }) {
                   top level of the exported library. Applies from the next export.
                 </span>
               </span>
+            </label>
+          </section>
+          <section className="space-y-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-faint">Deck</h3>
+            <label className="flex items-start justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-sm text-text">Time readout precision</span>
+                <span className="block text-xs text-faint">
+                  Decimal places on the Elapsed and Remain readouts. 1 shows tenths, 3 milliseconds.
+                </span>
+              </span>
+              <select
+                className="shrink-0 rounded-lg well px-2 py-1 text-sm text-text outline-none"
+                value={timeDecimals}
+                onChange={(e) => void set({ timeReadoutDecimals: Number(e.target.value) })}
+              >
+                {['00:00', '00:00.0', '00:00.00', '00:00.000'].map((sample, n) => (
+                  <option key={n} value={n}>
+                    {n} — {sample}
+                  </option>
+                ))}
+              </select>
             </label>
           </section>
           {error && <div className="text-xs text-pink">{error}</div>}

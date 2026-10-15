@@ -114,9 +114,9 @@ interface RowActions {
   onCancelDraft: () => void
   /** Whether a drag of tracks (or of files from the OS) may drop on this playlist. */
   acceptsTracks: (node: PlaylistNode, p: TracksOrFiles) => boolean
-  /** Tracks dropped on a playlist; `alt` (Option) moves them out of the
+  /** Tracks dropped on a playlist; `mod` (Cmd/Ctrl) moves them out of the
    *  playlist they came from. */
-  onDropTracks: (node: PlaylistNode, p: TracksOrFiles, alt: boolean) => void
+  onDropTracks: (node: PlaylistNode, p: TracksOrFiles, mod: boolean) => void
   /** Whether a node may be dragged elsewhere in the tree. */
   canMove: (node: PlaylistNode) => boolean
   /** A node dropped in the tree: `index` among `parentId`'s children,
@@ -227,8 +227,8 @@ function NodeRow({
   // drop TARGET for tracks. Whether it takes them is the node's own
   // `can_add_tracks` plus the library being writable, decided by the sidebar.
   const startDrag = usePressToDrag(() => (renaming ? null : { kind: 'node', node, parentId }))
-  const moves = (p: DragPayload, alt: boolean) =>
-    p.kind === 'tracks' && alt && !!p.fromPlaylist && p.fromPlaylist !== node.id
+  const moves = (p: DragPayload, mod: boolean) =>
+    p.kind === 'tracks' && mod && !!p.fromPlaylist && p.fromPlaylist !== node.id
 
   // A node held over this row: which zone, and where that puts it. Never into
   // itself or anything nested in it; a drop that would leave it exactly where
@@ -267,14 +267,14 @@ function NodeRow({
       if (h.zone === 'tracks') {
         if (p.kind === 'tracks' && p.origin === 'device') return `Import into ${node.name}…`
         if ((p.kind === 'tracks' && p.origin === 'folder') || p.kind === 'files') return `Add to ${node.name}…`
-        return `${moves(p, at.alt) ? 'Move' : 'Add'} to ${node.name}`
+        return `${moves(p, at.mod) ? 'Move' : 'Add'} to ${node.name}`
       }
       if (h.zone === 'peek') return null
       return h.zone === 'into' || h.zone === 'first' ? `Move into ${node.name}` : `Move ${h.zone} ${node.name}`
     },
     onDrop: (p, h, at) => {
       if (p.kind !== 'node') {
-        if (h.zone === 'tracks') actions.onDropTracks(node, p, at.alt)
+        if (h.zone === 'tracks') actions.onDropTracks(node, p, at.mod)
       } else if ('parentId' in h) {
         actions.onMoveNode(p.node, h.parentId, h.index, h.zone === 'into' && !expanded ? node : null)
       }
@@ -678,7 +678,7 @@ export function Sidebar({
         onError((e as Error).message)
       }
     },
-    onDropTracks: async (node, p, alt) => {
+    onDropTracks: async (node, p, mod) => {
       if (p.kind === 'files') {
         onAddForeign('dropped', p.paths, { kind: 'playlist', id: node.id, name: node.name })
         return
@@ -693,7 +693,7 @@ export function Sidebar({
           playlist: node,
           ids: p.ids,
           duplicatesAllowed: caps.playlists.duplicates,
-          moveFrom: alt ? p.fromPlaylist : undefined,
+          moveFrom: mod ? p.fromPlaylist : undefined,
         })
         if (msg) onDone(msg)
       } catch (e) {

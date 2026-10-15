@@ -1,24 +1,41 @@
 import { createPortal } from 'react-dom'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import type { SortingState } from '@tanstack/react-table'
 import { maxPosition, moveToPosition } from '../lib/playlistOrder'
+import { COLUMN_MENU } from '../lib/trackColumns'
 
 interface Props {
   /** The playlist's full entry order — never the sorted or filtered view, so
    *  the move is safe whatever the table is showing. */
   order: string[]
-  /** The tracks to move; they keep their playlist order as one block. */
+  /** The tracks to move, in the order the table shows them. */
   ids: string[]
+  /** The table's sort. While there is one, the block may keep that order
+   *  instead of its playlist order — which writes the sort into the playlist. */
+  sorting: SortingState
   onMove: (order: string[]) => void
   onClose: () => void
 }
 
-/** "Set Position…": type where the first selected track should end up. */
-export function SetPositionDialog({ order, ids, onMove, onClose }: Props) {
+/** "Key" / "Key descending, then BPM" — the sort as the Order choice names it. */
+function describeSort(sorting: SortingState): string {
+  const label = (id: string) => COLUMN_MENU.find((c) => c.id === id)?.label ?? id
+  return sorting.map((s) => `${label(s.id)}${s.desc ? ' descending' : ''}`).join(', then ')
+}
+
+/** "Set Position…": type where the first selected track should end up, and —
+ *  while the table is sorted — whether the block keeps its playlist order or
+ *  takes the sorted one. */
+export function SetPositionDialog({ order, ids, sorting, onMove, onClose }: Props) {
   const moving = new Set(ids)
   const count = order.filter((id) => moving.has(id)).length
   const max = maxPosition(order, moving)
   const current = order.findIndex((id) => moving.has(id)) + 1
   const [value, setValue] = useState(String(current))
+  // With one track there is no order to choose; unsorted, both are the same.
+  const canSort = sorting.length > 0 && count > 1
+  const [mode, setMode] = useState<'playlist' | 'sorted'>('sorted')
+  const sorted = canSort && mode === 'sorted'
   const input = useRef<HTMLInputElement>(null)
 
   useEffect(() => input.current?.select(), [])
@@ -28,7 +45,7 @@ export function SetPositionDialog({ order, ids, onMove, onClose }: Props) {
 
   const submit = () => {
     if (position === null) return
-    const next = moveToPosition(order, moving, position)
+    const next = moveToPosition(order, moving, position, sorted ? ids : undefined)
     if (next.some((id, i) => id !== order[i])) onMove(next)
     onClose()
   }
@@ -40,6 +57,26 @@ export function SetPositionDialog({ order, ids, onMove, onClose }: Props) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
+
+  const option = (value: 'playlist' | 'sorted', label: string, detail: ReactNode) => (
+    <label
+      className={`flex cursor-pointer gap-3 rounded-lg px-3 py-2 ${
+        mode === value ? 'is-selected' : 'hover:bg-ink-850'
+      }`}
+    >
+      <input
+        type="radio"
+        name="position-order"
+        checked={mode === value}
+        onChange={() => setMode(value)}
+        className="mt-0.5 accent-accent"
+      />
+      <span className="min-w-0 flex-1">
+        <span className="block text-text">{label}</span>
+        <span className="block text-xs text-faint">{detail}</span>
+      </span>
+    </label>
+  )
 
   const span = (p: number) => (count > 1 ? `#${p}–${p + count - 1}` : `#${p}`)
 
@@ -79,9 +116,24 @@ export function SetPositionDialog({ order, ids, onMove, onClose }: Props) {
             {position === null
               ? 'Type a position.'
               : count > 1
-                ? `Will occupy ${span(position)}`
+                ? `Will occupy ${span(position)}${canSort ? '' : ', in the order they have in the playlist.'}`
                 : `Now ${span(current)} · will be ${span(position)}`}
           </div>
+          {canSort && (
+            <div role="radiogroup" aria-label="Order" className="space-y-1">
+              <div className="text-xs uppercase tracking-wide text-faint">Order</div>
+              {option(
+                'sorted',
+                `As sorted: ${describeSort(sorting)}`,
+                'In the order shown here. The playlist keeps this order when you clear the sort.',
+              )}
+              {option(
+                'playlist',
+                'Playlist order',
+                'In the order they have in the playlist now, whatever the sort shows.',
+              )}
+            </div>
+          )}
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-3">
           <button

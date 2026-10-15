@@ -27,6 +27,25 @@ describe('moveToPosition', () => {
   })
 })
 
+describe('moveToPosition with a view order', () => {
+  const sorted = (ids: string[], position: number, view: string[]) =>
+    moveToPosition(order, new Set(ids), position, view).join('')
+
+  it('moves the block in the order the view shows it', () => {
+    expect(sorted(['B', 'E', 'F'], 1, ['F', 'B', 'E'])).toBe('FBEACDG')
+    expect(sorted(['B', 'E', 'F'], 3, ['E', 'F', 'B'])).toBe('ACEFBDG')
+  })
+
+  it('ignores view ids that are not moving', () => {
+    expect(sorted(['B', 'D'], 1, ['G', 'D', 'A', 'B'])).toBe('DBACEFG')
+  })
+
+  it('keeps a twice-listed track together, and appends a track the view lacks', () => {
+    expect(moveToPosition(['A', 'B', 'A', 'C'], new Set(['A', 'C']), 1, ['C', 'A']).join('')).toBe('CAAB')
+    expect(sorted(['B', 'C'], 1, ['C'])).toBe('CBADEFG')
+  })
+})
+
 describe('maxPosition', () => {
   it('leaves room for the block behind its first track', () => {
     expect(maxPosition(order, new Set(['B']))).toBe(7)

@@ -870,7 +870,7 @@ Two independent apps that talk over HTTP:
     too, so nested playlists are reachable). Tracks dropped on a playlist go
     through `lib/addTracks.ts` — shared with the context menu's "Add to" —
     which ASKS about duplicates where the platform can hold them (decided:
-    ask each time), and Option/Alt moves them out of the editable playlist
+    ask each time), and Cmd (Ctrl on Windows; `lib/modKey.ts`) moves them out of the editable playlist
     they came from. A device's or Files folder's tracks open `ImportDialog`
     (`trackIds` + `target`) / `AddFilesDialog` with the target filled in
     (`onAddForeign`), so copy-vs-reference is still asked. Export rows take the
@@ -893,7 +893,7 @@ Two independent apps that talk over HTTP:
     / Try again (`backend_restart`). The shell has no timeout of its own. Before
     ready it answers quit requests itself — nothing can be unsaved — and stops
     at ready so it never races `QuitGuard`), `SaveBar` (+ "Discard changes…" when
-    dirty, and the settings gear beside it, whose menu opens `ShortcutsDialog` — the shortcut list is written out BY HAND, so a new or changed shortcut in `PrepStrip` / `TrackTable` must be added there too — and `AppSettings` ("Konduktor Settings…": app-level prefs, each with its default in `APP_SETTING_DEFAULTS` and read through `useAppSetting`; today `expandPlaylistFolders` and `exportRootFolder`, both default off — the latter read by the backend at `run_export` and passed down as `ExportPayload.root_folder`. The Sidebar holds folder open state as per-id overrides of that setting, reset on a new library or a change of the setting, and carried to the new ids when a rename/move changes a folder's path id)), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
+    dirty, and the settings gear beside it, whose menu (or `?` anywhere) opens `ShortcutsDialog` — a KEYBOARD MAP (decided 2026-10-15): keys lit in the colour of what they do, a caption explaining the key pointed at or pressed (pressing explains, it never acts: a capture-phase listener keeps the deck's and table's keys from firing), holding or picking ⇧ / Cmd-Ctrl relights it with that layer, mouse gestures listed beneath. It shrinks to fit the dialog and drops the words on the keys when too small. Its content is `lib/shortcuts.ts`, written out BY HAND, so a new or changed shortcut in `PrepStrip` / `TrackTable` must be added there too — and `AppSettings` ("Konduktor Settings…": app-level prefs, each with its default in `APP_SETTING_DEFAULTS` and read through `useAppSetting`; today `expandPlaylistFolders` and `exportRootFolder`, both default off — the latter read by the backend at `run_export` and passed down as `ExportPayload.root_folder` — and `timeReadoutDecimals` (0–3, default 1: the deck's ELAPSED / REMAIN, truncated, never rounded). The Sidebar holds folder open state as per-id overrides of that setting, reset on a new library or a change of the setting, and carried to the new ids when a rename/move changes a folder's path id)), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
     `TrackTable` (**the one track list** — All Tracks, playlists, exports and
     devices. TanStack Table + **virtualized** grid; per-row play button,
     configurable columns, header sorting, inline double-click editing, and
@@ -915,7 +915,7 @@ Two independent apps that talk over HTTP:
     pointer-y / ROW_HEIGHT. dnd-kit still reorders the header's columns.
     Every table's rows are a DRAG SOURCE through `lib/drag.tsx` (a selected row
     carries the selection, the payload's `lead` is the row grabbed, `dragFrom`
-    says whose ids they are and which editable playlist an Option-drag leaves);
+    says whose ids they are and which editable playlist a Cmd/Ctrl-drag leaves — a Cmd/Ctrl press arms a drag, and stays a toggle-click if it never moves);
     the in-table reorder is just the table's own drop target.)
     **`lib/drag.tsx` — drag and drop across the window** (decided 2026-10-06,
     [the discussion](.claude/discussions/discuss-drag-and-drop-2026-10-06.md)):
@@ -996,9 +996,12 @@ Two independent apps that talk over HTTP:
     column chooser uses those; "Add to" lists
     playlists + exports and acts on the whole selection; in an editable
     playlist "Set Position…" (`SetPositionDialog`, `lib/playlistOrder.ts`)
-    moves the selection as ONE block in playlist order so its first track
-    lands at #N — allowed while sorted/filtered, unlike drag, because it
-    reorders the FULL entry list; "Remove ▸" holds
+    moves the selection as ONE block so its first track lands at #N —
+    allowed while sorted/filtered, unlike drag, because it reorders the FULL
+    entry list. While the table is sorted the dialog asks the block's Order:
+    "As sorted" (default; the menu's ids arrive in VIEW order, so the sort is
+    written into the playlist and survives clearing it) or playlist order;
+    "Remove ▸" holds
     From this playlist / From this export / Grids / Hotcues / From collection,
     each behind a `ConfirmDialog` — as is the playlist Delete key. Enter
     confirms unless a button has focus, so Tab-to-Cancel + Enter cancels) + `EditTagsDialog`
@@ -1026,7 +1029,7 @@ Two independent apps that talk over HTTP:
     one amplitude lane per stem, each normalised to its own 99.5th percentile
     but never below 5% of the loudest (a silent stem stays silent).
     `MainWaveform` draws the lanes in the file's own colours with a mute
-    button at each lane's left edge (click = mute, Alt/Option-click = solo);
+    button at each lane's left edge (click = mute, Cmd/Ctrl-click = solo);
     Q W E R mute stems 1-4, Shift+ solos. **Solo is not a mode**: it SETS the
     mutes (every other stem muted), so each stem stays freely mutable after
     it; soloing the one stem still playing unmutes all. Mutes reset per track. Memory is
@@ -1037,8 +1040,10 @@ Two independent apps that talk over HTTP:
     badge, the readout well (ELAPSED / REMAIN to tenths, KEY, and `BpmReadout` —
     click to type an exact BPM; with no grid, a typed or tapped BPM CREATES one at the playhead, and
     Set grid on a track with no BPM opens the readout to ask rather than failing), SNAP, Analyze, Auto hotcues. **Waveforms**:
-    `MainWaveform` (scrolling; zoom +/− in its corner and Cmd/Ctrl+scroll, owned
-    by `PrepStrip` so it survives track switches and persists) over
+    `MainWaveform` (scrolling; zoom +/− in its corner and Cmd/Ctrl+scroll,
+    0.25–64 s across, owned by `PrepStrip` so it survives track switches and
+    persists; a toggle under the zoom buttons draws the RAW signal instead
+    of bars — `lib/rawWave.ts`, below; persisted as `mainWaveRaw`) over
     `OverviewWaveform`, which frames the main view's visible range around the
     playhead (it takes `secPerView` for exactly that). **Controls**: play, CUE, `LoopControls`, then EITHER
     `HotcueBar` OR — in **Grid mode** — `GridEditStrip`, then `TempoControls`
@@ -2166,6 +2171,38 @@ The prep strip plays every track through the **Web Audio API** (a plain
   full scale for whole sections, so a linear map draws a solid orange wall
   instead of the kick pulse. The main view draws 2 px bars with a 1 px gap,
   **binned in track space** so bars scroll rather than flicker.
+- `rawWave.ts` — **the raw waveform** (decided 2026-10-15,
+  [the discussion](.claude/discussions/discuss-raw-waveform-2026-10-15.md)):
+  the bars' ~7 ms columns of unsigned band energy hide where a kick starts, so
+  the main view can draw the signal itself as a thin line, after Traktor at
+  full zoom. Its own toggle (under the zoom buttons), NOT tied to Grid mode —
+  tried first, changed after use.
+  **Shape exact, colour approximate**: the tint is the bar palette weighted by
+  the ~7 ms band columns, lerped, mixed in OKLab with the CHROMA restored
+  (`bandColour`) — a plain RGB mean of orange/violet/cyan lands near grey and
+  read as mud; chosen from five variants rendered on real tracks; the scale is fixed by the track's loudest
+  sample (no per-view gain, so nothing pumps while scrolling). Each pixel is a
+  min→max stroke stretched to touch its neighbour's, so it reads as an
+  envelope zoomed out and a line zoomed in with no switch-over. Data: min/max
+  per 32 samples summarised at load (~4 MB / 6 min) for wide views; below 128
+  samples a pixel, the visible window read straight from the `AudioBuffer`
+  (`copyFromChannel` — no full-length mono copy). Bins sit on a track-space
+  grid like the bars'. A stem track's lanes each draw their own raw line, in
+  the stem's colour, each at its own peak floored at 5% of the loudest.
+  Measured in WKWebView: 0.3 ms a frame at 0.25 s, ~5 ms at 64 s.
+- `decodeAlign.ts` — **the deck's decode vs the grid's time base.** Positions
+  are in the backend's PyAV decode; the deck decodes with `decodeAudioData`.
+  Measured 2026-10-15 with click files: identical on every format and engine
+  EXCEPT a **header-less MP3 under WebKit** (the macOS app), decoded 529
+  samples (12 ms) EARLY — CoreAudio trims the decoder delay with no header to
+  say so; FFmpeg (and Chromium/WebView2) do not. Invisible under bars, a
+  12 ms miss on the raw line. The engine's offset is MEASURED once per session
+  by decoding a built-in 2.7 KB header-less MP3 (`decodeProbe.ts`, click at a
+  known FFmpeg sample), and a header-less MP3's buffer (`mp3HeaderFrame`, a
+  port of `core/mp3_gapless.parse` behind an is-it-an-MP3 gate) is padded by
+  it in `decodeUrl` — so playback, scratch and both waveforms move together.
+  Not measured: a header without a trusted encoder-delay field; Edge on a real
+  Windows machine (Chromium on macOS matched).
 - `cues.ts` — canvas drawers for cue markers (type-colored), the active loop
   band, the beatgrid (per-segment white beats/brighter downbeats, plus marker
   lines — gold for the one governing the playhead, accent otherwise, with the

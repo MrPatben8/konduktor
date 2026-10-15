@@ -1,6 +1,6 @@
 import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Icon } from '../lib/icons'
 
 /** One row of a menu: an action, a submenu (`label ▸`), or a section heading. */
@@ -69,6 +69,27 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
     }
   }, [])
 
+  // Opened near the bottom of the window, the menu moves UP so its bottom sits
+  // at the window's edge, and only scrolls once it cannot fit at its natural
+  // height at all. The first render places it at the cursor; this measures the
+  // list's full height before paint and repositions it.
+  const [vertical, setVertical] = useState<{ top: number; maxHeight: number }>(() => {
+    const top = Math.min(y, window.innerHeight - 100)
+    return { top, maxHeight: Math.min(MENU_MAX_HEIGHT, window.innerHeight - top - 8) }
+  })
+  useLayoutEffect(() => {
+    const panel = rootRef.current?.firstElementChild as HTMLElement | null
+    const list = panel?.firstElementChild as HTMLElement | null
+    if (!panel || !list) return
+    const natural = Math.min(
+      MENU_MAX_HEIGHT,
+      panel.offsetHeight - list.clientHeight + list.scrollHeight,
+    )
+    const top = Math.max(8, Math.min(y, window.innerHeight - 8 - natural))
+    const maxHeight = Math.min(MENU_MAX_HEIGHT, window.innerHeight - top - 8)
+    setVertical((v) => (v.top === top && v.maxHeight === maxHeight ? v : { top, maxHeight }))
+  }, [y, items])
+
   return createPortal(
     // `contents`: the panels are fixed-positioned, so this wrapper must take no
     // part in layout. As an ordinary empty block it became one more item in
@@ -78,14 +99,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
         items={items}
         onClose={onClose}
         className="min-w-[160px]"
-        style={(() => {
-          const top = Math.min(y, window.innerHeight - 100)
-          return {
-            top,
-            left: Math.min(x, window.innerWidth - 180),
-            maxHeight: Math.min(MENU_MAX_HEIGHT, window.innerHeight - top - 8),
-          }
-        })()}
+        style={{ ...vertical, left: Math.min(x, window.innerWidth - 180) }}
       />
     </div>,
     document.body,

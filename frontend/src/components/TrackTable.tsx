@@ -31,6 +31,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import type { Track, TrackOrigin } from '../api'
 import { beginDrag, useDragPayload, useDropTarget } from '../lib/drag'
+import { hasMod } from '../lib/modKey'
 import { TRACK_COLUMNS } from '../lib/trackColumns'
 
 /** Fields this platform can persist, for the table's per-cell edit gating.
@@ -73,11 +74,12 @@ interface Props {
    *  active: reordering a partial or re-sorted list would lose the real order. */
   reorder?: { enabled: boolean; onReorder: (ids: string[]) => void }
   /** Where dragged rows come from: whose ids they are, and the editable
-   *  playlist they leave on an Option-drag (move). Defaults to the collection. */
+   *  playlist they leave on a Cmd/Ctrl-drag (move). Defaults to the collection. */
   dragFrom?: { origin: TrackOrigin; playlistId?: string }
   /** Delete/Backspace removes the selected tracks from this view. */
   onRemove?: (ids: string[]) => void
-  onRowContextMenu?: (track: Track, x: number, y: number) => void
+  /** `viewIds` is every row's id in the order shown (sorted, filtered). */
+  onRowContextMenu?: (track: Track, x: number, y: number, viewIds: string[]) => void
   /** Right-click on the header row (the column chooser). */
   onHeaderContextMenu?: (x: number, y: number) => void
   onPlay?: (track: Track) => void
@@ -431,7 +433,7 @@ export function TrackTable({
           fromPlaylist: from?.playlistId,
           source: tableKey,
         },
-        { x: e.clientX, y: e.clientY, alt: e.altKey },
+        { x: e.clientX, y: e.clientY, mod: hasMod(e) },
       )
     }
     const release = () => (pressRef.current = null)
@@ -579,7 +581,9 @@ export function TrackTable({
                   if (selection && (e.shiftKey || e.metaKey || e.ctrlKey)) e.preventDefault()
                 }}
                 onPointerDown={(e) => {
-                  if (e.button !== 0 || e.shiftKey || e.metaKey || e.ctrlKey) return
+                  // Cmd/Ctrl arms a drag too (it MOVES the tracks); without
+                  // movement it stays a Cmd/Ctrl-click, which toggles the row.
+                  if (e.button !== 0 || e.shiftKey || (!hasMod(e) && (e.metaKey || e.ctrlKey))) return
                   // Not from a control inside the row (play, stars, an edit field).
                   if ((e.target as HTMLElement).closest('button, input, textarea, select, a')) return
                   pressRef.current = { x: e.clientX, y: e.clientY, index: vr.index }
@@ -591,7 +595,7 @@ export function TrackTable({
                   // Right-clicking outside the selection retargets it, so the
                   // menu always acts on what is highlighted.
                   if (selection && !isSelected) selectOnly(vr.index)
-                  onRowContextMenu(row.original, e.clientX, e.clientY)
+                  onRowContextMenu(row.original, e.clientX, e.clientY, rows.map((r) => r.original.id))
                 }}
               >
                 <span className="w-10 shrink-0 pr-2 text-right text-xs tabular-nums text-faint">

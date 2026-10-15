@@ -1,11 +1,20 @@
 import { useEffect, useRef } from 'react'
 import type { CuePoint } from '../api'
 import type { BeatGrid } from '../lib/beatgrid'
+import { Icon } from '../lib/icons'
+import { hasMod, MOD_NAME } from '../lib/modKey'
 import { drawBeatgrid, drawCuePoint, drawCues, drawLoop, drawLoopIn, drawPlayhead } from '../lib/cues'
+import { laneScales, makeSpans, paintRaw, rawSpans, tintAt, type RawWave } from '../lib/rawWave'
 import { paintLane, paintWave, type WaveColumn } from '../lib/waveform'
 
 interface Props {
   cols: WaveColumn[]
+  /** The samples, for the raw view. */
+  raw?: RawWave | null
+  /** Draw the raw signal as a thin line instead of bars (the toggle under
+      the zoom buttons; owned by the parent, which persists it). */
+  rawMode?: boolean
+  onRawModeChange?: (raw: boolean) => void
   currentTime: number
   duration: number
   cues: CuePoint[]
@@ -30,12 +39,14 @@ interface Props {
   onScratchEnd: (t: number) => void
   /** A stem track: one lane per stem instead of the three-band mix view. */
   lanes?: StemLane[] | null
-  /** Click = mute toggle; Alt/Option-click = solo (mute all the others). */
+  /** Click = mute toggle; Cmd/Ctrl-click = solo (mute all the others). */
   onStemToggle?: (index: number, solo: boolean) => void
 }
 
 export interface StemLane {
   data: Float32Array
+  /** The stem's samples, for the raw view. */
+  raw?: RawWave | null
   name: string
   color: string
   /** Not muted. */
@@ -46,11 +57,9 @@ export interface StemLane {
   shortcut: string
 }
 
-const ALT = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? 'Option' : 'Alt'
-
 const DRAG_THRESHOLD = 3 // px before a press becomes a scratch (vs a click-seek)
 
-export const MIN_SEC = 2 // most zoomed-in (seconds across the view)
+export const MIN_SEC = 0.25 // most zoomed-in (seconds across the view): a kick's attack spans dozens of px
 export const MAX_SEC = 64 // most zoomed-out
 export const DEFAULT_SEC = 16
 
@@ -62,6 +71,9 @@ export const DEFAULT_SEC = 16
  */
 export function MainWaveform({
   cols,
+  raw = null,
+  rawMode = false,
+  onRawModeChange,
   currentTime,
   duration,
   cues,
@@ -89,6 +101,7 @@ export function MainWaveform({
   const dragRef = useRef<{ startX: number; startTime: number; lastT: number; moved: boolean } | null>(
     null,
   )
+  const spansRef = useRef(makeSpans())
 
   // Draw closes over the latest props/state; a ref lets the ResizeObserver call
   // the current version without re-subscribing.
@@ -111,7 +124,25 @@ export function MainWaveform({
       // 2 px bars with a 1 px gap: the texture that makes the scrolling view
       // read as discrete energy rather than a smear.
       const bars = { bar: Math.max(1, Math.round(2 * dpr)), gap: Math.max(1, Math.round(dpr)) }
-      if (lanes && lanes.length) {
+      // The raw line's minimum stroke, so silence and flat stretches still read.
+      const thick = Math.max(1, 1.25 * dpr)
+      const spans = spansRef.current
+      if (rawMode && lanes && lanes.length && lanes.every((l) => l.raw)) {
+        const laneH = h / lanes.length
+        const scales = laneScales(lanes.map((l) => l.raw!.peak), laneH / 2 - thick)
+        lanes.forEach((lane, k) => {
+          rawSpans(lane.raw!, startSec, endSec, w, spans)
+          ctx.globalAlpha = lane.audible ? 0.92 : 0.18
+          paintRaw(ctx, spans, k * laneH, laneH, scales[k], thick, lane.color)
+        })
+        ctx.globalAlpha = 1
+        ctx.fillStyle = 'rgba(255,255,255,0.06)'
+        for (let k = 1; k < lanes.length; k++) ctx.fillRect(0, Math.round(k * laneH), w, Math.max(1, Math.round(dpr)))
+      } else if (rawMode && !lanes?.length && raw) {
+        rawSpans(raw, startSec, endSec, w, spans)
+        const scale = (h / 2 - thick) / Math.max(raw.peak, 1e-6)
+        paintRaw(ctx, spans, 0, h, scale, thick, (t) => tintAt(cols, duration, t))
+      } else if (lanes && lanes.length) {
         // Stem lanes, Traktor-style: each stem its own strip in its own colour.
         const laneH = h / lanes.length
         lanes.forEach((lane, k) => {
@@ -245,8 +276,8 @@ export function MainWaveform({
             <div key={k} className="flex flex-1 items-center">
               <button
                 onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => onStemToggle?.(k, e.altKey)}
-                title={`${lane.name} — click to mute, ${ALT}-click to mute all the others (${lane.shortcut})`}
+                onClick={(e) => onStemToggle?.(k, hasMod(e))}
+                title={`${lane.name} — click to mute, ${MOD_NAME}-click to mute all the others (${lane.shortcut})`}
                 aria-pressed={lane.audible}
                 className={`flex h-5 min-w-5 items-center justify-center rounded-md px-1 font-mono text-[10px] font-semibold backdrop-blur-md transition-opacity ${
                   lane.audible ? '' : 'opacity-40'
@@ -263,9 +294,10 @@ export function MainWaveform({
         </div>
       )}
 
-      {/* Zoom controls (Traktor-style +/-). stopPropagation on down so tapping a
-          button doesn't begin a scratch drag. */}
-      <div className="absolute right-2 top-2 flex flex-col gap-1">
+      {/* Zoom in · raw/bars · zoom out, centred on the waveform's height.
+          stopPropagation on down so tapping a button doesn't begin a scratch
+          drag. */}
+      <div className="absolute right-2 top-1/2 flex -translate-y-1/2 flex-col gap-1">
         <button
           onPointerDown={(e) => e.stopPropagation()}
           onClick={zoomIn}
@@ -274,6 +306,17 @@ export function MainWaveform({
           title="Zoom in"
         >
           +
+        </button>
+        <button
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => onRawModeChange?.(!rawMode)}
+          aria-pressed={rawMode}
+          aria-label="Raw waveform"
+          className="btn-glass flex h-6 w-6 items-center justify-center rounded-lg text-text backdrop-blur-md"
+          title={rawMode ? 'Raw waveform — click for bars' : 'Bars — click for the raw waveform: the exact shape of every transient'}
+        >
+          {/* The icon shows the mode in force: bars, or the raw line. */}
+          <Icon name={rawMode ? 'sine' : 'wave'} size={14} />
         </button>
         <button
           onPointerDown={(e) => e.stopPropagation()}

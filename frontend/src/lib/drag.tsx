@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import type { PlaylistNode, Track, TrackOrigin } from '../api'
 import { Icon } from './icons'
+import { hasMod, MOD_KEY } from './modKey'
 
 /**
  * Drag and drop across the whole window: track rows onto sidebar playlists,
@@ -38,7 +39,7 @@ export type DragPayload =
       /** Which library the ids belong to — a device's or a folder's are not
        *  the collection's, so collection targets must not take them as such. */
       origin: TrackOrigin
-      /** The editable playlist they were dragged out of, for Option = move. */
+      /** The editable playlist they were dragged out of, for Cmd/Ctrl = move. */
       fromPlaylist?: string
       /** Identity of the table that started the drag (its own reorder target). */
       source: object
@@ -54,8 +55,8 @@ export type TracksOrFiles = Exclude<DragPayload, { kind: 'node' }>
 export interface DropPoint {
   x: number
   y: number
-  /** Option/Alt held: tracks dragged out of a playlist MOVE instead of copy. */
-  alt: boolean
+  /** Cmd (macOS) / Ctrl held: tracks dragged out of a playlist MOVE instead of copy. */
+  mod: boolean
 }
 
 export interface DropSpec<H> {
@@ -73,13 +74,13 @@ interface State {
   payload: DragPayload | null
   x: number
   y: number
-  alt: boolean
+  mod: boolean
   target: HTMLElement | null
   hint: unknown
   label: string | null
 }
 
-const IDLE: State = { payload: null, x: 0, y: 0, alt: false, target: null, hint: null, label: null }
+const IDLE: State = { payload: null, x: 0, y: 0, mod: false, target: null, hint: null, label: null }
 let state: State = IDLE
 const listeners = new Set<() => void>()
 const targets = new Map<HTMLElement, { current: DropSpec<unknown> }>()
@@ -107,9 +108,9 @@ function sameHint(a: unknown, b: unknown): boolean {
 
 /** Find the innermost target under the pointer that accepts, and record its hint. */
 function evaluate() {
-  const { payload, x, y, alt } = state
+  const { payload, x, y, mod } = state
   if (!payload) return
-  const at = { x, y, alt }
+  const at = { x, y, mod }
   let el = document.elementFromPoint(x, y) as HTMLElement | null
   while (el) {
     const spec = targets.get(el)
@@ -130,19 +131,19 @@ let detach: (() => void) | null = null
 
 /** End the drag in progress, dropping on the target under the pointer if `drop`. */
 function finish(drop: boolean) {
-  const { payload: p, target, hint, x, y, alt } = state
+  const { payload: p, target, hint, x, y, mod } = state
   detach?.()
   if (!drop || !p || !target) return
   const spec = targets.get(target)
   try {
-    spec?.current.onDrop(p, hint, { x, y, alt })
+    spec?.current.onDrop(p, hint, { x, y, mod })
   } catch (err) {
     console.error('drop failed', err)
   }
 }
 
 /** Publish a new drag and start edge auto-scroll. Returns what undoes both. */
-function open(payload: DragPayload, at: { x: number; y: number; alt: boolean }): () => void {
+function open(payload: DragPayload, at: { x: number; y: number; mod: boolean }): () => void {
   detach?.()
   set({ ...IDLE, payload, ...at })
   document.documentElement.classList.add('is-dragging')
@@ -188,12 +189,12 @@ function open(payload: DragPayload, at: { x: number; y: number; alt: boolean }):
 }
 
 /** Start a drag. Call it once the press has moved past the source's threshold. */
-export function beginDrag(payload: DragPayload, at: { x: number; y: number; alt: boolean }) {
+export function beginDrag(payload: DragPayload, at: { x: number; y: number; mod: boolean }) {
   const close = open(payload, at)
 
   const onMove = (e: PointerEvent) => {
     // One notification per move: evaluate() publishes the position with the hint.
-    state = { ...state, x: e.clientX, y: e.clientY, alt: e.altKey }
+    state = { ...state, x: e.clientX, y: e.clientY, mod: hasMod(e) }
     evaluate()
   }
   const onUp = () => finish(true)
@@ -206,8 +207,8 @@ export function beginDrag(payload: DragPayload, at: { x: number; y: number; alt:
       finish(false)
       return
     }
-    if (e.key === 'Alt' && state.alt !== (e.type === 'keydown')) {
-      set({ alt: e.type === 'keydown' })
+    if (e.key === MOD_KEY && state.mod !== (e.type === 'keydown')) {
+      set({ mod: e.type === 'keydown' })
       evaluate()
     }
   }
@@ -240,7 +241,7 @@ export function beginDrag(payload: DragPayload, at: { x: number; y: number; alt:
 
 /** A drag the OS owns (files from Finder / Explorer): it enters the window… */
 export function nativeDragStart(payload: DragPayload, at: { x: number; y: number }) {
-  const close = open(payload, { ...at, alt: false })
+  const close = open(payload, { ...at, mod: false })
   detach = () => {
     detach = null
     close()
@@ -276,7 +277,7 @@ export function usePressToDrag(make: () => DragPayload | null): (e: React.Pointe
       if (Math.hypot(m.clientX - start.x, m.clientY - start.y) < 6) return
       stop()
       const payload = makeRef.current()
-      if (payload) beginDrag(payload, { x: m.clientX, y: m.clientY, alt: m.altKey })
+      if (payload) beginDrag(payload, { x: m.clientX, y: m.clientY, mod: hasMod(m) })
     }
     const stop = () => {
       window.removeEventListener('pointermove', onMove)

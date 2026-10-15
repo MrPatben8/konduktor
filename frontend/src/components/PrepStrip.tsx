@@ -21,18 +21,21 @@ import { CUE_TYPE_LABELS, cueTypeColor } from '../lib/cues'
 import { keyColor } from '../lib/format'
 import { readOnlyShort, readOnlyNotice } from '../lib/platformCopy'
 import { analyzeStems, analyzeWaveform, type WaveColumn } from '../lib/waveform'
+import type { RawWave } from '../lib/rawWave'
 import { setAmbientFromArt } from '../lib/ambient'
 import { Icon } from '../lib/icons'
 import { ScratchEngine } from '../lib/scratchEngine'
 import { PlaybackEngine } from '../lib/playbackEngine'
 import { invalidateTrackLists } from '../lib/trackQueries'
 import { AutoCueDialog, eventLabel } from './AutoCueDialog'
+import { TrackInfoDialog } from './TrackInfoDialog'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { BpmReadout, GridEditStrip, TempoControls, TempoFold } from './GridControls'
 import { HotcueBar } from './HotcueBar'
 import { LoopControls, LOOP_SIZES, type LoopMode } from './LoopControls'
 import { MainWaveform, MIN_SEC, MAX_SEC, DEFAULT_SEC, type StemLane } from './MainWaveform'
 import { OverviewWaveform } from './OverviewWaveform'
+import { useAppSetting } from './AppSettings'
 import { usePrefsWriter } from '../lib/prefs'
 
 /** Keys that mute stems 1-4 (Shift = solo), by `KeyboardEvent.code`. */
@@ -59,15 +62,24 @@ interface Props {
   cuesRefresh?: number
   /** Reports whether the deck is playing, so the library can light its row. */
   onPlayingChange?: (playing: boolean) => void
+  /** Opens Edit Tags for the loaded track — passed only where the library
+   *  will accept the edit, so the cover popup offers it only then. */
+  onEditTags?: (track: Track) => void
 }
 
-/** m:ss.t — the deck's readouts show tenths, as a CDJ does. */
-function fmtTenths(secs: number): string {
+/** mm:ss.f — tenths by default, as a CDJ does; `places` is the
+ *  `timeReadoutDecimals` setting (0 drops the fraction). Truncates, never
+ *  rounds, so the readout never shows a second before it has been reached. */
+function fmtTime(secs: number, places: number): string {
   if (!isFinite(secs) || secs < 0) secs = 0
-  const tenths = Math.floor(secs * 10)
-  const m = Math.floor(tenths / 600)
-  const s = Math.floor((tenths % 600) / 10)
-  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${tenths % 10}`
+  const scale = 10 ** places
+  // The epsilon keeps e.g. 0.3 s from reading 0.299 at 3 places.
+  const units = Math.floor(secs * scale + 1e-6)
+  const whole = Math.floor(units / scale)
+  const m = Math.floor(whole / 60)
+  const s = whole % 60
+  const frac = places > 0 ? `.${(units % scale).toString().padStart(places, '0')}` : ''
+  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}${frac}`
 }
 
 /**
@@ -102,6 +114,7 @@ export function PrepStrip({
   origin = 'collection',
   cuesRefresh = 0,
   onPlayingChange,
+  onEditTags,
 }: Props) {
   const qc = useQueryClient()
   const [playing, setPlaying] = useState(false)
@@ -111,9 +124,13 @@ export function PrepStrip({
   // which the pointer's :active alone cannot, since the key never touches it.
   const [cueHeld, setCueHeld] = useState(false)
   const [current, setCurrent] = useState(0)
+  const timeDecimals = useAppSetting('timeReadoutDecimals')
   const [duration, setDuration] = useState(0)
   const [ready, setReady] = useState(false)
   const [cols, setCols] = useState<WaveColumn[] | null>(null)
+  // The raw waveform's data: the mix's samples, or one per stem lane.
+  const [raw, setRaw] = useState<RawWave | null>(null)
+  const [stemRaws, setStemRaws] = useState<RawWave[] | null>(null)
   // A stem track: its stems (from the FILE), their lanes, and which are muted
   // — reset per track, as Traktor's stem deck does. There is no separate solo
   // state: solo is a shortcut that SETS the mutes, so every stem stays freely
@@ -129,7 +146,9 @@ export function PrepStrip({
   const [snap, setSnap] = useState(true)
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null)
   const [cuePoint, setCuePoint] = useState(0) // floating "CUE" point (frontend-only)
+  const [infoOpen, setInfoOpen] = useState(false) // the cover's track-info popup
   const [secPerView, setSecPerView] = useState(DEFAULT_SEC) // main-waveform zoom (persisted)
+  const [rawWave, setRawWave] = useState(false) // main waveform: raw line instead of bars (persisted)
   // ONE size, in beats, for beat loops and beat jump alike (persisted).
   const [beatSize, setBeatSize] = useState(4)
   const [loopMode, setLoopMode] = useState<LoopMode>('beat')
@@ -164,7 +183,7 @@ export function PrepStrip({
 
   const trackId = track?.id ?? null
 
-  // Main-waveform zoom persists to userprefs.json so it survives track switches
+  // Main-waveform zoom (and the raw/bars toggle) persists to userprefs.json so it survives track switches
   // (MainWaveform unmounts during each load) and app restarts. Hydrate once from
   // the shared ['prefs'] query, then persist changes through the shared,
   // debounced prefs writer (as App's column layout does).
@@ -178,11 +197,12 @@ export function PrepStrip({
     if (typeof z === 'number' && isFinite(z)) {
       setSecPerView(Math.min(MAX_SEC, Math.max(MIN_SEC, z)))
     }
+    if ((prefsQuery.data as { mainWaveRaw?: unknown }).mainWaveRaw === true) setRawWave(true)
   }, [prefsQuery.data])
   useEffect(() => {
     if (!zoomHydratedRef.current) return // don't clobber saved prefs pre-hydration
-    writePrefs({ mainZoomSec: secPerView })
-  }, [secPerView, writePrefs])
+    writePrefs({ mainZoomSec: secPerView, mainWaveRaw: rawWave })
+  }, [secPerView, rawWave, writePrefs])
 
   // The loop/jump size persists the same way (survives track switches +
   // restarts). `beatJumpBeats` is its name from when only beat jump had a size;
@@ -271,11 +291,15 @@ export function PrepStrip({
     scratchRef.current = null
     if (!trackId) {
       setCols(null)
+      setRaw(null)
+      setStemRaws(null)
       setWaveStatus('loading')
       return
     }
     let cancelled = false
     setCols(null)
+    setRaw(null)
+    setStemRaws(null)
     setStems(null)
     setStemLanes(null)
     setWaveStatus('loading')
@@ -286,15 +310,17 @@ export function PrepStrip({
       .then(async (found) => {
         if (found.length) {
           const res = await analyzeStems(found.map((_, k) => trackStemUrl(origin, trackId, k)))
-          return { cols: res.cols, buffers: res.buffers, lanes: res.lanes, stems: found }
+          return { cols: res.cols, buffers: res.buffers, lanes: res.lanes, stems: found, raw: null, raws: res.raws }
         }
         const res = await analyzeWaveform(trackAudioUrl(origin, trackId))
-        return { cols: res.cols, buffers: [res.buffer], lanes: null, stems: null }
+        return { cols: res.cols, buffers: [res.buffer], lanes: null, stems: null, raw: res.raw, raws: null }
       })
     load
       .then((res) => {
         if (cancelled) return
         setCols(res.cols)
+        setRaw(res.raw)
+        setStemRaws(res.raws)
         setStems(res.stems)
         setStemLanes(res.lanes)
         setWaveStatus('ready')
@@ -917,7 +943,9 @@ export function PrepStrip({
   const activeMarkerIndex = grid ? grid.markerIndexAt(current) : -1
   const activeMarker = activeMarkerIndex >= 0 ? grid!.markers[activeMarkerIndex] : null
   // ~4px of the current zoom, so "on the marker" stays usable at 2s and 64s/view.
-  const markerHitSec = Math.max(0.01, secPerView / 250)
+  // ~4 px of the view either side, so "at a marker" stays a marker-sized
+  // target at deep zoom instead of 4% of a 0.25 s view.
+  const markerHitSec = Math.max(0.001, secPerView / 250)
   const atMarker = !!grid && grid.isOnMarker(current, markerHitSec)
   const beforeFirstMarker = !!grid && current < grid.markers[0].start - GRID_EPS
 
@@ -1097,6 +1125,7 @@ export function PrepStrip({
     stems && stemLanes
       ? stems.map((st, k) => ({
           data: stemLanes[k],
+          raw: stemRaws?.[k] ?? null,
           name: st.name,
           color: st.color,
           audible: stemLevels[k] > 0,
@@ -1282,7 +1311,10 @@ export function PrepStrip({
     <div className="glass flex h-[19.75rem] shrink-0 flex-col gap-2 p-4">
       {/* ---- Header: the track, its readouts, the analysis actions ---- */}
       <div className="flex h-12 shrink-0 items-center gap-3">
-        <CoverThumb trackId={track && origin === 'collection' ? track.id : null} />
+        <CoverThumb
+          trackId={track && origin === 'collection' ? track.id : null}
+          onOpen={track ? () => setInfoOpen(true) : undefined}
+        />
         <div className="min-w-0 flex-1">
           {track ? (
             <>
@@ -1314,12 +1346,12 @@ export function PrepStrip({
         <div className="well flex h-11 shrink-0 items-stretch rounded-xl">
           <div className="flex flex-col justify-center gap-px px-4">
             <span className="text-[10px] tracking-[0.08em] text-faint">ELAPSED</span>
-            <span className="font-mono text-[17px] font-medium">{fmtTenths(current)}</span>
+            <span className="font-mono text-[17px] font-medium">{fmtTime(current, timeDecimals)}</span>
           </div>
           <span aria-hidden className="my-2 w-px bg-line" />
           <div className="flex flex-col justify-center gap-px px-4">
             <span className="text-[10px] tracking-[0.08em] text-faint">REMAIN</span>
-            <span className="font-mono text-[17px] font-medium">−{fmtTenths(Math.max(0, duration - current))}</span>
+            <span className="font-mono text-[17px] font-medium">−{fmtTime(Math.max(0, duration - current), timeDecimals)}</span>
           </div>
           <span aria-hidden className="my-2 w-px bg-line" />
           <div className="flex flex-col justify-center gap-px px-4">
@@ -1390,6 +1422,9 @@ export function PrepStrip({
             {showWaves ? (
               <MainWaveform
                 cols={cols}
+                raw={raw}
+                rawMode={rawWave}
+                onRawModeChange={setRawWave}
                 currentTime={current}
                 duration={duration}
                 cues={cueData?.cues ?? []}
@@ -1567,6 +1602,21 @@ export function PrepStrip({
           onClose={() => setPadMenu(null)}
         />
       )}
+      {infoOpen && track && (
+        <TrackInfoDialog
+          track={track}
+          artUrl={origin === 'collection' ? api.artUrl(track.id) : null}
+          onClose={() => setInfoOpen(false)}
+          onEditTags={
+            onEditTags
+              ? () => {
+                  setInfoOpen(false)
+                  onEditTags(track)
+                }
+              : undefined
+          }
+        />
+      )}
       {autoOpen && track && (
         <AutoCueDialog
           track={track}
@@ -1585,14 +1635,19 @@ export function PrepStrip({
 /**
  * The loaded track's sleeve. Until it loads — and for a track with no art — a
  * swatch of the ambient colours stands in, so the header never has a hole in it.
+ * With a track loaded it is a button that opens the track-info popup.
  */
-function CoverThumb({ trackId }: { trackId: string | null }) {
+function CoverThumb({ trackId, onOpen }: { trackId: string | null; onOpen?: () => void }) {
   const [failed, setFailed] = useState<string | null>(null)
   const showArt = trackId != null && failed !== trackId
   return (
-    <div
-      aria-hidden
-      className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl shadow-[inset_0_1px_0_rgb(255_255_255/0.35),0_8px_24px_-6px_var(--amb-2)]"
+    <button
+      type="button"
+      onClick={onOpen}
+      disabled={!onOpen}
+      title={onOpen ? 'Track info' : undefined}
+      aria-label="Track info"
+      className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl shadow-[inset_0_1px_0_rgb(255_255_255/0.35),0_8px_24px_-6px_var(--amb-2)] transition-transform enabled:cursor-zoom-in enabled:hover:scale-105 enabled:active:scale-95 disabled:cursor-default"
       style={{ background: 'linear-gradient(135deg, var(--amb-1), var(--amb-2) 55%, var(--amb-3))' }}
     >
       {showArt && (
@@ -1604,6 +1659,6 @@ function CoverThumb({ trackId }: { trackId: string | null }) {
           onError={() => setFailed(trackId)}
         />
       )}
-    </div>
+    </button>
   )
 }
