@@ -38,6 +38,25 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
     return () => document.removeEventListener('mousedown', onDoc)
   }, [open])
 
+  // The `?` key opens the shortcut map from anywhere — unless typing, or
+  // something already holds the keyboard. Pressed as it is, no Shift: by its
+  // position (the US/UK "/ ?" key), and by the character on layouts that put
+  // `?` elsewhere (typed with Shift there).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (!(e.code === 'Slash' && !e.shiftKey) && e.key !== '?') return
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
+      if (document.querySelector('[aria-modal="true"], [role="menu"]')) return
+      e.preventDefault()
+      setOpen(false)
+      setShowShortcuts(true)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   const item =
     'flex w-full flex-col items-start rounded-[10px] px-2.5 py-1.5 text-left hover:bg-ink-800'
 
@@ -122,7 +141,7 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
             className={item}
           >
             <span className="text-sm text-text">View Shortcuts</span>
-            <span className="text-[11px] text-faint">Every keyboard shortcut in one list</span>
+            <span className="text-[11px] text-faint">Every keyboard shortcut, on a keyboard (?)</span>
           </button>
         </div>
       )}

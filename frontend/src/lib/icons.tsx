@@ -99,6 +99,12 @@ const PATHS = {
   fadeOut: <path d="M3 5l18 14H3z" strokeLinejoin="round" />,
   eject: <path d="M12 4l8 9H4zM4 18h16" strokeLinejoin="round" />,
   grid: <path d="M5 3v18M10 3v18M15 3v18M20 3v18" />,
+  mouse: (
+    <>
+      <rect x="6" y="3" width="12" height="18" rx="6" />
+      <path d="M12 7v3" />
+    </>
+  ),
 } as const
 
 export type IconName = keyof typeof PATHS
