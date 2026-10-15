@@ -77,7 +77,8 @@ interface Props {
   dragFrom?: { origin: TrackOrigin; playlistId?: string }
   /** Delete/Backspace removes the selected tracks from this view. */
   onRemove?: (ids: string[]) => void
-  onRowContextMenu?: (track: Track, x: number, y: number) => void
+  /** `viewIds` is every row's id in the order shown (sorted, filtered). */
+  onRowContextMenu?: (track: Track, x: number, y: number, viewIds: string[]) => void
   /** Right-click on the header row (the column chooser). */
   onHeaderContextMenu?: (x: number, y: number) => void
   onPlay?: (track: Track) => void
@@ -591,7 +592,7 @@ export function TrackTable({
                   // Right-clicking outside the selection retargets it, so the
                   // menu always acts on what is highlighted.
                   if (selection && !isSelected) selectOnly(vr.index)
-                  onRowContextMenu(row.original, e.clientX, e.clientY)
+                  onRowContextMenu(row.original, e.clientX, e.clientY, rows.map((r) => r.original.id))
                 }}
               >
                 <span className="w-10 shrink-0 pr-2 text-right text-xs tabular-nums text-faint">

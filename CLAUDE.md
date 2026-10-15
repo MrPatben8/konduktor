@@ -996,9 +996,12 @@ Two independent apps that talk over HTTP:
     column chooser uses those; "Add to" lists
     playlists + exports and acts on the whole selection; in an editable
     playlist "Set Position…" (`SetPositionDialog`, `lib/playlistOrder.ts`)
-    moves the selection as ONE block in playlist order so its first track
-    lands at #N — allowed while sorted/filtered, unlike drag, because it
-    reorders the FULL entry list; "Remove ▸" holds
+    moves the selection as ONE block so its first track lands at #N —
+    allowed while sorted/filtered, unlike drag, because it reorders the FULL
+    entry list. While the table is sorted the dialog asks the block's Order:
+    "As sorted" (default; the menu's ids arrive in VIEW order, so the sort is
+    written into the playlist and survives clearing it) or playlist order;
+    "Remove ▸" holds
     From this playlist / From this export / Grids / Hotcues / From collection,
     each behind a `ConfirmDialog` — as is the playlist Delete key. Enter
     confirms unless a button has focus, so Tab-to-Cancel + Enter cancels) + `EditTagsDialog`

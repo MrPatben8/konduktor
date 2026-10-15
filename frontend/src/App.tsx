@@ -898,11 +898,16 @@ export default function App() {
 
   // TrackTable retargets the selection to a right-clicked row outside it
   // before calling this, but that state update has not landed yet — so the
-  // same rule is applied here to decide what the menu acts on.
-  const openMenu = (track: Track, x: number, y: number, selectable: boolean) =>
+  // same rule is applied here to decide what the menu acts on. The ids come
+  // in the order the view shows them (Set Position can keep that order); a
+  // selected track the view hides follows.
+  const openMenu = (track: Track, x: number, y: number, selectable: boolean, viewIds: string[]) =>
     setMenu({
       track,
-      ids: selectable && selected.has(track.id) ? [...selected] : [track.id],
+      ids:
+        selectable && selected.has(track.id)
+          ? [...new Set([...viewIds.filter((id) => selected.has(id)), ...selected])]
+          : [track.id],
       x,
       y,
     })
@@ -1321,6 +1326,7 @@ export default function App() {
         <SetPositionDialog
           order={tracks.map((t) => t.id)}
           ids={positioning}
+          sorting={sorting}
           onMove={reorderPlaylist}
           onClose={() => setPositioning(null)}
         />
@@ -1603,7 +1609,7 @@ export default function App() {
                 sorting={sorting}
                 onSortingChange={setSorting}
                 selection={{ selected, onChange: setSelected }}
-                onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
+                onRowContextMenu={(track, x, y, viewIds) => openMenu(track, x, y, true, viewIds)}
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
                 onEditField={canEdit ? editField : undefined}
@@ -1644,7 +1650,7 @@ export default function App() {
                 selection={{ selected, onChange: setSelected }}
                 marked={{ ids: heldInFolder, title: 'Already in your collection' }}
                 dragFrom={{ origin: 'folder' }}
-                onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
+                onRowContextMenu={(track, x, y, viewIds) => openMenu(track, x, y, true, viewIds)}
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
                 onEditField={canEdit ? folderEditField : undefined}
@@ -1680,7 +1686,7 @@ export default function App() {
                 tracks={filtered}
                 sorting={sorting}
                 onSortingChange={setSorting}
-                onRowContextMenu={(track, x, y) => openMenu(track, x, y, false)}
+                onRowContextMenu={(track, x, y, viewIds) => openMenu(track, x, y, false, viewIds)}
                 dragFrom={{ origin: 'device' }}
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
@@ -1705,7 +1711,7 @@ export default function App() {
                 sorting={sorting}
                 onSortingChange={setSorting}
                 selection={{ selected, onChange: setSelected }}
-                onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
+                onRowContextMenu={(track, x, y, viewIds) => openMenu(track, x, y, true, viewIds)}
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
                 onEditField={canEdit ? editField : undefined}
@@ -1747,7 +1753,7 @@ export default function App() {
                 origin: 'collection',
                 playlistId: playlistEditable && source.kind === 'playlist' ? source.id : undefined,
               }}
-              onRowContextMenu={(track, x, y) => openMenu(track, x, y, true)}
+              onRowContextMenu={(track, x, y, viewIds) => openMenu(track, x, y, true, viewIds)}
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
               onPlay={playTrack}
               onEditField={canEdit ? editField : undefined}
