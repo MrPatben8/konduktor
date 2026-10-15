@@ -28,6 +28,7 @@ import { ScratchEngine } from '../lib/scratchEngine'
 import { PlaybackEngine } from '../lib/playbackEngine'
 import { invalidateTrackLists } from '../lib/trackQueries'
 import { AutoCueDialog, eventLabel } from './AutoCueDialog'
+import { TrackInfoDialog } from './TrackInfoDialog'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { BpmReadout, GridEditStrip, TempoControls, TempoFold } from './GridControls'
 import { HotcueBar } from './HotcueBar'
@@ -60,6 +61,9 @@ interface Props {
   cuesRefresh?: number
   /** Reports whether the deck is playing, so the library can light its row. */
   onPlayingChange?: (playing: boolean) => void
+  /** Opens Edit Tags for the loaded track — passed only where the library
+   *  will accept the edit, so the cover popup offers it only then. */
+  onEditTags?: (track: Track) => void
 }
 
 /** m:ss.t — the deck's readouts show tenths, as a CDJ does. */
@@ -103,6 +107,7 @@ export function PrepStrip({
   origin = 'collection',
   cuesRefresh = 0,
   onPlayingChange,
+  onEditTags,
 }: Props) {
   const qc = useQueryClient()
   const [playing, setPlaying] = useState(false)
@@ -133,6 +138,7 @@ export function PrepStrip({
   const [snap, setSnap] = useState(true)
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null)
   const [cuePoint, setCuePoint] = useState(0) // floating "CUE" point (frontend-only)
+  const [infoOpen, setInfoOpen] = useState(false) // the cover's track-info popup
   const [secPerView, setSecPerView] = useState(DEFAULT_SEC) // main-waveform zoom (persisted)
   const [rawWave, setRawWave] = useState(false) // main waveform: raw line instead of bars (persisted)
   // ONE size, in beats, for beat loops and beat jump alike (persisted).
@@ -1297,7 +1303,10 @@ export function PrepStrip({
     <div className="glass flex h-[19.75rem] shrink-0 flex-col gap-2 p-4">
       {/* ---- Header: the track, its readouts, the analysis actions ---- */}
       <div className="flex h-12 shrink-0 items-center gap-3">
-        <CoverThumb trackId={track && origin === 'collection' ? track.id : null} />
+        <CoverThumb
+          trackId={track && origin === 'collection' ? track.id : null}
+          onOpen={track ? () => setInfoOpen(true) : undefined}
+        />
         <div className="min-w-0 flex-1">
           {track ? (
             <>
@@ -1585,6 +1594,21 @@ export function PrepStrip({
           onClose={() => setPadMenu(null)}
         />
       )}
+      {infoOpen && track && (
+        <TrackInfoDialog
+          track={track}
+          artUrl={origin === 'collection' ? api.artUrl(track.id) : null}
+          onClose={() => setInfoOpen(false)}
+          onEditTags={
+            onEditTags
+              ? () => {
+                  setInfoOpen(false)
+                  onEditTags(track)
+                }
+              : undefined
+          }
+        />
+      )}
       {autoOpen && track && (
         <AutoCueDialog
           track={track}
@@ -1603,14 +1627,19 @@ export function PrepStrip({
 /**
  * The loaded track's sleeve. Until it loads — and for a track with no art — a
  * swatch of the ambient colours stands in, so the header never has a hole in it.
+ * With a track loaded it is a button that opens the track-info popup.
  */
-function CoverThumb({ trackId }: { trackId: string | null }) {
+function CoverThumb({ trackId, onOpen }: { trackId: string | null; onOpen?: () => void }) {
   const [failed, setFailed] = useState<string | null>(null)
   const showArt = trackId != null && failed !== trackId
   return (
-    <div
-      aria-hidden
-      className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl shadow-[inset_0_1px_0_rgb(255_255_255/0.35),0_8px_24px_-6px_var(--amb-2)]"
+    <button
+      type="button"
+      onClick={onOpen}
+      disabled={!onOpen}
+      title={onOpen ? 'Track info' : undefined}
+      aria-label="Track info"
+      className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl shadow-[inset_0_1px_0_rgb(255_255_255/0.35),0_8px_24px_-6px_var(--amb-2)] transition-transform enabled:cursor-zoom-in enabled:hover:scale-105 enabled:active:scale-95 disabled:cursor-default"
       style={{ background: 'linear-gradient(135deg, var(--amb-1), var(--amb-2) 55%, var(--amb-3))' }}
     >
       {showArt && (
@@ -1622,6 +1651,6 @@ function CoverThumb({ trackId }: { trackId: string | null }) {
           onError={() => setFailed(trackId)}
         />
       )}
-    </div>
+    </button>
   )
 }

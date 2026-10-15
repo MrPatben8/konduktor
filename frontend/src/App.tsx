@@ -1450,6 +1450,10 @@ export default function App() {
           origin={prepOrigin}
           cuesRefresh={cuesRefresh}
           onPlayingChange={setDeckPlaying}
+          // As the context menu's: a library that would refuse the save is
+          // not offered the dialog, and a deck track outside the collection
+          // (a device's, a loose file's) is not the collection's to edit.
+          onEditTags={canEdit && prepOrigin === 'collection' ? setEditing : undefined}
         />
       </CapabilitiesContext.Provider>
       </div>
