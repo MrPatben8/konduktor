@@ -1037,8 +1037,10 @@ Two independent apps that talk over HTTP:
     badge, the readout well (ELAPSED / REMAIN to tenths, KEY, and `BpmReadout` —
     click to type an exact BPM; with no grid, a typed or tapped BPM CREATES one at the playhead, and
     Set grid on a track with no BPM opens the readout to ask rather than failing), SNAP, Analyze, Auto hotcues. **Waveforms**:
-    `MainWaveform` (scrolling; zoom +/− in its corner and Cmd/Ctrl+scroll, owned
-    by `PrepStrip` so it survives track switches and persists) over
+    `MainWaveform` (scrolling; zoom +/− in its corner and Cmd/Ctrl+scroll,
+    0.25–64 s across, owned by `PrepStrip` so it survives track switches and
+    persists; a toggle under the zoom buttons draws the RAW signal instead
+    of bars — `lib/rawWave.ts`, below; persisted as `mainWaveRaw`) over
     `OverviewWaveform`, which frames the main view's visible range around the
     playhead (it takes `secPerView` for exactly that). **Controls**: play, CUE, `LoopControls`, then EITHER
     `HotcueBar` OR — in **Grid mode** — `GridEditStrip`, then `TempoControls`
@@ -2166,6 +2168,38 @@ The prep strip plays every track through the **Web Audio API** (a plain
   full scale for whole sections, so a linear map draws a solid orange wall
   instead of the kick pulse. The main view draws 2 px bars with a 1 px gap,
   **binned in track space** so bars scroll rather than flicker.
+- `rawWave.ts` — **the raw waveform** (decided 2026-10-15,
+  [the discussion](.claude/discussions/discuss-raw-waveform-2026-10-15.md)):
+  the bars' ~7 ms columns of unsigned band energy hide where a kick starts, so
+  the main view can draw the signal itself as a thin line, after Traktor at
+  full zoom. Its own toggle (under the zoom buttons), NOT tied to Grid mode —
+  tried first, changed after use.
+  **Shape exact, colour approximate**: the tint is the bar palette weighted by
+  the ~7 ms band columns, lerped, mixed in OKLab with the CHROMA restored
+  (`bandColour`) — a plain RGB mean of orange/violet/cyan lands near grey and
+  read as mud; chosen from five variants rendered on real tracks; the scale is fixed by the track's loudest
+  sample (no per-view gain, so nothing pumps while scrolling). Each pixel is a
+  min→max stroke stretched to touch its neighbour's, so it reads as an
+  envelope zoomed out and a line zoomed in with no switch-over. Data: min/max
+  per 32 samples summarised at load (~4 MB / 6 min) for wide views; below 128
+  samples a pixel, the visible window read straight from the `AudioBuffer`
+  (`copyFromChannel` — no full-length mono copy). Bins sit on a track-space
+  grid like the bars'. A stem track's lanes each draw their own raw line, in
+  the stem's colour, each at its own peak floored at 5% of the loudest.
+  Measured in WKWebView: 0.3 ms a frame at 0.25 s, ~5 ms at 64 s.
+- `decodeAlign.ts` — **the deck's decode vs the grid's time base.** Positions
+  are in the backend's PyAV decode; the deck decodes with `decodeAudioData`.
+  Measured 2026-10-15 with click files: identical on every format and engine
+  EXCEPT a **header-less MP3 under WebKit** (the macOS app), decoded 529
+  samples (12 ms) EARLY — CoreAudio trims the decoder delay with no header to
+  say so; FFmpeg (and Chromium/WebView2) do not. Invisible under bars, a
+  12 ms miss on the raw line. The engine's offset is MEASURED once per session
+  by decoding a built-in 2.7 KB header-less MP3 (`decodeProbe.ts`, click at a
+  known FFmpeg sample), and a header-less MP3's buffer (`mp3HeaderFrame`, a
+  port of `core/mp3_gapless.parse` behind an is-it-an-MP3 gate) is padded by
+  it in `decodeUrl` — so playback, scratch and both waveforms move together.
+  Not measured: a header without a trusted encoder-delay field; Edge on a real
+  Windows machine (Chromium on macOS matched).
 - `cues.ts` — canvas drawers for cue markers (type-colored), the active loop
   band, the beatgrid (per-segment white beats/brighter downbeats, plus marker
   lines — gold for the one governing the playhead, accent otherwise, with the

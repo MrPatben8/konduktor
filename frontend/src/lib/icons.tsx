@@ -25,6 +25,7 @@ const PATHS = {
   ),
   sparkle: <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.7 1.8 1.8.7-1.8.7L19 21l-.7-1.8-1.8-.7 1.8-.7z" strokeLinejoin="round" />,
   wave: <path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2" />,
+  sine: <path d="M2 12c2.5-8 5-8 7.5 0s5 8 7.5 0 3.5-5 5-3" strokeLinejoin="round" />,
   folder: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" strokeLinejoin="round" />,
   folderOpen: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v1M3 7v10a2 2 0 0 0 2 2h12.5a2 2 0 0 0 1.9-1.4L21 12a1 1 0 0 0-1-1.3H8.5a2 2 0 0 0-1.9 1.4L4 19" strokeLinejoin="round" />,
   playlist: <path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01" />,

@@ -12,6 +12,9 @@
 // and the structure of a track — where the bass drops out, where the highs
 // build — is visible at a glance. Still no green, matching Traktor's palette.
 
+import { alignDecoded, mp3HeaderFrame } from './decodeAlign'
+import { bufferReader, rawWaveFromMono, type RawWave } from './rawWave'
+
 export interface WaveColumn {
   peak: number // 0..1 amplitude of the full mix
   low: number // 0..1 band energies, each normalised to its own maximum
@@ -97,17 +100,21 @@ export interface WaveformAnalysis {
   cols: WaveColumn[]
   /** The decoded audio, retained for the scratch engine (reused, not re-decoded). */
   buffer: AudioBuffer
+  /** The raw waveform of the same audio. */
+  raw: RawWave
 }
 
 async function decodeUrl(url: string): Promise<AudioBuffer> {
   const resp = await fetch(url)
   if (!resp.ok) throw new Error(`audio fetch failed: ${resp.status}`)
   const arr = await resp.arrayBuffer()
+  // Read BEFORE decoding: decodeAudioData detaches `arr`.
+  const header = mp3HeaderFrame(new Uint8Array(arr))
   const AC: typeof AudioContext =
     window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
   const ctx = new AC()
   try {
-    return await ctx.decodeAudioData(arr)
+    return await alignDecoded(await ctx.decodeAudioData(arr), header)
   } finally {
     void ctx.close()
   }
@@ -129,7 +136,8 @@ export async function analyzeWaveform(url: string, buckets?: number): Promise<Wa
     const d = audio.getChannelData(c)
     for (let i = 0; i < len; i++) mono[i] += d[i] / chs
   }
-  return { cols: await analyzeMono(mono, audio.sampleRate, buckets), buffer: audio }
+  const raw = rawWaveFromMono(mono, audio.sampleRate, bufferReader(audio))
+  return { cols: await analyzeMono(mono, audio.sampleRate, buckets), buffer: audio, raw }
 }
 
 export interface StemAnalysis {
@@ -138,6 +146,8 @@ export interface StemAnalysis {
   /** Per stem, per column: amplitude 0..1 — the main view's lanes. */
   lanes: Float32Array[]
   buffers: AudioBuffer[]
+  /** Per stem: the raw waveform of its lane. */
+  raws: RawWave[]
 }
 
 /**
@@ -157,6 +167,7 @@ export async function analyzeStems(urls: string[], buckets?: number): Promise<St
   const scale = n / len
   const mono = new Float32Array(len)
   const tmp = new Float32Array(len)
+  const raws: RawWave[] = []
   const lanes = buffers.map((buf) => {
     const lane = new Float32Array(n)
     const chs = buf.numberOfChannels
@@ -172,6 +183,7 @@ export async function analyzeStems(urls: string[], buckets?: number): Promise<St
       const b = (i * scale) | 0
       if (a > lane[b]) lane[b] = a
     }
+    raws.push(rawWaveFromMono(monoStem, sr, bufferReader(buf)))
     return lane
   })
   const ceilOf = (v: Float32Array) => {
@@ -184,7 +196,7 @@ export async function analyzeStems(urls: string[], buckets?: number): Promise<St
     const top = Math.max(ceilings[k], loudest * 0.05, 1e-6)
     for (let b = 0; b < lane.length; b++) lane[b] = Math.min(1, lane[b] / top)
   })
-  return { cols: await analyzeMono(mono, sr, n), lanes, buffers }
+  return { cols: await analyzeMono(mono, sr, n), lanes, buffers, raws }
 }
 
 async function analyzeMono(mono: Float32Array<ArrayBuffer>, sr: number, buckets?: number): Promise<WaveColumn[]> {

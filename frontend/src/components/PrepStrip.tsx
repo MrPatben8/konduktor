@@ -21,6 +21,7 @@ import { CUE_TYPE_LABELS, cueTypeColor } from '../lib/cues'
 import { keyColor } from '../lib/format'
 import { readOnlyShort, readOnlyNotice } from '../lib/platformCopy'
 import { analyzeStems, analyzeWaveform, type WaveColumn } from '../lib/waveform'
+import type { RawWave } from '../lib/rawWave'
 import { setAmbientFromArt } from '../lib/ambient'
 import { Icon } from '../lib/icons'
 import { ScratchEngine } from '../lib/scratchEngine'
@@ -114,6 +115,9 @@ export function PrepStrip({
   const [duration, setDuration] = useState(0)
   const [ready, setReady] = useState(false)
   const [cols, setCols] = useState<WaveColumn[] | null>(null)
+  // The raw waveform's data: the mix's samples, or one per stem lane.
+  const [raw, setRaw] = useState<RawWave | null>(null)
+  const [stemRaws, setStemRaws] = useState<RawWave[] | null>(null)
   // A stem track: its stems (from the FILE), their lanes, and which are muted
   // — reset per track, as Traktor's stem deck does. There is no separate solo
   // state: solo is a shortcut that SETS the mutes, so every stem stays freely
@@ -130,6 +134,7 @@ export function PrepStrip({
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null)
   const [cuePoint, setCuePoint] = useState(0) // floating "CUE" point (frontend-only)
   const [secPerView, setSecPerView] = useState(DEFAULT_SEC) // main-waveform zoom (persisted)
+  const [rawWave, setRawWave] = useState(false) // main waveform: raw line instead of bars (persisted)
   // ONE size, in beats, for beat loops and beat jump alike (persisted).
   const [beatSize, setBeatSize] = useState(4)
   const [loopMode, setLoopMode] = useState<LoopMode>('beat')
@@ -164,7 +169,7 @@ export function PrepStrip({
 
   const trackId = track?.id ?? null
 
-  // Main-waveform zoom persists to userprefs.json so it survives track switches
+  // Main-waveform zoom (and the raw/bars toggle) persists to userprefs.json so it survives track switches
   // (MainWaveform unmounts during each load) and app restarts. Hydrate once from
   // the shared ['prefs'] query, then persist changes through the shared,
   // debounced prefs writer (as App's column layout does).
@@ -178,11 +183,12 @@ export function PrepStrip({
     if (typeof z === 'number' && isFinite(z)) {
       setSecPerView(Math.min(MAX_SEC, Math.max(MIN_SEC, z)))
     }
+    if ((prefsQuery.data as { mainWaveRaw?: unknown }).mainWaveRaw === true) setRawWave(true)
   }, [prefsQuery.data])
   useEffect(() => {
     if (!zoomHydratedRef.current) return // don't clobber saved prefs pre-hydration
-    writePrefs({ mainZoomSec: secPerView })
-  }, [secPerView, writePrefs])
+    writePrefs({ mainZoomSec: secPerView, mainWaveRaw: rawWave })
+  }, [secPerView, rawWave, writePrefs])
 
   // The loop/jump size persists the same way (survives track switches +
   // restarts). `beatJumpBeats` is its name from when only beat jump had a size;
@@ -271,11 +277,15 @@ export function PrepStrip({
     scratchRef.current = null
     if (!trackId) {
       setCols(null)
+      setRaw(null)
+      setStemRaws(null)
       setWaveStatus('loading')
       return
     }
     let cancelled = false
     setCols(null)
+    setRaw(null)
+    setStemRaws(null)
     setStems(null)
     setStemLanes(null)
     setWaveStatus('loading')
@@ -286,15 +296,17 @@ export function PrepStrip({
       .then(async (found) => {
         if (found.length) {
           const res = await analyzeStems(found.map((_, k) => trackStemUrl(origin, trackId, k)))
-          return { cols: res.cols, buffers: res.buffers, lanes: res.lanes, stems: found }
+          return { cols: res.cols, buffers: res.buffers, lanes: res.lanes, stems: found, raw: null, raws: res.raws }
         }
         const res = await analyzeWaveform(trackAudioUrl(origin, trackId))
-        return { cols: res.cols, buffers: [res.buffer], lanes: null, stems: null }
+        return { cols: res.cols, buffers: [res.buffer], lanes: null, stems: null, raw: res.raw, raws: null }
       })
     load
       .then((res) => {
         if (cancelled) return
         setCols(res.cols)
+        setRaw(res.raw)
+        setStemRaws(res.raws)
         setStems(res.stems)
         setStemLanes(res.lanes)
         setWaveStatus('ready')
@@ -917,7 +929,9 @@ export function PrepStrip({
   const activeMarkerIndex = grid ? grid.markerIndexAt(current) : -1
   const activeMarker = activeMarkerIndex >= 0 ? grid!.markers[activeMarkerIndex] : null
   // ~4px of the current zoom, so "on the marker" stays usable at 2s and 64s/view.
-  const markerHitSec = Math.max(0.01, secPerView / 250)
+  // ~4 px of the view either side, so "at a marker" stays a marker-sized
+  // target at deep zoom instead of 4% of a 0.25 s view.
+  const markerHitSec = Math.max(0.001, secPerView / 250)
   const atMarker = !!grid && grid.isOnMarker(current, markerHitSec)
   const beforeFirstMarker = !!grid && current < grid.markers[0].start - GRID_EPS
 
@@ -1097,6 +1111,7 @@ export function PrepStrip({
     stems && stemLanes
       ? stems.map((st, k) => ({
           data: stemLanes[k],
+          raw: stemRaws?.[k] ?? null,
           name: st.name,
           color: st.color,
           audible: stemLevels[k] > 0,
@@ -1390,6 +1405,9 @@ export function PrepStrip({
             {showWaves ? (
               <MainWaveform
                 cols={cols}
+                raw={raw}
+                rawMode={rawWave}
+                onRawModeChange={setRawWave}
                 currentTime={current}
                 duration={duration}
                 cues={cueData?.cues ?? []}
