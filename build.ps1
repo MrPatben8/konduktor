@@ -40,6 +40,12 @@ try {
         & (Join-Path $Root "backend\build_sidecar.ps1")
     }
 
+    # Updater packages are signed with the release key (CI's secret). Without
+    # it, build the installers alone rather than fail at the signing step.
+    if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+        $TauriArgs = @("--config", "src-tauri/tauri.unsigned.conf.json") + $TauriArgs
+    }
+
     Write-Host ""
     Write-Host "==> 2/2 Building the app (tauri build $TauriArgs)"
     Set-Location (Join-Path $Root "frontend")

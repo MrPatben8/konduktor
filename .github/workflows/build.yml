@@ -86,20 +86,31 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # createUpdaterArtifacts also signs the in-app update packages
+      # (Konduktor.app.tar.gz / the NSIS setup.exe) with the updater key, whose
+      # public half is plugins.updater.pubkey in tauri.conf.json. Losing the
+      # private key means installed copies can never update themselves again.
       - name: Build Tauri app
         working-directory: frontend
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build
 
       # Stage the single installer per OS into a flat folder. Uploading one
       # directory (not multiple bundle subpaths) keeps the artifact root at
       # ./installer, so the zip holds the bare file — no nested dmg/ or nsis/
       # folder. We ship the DMG on macOS and the NSIS -setup.exe on Windows
-      # (the .msi is intentionally left out).
+      # (the .msi is intentionally left out), plus what the in-app updater
+      # installs: the .app.tar.gz on macOS (the setup.exe on Windows) and the
+      # .sig files the release job folds into latest.json.
       - name: Stage installer (macOS)
         if: runner.os == 'macOS'
         run: |
           mkdir -p installer
           cp frontend/src-tauri/target/release/bundle/dmg/*.dmg installer/
+          cp frontend/src-tauri/target/release/bundle/macos/*.app.tar.gz installer/
+          cp frontend/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig installer/
 
       - name: Stage installer (Windows)
         if: runner.os == 'Windows'
@@ -107,6 +118,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force installer | Out-Null
           Copy-Item frontend/src-tauri/target/release/bundle/nsis/*-setup.exe installer/
+          Copy-Item frontend/src-tauri/target/release/bundle/nsis/*-setup.exe.sig installer/
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -226,6 +238,16 @@ jobs:
           print("Using the PR's patch notes." if found else "No patch notes section; using generated notes.")
           EOF
 
+      # The in-app updater's manifest for THIS release (the app's update
+      # dialog finds the release, then reads releases/download/<tag>/latest.json).
+      # The .sig files are folded into it and not uploaded themselves.
+      - name: Updater manifest
+        run: |
+          python3 .github/scripts/updater_manifest.py artifacts \
+            --version "${{ steps.version.outputs.version }}" \
+            --tag "v${{ steps.version.outputs.version }}-b${{ github.run_number }}" \
+            --repo "${{ github.repository }}"
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -235,4 +257,8 @@ jobs:
           body_path: ${{ steps.notes.outputs.found == 'true' && 'release-notes.md' || '' }}
           generate_release_notes: ${{ steps.notes.outputs.found != 'true' }}
           fail_on_unmatched_files: true
-          files: artifacts/**/*
+          files: |
+            artifacts/**/*.dmg
+            artifacts/**/*-setup.exe
+            artifacts/**/*.app.tar.gz
+            artifacts/latest.json

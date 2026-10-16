@@ -28,3 +28,7 @@ tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"                         # spawn the Python backend sidecar
 tokio = { version = "1", features = ["time"] }   # timeout on the port handshake
+# One-click update (UpdateDialog.tsx). No `zip` feature: it only unpacks
+# v1-style zipped Windows installers (we ship the bare NSIS setup.exe), and
+# every zip 4.x it would need is yanked.
+tauri-plugin-updater = { version = "2.12", default-features = false, features = ["rustls-tls", "system-proxy"] }
