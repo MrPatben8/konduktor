@@ -102,6 +102,10 @@ from .schemas import (
     SetCue,
     SetCueColor,
     SetCueType,
+    AddMemoryCue,
+    RenameMemoryCue,
+    SetMemoryCueColor,
+    SetMemoryCueType,
     SetGridLock,
     Stats,
     Track,
@@ -1840,6 +1844,45 @@ def edit_cue_color(body: SetCueColor) -> TrackCues:
 def delete_cue(track_id: str, slot: int) -> TrackCues:
     """Remove the hotcue in a slot."""
     return require_adapter().delete_cue(track_id, slot)
+
+
+# Memory cues — cues on no pad, addressed by CuePoint.id (gated on
+# capabilities.cues.memory_cues; the adapter refuses past max_memory_cues).
+@app.post("/api/tracks/memory-cue", response_model=TrackCues)
+def add_memory_cue(body: AddMemoryCue) -> TrackCues:
+    """Add a memory cue (a memory loop when `length` > 0)."""
+    return require_adapter().add_memory_cue(
+        body.track_id,
+        start_sec=body.start,
+        cue_type=body.type,
+        length_sec=body.length,
+        name=body.name,
+        color=body.color,
+    )
+
+
+@app.patch("/api/tracks/memory-cue", response_model=TrackCues)
+def rename_memory_cue(body: RenameMemoryCue) -> TrackCues:
+    """Name a memory cue (rekordbox calls it the comment); None/"" clears it."""
+    return require_adapter().rename_memory_cue(body.track_id, body.cue_id, body.name or None)
+
+
+@app.patch("/api/tracks/memory-cue/type", response_model=TrackCues)
+def edit_memory_cue_type(body: SetMemoryCueType) -> TrackCues:
+    """Change a memory cue's point type (keeps its position)."""
+    return require_adapter().set_memory_cue_type(body.track_id, body.cue_id, body.type)
+
+
+@app.patch("/api/tracks/memory-cue/color", response_model=TrackCues)
+def edit_memory_cue_color(body: SetMemoryCueColor) -> TrackCues:
+    """Recolour a memory cue from capabilities.cues.memory_palette (None = uncoloured)."""
+    return require_adapter().set_memory_cue_color(body.track_id, body.cue_id, body.color)
+
+
+@app.delete("/api/tracks/memory-cue", response_model=TrackCues)
+def delete_memory_cue(track_id: str, cue_id: str) -> TrackCues:
+    """Remove a memory cue."""
+    return require_adapter().delete_memory_cue(track_id, cue_id)
 
 
 @app.post("/api/tracks/grid/marker", response_model=TrackCues)

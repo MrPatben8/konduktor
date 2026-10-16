@@ -131,8 +131,8 @@ dat = dat_of(a, TRACK_1)
 ext = dat.with_suffix(".EXT")
 original = {p: p.read_bytes() for p in (dat, ext)}
 cues = {c.slot: c for c in a.track_cues(TRACK_1).cues if c.role == "hotcue"}
-check("hot cues are editable, memory cues are not",
-      all(c.editable == (c.role == "hotcue") for c in a.track_cues(TRACK_1).cues))
+check("hot cues and memory cues are editable on a drive opened for editing",
+      all(c.editable for c in a.track_cues(TRACK_1).cues))
 
 a.set_cue(TRACK_1, slot=5, start_sec=10.0, cue_type="cue", name="Drop")
 a.set_cue_color(TRACK_1, 5, "#FF0045")
@@ -154,8 +154,8 @@ check("a pad can be deleted (pad D, which lives in the .EXT's PCOB)",
 check("deleting an empty pad is NotFound", _raises(lambda: a.delete_cue(TRACK_1, 7), NotFound))
 check("a pad beyond the bank is refused",
       _raises(lambda: a.set_cue(TRACK_1, slot=8, start_sec=1.0, cue_type="cue"), InvalidCommand))
-check("memory cues are not editable",
-      _raises(lambda: a.set_cue(TRACK_1, slot=0, start_sec=1.0, cue_type="cue", role="memory"), Unsupported))
+check("set_cue refuses role=memory (memory cues have their own commands)",
+      _raises(lambda: a.set_cue(TRACK_1, slot=0, start_sec=1.0, cue_type="cue", role="memory"), InvalidCommand))
 check("a colour must be one of rekordbox's swatches",
       _raises(lambda: a.set_cue_color(TRACK_1, 5, "#123456"), InvalidCommand))
 a.place_cues(TRACK_1, [CuePoint(slot=1, start=30.0, length=0.0, type="cue"),
@@ -255,6 +255,127 @@ check("a 44-byte compact entry has no colour bytes to patch",
       A.entry_with_colour(A.raw_entries(A.Tag("PCO2", tag(HERE / "fixtures" / "onelibrary" / "rekordbox-edited"
                                                        / "nemean.EXT", "PCO2", A.LIST_MEMORY)))[-1],
                           9, (1, 2, 3)) is None)
+
+# ---- memory cues: rekordbox's own edits, byte for byte --------------------------
+# `fixtures/onelibrary-memory-edits`: six memory-cue edits rekordbox 7 made on a stick
+# (kit M2, 2026-10-16), one per track. Each is replayed with `memory_cues` — the
+# code the store runs — on `before/`, and the memory lists must equal `after/`.
+print("== memory cues: the same edit as rekordbox 7 made, the same bytes ==")
+from konduktor.adapters.onelibrary import memory_cues as M  # noqa: E402
+from konduktor.adapters.onelibrary.cues import memory_cue_id  # noqa: E402
+
+MEMORY_EDITS = HERE / "fixtures" / "onelibrary-memory-edits"
+
+
+def memory_edit(name: str):
+    return (A.parse_file(MEMORY_EDITS / "before" / f"{name}.DAT"),
+            A.parse_file(MEMORY_EDITS / "before" / f"{name}.EXT"))
+
+
+def same_as_rekordbox(name: str, dat, ext) -> bool:
+    """Both files equal rekordbox's, tag for tag — except that when rekordbox
+    rewrites a `.DAT` it also re-sorts the UNTOUCHED hot-cue `PCOB` into
+    ascending pad order (measured: same entries, pads 3-2-1 -> 1-2-3).
+    Konduktor changes only the list it edits, so that one tag must hold the
+    same entries in either order."""
+    want_dat = A.parse_file(MEMORY_EDITS / "after" / f"{name}.DAT")
+    want_ext = A.parse_file(MEMORY_EDITS / "after" / f"{name}.EXT")
+    if ext.to_bytes() != want_ext.to_bytes() or len(dat.tags) != len(want_dat.tags):
+        return False
+    for got, want in zip(dat.tags, want_dat.tags):
+        if (got.type, got.list_kind) == ("PCOB", A.LIST_HOT):
+            if sorted(A.raw_entries(got)) != sorted(A.raw_entries(want)):
+                return False
+        elif got.data != want.data:
+            return False
+    return dat.header[:8] == want_dat.header[:8] and len(dat.to_bytes()) == len(want_dat.to_bytes())
+
+
+def id_at(ext, time_ms: int) -> str:
+    return next(memory_cue_id(A.decode_entry(e)) for e in M.entries(ext, "PCO2")
+                if A.decode_entry(e).time == time_ms)
+
+
+dat, ext = memory_edit("black-bloc")
+M.add(dat, ext, kind=1, time_ms=131206, loop_ms=None, beats=None)
+check("add a memory cue: .DAT prepended + relinked, .EXT appended compact — both FILES "
+      "equal rekordbox's", same_as_rekordbox("black-bloc", dat, ext))
+
+dat, ext = memory_edit("formula")
+M.add(dat, ext, kind=2, time_ms=80378, loop_ms=81773, beats=4)
+check("add a memory loop (4 beats): rekordbox's bytes", same_as_rekordbox("formula", dat, ext))
+
+dat, ext = memory_edit("lift-it")
+for t in (3353, 4733, 6112, 7491, 8871, 10250, 11629, 13009):
+    M.add(dat, ext, kind=1, time_ms=t, loop_ms=None, beats=None)
+check("add eight, up to rekordbox's cap of 10: rekordbox's bytes",
+      same_as_rekordbox("lift-it", dat, ext) and M.count(ext) == 10)
+
+dat, ext = memory_edit("wtf")
+check("recolour Blue: only PCP2 byte 28 (= 7), rekordbox's bytes",
+      M.recolour(ext, id_at(ext, 113186), 7) and same_as_rekordbox("wtf", dat, ext))
+
+dat, ext = memory_edit("sell-my-soul")
+check("a comment grows the PCP2 entry by its length (88 -> 100): rekordbox's bytes",
+      M.rename(ext, id_at(ext, 78645), "Loopy") and same_as_rekordbox("sell-my-soul", dat, ext))
+
+dat, ext = memory_edit("doomed")
+check("delete: out of both lists, the survivor relinked: rekordbox's bytes",
+      M.delete(dat, ext, id_at(ext, 121402)) and same_as_rekordbox("doomed", dat, ext))
+check("an unknown id finds nothing", not M.delete(dat, ext, "m:1:1:4294967295"))
+
+print("== memory cues through the adapter, on the demo drive ==")
+from konduktor.adapters.rekordbox import memory_palette  # noqa: E402
+
+drive = copy_of(DEMO, "Memo")
+a = OneLibraryAdapter(drive)
+dat = dat_of(a, TRACK_1)
+ext = dat.with_suffix(".EXT")
+original = {p: p.read_bytes() for p in (dat, ext)}
+caps = a.capabilities().cues
+check("capabilities: memory cues, cap 10, the 8-colour palette",
+      caps.memory_cues and caps.max_memory_cues == 10 and caps.memory_color == "palette"
+      and caps.memory_palette == memory_palette.SWATCHES)
+before_mem = [c for c in a.track_cues(TRACK_1).cues if c.role == "memory"]
+tc = a.add_memory_cue(TRACK_1, start_sec=12.0, cue_type="cue", name="Break",
+                      color=memory_palette.SWATCHES[1])
+new = [c for c in tc.cues if c.role == "memory" and c not in before_mem]
+check("add_memory_cue: named, coloured (Red), editable, with an id",
+      len(new) == 1 and new[0].name == "Break" and new[0].color == memory_palette.SWATCHES[1]
+      and new[0].editable and new[0].id, str(new))
+check("nothing reaches the drive before Save", all(p.read_bytes() == b for p, b in original.items()))
+tc = a.rename_memory_cue(TRACK_1, new[0].id, "Breakdown")
+tc = a.set_memory_cue_color(TRACK_1, new[0].id, None)
+got = next(c for c in tc.cues if c.id == new[0].id)
+check("rename and clear the colour", got.name == "Breakdown" and got.color is None, str(got))
+check("a hot-cue swatch is not a memory colour",
+      _raises(lambda: a.set_memory_cue_color(TRACK_1, new[0].id, "#00FF30"), InvalidCommand))
+check("an unknown id is NotFound",
+      _raises(lambda: a.delete_memory_cue(TRACK_1, "m:1:1:4294967295"), NotFound))
+while sum(c.role == "memory" for c in a.track_cues(TRACK_1).cues) < 10:
+    n = sum(c.role == "memory" for c in a.track_cues(TRACK_1).cues)
+    a.add_memory_cue(TRACK_1, start_sec=100.0 + n, cue_type="cue")
+check("the 11th is refused", _raises(lambda: a.add_memory_cue(TRACK_1, start_sec=1.0,
+                                                               cue_type="cue"), InvalidCommand))
+a.delete_memory_cue(TRACK_1, new[0].id)
+check("delete removes it", all(c.id != new[0].id for c in a.track_cues(TRACK_1).cues))
+hot_before = {c.slot: (c.start, c.color) for c in a.track_cues(TRACK_1).cues if c.role == "hotcue"}
+a.save()
+def changed_tags(path: Path) -> set:
+    now, was = tags_by_key(path), tags_by_key(original[path])
+    return {k for k in set(now) | set(was) if now.get(k) != was.get(k)}
+
+
+check("Save: the .DAT changes only in its memory PCOB",
+      changed_tags(dat) == {("PCOB", A.LIST_MEMORY)}, str(changed_tags(dat)))
+check("the .EXT only in its memory PCO2",
+      changed_tags(ext) == {("PCO2", A.LIST_MEMORY)}, str(changed_tags(ext)))
+b = OneLibraryAdapter(drive)
+check("reopened: the hot cues are untouched and 9 memory cues remain",
+      {c.slot: (c.start, c.color) for c in b.track_cues(TRACK_1).cues if c.role == "hotcue"}
+      == hot_before and sum(c.role == "memory" for c in b.track_cues(TRACK_1).cues) == 9)
+b.close()
+a.close()
 
 print()
 print("RESULT:", "FAILED" if failed else "ALL PASSED")

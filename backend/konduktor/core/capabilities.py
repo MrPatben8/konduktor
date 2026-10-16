@@ -45,10 +45,17 @@ class CueCapabilities(BaseModel):
     editable: bool = False
     hotcue_slots: int = 8  # size of the addressable bank; 0 = no bank
     slot_labels: Literal["number", "letter"] = "number"
-    # Memory cues are Rekordbox-only today, so they are modelled and PRESERVED
-    # but not editable anywhere yet (the two-platform promotion rule).
+    # Cues on no pad, listed in time order and called CDJ-style (decided
+    # 2026-10-16). Editable wherever `editable` is: every platform that has them
+    # can store them (Rekordbox, OneLibrary, and Traktor's HOTCUE="-1").
     memory_cues: bool = False
+    # Per track; None = no limit. rekordbox stops storing at 10 WITHOUT saying
+    # so, so the adapter refuses the 11th itself.
     max_memory_cues: int | None = None
+    # A memory cue's colour is its own palette, not `palette` (rekordbox offers
+    # 8 colours for memory cues against 16 for hot cues).
+    memory_color: Literal["none", "palette"] = "none"
+    memory_palette: list[str] = []
     types: list[CueType] = ["cue"]
     color: Literal["none", "free", "palette"] = "none"
     palette: list[str] = []

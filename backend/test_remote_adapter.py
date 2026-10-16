@@ -179,6 +179,15 @@ with tempfile.TemporaryDirectory() as d:
     r = c.post("/api/tracks/cue", json={"track_id": target, "slot": 4, "start": 1.0, "type": "cue"})
     check("a hotcue goes to the server", r.status_code == 200
           and any(cu["slot"] == 4 for cu in server_adapter.track_cues(target).model_dump()["cues"]), r.text[:200])
+    r = c.post("/api/tracks/memory-cue", json={"track_id": target, "start": 2.0, "type": "cue"})
+    mem = [cu for cu in server_adapter.track_cues(target).model_dump()["cues"] if cu["role"] == "memory"]
+    check("a memory cue goes to the server (protocol 1.3)", r.status_code == 200 and len(mem) == 1
+          and any(cu["id"] == mem[0]["id"] for cu in r.json()["cues"]), r.text[:200])
+    r = c.patch("/api/tracks/memory-cue", json={"track_id": target, "cue_id": mem[0]["id"],
+                                                 "name": "Remote memo"})
+    check("…and is renamed there, by id", r.status_code == 200 and any(
+        cu["name"] == "Remote memo" for cu in server_adapter.track_cues(target).model_dump()["cues"]
+        if cu["role"] == "memory"), r.text[:200])
     check("the state says unsaved", c.get("/api/state").json()["dirty"] is True)
     versions = len(history.list_history(work))
     r = c.post("/api/save").json()

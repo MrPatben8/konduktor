@@ -47,8 +47,8 @@ from ...core.adapter import (
 from ...core.edit_journal import EditJournal
 from ...core.grid_edit import ReplaceGridCommands
 from ...core.pathmap import PathMapping, stored_form
-from . import timebase
-from .cue_types import beat_loop_size, kind_for, role_and_slot
+from . import memory_palette, timebase
+from .cue_types import MAX_MEMORY_CUES, beat_loop_size, kind_for, role_and_slot
 
 log = logging.getLogger(__name__)
 
@@ -1147,6 +1147,25 @@ class RekordboxStore(ReplaceGridCommands):
         )
         self._journal.record("cue", "add" if existing is None else "modify", track_id, f"slot:{slot}")
 
+    MAX_MEMORY_CUES = MAX_MEMORY_CUES  # see `cue_types`
+
+    def memory_cue_rows(self, track_id: str) -> list:
+        """A track's memory cues (`Kind` 0), in row order."""
+        t = self._tables
+        return list(
+            self._db.session.query(t.DjmdCue)
+            .filter(t.DjmdCue.ContentID == str(track_id))
+            .filter(t.DjmdCue.Kind == kind_for("memory", None))
+            .filter(t.DjmdCue.rb_local_deleted == 0)
+        )
+
+    def _memory_cue_row(self, track_id: str, cue_id: str):
+        """The memory cue whose `djmdCue.ID` is `cue_id` (`CuePoint.id`)."""
+        row = next((c for c in self.memory_cue_rows(track_id) if str(c.ID) == str(cue_id)), None)
+        if row is None:
+            raise NotFound(f"No memory cue {cue_id!r} on this track")
+        return row
+
     def add_memory_cue(
         self,
         track_id: str,
@@ -1156,23 +1175,59 @@ class RekordboxStore(ReplaceGridCommands):
         length_sec: float = 0.0,
         name: str | None = None,
         color_code: int | None = None,
+        enforce_cap: bool = True,
     ) -> None:
-        """Add a MEMORY cue (`Kind` 0) — for the exporter building a new library.
+        """Add a MEMORY cue (`Kind` 0); a memory loop when `length_sec` > 0.
 
-        The adapter never calls this: editing memory cues in a user's library
-        stays refused under the two-platform promotion rule. A new export is not
-        an edit, and dropping the source's memory cues would lose prep.
+        `color_code` is a 0-based `memory_palette` code — NOT a hot-cue palette
+        code: a memory cue keeps its colour in `Color`, not `ColorTableIndex`.
+        `enforce_cap` refuses the 11th (an edit); the exporter, building a
+        library from a source that may hold more, trims before calling.
         """
+        if enforce_cap and len(self.memory_cue_rows(track_id)) >= self.MAX_MEMORY_CUES:
+            raise InvalidCommand(
+                f"rekordbox keeps at most {self.MAX_MEMORY_CUES} memory cues per track"
+            )
         self._write_cue(
             track_id, None, kind=kind_for("memory", None), start_sec=start_sec,
             cue_type=cue_type, length_sec=length_sec, name=name, color_code=color_code,
         )
         self._journal.record("cue", "add", track_id, "memory")
 
+    def rename_memory_cue(self, track_id: str, cue_id: str, name: str | None) -> None:
+        """A memory cue's name is rekordbox's `Comment`; only that column changes."""
+        cue = self._memory_cue_row(track_id, cue_id)
+        is_loop = (cue.OutMsec or 0) > 0
+        # An unnamed memory LOOP is '' (measured); an unnamed point cue NULL.
+        cue.Comment = name or ("" if is_loop else None)
+        self._db.flush()
+        self._sync_content_cue(track_id)
+        self._journal.record("cue", "modify", track_id, "memory")
+
+    def set_memory_cue_color(self, track_id: str, cue_id: str, color_code: int | None) -> None:
+        """Recolour a memory cue; None = rekordbox's "No Color" (255, measured)."""
+        cue = self._memory_cue_row(track_id, cue_id)
+        self._apply_memory_color(cue, color_code, (cue.OutMsec or 0) > 0, cleared=True)
+        self._db.flush()
+        self._sync_content_cue(track_id)
+        self._journal.record("cue", "modify", track_id, "memory")
+
+    def delete_memory_cue(self, track_id: str, cue_id: str) -> None:
+        """Delete the row outright, as rekordbox does (never `rb_local_deleted`)."""
+        cue = self._memory_cue_row(track_id, cue_id)
+        self._db.delete(cue)
+        self._db.flush()
+        self._sync_content_cue(track_id)
+        self._journal.record("cue", "delete", track_id, "memory")
+
     def _write_cue(self, track_id: str, cue, *, kind: int, start_sec: float, cue_type: str,
                    length_sec: float, name: str | None, color_code: int | None) -> None:
         """Fill one `djmdCue` row (a new one when `cue` is None) and resync the
-        `contentCue` mirror — the single definition of a cue row's fields."""
+        `contentCue` mirror — the single definition of a cue row's fields.
+
+        `color_code` is a hot-cue palette code on a hot cue and a 0-based
+        `memory_palette` code on a memory cue (`Kind` 0): the two keep their
+        colour in different columns."""
         if start_sec < 0:
             raise InvalidCommand("A cue cannot be before the start of the track")
         row = self.content(track_id)
@@ -1217,8 +1272,13 @@ class RekordboxStore(ReplaceGridCommands):
             cue.BeatLoopSize = None
             cue.ActiveLoop = None
             cue.CueMicrosec = None
-        self._apply_color(cue, color_code, is_loop)
-        cue.Comment = name or None
+        if kind == kind_for("memory", None):
+            self._apply_memory_color(cue, color_code, is_loop)
+            # Measured: an unnamed memory LOOP has Comment '', a point cue NULL.
+            cue.Comment = name or ("" if is_loop else None)
+        else:
+            self._apply_color(cue, color_code, is_loop)
+            cue.Comment = name or None
 
         self._db.flush()
         self._sync_content_cue(track_id)
@@ -1239,6 +1299,21 @@ class RekordboxStore(ReplaceGridCommands):
         else:
             cue.Color = -1
             cue.ColorTableIndex = None
+
+    @staticmethod
+    def _apply_memory_color(cue, code: int | None, is_loop: bool, *, cleared: bool = False) -> None:
+        """A MEMORY cue's colour columns (measured 2026-10-16, kit M1): the
+        0-based `memory_palette` code in `Color`, `ColorTableIndex` untouched by
+        colour — NULL on a point cue, 0 on a loop (rekordbox's loop marker).
+        Uncoloured is -1 on a new point cue, 255 on a loop and on any cue set
+        back to "No Color" (`cleared`)."""
+        cue.ColorTableIndex = 0 if is_loop else None
+        if code is not None:
+            cue.Color = int(code)
+        elif cleared or is_loop:
+            cue.Color = memory_palette.CLEARED
+        else:
+            cue.Color = -1
 
     def set_cue_color(self, track_id: str, slot: int, color_code: int | None) -> None:
         """Recolour the cue in `slot`; None makes it uncoloured. Touches only the
@@ -1308,11 +1383,13 @@ class RekordboxStore(ReplaceGridCommands):
         """
         t = self._tables
         row = self.content(track_id)
+        # In ROW order, as rekordbox writes it (measured: a memory cue added at
+        # 1:55 is listed after older ones at 2:04 and 3:26), not by position.
         cues = (
             self._db.session.query(t.DjmdCue)
             .filter(t.DjmdCue.ContentID == str(track_id))
             .filter(t.DjmdCue.rb_local_deleted == 0)
-            .order_by(t.DjmdCue.InMsec)
+            .order_by(text("djmdCue.rowid"))
             .all()
         )
         fields = (

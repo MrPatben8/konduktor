@@ -158,6 +158,9 @@ class CueEntry:
     color_green: int | None = None
     color_blue: int | None = None
     len_entry: int = 0
+    #: `PCP2` byte 28: a MEMORY cue's colour, 1-based, 0 = none (also present
+    #: in the compact 44-byte form, which has no hot-cue colour tail).
+    color_id: int = 0
 
 
 def raw_entries(tag: Tag) -> list[bytes]:
@@ -195,6 +198,35 @@ def entry_with_colour(entry: bytes, code: int, rgb: tuple[int, int, int]) -> byt
     if at + 4 > len(entry):
         return None
     return entry[:at] + bytes([code & 0xFF, *rgb]) + entry[at + 4:]
+
+
+def entry_color_id(entry: bytes) -> int:
+    """A `PCP2` entry's byte 28 — a MEMORY cue's colour, 1-based, 0 = none."""
+    return entry[28] if len(entry) > 28 and entry[:4] == b"PCP2" else 0
+
+
+def entry_with_color_id(entry: bytes, value: int) -> bytes:
+    """A `PCP2` entry with ONLY byte 28 changed — what rekordbox does to recolour
+    a memory cue (measured: that one byte, in any entry length, compact too)."""
+    return entry[:28] + bytes([value & 0xFF]) + entry[29:]
+
+
+def entry_with_comment(entry: bytes, name: str | None) -> bytes:
+    """A `PCP2` entry renamed, every other byte kept.
+
+    Measured on a memory loop (rekordbox 7, 2026-10-16): the comment goes in at
+    byte 44 as UTF-16BE plus a NUL, `len_comment` (byte 40) counts it, and the
+    entry GROWS by exactly that much — 88 -> 100 for "Loopy" — the colour tail
+    and padding following it unchanged. A compact 44-byte entry has no tail, so
+    it first takes a full entry's (4 colour bytes + 40 zeros); that case is
+    unmeasured."""
+    if len(entry) < 44:
+        raise AnlzError("A PCP2 entry shorter than 44 bytes has no comment field")
+    old_len = struct.unpack_from(">I", entry, 40)[0]
+    tail = entry[44 + old_len:] if len(entry) > 44 else bytes(44)
+    comment = (name.encode("utf-16-be") + b"\0\0") if name else b""
+    head = entry[:8] + struct.pack(">I", 44 + len(comment) + len(tail)) + entry[12:40]
+    return head + struct.pack(">I", len(comment)) + comment + tail
 
 
 def entry_without_loop_beats(entry: bytes) -> bytes:
@@ -245,7 +277,8 @@ def _pco2(data: bytes) -> list[CueEntry]:
         hot_cue, = struct.unpack_from(">I", data, off + 12)
         kind = data[off + 16]
         time, loop = struct.unpack_from(">II", data, off + 20)
-        e = CueEntry(hot_cue=hot_cue, type=kind, time=time, loop_time=loop, len_entry=n)
+        e = CueEntry(hot_cue=hot_cue, type=kind, time=time, loop_time=loop, len_entry=n,
+                     color_id=data[off + 28] if n > 28 else 0)
         if n >= 44:
             e.loop_numerator, e.loop_denominator, len_comment = struct.unpack_from(">HHI", data, off + 36)
             colour_at = off + 44 + len_comment

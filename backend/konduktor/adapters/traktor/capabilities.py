@@ -46,8 +46,11 @@ def capabilities_for(path: Path, editable_fields: list[str]) -> Capabilities:
             editable=True,
             hotcue_slots=8,
             slot_labels="number",
-            # Traktor has no memory cues — every cue occupies a bank slot.
-            memory_cues=False,
+            # Memory cues are CUE_V2s on no pad (HOTCUE="-1"), any type, no
+            # limit (measured in Traktor 4.5, 2026-10-16). No colour: by type.
+            memory_cues=True,
+            max_memory_cues=None,
+            memory_color="none",
             types=CUE_TYPES,
             # Traktor colours a cue by its TYPE; the only COLOR it stores is a
             # grid marker's white companion, so there is nothing to pick.

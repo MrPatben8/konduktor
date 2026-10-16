@@ -25,9 +25,8 @@ MEMORY_COLOR = "#9AA1B2"    # grey
 
 
 def effective_color(cue: CuePoint) -> str:
-    """`#RRGGBB` — the stored colour, or the type's."""
+    """`#RRGGBB` — the stored colour, or the type's: hot and memory cues alike
+    (a memory cue's type colours it too, decided 2026-10-16)."""
     if cue.color:
         return cue.color.upper()
-    if cue.role == "memory":
-        return MEMORY_COLOR
     return TYPE_COLORS.get(cue.type, MEMORY_COLOR)

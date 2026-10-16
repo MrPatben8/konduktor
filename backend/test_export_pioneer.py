@@ -236,7 +236,10 @@ def _real_cue_tags(path: Path) -> list[bytes]:
 
 
 def _mask_colour(tag: bytes) -> bytes:
-    """A PCO2 tag with each entry's code + RGB (after its comment) zeroed."""
+    """A PCO2 tag with each entry's colours zeroed: the hot-cue code + RGB
+    (after its comment) and byte 28, a memory cue's colour. The fixture's
+    memory loop is uncoloured; Konduktor now exports one in its TYPE colour,
+    as it draws it (decided 2026-10-16) — pinned separately below."""
     if tag[:4] != b"PCO2":
         return tag
     out, off = bytearray(tag), struct.unpack(">I", tag[4:8])[0]
@@ -244,6 +247,7 @@ def _mask_colour(tag: bytes) -> bytes:
         length = struct.unpack(">I", tag[off + 8:off + 12])[0]
         at = off + 44 + struct.unpack(">I", tag[off + 40:off + 44])[0]
         out[at:at + 4] = bytes(4)
+        out[off + 28] = 0
         off += length
     return bytes(out)
 
@@ -424,6 +428,7 @@ print("\n== cue colours cross as rekordbox PALETTE CODES ==")
 # rekordbox draws a hot cue from the palette code, not the RGB: an export writing
 # code 0 had every cue drawn in rekordbox's defaults (green cues, orange loops).
 # The table was measured from a rekordbox 7 export of all 16 swatches.
+from konduktor.adapters.rekordbox import anlz_file as A_  # noqa: E402
 from konduktor.adapters.rekordbox import palette  # noqa: E402
 
 check("a measured swatch keeps its exact code and RGB",
@@ -450,6 +455,35 @@ entry = W.cue_tags([{"hot_cue": 1, "kind": 1, "time_ms": 1000, "loop_ms": None,
                      "rgb": (0x1A, 0xFF, 0x00), "code": 0x16, "beats": None}], extended=True)[2]
 check("the code is packed where rekordbox 7 puts it — byte 44, before the RGB",
       entry[20 + 44:20 + 48] == bytes([0x16, 0x1A, 0xFF, 0x00]), entry[64:68].hex())
+
+# Memory cues (kit M2, 2026-10-16): colour is PCP2 byte 28 from the 8-colour
+# memory palette, a list of two or more is LINKED in the .DAT, and rekordbox
+# keeps 10.
+from konduktor.adapters.rekordbox import memory_palette  # noqa: E402
+
+many_memory = [CuePoint(type="cue", role="memory", start=float(i), length=0.0, slot=None,
+                        color="#E13121" if i == 0 else None) for i in range(12)]
+mem_dicts = OneLibraryExporter._cue_dicts(
+    ExportTrack(track=cued, destination=Path("t.wav"),
+                cues=TrackCues(track_id="t", cues=many_memory, grid_markers=[])), [], 0.0)
+check("rekordbox keeps 10 memory cues: the earliest 10 are exported",
+      len(mem_dicts) == 10 and [d["time_ms"] for d in mem_dicts] == [i * 1000 for i in range(10)],
+      [d["time_ms"] for d in mem_dicts])
+check("a memory cue's colour is byte 28 from its own palette (Red = 2); no hot-cue code",
+      (mem_dicts[0]["color_id"], mem_dicts[0]["code"]) == (memory_palette.anlz_byte(1), 0),
+      (mem_dicts[0]["color_id"], mem_dicts[0]["code"]))
+check("an uncoloured one exports in its type colour, as Konduktor shows it (cue -> Blue = 7)",
+      mem_dicts[1]["color_id"] == memory_palette.anlz_byte(6), mem_dicts[1]["color_id"])
+dat_tags = W.cue_tags(mem_dicts[:3], extended=False)
+mem_pcob = A_.raw_entries(A_.Tag("PCOB", dat_tags[1]))
+check("a memory PCOB of two or more is linked, status 0, as rekordbox writes it",
+      [(e[16:20].hex(), e[24:28].hex()) for e in mem_pcob]
+      == [("00000000", "ffff0001"), ("00000000", "00000002"), ("00000000", "0001ffff")],
+      [(e[16:20].hex(), e[24:28].hex()) for e in mem_pcob])
+ext_tags = W.cue_tags(mem_dicts[:1], extended=True)
+pco2_mem = A_.raw_entries(A_.Tag("PCO2", ext_tags[3]))
+check("and the colour lands in PCP2 byte 28",
+      len(pco2_mem) == 1 and pco2_mem[0][28] == memory_palette.anlz_byte(1), pco2_mem and pco2_mem[0][24:32].hex())
 
 print("\n== artwork crosses the way rekordbox 7 writes it ==")
 # Measured on a rekordbox 7 export: PIONEER/Artwork/00001/{a,b}<n>{,_m}.jpg at
@@ -581,7 +615,8 @@ check("four cue rows: three hot cues and a memory cue (Kind 0)",
 check("a plain cue is rekordbox's light blue (code 5)", by_kind.get(1) == (0x05, -1), by_kind.get(1))
 check("a loop is rekordbox's green (code 22)", by_kind.get(2) == (0x16, -1), by_kind.get(2))
 check("the white grid cue has no swatch, so stays uncoloured", by_kind.get(3) == (None, -1), by_kind.get(3))
-check("the memory cue is written, uncoloured", by_kind.get(0) == (None, -1), by_kind.get(0))
+check("an uncoloured memory cue is written in its type colour (cue -> Blue, Color 6)",
+      by_kind.get(0) == (None, 6), by_kind.get(0))
 check("the contentCue mirror holds all four, colours included",
       mirror is not None and mirror[0].count('"Kind"') == 4 and '"ColorTableIndex": 22' in mirror[0].replace(":22", ": 22"),
       mirror and mirror[0][:200])

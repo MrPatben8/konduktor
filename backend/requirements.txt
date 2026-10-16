@@ -24,7 +24,7 @@ scikit-learn>=1.5
 # what it had: pyrekordbox renamed `devicelib_plus` to `onelibrary` upstream,
 # every local test passed, and the released app could not export or read a
 # OneLibrary stick. Move a pin deliberately, with ./run_tests.sh.
-traktor-nml-utils @ git+https://github.com/MrPatben8/traktor-nml-utils.git@39a9c15f29d6b0ea2ce61cd7d548501eea38319d
+traktor-nml-utils @ git+https://github.com/MrPatben8/traktor-nml-utils.git@d7f472aaf5be53e53921de351e948233e9c1d1e8
 # Rekordbox (master.db is SQLCipher-encrypted SQLite + per-track ANLZ analysis
 # files). Both ship prebuilt Python 3.14 wheels — no Rust/OpenSSL source build.
 #

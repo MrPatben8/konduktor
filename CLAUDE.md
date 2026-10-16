@@ -315,8 +315,19 @@ Two independent apps that talk over HTTP:
       cue at `Kind=4` lands on no pad and Rekordbox shows it as a memory cue.
       Get this wrong and cues silently move to the wrong pad or vanish from the
       bank. Point cues AND loops both write; `cue_types` owns the translation.
-      **Memory cues stay preserved-but-uneditable** (Rekordbox is the only
-      platform with them — the two-platform promotion rule).
+      **Memory cues are editable** (`add_memory_cue` / `rename_` /
+      `set_memory_cue_color` / `delete_memory_cue`, addressed by `CuePoint.id`
+      = `djmdCue.ID`; decided and MEASURED 2026-10-16, kit M1 in
+      [the discussion](.claude/discussions/discuss-memory-cues-2026-10-16.md)):
+      `Kind=0`, no ANLZ write, **at most 10 per track** (rekordbox stops
+      storing the 11th SILENTLY, so the store refuses it with a reason), and
+      a colour of their OWN — 8 colours (`memory_palette.py`, display RGB
+      sampled from rekordbox's menu), the 0-based code in **`Color`** with
+      `ColorTableIndex` NULL (the opposite of a hot cue), `-1` never coloured,
+      **255** after "No Color", and an unnamed memory LOOP has `Comment=''`.
+      `_sync_content_cue` writes the mirror in **ROW order** (`rowid`), as
+      rekordbox does — not by position. A cue on the reserved `Kind=4` is
+      shown as a memory cue but is not one, so it is not editable.
       **Hot cue colour is writable** (`set_cue_color`, `PATCH
       /api/tracks/cue/color`) from `palette.SWATCHES` — all 16 of rekordbox's
       swatches, MEASURED (the teal-green, 0x13 #00FF30, came last: rekordbox
@@ -392,8 +403,19 @@ Two independent apps that talk over HTTP:
     A pad keeps its colour and (unless given one) its name through a move or
     retype. An `.EXT` without `PCO2` gets both lists seeded from its `PCOB`s on
     the first edit — readers prefer `PCO2`, so a one-pad list would hide the rest.
-    A track with no analysis files refuses cue/grid edits. Memory cues stay
-    preserved-but-uneditable.
+    A track with no analysis files refuses cue/grid edits.
+    **Memory cues are editable** the way rekordbox 7 edits them on a stick
+    (kit M2; rekordbox's own bytes are `fixtures/onelibrary-memory-edits`):
+    `memory_cues.py` does the list edits — ONLY the analysis files change (the
+    database and both pdbs keep every row); the `.DAT` `PCOB` memory list
+    PREPENDS a new cue and is relinked as a whole (status 0, bytes 24–27 =
+    prev/next list index, `anlz_writer.relinked_memory_pcpts`), the `.EXT`
+    `PCO2` memory list APPENDS it in rekordbox's compact 44-byte form; colour =
+    `PCP2` byte 28, 1-based (`memory_palette.anlz_byte`), name = the `PCP2`
+    comment, which grows the entry by its length; cap 10. The id is
+    content-derived (`cues.memory_cue_id`: stored time, kind, loop end), the
+    same in both lists. When rekordbox rewrites a `.DAT` it also re-sorts the
+    untouched hot `PCOB` ascending; Konduktor changes only the list it edits.
     **`device_library.py` keeps the stick's legacy `export.pdb` in step** at
     every Save (rekordbox's own edits let its playlists drift — measured). The
     stick's own pdb is EDITED (`pdb.PdbEditor`), not regenerated: ids are
@@ -1045,8 +1067,9 @@ Two independent apps that talk over HTTP:
     persists; a toggle under the zoom buttons draws the RAW signal instead
     of bars — `lib/rawWave.ts`, below; persisted as `mainWaveRaw`) over
     `OverviewWaveform`, which frames the main view's visible range around the
-    playhead (it takes `secPerView` for exactly that). **Controls**: play, CUE, `LoopControls`, then EITHER
-    `HotcueBar` OR — in **Grid mode** — `GridEditStrip`, then `TempoControls`
+    playhead (it takes `secPerView` for exactly that). **Controls**: play, CUE, `LoopControls`, then
+    (where `cues.memory_cues`) the **Hot / Mem** switch (`ModeSwitch`, the same component as BEAT / MAN), then
+    `HotcueBar`, `MemoryCueStrip` (Mem) OR — in **Grid mode** — `GridEditStrip`, then `TempoControls`
     (±0.01 / ±0.25, ÷2 ×2, tap, lock) and the Grid toggle. The row is a
     **container** and gives way in stages instead of overlapping: each pad
     queries its own width and drops its name below 4rem (the bank never goes
@@ -1070,6 +1093,20 @@ Two independent apps that talk over HTTP:
       and only jump the playhead when no loop is engaged. The move sets the new
       loop BEFORE seeking: `PlaybackEngine.seek` honours the loop in force, so
       seeking first wraps the playhead back into the old loop.
+    - **Memory cues** (decided 2026-10-16, [the discussion](.claude/discussions/discuss-memory-cues-2026-10-16.md)):
+      Mem mode replaces the pads with `MemoryCueStrip` — chips in TIME order,
+      scrolling sideways, labelled by name else `m:ss.s`, after a + Memory button
+      (at the snapped playhead, or the engaged loop as a memory loop;
+      disabled with the reason past `max_memory_cues`). **Clicking a chip is
+      CDJ CALL, not a trigger**: jump there and make it the CUE point (paused
+      stays paused), a memory loop engaging as a loop pad does (`enterCue`).
+      Right-click: Type (point types, where the platform has more than one —
+      Traktor; `set_memory_cue_type`, a loop is not retyped), Colour
+      (`memory_palette`), Rename… (the shared `RenameField`), Delete — no move
+      (rekordbox has none: a move is delete + add). An uncoloured memory cue
+      draws in its TYPE colour, exactly as a hot cue does (`cueColor` /
+      `core/cue_colors.effective_color`). Digit keys stay on hot cues. The mode
+      persists as `cueBankMode`.
     - **Hotcue edits live on the pad's right-click menu** (type as one-click
       choices, a colour swatch grid + Default where `cues.color` is `palette` —
       `ContextMenu`'s `swatches` item, Rename…, Delete); there is no standalone
@@ -1100,9 +1137,12 @@ Two independent apps that talk over HTTP:
   `cues.palette`; a `free` platform gets no picker yet), the rating scale
   (`tracks.rating_max`), the grid Lock button (`grid.lockable`). Per-node playlist flags (`can_rename`, `can_delete`,
   `can_add_tracks`) gate the sidebar and the context menu's "Add to" — each on its OWN flag,
-  since a platform may allow renaming but not deleting. Carried but deliberately unused until a second adapter
-  exists: `slot_labels: 'letter'`, `loops: 'separate_bank'`, and
-  memory-cue *editing* (one-platform features stay preserved-but-uneditable).
+  since a platform may allow renaming but not deleting. Memory cues: the deck's
+  Hot / Mem toggle shows on `cues.memory_cues`, + Memory refuses past
+  `cues.max_memory_cues`, and a memory cue's swatches are `cues.memory_palette`
+  where `cues.memory_color` is `palette` (its own 8, not `palette`'s 16).
+  Carried but deliberately unused until a second adapter
+  exists: `slot_labels: 'letter'`, `loops: 'separate_bank'`.
 - `lib/trackColumns.tsx` — single source of truth for the library table's
     columns (defs, default widths/visibility/order, the Columns-menu list, the
     inline `InlineEdit` cell, and the `TableMeta.onEditField` augmentation).
@@ -1176,6 +1216,16 @@ serialization path.** It enforces:
   moving back is byte-identical; a folder moves with its subtree and answers
   its new path id; into its own descendant / beside a namesake is refused with
   nothing changed; a smart playlist moves by its path id; a no-op is not dirty.
+  And **memory cues** (P): add / rename / delete change only that `<ENTRY>`'s
+  cue lines, in Traktor's shape (`HOTCUE="-1"`, `n.n.`), add + delete
+  round-trips byte for byte, new cues (hot ones too) are INSERTED by START,
+  and a pad + memory cue at one START project once, as the pad.
+  And **`>` / quotes in attribute values** (Q): Traktor leaves `>` raw, and
+  an empty element holding one (4.5's default "Recently added" query
+  `$IMPORTDATE >= MONTHS_AGO(1)`, a comment, a file name) once came back
+  self-closed (`/>`, which Traktor never writes); a value containing
+  `name='x'` once came back with a bare `"` (malformed). Both were in the
+  fork's `format_traktor_layout`, fixed there (2026-10-16).
   The guard that catches serialization regressions like the lxml reformatting bug.
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched;
@@ -1276,7 +1326,13 @@ serialization path.** It enforces:
   and the counter, pointing at its OWN row (found by meaning, not name); a
   missing key adds one `djmdKey` row as rekordbox creates its own — its
   spelling, `Seq` NULL, its own USN (so through the ORM; a raw insert is
-  left unstamped) — which the next `set_key` reuses.
+  left unstamped) — which the next `set_key` reuses. And **memory cues** (G2):
+  M1's measured row shapes (point: `Color -1`, CTI NULL; loop: `255/0`,
+  `Comment ''`), colour in `Color` (Blue 6) with CTI NULL, No Color = 255, the
+  mirror in ROW order, rename touching only `Comment` (+ the USN pyrekordbox
+  stamps on every cue write — rekordbox's own leave it NULL, and it has
+  accepted ours), the 11th refused with nothing changed, delete removing the
+  row outright.
 - `test_onelibrary_adapter.py` — the third adapter against the same contract.
   Unlike the Rekordbox tests it needs **nothing installed and nothing plugged
   in**: it runs against `fixtures/onelibrary/`, a real rekordbox 7 export trimmed
@@ -1307,10 +1363,15 @@ serialization path.** It enforces:
   new `PQTZ` keeps the marker where it was (rekordbox's own halving moved its
   anchor 6 ms; within 10 ms). Then fidelity on the demo drive: nothing on the
   drive before Save, only the touched tags change (in place, order kept), a
-  moved pad keeps colour and name, memory cues refused, swatches only, a
+  moved pad keeps colour and name, swatches only, a
   same-tempo marker collapses (a per-beat grid has no markers), another app's
   ANLZ write refused, an `.EXT` with no `PCO2` keeps every pad, a track with no
-  analysis files refuses.
+  analysis files refuses. And **memory cues against rekordbox's own edits**
+  (`fixtures/onelibrary-memory-edits`): add a cue, add a loop, add up to 10, recolour,
+  comment and delete, each replayed with `memory_cues` on `before/` and equal
+  to `after/` tag for tag (the `.DAT` hot list compared as a set — rekordbox
+  re-sorts it); then through the adapter on the demo drive: palette, cap,
+  NotFound, nothing before Save, and Save changing only the two memory lists.
 - `test_onelibrary_pdb.py` — the Device Library rebuild on Goober's own
   `export.pdb`: every track row reads (rows end at their last string; stale
   heap tails ignored), a no-op rebuild returns None and a no-op save leaves the
@@ -1327,7 +1388,9 @@ serialization path.** It enforces:
   and files only at Save, renumbers playlists and prunes empty folders.
 - `test_import.py` — the import feature end to end: a drive's tracks into a temp
   copy of the real collection. Asserts the prep survives (hot cues keep their
-  PAD, memory cues fill spare ones, the flexible grid crosses intact, no
+  PAD, memory cues arrive as Traktor memory cues (`HOTCUE="-1"`; one on a
+  pad's START shows once, as the pad), a hot cue displaced with no spare pad
+  becomes a memory cue instead of being dropped, the flexible grid crosses intact, no
   companion cue is invented), that the existing 8,485 entries render
   byte-identically, that the job registry runs/fails/cancels, and that a
   cancelled import leaves **no orphaned audio and an untouched collection**.
@@ -1590,6 +1653,16 @@ frontend at `http://localhost:5173`.
     load-bearing: 49 uncoloured cues and 18 *loops* also sit within 1 ms of a
     marker and must not be dragged or deleted. `backend/konduktor/beatgrid.py`
     is the single shared definition of all of this.
+  - **Memory cues are `CUE_V2`s on no pad** (`HOTCUE="-1"`) WITHOUT a `<GRID>`
+    — a grid marker is also `HOTCUE="-1"`, and the `<GRID>` child is the only
+    test (`projection.is_memory_cue`). Measured in Traktor 4.5 (kit M3,
+    2026-10-16): any type, no limit, drawn on the waveform, reached with the
+    cue panel's ‹ ›, a name shown in the cue panel, and a Konduktor-written one
+    kept byte for byte. MAP puts a pad on one and leaves the memory cue at the
+    same START; Traktor draws ONE marker, so the projection shows the pad only.
+    Their id is content-derived (`m:<START>:<TYPE>:<LEN>:<n>`). Traktor keeps
+    `CUE_V2` sorted by START, so the store INSERTS new cues in place
+    (`_insert_cue`) rather than appending.
 - **Playlist tree**: recurse `nml.playlists.node.subnodes.node`. A node's `.type`
   is `FOLDER`, `PLAYLIST`, or `SMARTLIST`. Smart playlists are rule-based and
   have no static entry list. `PlaylistNode.id` is the playlist's stable `UUID`;
@@ -1787,9 +1860,11 @@ that number and nothing else — everything derives from it:
     that swap so `SaveBar` still saves collection edits. While a device's
     capabilities load the fallback is read-only, never the collection's —
     guessing "writable" for one frame would offer an edit bound for the wrong
-    library. Lossiness follows the settled rule: memory cues become hot cues in
-    spare pads (earliest first), cue colour is dropped (Traktor derives it from
-    type).
+    library. Lossiness follows the settled rule: memory cues stay memory cues
+    (Traktor's `HOTCUE="-1"`; until 2026-10-16 they were promoted to spare
+    pads), a hot cue whose pad is taken moves to a spare pad, else becomes a
+    memory cue; cue colour is dropped (Traktor derives it from type). Into
+    Rekordbox / OneLibrary only the first 10 memory cues cross (rekordbox's cap).
 - ✅ OneLibrary adapter — **reading and editing done**, at parity with the
   Rekordbox adapter (2026-10-01, [decisions](.claude/discussions/discuss-onelibrary-editing-2026-10-01.md)).
   A OneLibrary USB drive opens, projects, browses and searches: tracks,
@@ -1798,8 +1873,7 @@ that number and nothing else — everything derives from it:
   files, each rule matching rekordbox's measured edit), the `export.pdb` rebuild
   on save, adding/removing tracks (the library places the audio), Save via a
   working copy, and "Open for editing…" on a Devices row — all verified in
-  rekordbox 7. Same gaps as Rekordbox: cover-art writing, memory-cue editing,
-  stem conversion. All format research — including the schema, which has no
+  rekordbox 7. Same gaps as Rekordbox: cover-art writing, stem conversion. All format research — including the schema, which has no
   public spec — is in [.claude/handoffs/onelibrary-adapter.md](.claude/handoffs/onelibrary-adapter.md).
 - 🟡 **Export/conversion** — **in progress.** Both the design AND the user flow
   are settled; see
@@ -1962,7 +2036,8 @@ that number and nothing else — everything derives from it:
   0x2C060E. **Parity with the OneLibrary target is done and verified in
   Rekordbox 7**: cue colours (palette code in `djmdCue.ColorTableIndex`,
   `Color` -1 — coloured loops included), memory cues (`store.add_memory_cue`,
-  export-only: the adapter still refuses memory-cue edits), and artwork
+  the same write as the adapter's memory-cue edit: colour in `Color` from the
+  memory palette, the first 10 per track), and artwork
   (`share/PIONEER/Artwork/<uuid[:3]>/<uuid[3:]>/artwork.jpg` fit to 800 px plus
   `_m` 240 / `_s` 80 letterboxed, `ImagePath` -> artwork.jpg). The exporter writes
   cues through `store.set_cue`/`add_memory_cue`, which share `_write_cue` with

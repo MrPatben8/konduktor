@@ -37,7 +37,7 @@ from __future__ import annotations
 import logging
 
 from ...core.model import CuePoint
-from ..rekordbox import palette
+from ..rekordbox import memory_palette, palette
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +112,13 @@ def _to_cue(entry, *, with_color: bool, editable: bool = False) -> CuePoint | No
     slot = None if role == "memory" else hot_cue - 1
 
     comment = getattr(entry, "comment", None)
+    if role == "memory":
+        # A memory cue's colour is byte 28 (`memory_palette`), not the hot-cue
+        # code + RGB tail, which stays zero on one.
+        color = (memory_palette.hex_for(memory_palette.from_anlz_byte(
+            int(getattr(entry, "color_id", 0) or 0))) if with_color else None)
+    else:
+        color = _color(entry) if with_color else None
     return CuePoint(
         name=(str(comment) or None) if comment else None,
         type="loop" if length > 0 else "cue",
@@ -119,14 +126,24 @@ def _to_cue(entry, *, with_color: bool, editable: bool = False) -> CuePoint | No
         start=start_ms / 1000.0,
         length=length,
         slot=slot,
-        color=_color(entry) if with_color else None,
-        # Hot cues are editable on a drive opened for editing (the caller says
-        # so). MEMORY cues never are — preserved-but-uneditable, as in the
-        # Rekordbox adapter (the two-platform rule).
-        editable=editable and role == "hotcue",
-        readonly_reason=None if editable and role == "hotcue" else "platform_managed",
+        color=color,
+        # Editable on a drive opened for editing (the caller says so), memory
+        # cues included; browsing a device is read-only.
+        editable=editable,
+        readonly_reason=None if editable else "platform_managed",
         grid_marker=None,
+        id=memory_cue_id(entry) if role == "memory" else None,
     )
+
+
+def memory_cue_id(entry) -> str:
+    """A memory cue's `CuePoint.id`: its STORED position, kind and loop end.
+
+    Content-derived, so it is the same on every read and in both lists (`PCOB`
+    in the .DAT, `PCO2` in the .EXT, which order the same cues differently);
+    an index would not be. Two memory cues identical in all three are one cue
+    to `_dedupe` already, so the first match is the one meant."""
+    return f"m:{int(entry.time)}:{_entry_kind(getattr(entry, 'type', ENTRY_CUE))}:{int(getattr(entry, 'loop_time', NO_LOOP))}"
 
 
 def _entries(anlz, tag_type: str) -> list:

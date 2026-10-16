@@ -32,6 +32,8 @@ import { TrackInfoDialog } from './TrackInfoDialog'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { BpmReadout, GridEditStrip, TempoControls, TempoFold } from './GridControls'
 import { HotcueBar } from './HotcueBar'
+import { MemoryCueStrip } from './MemoryCueStrip'
+import { ModeSwitch } from './ModeSwitch'
 import { LoopControls, LOOP_SIZES, type LoopMode } from './LoopControls'
 import { MainWaveform, MIN_SEC, MAX_SEC, DEFAULT_SEC, type StemLane } from './MainWaveform'
 import { OverviewWaveform } from './OverviewWaveform'
@@ -156,6 +158,10 @@ export function PrepStrip({
   const [gridMode, setGridMode] = useState(false)
   const [padMenu, setPadMenu] = useState<{ slot: number; x: number; y: number } | null>(null)
   const [renamingSlot, setRenamingSlot] = useState<number | null>(null)
+  // Hot / Memory: which bank the pads' place in the row shows (persisted).
+  const [bankMode, setBankMode] = useState<'hot' | 'memory'>('hot')
+  const [memoryMenu, setMemoryMenu] = useState<{ cue: CuePoint; x: number; y: number } | null>(null)
+  const [renamingMemory, setRenamingMemory] = useState<string | null>(null)
 
   // Loop state (transient — persisted only when saved as a hotcue later).
   const [loopRegion, setLoopRegion] = useState<{ start: number; end: number } | null>(null)
@@ -220,6 +226,18 @@ export function PrepStrip({
     writePrefs({ beatSize })
   }, [beatSize, writePrefs])
 
+  // Hot / Memory bank, remembered the same way (decided 2026-10-16).
+  const bankHydratedRef = useRef(false)
+  useEffect(() => {
+    if (bankHydratedRef.current || !prefsQuery.data) return
+    bankHydratedRef.current = true
+    if ((prefsQuery.data as { cueBankMode?: unknown }).cueBankMode === 'memory') setBankMode('memory')
+  }, [prefsQuery.data])
+  useEffect(() => {
+    if (!bankHydratedRef.current) return // don't clobber saved prefs pre-hydration
+    writePrefs({ cueBankMode: bankMode })
+  }, [bankMode, writePrefs])
+
   const getCtx = (): AudioContext => {
     if (!audioCtxRef.current) {
       audioCtxRef.current = new (window.AudioContext ??
@@ -267,6 +285,8 @@ export function PrepStrip({
     setSelectedSlot(null)
     setPadMenu(null)
     setRenamingSlot(null)
+    setMemoryMenu(null)
+    setRenamingMemory(null)
     setLoopRegion(null)
     setLoopActive(false)
     setActiveBeats(null)
@@ -830,11 +850,18 @@ export function PrepStrip({
     const eng = playbackRef.current
     if (!eng || !eng.ready) return
     getCtx()
-    // A loop hotcue jumps to its start AND engages a loop of its length — the
-    // new loop FIRST, so the seek is not wrapped back into the old one. The loop
-    // controls follow it: a beat-sized loop takes over the shared size (so −/+
-    // resize THIS loop), and one of no preset size shows in MAN, where its
-    // toggle is.
+    enterCue(cue)
+    seek(cue.start)
+    // Paused at press → momentary preview: play while held.
+    if (!eng.playing) beginPreview(`hc:${slot}`, cue.start)
+  }
+
+  // Before jumping to a cue: a loop cue engages a loop of its length — the new
+  // loop FIRST, so the seek is not wrapped back into the old one. The loop
+  // controls follow it: a beat-sized loop takes over the shared size (so −/+
+  // resize THIS loop), and one of no preset size shows in MAN, where its toggle
+  // is. A point cue outside an engaged loop leaves it.
+  const enterCue = (cue: CuePoint) => {
     if (cue.type === 'loop' && cue.length > 0) {
       const beats = beatsForLoop(cue.start, cue.length)
       engagLoop(cue.start, cue.start + cue.length, beats)
@@ -847,9 +874,6 @@ export function PrepStrip({
     } else {
       leaveLoopFor(cue.start)
     }
-    seek(cue.start)
-    // Paused at press → momentary preview: play while held.
-    if (!eng.playing) beginPreview(`hc:${slot}`, cue.start)
   }
 
   // Hotcue slot released (mouse/touch up, or key up). Ends its momentary preview.
@@ -935,6 +959,125 @@ export function PrepStrip({
     } catch (e) {
       onError?.((e as Error).message)
     }
+  }
+
+  // ---- memory cues --------------------------------------------------------
+  // Cues on no pad, listed in time order (MemoryCueStrip). Calling one is
+  // CDJ-style: jump there and make it the CUE point — paused stays paused,
+  // playing keeps playing; a memory loop also engages (decided 2026-10-16).
+  const showMemory = caps.cues.memory_cues && bankMode === 'memory'
+  const memoryPalette = caps.cues.memory_color === 'palette' ? caps.cues.memory_palette : []
+  const memoryCount = cueData?.cues.filter((c) => c.role === 'memory' && c.editable).length ?? 0
+  const memoryCap = caps.cues.max_memory_cues
+  const memoryAddRefusal = !canEditCues
+    ? (readOnlyNotice(caps) ?? `Cues cannot be edited on ${caps.save.app_name} libraries yet.`)
+    : memoryCap != null && memoryCount >= memoryCap
+      ? `${caps.save.app_name} keeps at most ${memoryCap} memory cues per track`
+      : null
+
+  const callMemoryCue = (cue: CuePoint) => {
+    const eng = playbackRef.current
+    if (!eng || !eng.ready) return
+    getCtx()
+    enterCue(cue)
+    seek(cue.start)
+    setCuePoint(cue.start)
+  }
+
+  // + Memory: at the (snapped) playhead, or the engaged loop as a memory loop.
+  const addMemoryCue = async () => {
+    if (!track) return
+    if (memoryAddRefusal) {
+      onError?.(memoryAddRefusal)
+      return
+    }
+    try {
+      if (loopActive && loopRegion) {
+        const len = loopRegion.end - loopRegion.start
+        applyCueEdit(await api.addMemoryCue(track.id, loopRegion.start, 'loop', len))
+      } else {
+        const t = snapTime(playbackRef.current?.getPosition() ?? current)
+        applyCueEdit(await api.addMemoryCue(track.id, t, 'cue'))
+      }
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+
+  const editMemoryCue = async (edit: () => Promise<TrackCues>) => {
+    if (!track || refuseCueEdit()) return
+    try {
+      applyCueEdit(await edit())
+    } catch (e) {
+      onError?.((e as Error).message)
+    }
+  }
+
+  const memoryMenuItems = (cue: CuePoint): MenuItem[] => {
+    const id = cue.id
+    const locked = !cue.editable || id == null
+    const items: MenuItem[] = []
+    // Its type as one-click choices, as on a pad — where the platform has more
+    // than one point type (Traktor); a loop stays a loop.
+    if (cue.type === 'loop') {
+      items.push({ heading: 'Memory loop' })
+    } else if (pointCueTypes.length > 1) {
+      items.push({ heading: 'Memory cue · Type' })
+      for (const t of pointCueTypes) {
+        const color = cueTypeColor(t)
+        items.push({
+          label: CUE_TYPE_LABELS[t],
+          icon: (
+            <span
+              className="block h-2 w-2 rounded-full"
+              style={{ background: color, boxShadow: `0 0 6px ${color}` }}
+            />
+          ),
+          hint: t === cue.type ? '✓' : undefined,
+          disabled: locked,
+          onClick: () =>
+            t !== cue.type &&
+            id != null &&
+            void editMemoryCue(() => api.setMemoryCueType(track!.id, id, t)),
+        })
+      }
+    } else {
+      items.push({ heading: 'Memory cue' })
+    }
+    if (memoryPalette.length > 0) {
+      items.push({ separator: true })
+      items.push({ heading: 'Colour' })
+      items.push({
+        swatches: memoryPalette,
+        selected: cue.color,
+        disabled: locked,
+        onPick: (color) =>
+          color !== cue.color &&
+          id != null &&
+          void editMemoryCue(() => api.setMemoryCueColor(track!.id, id, color)),
+      })
+    }
+    if (locked) items.push({ heading: 'Managed by the DJ app — not editable here' })
+    items.push({ separator: true })
+    items.push({
+      label: 'Rename…',
+      disabled: locked,
+      onClick: () => !refuseCueEdit() && setRenamingMemory(id),
+    })
+    items.push({
+      label: 'Delete',
+      danger: true,
+      disabled: locked,
+      onClick: () => id != null && void editMemoryCue(() => api.deleteMemoryCue(track!.id, id)),
+    })
+    return items
+  }
+
+  const renameMemoryCue = (cue: CuePoint, name: string) => {
+    setRenamingMemory(null)
+    if (cue.id == null) return
+    const id = cue.id
+    void editMemoryCue(() => api.renameMemoryCue(track!.id, id, name || null))
   }
 
   // ---- beatgrid ---------------------------------------------------------
@@ -1471,10 +1614,11 @@ export function PrepStrip({
           A container, so the row gives way in stages as the window narrows
           instead of the pads sliding under the tempo group: the pads drop
           their names first (each pad queries its own width, see HotcueBar),
-          then below 74rem the tempo group folds into one BPM button, and below
-          60rem the Grid toggle keeps only its icon. Those are the row's
+          then below 77rem the tempo group folds into one BPM button, and below
+          63rem the Grid toggle keeps only its icon. Those are the row's
           measured widths just before the pad bank would hit its minimum (with
-          a lockable grid's extra Lock button), so move them with the controls. */}
+          a lockable grid's extra Lock button, and the Hot / Mem toggle's
+          ~3rem with its gap), so move them with the controls. */}
       <div className="@container flex h-11 shrink-0 items-center gap-3">
         <button
           onClick={toggle}
@@ -1533,6 +1677,23 @@ export function PrepStrip({
           onMove={moveOrJump}
         />
         {DIVIDER}
+        {caps.cues.memory_cues && !gridMode && (
+          <ModeSwitch
+            label="Cue bank"
+            value={bankMode}
+            options={[
+              { value: 'hot', text: 'HOT', title: 'Hot cues: the pads' },
+              { value: 'memory', text: 'MEM', title: 'Memory cues: call one to make it the CUE point' },
+            ]}
+            onChange={(m) => {
+              setBankMode(m)
+              setPadMenu(null)
+              setMemoryMenu(null)
+              setRenamingSlot(null)
+              setRenamingMemory(null)
+            }}
+          />
+        )}
         {gridMode ? (
           <GridEditStrip
             markerIndex={activeMarkerIndex}
@@ -1549,6 +1710,18 @@ export function PrepStrip({
             onDeleteMarker={deleteMarkerHere}
             onDeleteGrid={deleteGrid}
             onReset={resetGrid}
+          />
+        ) : showMemory ? (
+          <MemoryCueStrip
+            cues={cueData?.cues ?? []}
+            cuePoint={cuePoint}
+            onCall={callMemoryCue}
+            onMenu={(cue, x, y) => setMemoryMenu({ cue, x, y })}
+            onAdd={() => void addMemoryCue()}
+            addRefusal={memoryAddRefusal}
+            renamingId={renamingMemory}
+            onRenameCommit={renameMemoryCue}
+            onRenameCancel={() => setRenamingMemory(null)}
           />
         ) : (
           <HotcueBar
@@ -1568,8 +1741,8 @@ export function PrepStrip({
           />
         )}
         {DIVIDER}
-        <TempoControls {...tempoProps} className="@max-[74rem]:hidden" />
-        <TempoFold locked={tempoProps.locked} className="hidden @max-[74rem]:flex">
+        <TempoControls {...tempoProps} className="@max-[77rem]:hidden" />
+        <TempoFold locked={tempoProps.locked} className="hidden @max-[77rem]:flex">
           <TempoControls {...tempoProps} />
         </TempoFold>
         <button
@@ -1577,22 +1750,33 @@ export function PrepStrip({
             setGridMode((g) => !g)
             setPadMenu(null)
             setRenamingSlot(null)
+            setMemoryMenu(null)
+            setRenamingMemory(null)
           }}
           aria-pressed={gridMode}
           disabled={!track}
           title={gridMode ? 'Back to the hotcue pads' : 'Edit the beatgrid: markers, phase, reset'}
           aria-label="Grid"
-          className={`flex h-10 shrink-0 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold transition-colors disabled:opacity-40 @max-[60rem]:w-10 @max-[60rem]:justify-center @max-[60rem]:px-0 ${
+          className={`flex h-10 shrink-0 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold transition-colors disabled:opacity-40 @max-[63rem]:w-10 @max-[63rem]:justify-center @max-[63rem]:px-0 ${
             gridMode
               ? 'bg-gold/15 text-gold shadow-[inset_0_0_0_1px_rgb(255_200_97/0.5),0_0_16px_-4px_rgb(255_200_97/0.6)]'
               : 'btn-glass text-text'
           }`}
         >
           <Icon name="grid" size={14} />
-          <span className="@max-[60rem]:hidden">Grid</span>
+          <span className="@max-[63rem]:hidden">Grid</span>
         </button>
       </div>
 
+      {memoryMenu && (
+        <ContextMenu
+          key={`m:${memoryMenu.cue.id}:${memoryMenu.x}:${memoryMenu.y}`}
+          x={memoryMenu.x}
+          y={memoryMenu.y}
+          items={memoryMenuItems(memoryMenu.cue)}
+          onClose={() => setMemoryMenu(null)}
+        />
+      )}
       {padMenu && (
         <ContextMenu
           key={`${padMenu.slot}:${padMenu.x}:${padMenu.y}`}

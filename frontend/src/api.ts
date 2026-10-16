@@ -125,8 +125,8 @@ export type TrackField =
 export interface CuePoint {
   name: string | null
   type: CueType
-  /** Memory cues have no bank slot. Only Rekordbox has them, so they are
-   *  preserved and shown but not editable anywhere yet. */
+  /** A memory cue has no bank slot (Rekordbox / OneLibrary memory cues,
+   *  Traktor's cues on no pad) and is addressed by `id`, not `slot`. */
   role: CueRole
   start: number // seconds
   length: number // seconds (>0 for loops)
@@ -139,6 +139,10 @@ export interface CuePoint {
   /** Index of the grid marker this cue mirrors, where the platform pairs them.
    *  A display hint only; null on platforms that do not. */
   grid_marker: number | null
+  /** The handle the memory-cue commands take; null on a hot cue (addressed by
+   *  slot). Opaque, and may change when THIS cue is edited — always use the
+   *  fresh TrackCues a command returns. */
+  id: string | null
 }
 
 /** One beatgrid marker. Its position in the list IS its index/identity. */
@@ -208,7 +212,11 @@ export interface CueCapabilities {
   hotcue_slots: number
   slot_labels: 'number' | 'letter'
   memory_cues: boolean
+  /** Per track; null = no limit. rekordbox stops at 10 without saying so. */
   max_memory_cues: number | null
+  /** A memory cue's colours are its own palette, not `palette`. */
+  memory_color: 'none' | 'palette'
+  memory_palette: string[]
   types: CueType[]
   color: 'none' | 'free' | 'palette'
   palette: string[]
@@ -1140,6 +1148,28 @@ export const api = {
     send<TrackCues>(
       'DELETE',
       `/api/tracks/cue?track_id=${encodeURIComponent(trackId)}&slot=${slot}`,
+    ),
+  /** A memory cue (a memory loop when `length` > 0). Refused past
+   *  `capabilities.cues.max_memory_cues`. */
+  addMemoryCue: (trackId: string, start: number, type: CueType, length = 0) =>
+    send<TrackCues>('POST', '/api/tracks/memory-cue', { track_id: trackId, start, type, length }),
+  /** `cueId` is `CuePoint.id`; null / '' clears the name. */
+  renameMemoryCue: (trackId: string, cueId: string, name: string | null) =>
+    send<TrackCues>('PATCH', '/api/tracks/memory-cue', { track_id: trackId, cue_id: cueId, name }),
+  /** A point type from `capabilities.cues.types`; a memory loop is not retyped. */
+  setMemoryCueType: (trackId: string, cueId: string, type: CueType) =>
+    send<TrackCues>('PATCH', '/api/tracks/memory-cue/type', { track_id: trackId, cue_id: cueId, type }),
+  /** From `capabilities.cues.memory_palette`; null = uncoloured. */
+  setMemoryCueColor: (trackId: string, cueId: string, color: string | null) =>
+    send<TrackCues>('PATCH', '/api/tracks/memory-cue/color', {
+      track_id: trackId,
+      cue_id: cueId,
+      color,
+    }),
+  deleteMemoryCue: (trackId: string, cueId: string) =>
+    send<TrackCues>(
+      'DELETE',
+      `/api/tracks/memory-cue?track_id=${encodeURIComponent(trackId)}&cue_id=${encodeURIComponent(cueId)}`,
     ),
   /** Retempo and/or move one marker. `index` is its position in grid_markers;
    *  a move is clamped between its neighbours rather than reordering them. */

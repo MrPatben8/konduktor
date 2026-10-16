@@ -26,7 +26,7 @@ from ...core.capabilities import Capabilities
 from ...core.model import GridMarker, HotcueChip, PlaylistNode, Track, TrackCues
 from ...core.pathmap import PathMapping, common_dir_prefix
 from ...core.query import TrackIndex
-from ..rekordbox import palette
+from ..rekordbox import memory_palette, palette
 from ..rekordbox.cue_types import WRITABLE_CUE_TYPES
 from ...exporter import MANIFEST_NAME
 from . import capabilities as caps
@@ -457,10 +457,8 @@ class OneLibraryAdapter:
     ) -> TrackCues:
         self._require_writable("Editing cues")
         if role != "hotcue":
-            # Preserved-but-uneditable, exactly as in the Rekordbox adapter.
-            raise Unsupported(
-                "Memory cues are shown but cannot be edited — only hot cues are writable"
-            )
+            # A memory cue has no slot to set; it has its own commands.
+            raise InvalidCommand("Memory cues are added with add_memory_cue, not set_cue")
         self._check_cue_type(cue_type)
         self._store.set_cue(track_id, slot=slot, start_sec=start_sec, cue_type=cue_type,
                             length_sec=length_sec, name=name)
@@ -492,6 +490,53 @@ class OneLibraryAdapter:
         for cue in cues:
             self._check_cue_type(getattr(cue, "type", "cue"))
         self._store.place_cues(track_id, cues, overwrite=overwrite)
+        return self._refresh_cues(track_id)
+
+    # ---- commands: memory cues --------------------------------------------
+    @staticmethod
+    def _memory_byte(color: str | None) -> int:
+        if color is None:
+            return 0
+        code = memory_palette.code_for(color)
+        if code is None:
+            raise InvalidCommand(f"{color!r} is not one of rekordbox's memory cue colours")
+        return memory_palette.anlz_byte(code)
+
+    def add_memory_cue(
+        self,
+        track_id: str,
+        *,
+        start_sec: float,
+        cue_type: str,
+        length_sec: float = 0.0,
+        name: str | None = None,
+        color: str | None = None,
+    ) -> TrackCues:
+        self._require_writable("Editing cues")
+        self._check_cue_type(cue_type)
+        self._store.add_memory_cue(track_id, start_sec=start_sec, cue_type=cue_type,
+                                   length_sec=length_sec, name=name,
+                                   color_id=self._memory_byte(color))
+        return self._refresh_cues(track_id)
+
+    def rename_memory_cue(self, track_id: str, cue_id: str, name: str | None) -> TrackCues:
+        self._require_writable("Editing cues")
+        self._store.rename_memory_cue(track_id, cue_id, name)
+        return self._refresh_cues(track_id)
+
+    def set_memory_cue_type(self, track_id: str, cue_id: str, cue_type: str) -> TrackCues:
+        # rekordbox has one point type, so there is nothing to choose; a memory
+        # cue is a cue or a loop by its length.
+        raise Unsupported("rekordbox memory cues have no type to change")
+
+    def set_memory_cue_color(self, track_id: str, cue_id: str, color: str | None) -> TrackCues:
+        self._require_writable("Editing cues")
+        self._store.set_memory_cue_color(track_id, cue_id, self._memory_byte(color))
+        return self._refresh_cues(track_id)
+
+    def delete_memory_cue(self, track_id: str, cue_id: str) -> TrackCues:
+        self._require_writable("Deleting cues")
+        self._store.delete_memory_cue(track_id, cue_id)
         return self._refresh_cues(track_id)
 
     # ---- commands: beatgrid -----------------------------------------------

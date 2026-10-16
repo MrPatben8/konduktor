@@ -167,21 +167,23 @@ class EditJournal:
             else:
                 parts.append(f"{verb} {len(names)} {noun}s")
 
-        # --- hotcues: net change in count, scoped by how many tracks were touched ---
-        hc_add = hc_del = 0
-        hc_tracks: set[str] = set()
+        # --- cues: net change in count, scoped by how many tracks were touched.
+        # Memory cues (detail "memory") are counted apart from hotcues, so a
+        # session of memory-cue edits is not described as hotcue work.
+        counts = {kind: [0, 0, set()] for kind in ("hotcue", "memory cue")}
         grid_edit: set[str] = set()
         grid_del: set[str] = set()
         lock_on: set[str] = set()
         lock_off: set[str] = set()
         for c in self.changes:
             if c.scope == "cue":
+                bucket = counts["memory cue" if c.detail == "memory" else "hotcue"]
                 if c.target:
-                    hc_tracks.add(c.target)
+                    bucket[2].add(c.target)
                 if c.op == "add":
-                    hc_add += 1
+                    bucket[0] += 1
                 elif c.op == "delete":
-                    hc_del += 1
+                    bucket[1] += 1
             elif c.scope == "grid":
                 # "delete" is the ONLY deletion op. Everything else — including
                 # ops added later — counts as an edit, because mis-labelling an
@@ -190,15 +192,17 @@ class EditJournal:
             elif c.scope == "lock":
                 (lock_on if c.op == "on" else lock_off).add(c.target or "")
 
-        if hc_tracks:
-            net = hc_add - hc_del
-            scope = f" across {tracks(len(hc_tracks))}" if len(hc_tracks) > 1 else ""
+        for noun, (added, deleted, touched) in counts.items():
+            if not touched:
+                continue
+            net = added - deleted
+            scope = f" across {tracks(len(touched))}" if len(touched) > 1 else ""
             if net > 0:
-                parts.append(f"added {net} hotcue{'' if net == 1 else 's'}{scope}")
+                parts.append(f"added {net} {noun}{'' if net == 1 else 's'}{scope}")
             elif net < 0:
-                parts.append(f"removed {-net} hotcue{'' if -net == 1 else 's'}{scope}")
+                parts.append(f"removed {-net} {noun}{'' if -net == 1 else 's'}{scope}")
             else:  # net zero but there was activity (moves / retypes / add-then-delete)
-                parts.append(f"adjusted hotcues{scope}")
+                parts.append(f"adjusted {noun}s{scope}")
 
         # --- beatgrids & lock: per-track counts ---
         if grid_edit:

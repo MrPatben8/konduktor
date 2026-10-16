@@ -36,6 +36,10 @@ has an out-point, so a loop can sit in a hot cue slot or be a memory cue.
 from __future__ import annotations
 
 MEMORY_KIND = 0
+#: rekordbox stores at most this many memory cues per track — on the computer
+#: AND on a stick — and enforces it SILENTLY (measured 2026-10-16: MEMORY simply
+#: stops storing), so Konduktor refuses the next one itself, with a reason.
+MAX_MEMORY_CUES = 10
 
 # Rekordbox has no fade-in/fade-out/load cues; those are Traktor-only.
 CUE_TYPES = ["cue", "loop"]

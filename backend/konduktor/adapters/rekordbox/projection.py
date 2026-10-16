@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from ...core import musical_key
 from ...core.model import CuePoint, GridMarker, HotcueChip, Track, TrackCues
-from . import beatgrid, palette, timebase
-from .cue_types import cue_type, role_and_slot
+from . import beatgrid, memory_palette, palette, timebase
+from .cue_types import cue_type, kind_for, role_and_slot
 
 # Rekordbox names keys musically ("Abm", "F", "Ebm") — but its key table also
 # holds whatever text a track's key TAG carried when it was imported, so a real
@@ -140,10 +140,10 @@ def to_track_cues(cue_rows: list, grid: tuple | None, time_offset: float = 0.0) 
     `editable` says whether the adapter will accept a command on THIS cue, which
     is the only thing the UI gates on. Every hot cue is editable, loops included.
 
-    **Memory cues are not**: Rekordbox is the only platform that has them, so
-    under the two-platform promotion rule they are shown and never written. A cue
-    sitting on the reserved `Kind` occupies no pad and is projected the same way,
-    because that is how Rekordbox itself displays one.
+    So is every memory cue (`Kind` 0), addressed by its row id (`CuePoint.id`)
+    since it has no pad. A cue sitting on the reserved `Kind` 4 occupies no pad
+    either and is SHOWN as a memory cue, because that is how Rekordbox itself
+    displays one — but it is not one, so it is not editable.
     """
     markers: list[GridMarker] = []
     if grid is not None:
@@ -158,7 +158,9 @@ def to_track_cues(cue_rows: list, grid: tuple | None, time_offset: float = 0.0) 
         length = 0.0
         if out_msec is not None and out_msec > 0:
             length = max(0.0, (out_msec - in_msec) / 1000.0)
-        editable = role == "hotcue"
+        memory = role == "memory"
+        # Kind 4 (reserved) displays as a memory cue but is not one.
+        editable = not memory or getattr(c, "Kind", None) == kind_for("memory", None)
         cues.append(
             CuePoint(
                 name=(getattr(c, "Comment", None) or None),
@@ -169,13 +171,25 @@ def to_track_cues(cue_rows: list, grid: tuple | None, time_offset: float = 0.0) 
                 start=timebase.from_pioneer(in_msec / 1000.0, time_offset),
                 length=length,
                 slot=slot,
-                color=_cue_color(c),
+                color=_memory_cue_color(c) if memory else _cue_color(c),
                 editable=editable,
                 readonly_reason=None if editable else "platform_managed",
                 grid_marker=None,
+                # A memory cue is addressed by its row id (`CuePoint.id`).
+                id=str(c.ID) if memory and editable and getattr(c, "ID", None) is not None else None,
             )
         )
     return TrackCues(grid_markers=markers, grid_locked=False, cues=cues)
+
+
+def _memory_cue_color(row) -> str | None:
+    """A memory cue keeps its 0-based `memory_palette` code in `Color` (-1 and
+    255 = none). A row Konduktor wrote before that was measured carries a
+    hot-cue code in `ColorTableIndex` instead; read it rather than lose it."""
+    colour = memory_palette.hex_for(getattr(row, "Color", None))
+    if colour is None and (getattr(row, "OutMsec", -1) or -1) <= 0:
+        colour = palette.hex_for(getattr(row, "ColorTableIndex", None))
+    return colour
 
 
 def _cue_color(row) -> str | None:

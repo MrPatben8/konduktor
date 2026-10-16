@@ -197,10 +197,11 @@ class TraktorAdapter:
         Lossiness follows the settled rule — degrade to the nearest equivalent,
         drop only where none exists:
 
-          * **Memory cues become hot cues in spare slots.** Traktor has no
-            memory cues, and every Traktor cue occupies a slot. Filling the
-            leftovers preserves the positions a DJ actually marked; when the
-            bank is full the rest are dropped, because there is nowhere left.
+          * **Memory cues stay memory cues** — Traktor's cues on no pad
+            (HOTCUE="-1"), decided 2026-10-16 once Traktor was measured keeping
+            them. They used to be promoted to spare pads.
+          * **A hot cue whose pad is taken** moves to a spare pad, else becomes a
+            memory cue — never dropped.
           * **Cue colour is dropped.** Traktor derives a cue's colour from its
             type, so a free RGB value has nowhere to go.
 
@@ -250,29 +251,43 @@ class TraktorAdapter:
             self._place_imported_cue(track_id, cue.slot, cue)
             taken.add(cue.slot)
 
-        # Everything without a pad of its own competes for what is left: memory
-        # cues, which Traktor has no equivalent for, and any hot cue whose pad
-        # was already occupied. Earliest first, so that when the bank runs out
-        # it is the late cues that are lost rather than an arbitrary set — and
-        # a displaced hot cue is moved rather than dropped, because losing one
-        # silently is much worse than having it turn up on the wrong pad.
-        leftovers = displaced + [c for c in (cues.cues or []) if c.role != "hotcue"]
+        # A hot cue whose pad was taken (or is past the bank) moves to a spare
+        # pad, earliest first, because muscle memory is most of what a hot cue
+        # layout is; once the bank is full it becomes a memory cue rather than
+        # being lost. Memory cues cross as memory cues.
         spare = (s for s in range(slots) if s not in taken)
-        for cue in sorted(leftovers, key=lambda c: c.start):
+        for cue in sorted(displaced, key=lambda c: c.start):
             slot = next(spare, None)
             if slot is None:
-                break  # bank full: the rest are dropped, per the lossiness rule
-            self._place_imported_cue(track_id, slot, cue)
+                self._place_imported_memory_cue(track_id, cue)
+            else:
+                self._place_imported_cue(track_id, slot, cue)
+        for cue in sorted((c for c in (cues.cues or []) if c.role != "hotcue" or c.slot is None),
+                          key=lambda c: c.start):
+            self._place_imported_memory_cue(track_id, cue)
+
+    @staticmethod
+    def _imported_type(cue) -> str:
+        """A loop stays a loop; Traktor's own point types (fade, load) survive."""
+        if getattr(cue, "length", 0):
+            return "loop"
+        return cue.type if cue.type in ("cue", "fade_in", "fade_out", "load") else "cue"
 
     def _place_imported_cue(self, track_id: str, slot: int, cue) -> None:
-        cue_type = "loop" if getattr(cue, "length", 0) else "cue"
-        if cue_type not in CUE_TYPE_TO_NATIVE:
-            return
         self.set_cue(
             track_id,
             slot=slot,
             start_sec=cue.start,
-            cue_type=cue_type,
+            cue_type=self._imported_type(cue),
+            length_sec=getattr(cue, "length", 0.0) or 0.0,
+            name=getattr(cue, "name", None),
+        )
+
+    def _place_imported_memory_cue(self, track_id: str, cue) -> None:
+        self.add_memory_cue(
+            track_id,
+            start_sec=cue.start,
+            cue_type=self._imported_type(cue),
             length_sec=getattr(cue, "length", 0.0) or 0.0,
             name=getattr(cue, "name", None),
         )
@@ -296,8 +311,8 @@ class TraktorAdapter:
         name: str | None = None,
     ) -> TrackCues:
         if role != "hotcue":
-            # Memory cues are a Rekordbox concept; every Traktor cue holds a slot.
-            raise Unsupported("Traktor cues always occupy a hotcue slot")
+            # A memory cue has no slot to set; it has its own commands.
+            raise InvalidCommand("Memory cues are added with add_memory_cue, not set_cue")
         with _translate():
             self._store.set_hotcue(
                 track_id, slot, start_sec, self._native_cue_type(cue_type), length_sec, name
@@ -316,6 +331,45 @@ class TraktorAdapter:
     def delete_cue(self, track_id: str, slot: int) -> TrackCues:
         with _translate():
             self._store.delete_hotcue(track_id, slot)
+        return self._refresh(track_id)
+
+    # ---- memory cues: cues on no pad (HOTCUE="-1") ----------------------------
+    def add_memory_cue(
+        self,
+        track_id: str,
+        *,
+        start_sec: float,
+        cue_type: str,
+        length_sec: float = 0.0,
+        name: str | None = None,
+        color: str | None = None,
+    ) -> TrackCues:
+        # Traktor colours a cue by its type, so a colour has nowhere to go; an
+        # import passes none, and the capabilities offer none.
+        if color is not None:
+            raise Unsupported("Traktor colours cues by their type")
+        with _translate():
+            self._store.add_memory_cue(
+                track_id, start_sec, self._native_cue_type(cue_type), length_sec, name
+            )
+        return self._refresh(track_id)
+
+    def rename_memory_cue(self, track_id: str, cue_id: str, name: str | None) -> TrackCues:
+        with _translate():
+            self._store.rename_memory_cue(track_id, cue_id, name)
+        return self._refresh(track_id)
+
+    def set_memory_cue_type(self, track_id: str, cue_id: str, cue_type: str) -> TrackCues:
+        with _translate():
+            self._store.set_memory_cue_type(track_id, cue_id, self._native_cue_type(cue_type))
+        return self._refresh(track_id)
+
+    def set_memory_cue_color(self, track_id: str, cue_id: str, color: str | None) -> TrackCues:
+        raise Unsupported("Traktor colours cues by their type")
+
+    def delete_memory_cue(self, track_id: str, cue_id: str) -> TrackCues:
+        with _translate():
+            self._store.delete_memory_cue(track_id, cue_id)
         return self._refresh(track_id)
 
     def place_cues(self, track_id: str, cues: list, *, overwrite: bool = False) -> TrackCues:

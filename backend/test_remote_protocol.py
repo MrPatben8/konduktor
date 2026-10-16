@@ -70,6 +70,16 @@ got = through_json("set_cue", {"track_id": "a", "slot": 2, "start_sec": 1.5, "cu
                                "length_sec": 4.0, "name": None})
 check("set_cue's arguments survive", got == {"track_id": "a", "slot": 2, "start_sec": 1.5,
                                               "cue_type": "loop", "length_sec": 4.0, "name": None}, got)
+got = through_json("add_memory_cue", {"track_id": "a", "start_sec": 2.5, "cue_type": "loop",
+                                      "length_sec": 2.0, "name": "Break", "color": "#1F4EED"})
+check("add_memory_cue's arguments survive",
+      got == {"track_id": "a", "start_sec": 2.5, "cue_type": "loop", "length_sec": 2.0,
+              "name": "Break", "color": "#1F4EED"}, got)
+got = through_json("set_memory_cue_type", {"track_id": "a", "cue_id": "m:1", "cue_type": "load"})
+check("set_memory_cue_type's arguments survive",
+      got == {"track_id": "a", "cue_id": "m:1", "cue_type": "load"}, got)
+got = through_json("delete_memory_cue", {"track_id": "a", "cue_id": "m:1:1:4294967295"})
+check("a memory cue id survives", got == {"track_id": "a", "cue_id": "m:1:1:4294967295"}, got)
 got = through_json("replace_grid", {"track_id": "a", "markers": [(0.1, 128.0), (60.0, 130.0)]})
 check("a grid's (start, bpm) tuples survive", got["markers"] == [(0.1, 128.0), (60.0, 130.0)], got)
 cue = AutoHotcue(slot=1, start=12.0, name="Drop")

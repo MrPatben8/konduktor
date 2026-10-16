@@ -30,8 +30,8 @@ from ...core.capabilities import (
     SaveCapabilities,
     TrackCapabilities,
 )
-from . import palette
-from .cue_types import WRITABLE_CUE_TYPES
+from . import memory_palette, palette
+from .cue_types import MAX_MEMORY_CUES, WRITABLE_CUE_TYPES
 
 # Rekordbox's addressable hot cue bank. The pads are labelled A-H; the stored
 # slot number is NOT a plain letter index (see cue_types), so the adapter keeps
@@ -55,18 +55,19 @@ def capabilities_for(
         writable=not cloud_synced,
         readonly_cause="cloud_synced" if cloud_synced else None,
         cues=CueCapabilities(
-            # Hot cues are writable: djmdCue rows plus the contentCue JSON
-            # mirror, kept in step. MEMORY cues stay preserved-but-uneditable —
-            # Rekordbox is the only platform that has them, and the two-platform
-            # promotion rule says a one-platform concept does not become an
-            # editing feature.
+            # Hot AND memory cues are writable: djmdCue rows plus the
+            # contentCue JSON mirror, kept in step (memory cues: measured
+            # 2026-10-16, kit M1).
             editable=True,
             hotcue_slots=HOTCUE_SLOTS,
             slot_labels="letter",
-            # Rekordbox is the only platform with memory cues, so they are
-            # projected and PRESERVED but not editable (two-platform rule).
             memory_cues=True,
-            max_memory_cues=None,  # unlimited
+            # rekordbox stops storing at 10, silently; the store refuses the 11th.
+            max_memory_cues=MAX_MEMORY_CUES,
+            # A memory cue's colour is its own 8-colour palette (`Color`, not
+            # `ColorTableIndex`) — see `memory_palette`.
+            memory_color="palette",
+            memory_palette=list(memory_palette.SWATCHES),
             # Both cue types write; Rekordbox has no fade/load types.
             types=WRITABLE_CUE_TYPES,
             # A hot cue's colour is one of rekordbox's 16 swatches (all

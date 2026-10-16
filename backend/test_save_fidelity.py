@@ -55,6 +55,14 @@ def playlist_block_span(data: bytes, uuid: str):
     return start, end
 
 
+def _raises_playlist(fn) -> bool:
+    try:
+        fn()
+    except PlaylistError:
+        return True
+    return False
+
+
 def tag_lines(b: bytes) -> list[str]:
     return b.replace(b"><", b">\n<").decode("utf-8", "replace").splitlines()
 
@@ -1190,6 +1198,148 @@ with tempfile.TemporaryDirectory() as d:
     fresh.move_playlist(first.id, None, 0)
     check("O: moving a node onto its own place is not an edit", not fresh.dirty)
 
+
+# ---- P: memory cues (CUE_V2 on no pad) are localized + reversible ------------
+# Measured in Traktor 4.5 (2026-10-16): a memory cue is set_hotcue's element with
+# HOTCUE="-1", and Traktor keeps a Konduktor-written one byte for byte. Cues are
+# inserted in START order, as Traktor itself writes them.
+print("\n== P. memory cues: add / rename / delete, localized, in START order ==")
+from konduktor.adapters.traktor import projection as _proj  # noqa: E402
+
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    original = work.read_bytes()
+    store = TraktorStore(work)
+    entry = store._nml.collection.entry[0]
+    loc = entry.location
+    tid = f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}"
+    off = store.time_offset_ms(entry)
+
+    store.add_memory_cue(tid, 42.5, 0)
+    store.add_memory_cue(tid, 30.0, 5, 2.0, "Intro loop")
+    store.save()
+    edited = work.read_bytes()
+    os_, oe = _entry_span_by_file(original, loc.file)
+    es_, ee = _entry_span_by_file(edited, loc.file)
+    check("everything outside the ENTRY is byte-identical",
+          original[:os_] + b"@@" + original[oe:] == edited[:es_] + b"@@" + edited[ee:])
+    added = [l for l in tag_lines(edited[es_:ee]) if l not in tag_lines(original[os_:oe])]
+    check("the ENTRY gains exactly the two memory cue lines",
+          len(added) == 2 and all('HOTCUE="-1"' in l and "<GRID" not in l for l in added),
+          str(added))
+    check("in Traktor's own shape (n.n., DISPL_ORDER 0, REPEATS -1, no COLOR)",
+          any('NAME="n.n." DISPL_ORDER="0" TYPE="0" START="' in l and 'REPEATS="-1"' in l
+              and "COLOR" not in l for l in added), str(added))
+    check("a memory loop carries its LEN and name",
+          any('NAME="Intro loop"' in l and 'TYPE="5"' in l and 'LEN="2000.000000"' in l
+              for l in added), str(added))
+
+    store = TraktorStore(work)
+    entry = store._nml.collection.entry[0]
+    starts = [c.start or 0.0 for c in entry.cue_v2]
+    check("cues stay sorted by START (inserted in place, not appended)",
+          starts == sorted(starts), str(starts))
+    tc = _proj.to_track_cues(entry, off)
+    memory = [c for c in tc.cues if c.role == "memory"]
+    check("both project as memory cues with ids, no slot",
+          len(memory) == 2 and all(c.slot is None and c.id for c in memory), str(memory))
+    check("the grid marker is still a grid marker, not a memory cue",
+          len(tc.grid_markers) == len([c for c in entry.cue_v2 if c.grid is not None]))
+
+    loop = next(c for c in memory if c.type == "loop")
+    store.rename_memory_cue(tid, loop.id, "Outro loop")
+    store.save()
+    renamed = work.read_bytes()
+    check("a rename changes one line", diff_count(edited, renamed) == 2,
+          str(diff_count(edited, renamed)))
+
+    store = TraktorStore(work)
+    entry = store._nml.collection.entry[0]
+    point = next(c for c in _proj.to_track_cues(entry, off).cues
+                 if c.role == "memory" and c.type == "cue")
+    store.set_memory_cue_type(tid, point.id, 1)
+    store.save()
+    retyped = work.read_bytes()
+    check("a type change changes one line (TYPE 0 -> 1)",
+          diff_count(renamed, retyped) == 2 and b'TYPE="1" START=' in retyped,
+          str(diff_count(renamed, retyped)))
+
+    store = TraktorStore(work)
+    entry = store._nml.collection.entry[0]
+    for c in [c for c in _proj.to_track_cues(entry, off).cues if c.role == "memory"]:
+        store.delete_memory_cue(tid, c.id)
+    store.save()
+    check("add + delete round-trips to the original bytes", work.read_bytes() == original)
+
+    store = TraktorStore(work)
+    check("an unknown memory cue id is refused",
+          _raises_playlist(lambda: store.delete_memory_cue(tid, "m:1.000000:0:0.000000:0")))
+
+    # A new HOT cue is inserted in START order too (it used to be appended).
+    entry = store._nml.collection.entry[0]
+    store.set_hotcue(tid, next(s for s in range(8)
+                               if s not in {c.hotcue for c in entry.cue_v2}), 0.001, 0)
+    starts = [c.start or 0.0 for c in entry.cue_v2]
+    check("a new hot cue is inserted by START too", starts == sorted(starts), str(starts))
+
+# A pad MAPPED onto a memory cue: Traktor keeps both cues at one START and draws
+# one marker; Konduktor shows it once, as the pad.
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    store = TraktorStore(work)
+    entry = store._nml.collection.entry[0]
+    loc = entry.location
+    tid = f"{loc.volume or ''}{loc.dir or ''}{loc.file or ''}"
+    off = store.time_offset_ms(entry)
+    store.add_memory_cue(tid, 77.0, 0)
+    store.add_memory_cue(tid, 88.0, 0)
+    free = next(s for s in range(8) if s not in {c.hotcue for c in entry.cue_v2})
+    store.set_hotcue(tid, free, 77.0, 0)
+    tc = _proj.to_track_cues(entry, off)
+    check("a pad and a memory cue at one START show once, as the pad",
+          [round(c.start, 3) for c in tc.cues if c.role == "memory"] == [88.0]
+          and any(c.slot == free and round(c.start, 3) == 77.0 for c in tc.cues),
+          str([(c.role, c.slot, c.start) for c in tc.cues]))
+    check("both cues stay in the file",
+          sum(1 for c in entry.cue_v2 if c.grid is None and c.hotcue == -1) == 2)
+
+print("== Q. '>' and quotes in attribute values round-trip (Traktor leaves '>' raw) ==")
+# The real collection's queries hold no '>', so Traktor-written values with one
+# are injected into a copy: Traktor 4.5's default "Recently added" smartlist,
+# a '<' query (Traktor escapes it), and '>' / name='x' in a comment and a file
+# name. All four once came back self-closed ("<X .../>"), which Traktor never
+# writes, and a quoting step rewrote name='x' into a bare '"' (malformed XML).
+import re as _re  # noqa: E402
+
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    data = REAL.read_bytes()
+    queries = list(_re.finditer(rb'QUERY="[^"]*"', data))
+    swaps = [
+        (queries[0].group(0), b'QUERY="$IMPORTDATE >= MONTHS_AGO(1)"'),
+        (queries[1].group(0), b'QUERY="$RATING &lt; 3"'),
+        (_re.search(rb' COMMENT="[^"]*"', data).group(0), b" COMMENT=\"Classic > Move key='8A'\""),
+        (_re.search(rb' FILE="[^"]*"', data).group(0), b' FILE="Break Down > Build Up.wav"'),
+    ]
+    for old, new in swaps:
+        data = data.replace(old, new, 1)
+    work.write_bytes(data)
+    store = TraktorStore(work)
+    out = store._render()
+    check("no-op render is byte-identical", out == data, f"{diff_count(data, out)} lines differ")
+    check("nothing is self-closed ('/>' — Traktor never writes it)", b"/>" not in out)
+
+    entry = store._nml.collection.entry[0]
+    tid = f"{entry.location.volume}{entry.location.dir}{entry.location.file}"
+    store.set_track_metadata(tid, {"comment": "x > y key='8A' \"z\""})
+    store.save()
+    saved = work.read_bytes()
+    check("an edited comment with '>' keeps </INFO>",
+          b"COMMENT=\"x > y key='8A' &quot;z&quot;\"" in saved and b"/>" not in saved)
+    reread = TraktorStore(work)._nml.collection.entry[0].info.comment
+    check("…and reads back unchanged", reread == "x > y key='8A' \"z\"", repr(reread))
 
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

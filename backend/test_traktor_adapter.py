@@ -22,11 +22,19 @@ REAL = Path(__file__).resolve().parents[1] / "collection.nml"
 import traktor_nml_utils as tnu  # noqa: E402
 
 from konduktor.adapters.traktor.adapter import TraktorAdapter  # noqa: E402
-from konduktor.core.adapter import LibraryAdapter, Unsupported  # noqa: E402
+from konduktor.core.adapter import InvalidCommand, LibraryAdapter, NotFound, Unsupported  # noqa: E402
 from konduktor.core.model import AutoHotcue  # noqa: E402
 from konduktor.core.pathmap import PathMapping  # noqa: E402
 
 failed = False
+
+
+def _raises(fn, exc) -> bool:
+    try:
+        fn()
+    except exc:
+        return True
+    return False
 
 
 def check(label, cond, detail=""):
@@ -84,7 +92,9 @@ with tempfile.TemporaryDirectory() as d:
           caps.writable is True and caps.readonly_cause is None)
     check("version read from the NML header", caps.version == "20", str(caps.version))
     check("8 hotcue slots", caps.cues.hotcue_slots == 8)
-    check("no memory cues on Traktor", caps.cues.memory_cues is False)
+    check("memory cues: Traktor's cues on no pad, no limit, no colour",
+          caps.cues.memory_cues is True and caps.cues.max_memory_cues is None
+          and caps.cues.memory_color == "none")
     check("loops are a cue type, not a separate bank", caps.cues.loops == "cue_type")
     # Traktor colours a cue by its type, so no colour picker may be offered.
     check("no cue colours to pick", caps.cues.color == "none" and caps.cues.palette == [])
@@ -142,14 +152,56 @@ with tempfile.TemporaryDirectory() as d:
           next(c.type for c in adapter.track_cues(tid2).cues if c.slot == free) == "load")
     try:
         adapter.set_cue(tid2, slot=free, start_sec=1.0, cue_type="cue", role="memory")
-        check("memory cues are refused on Traktor", False, "no error raised")
-    except Unsupported:
-        check("memory cues are refused on Traktor", True)
+        check("set_cue refuses role=memory (memory cues have their own commands)", False,
+              "no error raised")
+    except InvalidCommand:
+        check("set_cue refuses role=memory (memory cues have their own commands)", True)
     try:
         adapter.set_cue_color(tid2, free, "#FF0000")
         check("cue colour is refused on Traktor", False, "no error raised")
     except Unsupported:
         check("cue colour is refused on Traktor", True)
+
+    # memory cues — Traktor's cues on no pad (HOTCUE="-1")
+    count_before = adapter.track(tid2).cue_count
+    tc = adapter.add_memory_cue(tid2, start_sec=33.0, cue_type="fade_in")
+    mem = [c for c in tc.cues if c.role == "memory"]
+    check("an unnamed cue (Traktor's \"n.n.\") projects with no name",
+          mem[0].name is None if mem else False, str(mem))
+    check("add_memory_cue returns fresh cues with the memory cue, by id",
+          len(mem) == 1 and mem[0].slot is None and mem[0].id and mem[0].type == "fade_in"
+          and abs(mem[0].start - 33.0) < 0.001, str(mem))
+    check("the hot cue bank is untouched (count and chips)",
+          adapter.track(tid2).hotcue_count == before + 1
+          and adapter.track(tid2).cue_count == count_before + 1)
+    tc = adapter.rename_memory_cue(tid2, mem[0].id, "Vocal in")
+    renamed = next(c for c in tc.cues if c.role == "memory")
+    check("rename_memory_cue names it", renamed.name == "Vocal in")
+    tc = adapter.set_memory_cue_type(tid2, renamed.id, "load")
+    renamed = next(c for c in tc.cues if c.role == "memory")
+    check("set_memory_cue_type changes its type, keeping position and name",
+          (renamed.type, renamed.name, round(renamed.start, 3)) == ("load", "Vocal in", 33.0),
+          str(renamed))
+    check("a memory loop is not retyped",
+          _raises(lambda: adapter.set_memory_cue_type(
+              tid2, next(c.id for c in adapter.add_memory_cue(
+                  tid2, start_sec=40.0, cue_type="loop", length_sec=2.0).cues
+                  if c.role == "memory" and c.type == "loop"), "cue"), InvalidCommand))
+    adapter.delete_memory_cue(tid2, next(c.id for c in adapter.track_cues(tid2).cues
+                                         if c.role == "memory" and c.type == "loop"))
+    check("a memory cue colour is refused (Traktor colours by type)",
+          _raises(lambda: adapter.set_memory_cue_color(tid2, renamed.id, "#FF0000"), Unsupported))
+    check("adding one with a colour is refused too",
+          _raises(lambda: adapter.add_memory_cue(tid2, start_sec=1.0, cue_type="cue",
+                                                 color="#FF0000"), Unsupported))
+    tc = adapter.delete_memory_cue(tid2, renamed.id)
+    check("delete_memory_cue removes it", not any(c.role == "memory" for c in tc.cues))
+    check("an unknown id is NotFound",
+          _raises(lambda: adapter.delete_memory_cue(tid2, renamed.id), NotFound))
+    adapter.add_memory_cue(tid2, start_sec=34.0, cue_type="cue")
+    summary = adapter._store._journal.summary()
+    check("the history message names memory cues, apart from hotcues",
+          "memory cue" in summary, summary)
 
     # grid
     grid_before = len(adapter.track_cues(tid2).grid_markers)

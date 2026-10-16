@@ -143,6 +143,8 @@ export const MOUSE: { title: string; rows: MouseGesture[] }[] = [
       { gesture: 'Click', on: 'stem button', text: 'Mute or unmute that stem' },
       { mod: 'mod', gesture: 'Click', on: 'stem button', text: 'Solo that stem' },
       { gesture: 'Right-click', on: 'pad', text: 'Hotcue type, colour, rename, delete' },
+      { gesture: 'Click', on: 'memory cue', text: 'Jump there and make it the CUE point (a memory loop engages)' },
+      { gesture: 'Right-click', on: 'memory cue', text: 'Memory cue type, colour, rename, delete' },
     ],
   },
   {

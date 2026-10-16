@@ -1,7 +1,8 @@
-import { useRef, useState, type CSSProperties } from 'react'
+import type { CSSProperties } from 'react'
 import type { CuePoint } from '../api'
 import { CUE_TYPE_LABELS, cueColor, cueIcon, withAlpha } from '../lib/cues'
 import { Icon } from '../lib/icons'
+import { RenameField } from './RenameField'
 
 interface Props {
   cues: CuePoint[]
@@ -155,7 +156,7 @@ export function HotcueBar({
  * backlit controller pad reads. Selection brightens the tint and rings it in
  * the colour itself, so it stays legible whichever colour the cue is.
  */
-function padStyle(color: string, selected: boolean): CSSProperties {
+export function padStyle(color: string, selected: boolean): CSSProperties {
   return {
     // The cue colour sits on a DARK GROUND (the last layer), not on bare glass:
     // over a bright or warm ambient wash a thin tint alone came out the same hue
@@ -178,47 +179,8 @@ function padStyle(color: string, selected: boolean): CSSProperties {
 
 /** A cue colour lifted toward white, for the pad's number: the raw colour is
  *  too dark to read as text on its own tint (blue especially). */
-function lighten(hex: string, amount = 0.35): string {
+export function lighten(hex: string, amount = 0.35): string {
   const v = parseInt(hex.slice(1, 7), 16)
   const mix = (c: number) => Math.round(c + (255 - c) * amount)
   return `rgb(${mix(v >> 16)},${mix((v >> 8) & 255)},${mix(v & 255)})`
-}
-
-/** The pad's name, edited in place. Enter or clicking away commits; Esc cancels. */
-function RenameField({
-  initial,
-  onCommit,
-  onCancel,
-}: {
-  initial: string
-  onCommit: (name: string) => void
-  onCancel: () => void
-}) {
-  const [val, setVal] = useState(initial)
-  // Enter commits and unmounts the field, which can fire a trailing blur.
-  const done = useRef(false)
-  const finish = (commit: boolean) => {
-    if (done.current) return
-    done.current = true
-    if (commit && val.trim() !== initial) onCommit(val.trim())
-    else onCancel()
-  }
-  return (
-    <input
-      autoFocus
-      value={val}
-      onChange={(e) => setVal(e.target.value)}
-      onFocus={(e) => e.currentTarget.select()}
-      onBlur={() => finish(true)}
-      // The pad is a button: keep its press/preview handlers out of the field.
-      onPointerDown={(e) => e.stopPropagation()}
-      onPointerUp={(e) => e.stopPropagation()}
-      onKeyDown={(e) => {
-        e.stopPropagation() // digits and Space must type, not trigger the deck
-        if (e.key === 'Enter') finish(true)
-        else if (e.key === 'Escape') finish(false)
-      }}
-      className="w-full min-w-0 rounded bg-well px-1 text-[11px] leading-4 text-text outline-none ring-1 ring-accent"
-    />
-  )
 }

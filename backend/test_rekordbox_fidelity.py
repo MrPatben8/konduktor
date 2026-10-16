@@ -97,6 +97,14 @@ def diff(before: dict, after: dict, ignore_columns=("updated_at", "created_at"))
     return changes
 
 
+def _raises(fn, exc) -> bool:
+    try:
+        fn()
+    except exc:
+        return True
+    return False
+
+
 def describe(changes) -> str:
     return "; ".join(f"{t}/{pk} {kind}" for t, pk, kind, _ in changes) or "(none)"
 
@@ -444,6 +452,113 @@ with tempfile.TemporaryDirectory() as d:
         check("with rb_cue_count updated",
               mirror_row["rb_cue_count"] == len(records),
               f"{mirror_row['rb_cue_count']} vs {len(records)}")
+    adapter.close()
+
+    # ---- G2: memory cues, as rekordbox 7 writes them (kit M1, 2026-10-16) ---
+    print("== G2: memory cues: row shapes, colour column, mirror order, the cap of 10 ==")
+    import json as _json
+    from konduktor.adapters.rekordbox import memory_palette as _mp
+    from konduktor.core.adapter import InvalidCommand as _Invalid
+
+    clean_copy(REAL, work, closing=[adapter])
+    adapter = RekordboxAdapter(work)
+    mem_track = next((t for t in adapter.tracks if t.bpm), adapter.tracks[0])
+    for c in [c for c in adapter.track_cues(mem_track.id).cues if c.role == "memory" and c.id]:
+        adapter.delete_memory_cue(mem_track.id, c.id)
+    adapter.save()
+
+    def memory_rows(snapshot):
+        return {pk: r for pk, r in snapshot["djmdCue"].items()
+                if r["ContentID"] == mem_track.id and r["Kind"] == 0}
+
+    before = dump(work)
+    adapter.add_memory_cue(mem_track.id, start_sec=60.0, cue_type="cue")
+    adapter.add_memory_cue(mem_track.id, start_sec=20.0, cue_type="loop", length_sec=2.0)
+    adapter.save()
+    changes = diff(before, dump(work))
+    check("adding memory cues changes only djmdCue, contentCue and the counter",
+          {t for t, _, _, _ in changes} == {"djmdCue", "contentCue", "agentRegistry"},
+          describe(changes))
+    after = dump(work)
+    rows = sorted(memory_rows(after).values(), key=lambda r: r["InMsec"])
+    point = next((r for r in rows if r["OutMsec"] == -1), None)
+    loop = next((r for r in rows if r["OutMsec"] > 0), None)
+    check("a memory point cue: Kind 0, Color -1, ColorTableIndex NULL, Comment NULL",
+          point is not None and (point["Color"], point["ColorTableIndex"], point["Comment"])
+          == (-1, None, None), str(point and (point["Color"], point["ColorTableIndex"], point["Comment"])))
+    check("a memory loop: Color 255, ColorTableIndex 0, Comment '', ActiveLoop 0, CueMicrosec 0",
+          loop is not None and (loop["Color"], loop["ColorTableIndex"], loop["Comment"],
+                                loop["ActiveLoop"], loop["CueMicrosec"]) == (255, 0, "", 0, 0),
+          str(loop and (loop["Color"], loop["ColorTableIndex"], loop["Comment"])))
+    check("its BeatLoopSize is (beats << 16) | 1",
+          loop is not None and loop["BeatLoopSize"] and loop["BeatLoopSize"] & 0xFFFF == 1)
+
+    mirror = next(r for r in after["contentCue"].values() if r["ContentID"] == mem_track.id)
+    ids_in_mirror = [str(r["ID"]) for r in _json.loads(mirror["Cues"])]
+    live = [r for r in after["djmdCue"].values() if r["ContentID"] == mem_track.id]
+    check("the mirror lists cues in ROW order, as rekordbox does — the 20 s loop "
+          "added second comes after the 60 s cue",
+          ids_in_mirror.index(str(loop["ID"])) > ids_in_mirror.index(str(point["ID"])),
+          str(ids_in_mirror))
+    check("rb_cue_count counts memory cues too", mirror["rb_cue_count"] == len(live))
+
+    cues = {c.id: c for c in adapter.track_cues(mem_track.id).cues if c.role == "memory"}
+    point_id = str(point["ID"])
+    check("a memory cue projects with its row id, editable",
+          point_id in cues and cues[point_id].editable)
+    blue = _mp.SWATCHES[6]
+    adapter.set_memory_cue_color(mem_track.id, point_id, blue)
+    adapter.save()
+    row = memory_rows(dump(work))[point_id]
+    check("a colour is the 0-based code in Color (Blue = 6), ColorTableIndex NULL",
+          (row["Color"], row["ColorTableIndex"]) == (6, None),
+          str((row["Color"], row["ColorTableIndex"])))
+    check("and projects back as that swatch",
+          next(c.color for c in adapter.track_cues(mem_track.id).cues if c.id == point_id) == blue)
+    adapter.set_memory_cue_color(mem_track.id, point_id, None)
+    adapter.save()
+    row = memory_rows(dump(work))[point_id]
+    check("No Color writes 255, as rekordbox does after a colour is cleared",
+          (row["Color"], row["ColorTableIndex"]) == (255, None),
+          str((row["Color"], row["ColorTableIndex"])))
+    check("rekordbox memory cues have no type to choose",
+          _raises(lambda: adapter.set_memory_cue_type(mem_track.id, point_id, "load"), Exception))
+    check("a hot-cue swatch is not a memory colour",
+          _raises(lambda: adapter.set_memory_cue_color(mem_track.id, point_id, "#00FF30"), _Invalid))
+    before = dump(work)
+    adapter.rename_memory_cue(mem_track.id, point_id, "This is a comment")
+    adapter.save()
+    changes = diff(before, dump(work))
+    cue_change = [c for c in changes if c[0] == "djmdCue"]
+    # pyrekordbox's commit stamps the row's USN too, as on every hot-cue write
+    # (rekordbox's own edits leave a cue row's USN NULL; it has accepted ours).
+    check("a rename changes only that row's Comment (and its USN)",
+          len(cue_change) == 1 and set(cue_change[0][3]) <= {"Comment", "rb_local_usn"}
+          and "Comment" in cue_change[0][3],
+          str(cue_change and cue_change[0][3]))
+
+    while sum(1 for c in adapter.track_cues(mem_track.id).cues if c.role == "memory") < 10:
+        adapter.add_memory_cue(mem_track.id, start_sec=float(
+            1 + sum(1 for c in adapter.track_cues(mem_track.id).cues if c.role == "memory")),
+            cue_type="cue")
+    adapter.save()
+    before = dump(work)
+    check("the 11th memory cue is refused (rekordbox would drop it silently)",
+          _raises(lambda: adapter.add_memory_cue(mem_track.id, start_sec=99.0, cue_type="cue"),
+                  _Invalid))
+    adapter.save()
+    check("and nothing changed", not diff(before, dump(work)))
+
+    before = dump(work)
+    adapter.delete_memory_cue(mem_track.id, point_id)
+    adapter.save()
+    after = dump(work)
+    changes = [c for c in diff(before, after) if c[0] == "djmdCue"]
+    check("a delete removes the row outright (not rb_local_deleted)",
+          len(changes) == 1 and changes[0][2] == "DELETE", describe(changes))
+    mirror = next(r for r in after["contentCue"].values() if r["ContentID"] == mem_track.id)
+    check("and its mirror entry",
+          point_id not in {str(r["ID"]) for r in _json.loads(mirror["Cues"])})
     adapter.close()
 
     # ---- H: a grid write touches ONE tag of ONE file ---------------------
