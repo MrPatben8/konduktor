@@ -236,7 +236,10 @@ def _real_cue_tags(path: Path) -> list[bytes]:
 
 
 def _mask_colour(tag: bytes) -> bytes:
-    """A PCO2 tag with each entry's code + RGB (after its comment) zeroed."""
+    """A PCO2 tag with each entry's colours zeroed: the hot-cue code + RGB
+    (after its comment) and byte 28, a memory cue's colour. The fixture's
+    memory loop is uncoloured; Konduktor now exports one in its TYPE colour,
+    as it draws it (decided 2026-10-16) — pinned separately below."""
     if tag[:4] != b"PCO2":
         return tag
     out, off = bytearray(tag), struct.unpack(">I", tag[4:8])[0]
@@ -244,6 +247,7 @@ def _mask_colour(tag: bytes) -> bytes:
         length = struct.unpack(">I", tag[off + 8:off + 12])[0]
         at = off + 44 + struct.unpack(">I", tag[off + 40:off + 44])[0]
         out[at:at + 4] = bytes(4)
+        out[off + 28] = 0
         off += length
     return bytes(out)
 
@@ -468,6 +472,8 @@ check("rekordbox keeps 10 memory cues: the earliest 10 are exported",
 check("a memory cue's colour is byte 28 from its own palette (Red = 2); no hot-cue code",
       (mem_dicts[0]["color_id"], mem_dicts[0]["code"]) == (memory_palette.anlz_byte(1), 0),
       (mem_dicts[0]["color_id"], mem_dicts[0]["code"]))
+check("an uncoloured one exports in its type colour, as Konduktor shows it (cue -> Blue = 7)",
+      mem_dicts[1]["color_id"] == memory_palette.anlz_byte(6), mem_dicts[1]["color_id"])
 dat_tags = W.cue_tags(mem_dicts[:3], extended=False)
 mem_pcob = A_.raw_entries(A_.Tag("PCOB", dat_tags[1]))
 check("a memory PCOB of two or more is linked, status 0, as rekordbox writes it",
@@ -609,7 +615,8 @@ check("four cue rows: three hot cues and a memory cue (Kind 0)",
 check("a plain cue is rekordbox's light blue (code 5)", by_kind.get(1) == (0x05, -1), by_kind.get(1))
 check("a loop is rekordbox's green (code 22)", by_kind.get(2) == (0x16, -1), by_kind.get(2))
 check("the white grid cue has no swatch, so stays uncoloured", by_kind.get(3) == (None, -1), by_kind.get(3))
-check("the memory cue is written, uncoloured", by_kind.get(0) == (None, -1), by_kind.get(0))
+check("an uncoloured memory cue is written in its type colour (cue -> Blue, Color 6)",
+      by_kind.get(0) == (None, 6), by_kind.get(0))
 check("the contentCue mirror holds all four, colours included",
       mirror is not None and mirror[0].count('"Kind"') == 4 and '"ColorTableIndex": 22' in mirror[0].replace(":22", ": 22"),
       mirror and mirror[0][:200])

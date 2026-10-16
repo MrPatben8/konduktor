@@ -175,6 +175,10 @@ def to_track(e) -> Track:
     )
 
 
+#: Traktor's NAME for a cue nobody named.
+UNNAMED = "n.n."
+
+
 def is_memory_cue(c) -> bool:
     """A cue on no pad that is not a grid marker — Traktor's memory cue.
 
@@ -248,7 +252,10 @@ def to_track_cues(entry, offset_ms: float = 0.0) -> TrackCues:
         slot = c.hotcue if c.hotcue is not None and c.hotcue >= 0 else None
         cues.append(
             CuePoint(
-                name=c.name,
+                # "n.n." is the name Traktor gives every cue the user did not
+                # name — a placeholder, not a name, so it crosses as none
+                # (it once landed in rekordbox as a comment reading "n.n.").
+                name=None if c.name in (None, "", UNNAMED) else c.name,
                 # An unknown TYPE is projected as a plain cue rather than dropped:
                 # preserving a cue we cannot name beats hiding it from the user.
                 type=NATIVE_TO_CUE_TYPE.get(c.type, "cue"),

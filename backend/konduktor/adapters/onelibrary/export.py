@@ -367,12 +367,13 @@ class OneLibraryExporter:
             if is_memory:
                 # rekordbox keeps 10 (earliest first; the rest are dropped, per
                 # the lossiness rule). A memory cue's colour is PCP2 byte 28 from
-                # its own 8-colour palette; the hot-cue code + RGB stay zero.
+                # its own 8-colour palette — what Konduktor SHOWS (stored, else
+                # the type's), as for a hot cue; the hot-cue code + RGB stay zero.
                 if memory >= MAX_MEMORY_CUES:
                     continue
                 memory += 1
                 code, rgb = 0, (0, 0, 0)
-                color_id = memory_palette.anlz_byte(memory_palette.nearest_code(cue.color))
+                color_id = memory_palette.anlz_byte(memory_palette.nearest_code(effective_color(cue)))
             else:
                 # What Konduktor SHOWS — stored colour, else the type's (blue cue,
                 # green loop) — as a rekordbox palette CODE, which is what

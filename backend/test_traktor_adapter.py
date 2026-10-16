@@ -166,6 +166,8 @@ with tempfile.TemporaryDirectory() as d:
     count_before = adapter.track(tid2).cue_count
     tc = adapter.add_memory_cue(tid2, start_sec=33.0, cue_type="fade_in")
     mem = [c for c in tc.cues if c.role == "memory"]
+    check("an unnamed cue (Traktor's \"n.n.\") projects with no name",
+          mem[0].name is None if mem else False, str(mem))
     check("add_memory_cue returns fresh cues with the memory cue, by id",
           len(mem) == 1 and mem[0].slot is None and mem[0].id and mem[0].type == "fade_in"
           and abs(mem[0].start - 33.0) < 0.001, str(mem))

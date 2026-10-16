@@ -213,14 +213,15 @@ class RekordboxExporter:
                 for cue in sorted(item.cues.cues, key=lambda c: c.start):
                     if cue.role == "memory" or cue.slot is None:
                         # rekordbox keeps 10 (earliest first; the rest are
-                        # dropped, per the lossiness rule). Colour: the memory
-                        # palette's nearest swatch, else rekordbox's "unset".
+                        # dropped, per the lossiness rule). Colour: what
+                        # Konduktor SHOWS — stored, else the type's — as the
+                        # nearest of the memory palette's 8, as for a hot cue.
                         if memory >= store.MAX_MEMORY_CUES:
                             continue
                         store.add_memory_cue(
                             track_id, start_sec=cue.start, cue_type=cue.type,
                             length_sec=cue.length, name=cue.name,
-                            color_code=memory_palette.nearest_code(cue.color),
+                            color_code=memory_palette.nearest_code(effective_color(cue)),
                         )
                         memory += 1
                         continue
