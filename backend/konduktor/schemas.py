@@ -200,6 +200,33 @@ class SetCueColor(BaseModel):
     color: str | None = None  # a capabilities.cues.palette entry; None = uncoloured
 
 
+class AddMemoryCue(BaseModel):
+    track_id: str
+    start: float  # seconds
+    type: CueType = "cue"
+    length: float = 0.0  # seconds (>0 for a memory loop)
+    name: str | None = None
+    color: str | None = None  # a capabilities.cues.memory_palette entry
+
+
+class RenameMemoryCue(BaseModel):
+    track_id: str
+    cue_id: str  # CuePoint.id
+    name: str | None = None  # None / "" = unnamed
+
+
+class SetMemoryCueType(BaseModel):
+    track_id: str
+    cue_id: str
+    type: CueType  # a point type from capabilities.cues.types
+
+
+class SetMemoryCueColor(BaseModel):
+    track_id: str
+    cue_id: str
+    color: str | None = None  # a capabilities.cues.memory_palette entry; None = uncoloured
+
+
 class StemEngineInstall(BaseModel):
     # None = this computer's default engine; "windows-x64-cuda" to take the GPU one.
     target: str | None = None

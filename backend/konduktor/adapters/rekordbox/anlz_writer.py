@@ -315,7 +315,7 @@ def flat_preview_tags() -> list[bytes]:
 
 def pcp2_entry(*, hot_cue: int, kind: int, time_ms: int, loop_ms: int | None,
                rgb: tuple[int, int, int] | None, beats: int | None, code: int = 0,
-               comment: str | None = None) -> bytes:
+               comment: str | None = None, color_id: int = 0) -> bytes:
     """One `PCP2` entry, byte-for-byte as rekordbox 7 writes it.
 
     Two constants in here are rekordbox's, not the documented struct's: the
@@ -328,6 +328,9 @@ def pcp2_entry(*, hot_cue: int, kind: int, time_ms: int, loop_ms: int | None,
     Konduktor's reader and pyrekordbox's agree with. No reference cue carries
     one, so that detail is documented rather than measured. The entry stays the
     exported 88 bytes unless the name needs more.
+
+    `color_id` is byte 28: a MEMORY cue's colour, 1-based (`memory_palette`),
+    0 = none. A hot cue's colour is the code + RGB tail instead.
     """
     comment_bytes = (comment.encode("utf-16-be") + b"\0\0") if comment else b""
     red, green, blue = rgb or (0, 0, 0)
@@ -336,12 +339,47 @@ def pcp2_entry(*, hot_cue: int, kind: int, time_ms: int, loop_ms: int | None,
         ">4sIIIBxHIIBB6xHHI",
         b"PCP2", 16, length, hot_cue, kind, 1000,
         int(time_ms), NO_LOOP if loop_ms is None else int(loop_ms),
-        0, 1, beats or 0, 1 if beats else 0, len(comment_bytes),
+        color_id & 0xFF, 1, beats or 0, 1 if beats else 0, len(comment_bytes),
     # The colour is the palette CODE, then RGB: rekordbox draws from the code
     # (`palette`); a code of 0 draws its default colour whatever the RGB says.
     ) + comment_bytes + struct.pack(">4B", code & 0xFF, red, green, blue) + bytes(
         length - 48 - len(comment_bytes)
     )
+
+
+#: rekordbox's COMPACT `PCP2` entry: the first 44 bytes of a full one — no
+#: comment and no colour tail. What rekordbox 7 appends when it ADDS a memory cue
+#: on a stick (measured 2026-10-16, `fixtures/onelibrary-memory-edits`).
+PCP2_COMPACT_LEN = 44
+
+
+def pcp2_compact_entry(*, kind: int, time_ms: int, loop_ms: int | None,
+                       beats: int | None, color_id: int = 0, hot_cue: int = 0) -> bytes:
+    """A compact 44-byte `PCP2` entry, byte for byte as rekordbox 7 writes one
+    for a memory cue it adds: the same fields as `pcp2_entry` up to
+    `len_comment` (0), including the `1000` and the `1` after byte 28."""
+    return struct.pack(
+        ">4sIIIBxHIIBB6xHHI",
+        b"PCP2", 16, PCP2_COMPACT_LEN, hot_cue, kind, 1000,
+        int(time_ms), NO_LOOP if loop_ms is None else int(loop_ms),
+        color_id & 0xFF, 1, beats or 0, 1 if beats else 0, 0,
+    )
+
+
+def relinked_memory_pcpts(entries: list[bytes]) -> list[bytes]:
+    """A `PCOB` MEMORY list's entries with their link fields rewritten, as
+    rekordbox 7 leaves them after ANY add or delete (measured 2026-10-16,
+    `fixtures/onelibrary-memory-edits`): status (bytes 16-19) 0, and bytes 24-27 the
+    previous / next entry's INDEX IN THE LIST, 0xFFFF at either end — so every
+    entry changes when one is added or removed. rekordbox's exports agree on any
+    list of two or more; a lone exported entry is status 4, 0xFFFF/0xFFFF."""
+    n = len(entries)
+    out = []
+    for i, e in enumerate(entries):
+        prev = i - 1 if i > 0 else 0xFFFF
+        nxt = i + 1 if i < n - 1 else 0xFFFF
+        out.append(e[:16] + struct.pack(">I", 0) + e[20:24] + struct.pack(">HH", prev, nxt) + e[28:])
+    return out
 
 
 def pcpt_entry(*, hot_cue: int, kind: int, time_ms: int, loop_ms: int | None) -> bytes:
@@ -378,18 +416,25 @@ def pco2_tag(cue_type: int, entries: list[bytes]) -> bytes:
 
 
 def _pcob(cue_type: int, chosen: list[dict]) -> bytes:
-    return pcob_tag(cue_type, [
+    entries = [
         pcpt_entry(hot_cue=c["hot_cue"], kind=c["kind"], time_ms=c["time_ms"],
                    loop_ms=c["loop_ms"])
         for c in chosen
-    ])
+    ]
+    if cue_type == 0 and len(entries) > 1:
+        # A memory list of two or more is linked, status 0 — what rekordbox's
+        # own exports (two test sticks) and edits hold. A lone entry keeps the
+        # status 4 / 0xFFFF form the reference export pins.
+        entries = relinked_memory_pcpts(entries)
+    return pcob_tag(cue_type, entries)
 
 
 def _pco2(cue_type: int, chosen: list[dict]) -> bytes:
     return pco2_tag(cue_type, [
         pcp2_entry(hot_cue=c["hot_cue"], kind=c["kind"], time_ms=c["time_ms"],
                    loop_ms=c["loop_ms"], rgb=c.get("rgb"), beats=c.get("beats"),
-                   code=c.get("code", 0), comment=c.get("comment"))
+                   code=c.get("code", 0), comment=c.get("comment"),
+                   color_id=c.get("color_id", 0))
         for c in chosen
     ])
 

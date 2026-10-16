@@ -175,6 +175,39 @@ def to_track(e) -> Track:
     )
 
 
+def is_memory_cue(c) -> bool:
+    """A cue on no pad that is not a grid marker — Traktor's memory cue.
+
+    Traktor stores it as an ordinary CUE_V2 with HOTCUE="-1", any type, drawn
+    on the waveform and reached with the cue panel's ‹ › (measured in Traktor
+    4.5, 2026-10-16). A grid marker is ALSO HOTCUE="-1"; its <GRID> child is
+    what tells them apart — never its name or position.
+    """
+    return getattr(c, "grid", None) is None and (c.hotcue is None or c.hotcue < 0)
+
+
+def memory_cue_id(c, n: int) -> str:
+    """`CuePoint.id` for a memory cue: its stored START, TYPE and LEN, plus `n`
+    — how many identical memory cues come before it (Traktor allows several at
+    one START). Content-derived, so it is the same on every read."""
+    return f"m:{c.start or 0.0:.6f}:{c.type}:{c.len or 0.0:.6f}:{n}"
+
+
+def with_memory_ids(entry) -> list:
+    """(cue, its memory id or None) for every CUE_V2 of an entry, in order."""
+    seen: dict[str, int] = {}
+    out = []
+    for c in entry.cue_v2 or []:
+        if not is_memory_cue(c):
+            out.append((c, None))
+            continue
+        base = memory_cue_id(c, 0)
+        n = seen.get(base, 0)
+        seen[base] = n + 1
+        out.append((c, memory_cue_id(c, n)))
+    return out
+
+
 def to_track_cues(entry, offset_ms: float = 0.0) -> TrackCues:
     """Project an ENTRY's beatgrid + cues.
 
@@ -200,10 +233,17 @@ def to_track_cues(entry, offset_ms: float = 0.0) -> TrackCues:
         )
         for i, m in enumerate(markers)
     ]
+    # A pad MAP put on a memory cue leaves the memory cue in place at the same
+    # START (measured in Traktor 4.5); Traktor draws ONE marker, so the pad
+    # stands for both (decided 2026-10-16).
+    pad_starts = {c.start for c in entry.cue_v2 or []
+                  if getattr(c, "grid", None) is None and c.hotcue is not None and c.hotcue >= 0}
     cues = []
-    for c in entry.cue_v2 or []:
+    for c, memory_id in with_memory_ids(entry):
         if getattr(c, "grid", None) is not None:
             continue  # a grid marker is projected as a beatgrid marker, not a cue
+        if memory_id is not None and c.start in pad_starts:
+            continue
         marker = marker_of.get(id(c))
         slot = c.hotcue if c.hotcue is not None and c.hotcue >= 0 else None
         cues.append(
@@ -212,8 +252,8 @@ def to_track_cues(entry, offset_ms: float = 0.0) -> TrackCues:
                 # An unknown TYPE is projected as a plain cue rather than dropped:
                 # preserving a cue we cannot name beats hiding it from the user.
                 type=NATIVE_TO_CUE_TYPE.get(c.type, "cue"),
-                # Every Traktor cue lives in the hotcue bank.
-                role="hotcue",
+                # A cue on no pad (HOTCUE="-1") is a memory cue.
+                role="hotcue" if slot is not None else "memory",
                 start=timebase.from_traktor_ms(c.start or 0.0, offset_ms),
                 length=(c.len or 0.0) / 1000.0,
                 slot=slot,
@@ -221,6 +261,7 @@ def to_track_cues(entry, offset_ms: float = 0.0) -> TrackCues:
                 editable=True,
                 readonly_reason=None,
                 grid_marker=marker,
+                id=memory_id,
             )
         )
     return TrackCues(

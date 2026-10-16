@@ -234,6 +234,22 @@ class RemoteAdapter:
     def place_cues(self, track_id, cues, *, overwrite=False):
         return self._call("place_cues", track_id=track_id, cues=list(cues), overwrite=overwrite)
 
+    def add_memory_cue(self, track_id, *, start_sec, cue_type, length_sec=0.0, name=None, color=None):
+        return self._call("add_memory_cue", track_id=track_id, start_sec=start_sec,
+                          cue_type=cue_type, length_sec=length_sec, name=name, color=color)
+
+    def rename_memory_cue(self, track_id, cue_id, name):
+        return self._call("rename_memory_cue", track_id=track_id, cue_id=cue_id, name=name)
+
+    def set_memory_cue_type(self, track_id, cue_id, cue_type):
+        return self._call("set_memory_cue_type", track_id=track_id, cue_id=cue_id, cue_type=cue_type)
+
+    def set_memory_cue_color(self, track_id, cue_id, color):
+        return self._call("set_memory_cue_color", track_id=track_id, cue_id=cue_id, color=color)
+
+    def delete_memory_cue(self, track_id, cue_id):
+        return self._call("delete_memory_cue", track_id=track_id, cue_id=cue_id)
+
     def add_grid_marker(self, track_id, start_sec, bpm=None):
         return self._call("add_grid_marker", track_id=track_id, start_sec=start_sec, bpm=bpm)
 

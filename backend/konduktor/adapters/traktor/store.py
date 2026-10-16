@@ -56,7 +56,7 @@ from ...schemas import PlaylistNode
 from . import beatgrid, timebase
 from .locations import os_path_to_location, resolve_path
 from ...core import musical_key
-from .projection import iso_date, musical_key_value, traktor_date
+from .projection import iso_date, musical_key_value, traktor_date, with_memory_ids
 
 # Traktor's POPM frame owner: an ID3 rating is per-owner, so writing under
 # this email is what makes the stars show up in Traktor itself.
@@ -770,21 +770,7 @@ class TraktorStore:
                 if name is not None:
                     existing.name = name
             else:
-                if entry.cue_v2 is None:
-                    entry.cue_v2 = []
-                entry.cue_v2.append(
-                    CueV2Type(
-                        name=name or "n.n.",  # Traktor's default name for a manual cue
-                        displ_order=0,
-                        type=cue_type,
-                        start=start_ms,
-                        len=len_ms,
-                        repeats=-1,
-                        hotcue=slot,
-                        color=None,
-                        grid=None,
-                    )
-                )
+                self._insert_cue(entry, self._new_cue(cue_type, start_ms, len_ms, slot, name))
             # "add" only when it's a genuinely new hotcue; repositioning/retyping
             # an existing slot is a "modify" (keeps the net add/remove count honest).
             self._note(
@@ -815,6 +801,87 @@ class TraktorStore:
                 getattr(spec, "length", 0.0),
                 name=getattr(spec, "name", None),
             )
+
+    @staticmethod
+    def _new_cue(cue_type: int, start_ms: float, len_ms: float, hotcue: int,
+                 name: str | None) -> CueV2Type:
+        """A CUE_V2 as Traktor writes one by hand — on a pad, or on none
+        (`hotcue` -1, a memory cue: the same element, measured in Traktor 4.5)."""
+        return CueV2Type(
+            name=name or "n.n.",  # Traktor's default name for a manual cue
+            displ_order=0,
+            type=cue_type,
+            start=start_ms,
+            len=len_ms,
+            repeats=-1,
+            hotcue=hotcue,
+            color=None,
+            grid=None,
+        )
+
+    @staticmethod
+    def _insert_cue(entry: Entrytype, cue: CueV2Type) -> None:
+        """Insert a new cue at its place BY START, after every cue at or before
+        it — Traktor keeps CUE_V2 sorted by START (8485/8485 reference entries,
+        and its own saves), so a later Traktor save moves nothing. Nothing else
+        moves either, unlike a re-sort of an entry another tool left unsorted."""
+        if entry.cue_v2 is None:
+            entry.cue_v2 = []
+        at = len(entry.cue_v2)
+        while at > 0 and (entry.cue_v2[at - 1].start or 0.0) > (cue.start or 0.0):
+            at -= 1
+        entry.cue_v2.insert(at, cue)
+
+    # ---- memory cues: CUE_V2 on no pad (HOTCUE="-1"), not a grid marker -----
+    # Measured in Traktor 4.5 (2026-10-16, kit M3): any type, no limit, drawn
+    # on the waveform and reached with the cue panel's ‹ ›, a name shown in the
+    # cue panel — and a cue written here survives Traktor's own save byte for
+    # byte. Addressed by `projection.memory_cue_id`.
+    def _memory_cue(self, entry: Entrytype, cue_id: str) -> CueV2Type:
+        cue = next((c for c, mid in with_memory_ids(entry) if mid == cue_id), None)
+        if cue is None:
+            raise PlaylistError(f"Memory cue {cue_id!r} not found on this track")
+        return cue
+
+    def add_memory_cue(self, track_id: str, start_sec: float, cue_type: int,
+                       length_sec: float = 0.0, name: str | None = None) -> None:
+        if cue_type not in self.CREATABLE_TYPES:
+            raise PlaylistError(f"Unsupported cue type: {cue_type}")
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            start_ms = timebase.to_traktor_ms(start_sec, self.time_offset_ms(entry))
+            len_ms = max(0.0, length_sec * 1000.0)
+            self._insert_cue(entry, self._new_cue(cue_type, start_ms, len_ms, -1, name))
+            self._note("hotcue", "add", track_id, "memory")
+            self.dirty = True
+
+    def rename_memory_cue(self, track_id: str, cue_id: str, name: str | None) -> None:
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            self._memory_cue(entry, cue_id).name = name or "n.n."
+            self._note("hotcue", "modify", track_id, "memory")
+            self.dirty = True
+
+    def set_memory_cue_type(self, track_id: str, cue_id: str, cue_type: int) -> None:
+        """A point type only, as for a hot cue: a loop is not retyped."""
+        if cue_type not in self.POINT_CUE_TYPES:
+            raise PlaylistError(f"Unsupported cue type: {cue_type}")
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            cue = self._memory_cue(entry, cue_id)
+            if cue.type not in self.POINT_CUE_TYPES:
+                raise PlaylistError("A memory loop keeps its type")
+            cue.type = cue_type
+            self._note("hotcue", "modify", track_id, "memory")
+            self.dirty = True
+
+    def delete_memory_cue(self, track_id: str, cue_id: str) -> None:
+        with self._lock:
+            entry = self._entry_or_raise(track_id)
+            cue = self._memory_cue(entry, cue_id)
+            entry.cue_v2 = [c for c in entry.cue_v2 if c is not cue]
+            self._note("hotcue", "delete", track_id, "memory")
+            self.dirty = True
 
     def set_hotcue_type(self, track_id: str, slot: int, cue_type: int) -> None:
         """Change the type of the existing hotcue in `slot` (keeps its position)."""

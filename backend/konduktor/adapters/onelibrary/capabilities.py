@@ -36,8 +36,8 @@ from ...core.capabilities import (
     SaveCapabilities,
     TrackCapabilities,
 )
-from ..rekordbox import palette
-from ..rekordbox.cue_types import WRITABLE_CUE_TYPES
+from ..rekordbox import memory_palette, palette
+from ..rekordbox.cue_types import MAX_MEMORY_CUES, WRITABLE_CUE_TYPES
 
 # Pads A-H. Unlike `djmdCue.Kind`, the ANLZ slot number is a dense 1-based index,
 # so the bank really is 1..8 (see `cues.py`).
@@ -61,10 +61,12 @@ def capabilities_for(
             editable=True,
             hotcue_slots=HOTCUE_SLOTS,
             slot_labels="letter",
-            # OneLibrary carries memory cues, as Rekordbox does: projected and
-            # preserved, NOT editable (the two-platform rule, as in Rekordbox).
+            # Memory cues, editable as in Rekordbox — in the ANLZ files, the
+            # way rekordbox 7 edits them on a stick (measured, kit M2).
             memory_cues=True,
-            max_memory_cues=None,
+            max_memory_cues=MAX_MEMORY_CUES,
+            memory_color="palette",
+            memory_palette=list(memory_palette.SWATCHES),
             types=WRITABLE_CUE_TYPES,
             color="palette",
             palette=[palette.hex_for(code) for code in palette.SWATCHES],

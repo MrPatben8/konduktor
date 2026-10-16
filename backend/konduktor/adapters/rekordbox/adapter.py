@@ -27,7 +27,7 @@ from ...core.model import GridMarker, PlaylistNode, Track, TrackCues
 from ...core.pathmap import PathMapping, common_dir_prefix
 from ...core.query import TrackIndex
 from . import capabilities as caps
-from . import palette, projection, timebase
+from . import memory_palette, palette, projection, timebase
 from ...core import add_analysis
 from .store import RekordboxStore
 
@@ -303,12 +303,8 @@ class RekordboxAdapter:
     ) -> TrackCues:
         self._require_writable("Editing cues")
         if role != "hotcue":
-            # Rekordbox is the ONLY platform with memory cues, so under the
-            # two-platform promotion rule they stay preserved-but-uneditable:
-            # they are projected and shown, never written.
-            raise Unsupported(
-                "Memory cues are shown but cannot be edited — only hot cues are writable"
-            )
+            # A memory cue has no slot to set; it has its own commands.
+            raise InvalidCommand("Memory cues are added with add_memory_cue, not set_cue")
         self._check_cue_type(cue_type)
         self._store.set_cue(
             track_id, slot=slot, start_sec=start_sec, cue_type=cue_type,
@@ -337,6 +333,53 @@ class RekordboxAdapter:
     def delete_cue(self, track_id: str, slot: int) -> TrackCues:
         self._require_writable("Deleting cues")
         self._store.delete_cue(track_id, slot)
+        return self._refresh_cues(track_id)
+
+    # ---- commands: memory cues --------------------------------------------
+    def _memory_code(self, color: str | None) -> int | None:
+        if color is None:
+            return None
+        code = memory_palette.code_for(color)
+        if code is None:
+            raise InvalidCommand(f"{color!r} is not one of rekordbox's memory cue colours")
+        return code
+
+    def add_memory_cue(
+        self,
+        track_id: str,
+        *,
+        start_sec: float,
+        cue_type: str,
+        length_sec: float = 0.0,
+        name: str | None = None,
+        color: str | None = None,
+    ) -> TrackCues:
+        self._require_writable("Editing cues")
+        self._check_cue_type(cue_type)
+        self._store.add_memory_cue(
+            track_id, start_sec=start_sec, cue_type=cue_type, length_sec=length_sec,
+            name=name, color_code=self._memory_code(color),
+        )
+        return self._refresh_cues(track_id)
+
+    def rename_memory_cue(self, track_id: str, cue_id: str, name: str | None) -> TrackCues:
+        self._require_writable("Editing cues")
+        self._store.rename_memory_cue(track_id, cue_id, name)
+        return self._refresh_cues(track_id)
+
+    def set_memory_cue_type(self, track_id: str, cue_id: str, cue_type: str) -> TrackCues:
+        # rekordbox has one point type, so there is nothing to choose; a memory
+        # cue is a cue or a loop by its length.
+        raise Unsupported("rekordbox memory cues have no type to change")
+
+    def set_memory_cue_color(self, track_id: str, cue_id: str, color: str | None) -> TrackCues:
+        self._require_writable("Editing cues")
+        self._store.set_memory_cue_color(track_id, cue_id, self._memory_code(color))
+        return self._refresh_cues(track_id)
+
+    def delete_memory_cue(self, track_id: str, cue_id: str) -> TrackCues:
+        self._require_writable("Deleting cues")
+        self._store.delete_memory_cue(track_id, cue_id)
         return self._refresh_cues(track_id)
 
     def place_cues(self, track_id: str, cues: list, *, overwrite: bool = False) -> TrackCues:
@@ -521,20 +564,25 @@ class RekordboxAdapter:
 
     def _place_imported_cues(self, track_id: str, cues) -> None:
         """Hot cues on their own pads; memory cues — and a hot cue with no
-        free pad — as memory cues. Colour as the nearest palette swatch."""
+        free pad — as memory cues, up to rekordbox's 10 (earliest first; the
+        rest are dropped, per the lossiness rule). Colour as the nearest swatch
+        of the palette the cue lands in: a hot cue's 16, a memory cue's 8."""
         taken: set[int] = set()
+        memory = 0
         for cue in sorted(cues.cues or [], key=lambda c: c.start):
             cue_type = "loop" if getattr(cue, "length", 0) else "cue"
-            code, _rgb = palette.code_for(cue.color)
             common = dict(start_sec=cue.start, cue_type=cue_type,
                           length_sec=getattr(cue, "length", 0.0) or 0.0,
-                          name=getattr(cue, "name", None), color_code=code or None)
+                          name=getattr(cue, "name", None))
             slot = cue.slot if cue.role == "hotcue" else None
             if slot is not None and 0 <= slot < caps.HOTCUE_SLOTS and slot not in taken:
-                self._store.set_cue(track_id, slot=slot, **common)
+                code, _rgb = palette.code_for(cue.color)
+                self._store.set_cue(track_id, slot=slot, color_code=code or None, **common)
                 taken.add(slot)
-            else:
-                self._store.add_memory_cue(track_id, **common)
+            elif memory < self._store.MAX_MEMORY_CUES:
+                self._store.add_memory_cue(
+                    track_id, color_code=memory_palette.nearest_code(cue.color), **common)
+                memory += 1
 
     def remove_tracks(self, track_ids: list[str]) -> int:
         # What goes with a track was measured in Rekordbox 7 — see the store.

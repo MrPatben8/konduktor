@@ -54,8 +54,9 @@ from ...core.edit_journal import EditJournal
 from ...core.grid_edit import ReplaceGridCommands
 from ...core.model import CuePoint
 from ... import paths
-from . import beatgrid, cues as cue_reader
+from . import beatgrid, cues as cue_reader, memory_cues
 from ..rekordbox import anlz_file, palette, timebase
+from ..rekordbox.cue_types import MAX_MEMORY_CUES
 from ..rekordbox import anlz_writer as W
 from ..rekordbox import beatgrid as rb_beatgrid
 from .layout import DriveLayout
@@ -915,6 +916,60 @@ class OneLibraryStore(ReplaceGridCommands):
         hot, _cue = self._existing(track_id, slot)
         self._replace_hot(track_id, hot, None, None)
         self._journal.record("cue", "delete", track_id, f"slot:{slot}")
+
+    # ---- memory cues -------------------------------------------------------
+    # The list edits — and what rekordbox was measured doing — are in
+    # `memory_cues`; here: the drive, the time base, the cap and the journal.
+    MAX_MEMORY_CUES = MAX_MEMORY_CUES  # rekordbox stops storing at 10, silently (measured)
+
+    def _memory_files(self, track_id: str):
+        dat, ext = self._editing(track_id)
+        self._ensure_pco2(dat, ext)
+        return dat, ext
+
+    def add_memory_cue(self, track_id: str, *, start_sec: float, cue_type: str,
+                       length_sec: float = 0.0, name: str | None = None,
+                       color_id: int = 0) -> None:
+        """Add a memory cue (a memory loop with a length) the way rekordbox does.
+
+        `color_id` is `PCP2` byte 28 (`memory_palette.anlz_byte`), 0 = none."""
+        from .export import _loop_beats
+
+        if start_sec < 0:
+            raise InvalidCommand("A cue cannot be before the start of the track")
+        dat, ext = self._memory_files(track_id)
+        if memory_cues.count(ext) >= self.MAX_MEMORY_CUES:
+            raise InvalidCommand(
+                f"rekordbox keeps at most {self.MAX_MEMORY_CUES} memory cues per track"
+            )
+        is_loop = cue_type == "loop" and length_sec > 0
+        off = self._offset(track_id)
+        time_ms = int(round(timebase.to_pioneer(start_sec, off) * 1000))
+        loop_ms = int(round(timebase.to_pioneer(start_sec + length_sec, off) * 1000)) if is_loop else None
+        grid = self.anlz_grid(track_id)
+        beats = (_loop_beats(start_sec, length_sec, list(zip(grid[2], grid[1], grid[0])))
+                 if is_loop and grid else None)
+        memory_cues.add(dat, ext, kind=2 if is_loop else 1, time_ms=time_ms, loop_ms=loop_ms,
+                        beats=beats, name=name, color_id=color_id)
+        self._journal.record("cue", "add", track_id, "memory")
+
+    def _memory_edit(self, track_id: str, cue_id: str, op: str, edit) -> None:
+        dat, ext = self._memory_files(track_id)
+        if not edit(dat, ext):
+            raise NotFound(f"No memory cue {cue_id!r} on this track")
+        self._journal.record("cue", op, track_id, "memory")
+
+    def rename_memory_cue(self, track_id: str, cue_id: str, name: str | None) -> None:
+        self._memory_edit(track_id, cue_id, "modify",
+                          lambda _d, ext: memory_cues.rename(ext, cue_id, name))
+
+    def set_memory_cue_color(self, track_id: str, cue_id: str, color_id: int) -> None:
+        self._memory_edit(track_id, cue_id, "modify",
+                          lambda _d, ext: memory_cues.recolour(ext, cue_id, color_id))
+
+    def delete_memory_cue(self, track_id: str, cue_id: str) -> None:
+        self._memory_edit(track_id, cue_id, "delete",
+                          lambda dat, ext: memory_cues.delete(dat, ext, cue_id))
 
     def hot_slots(self, track_id: str) -> set[int]:
         """Occupied 0-based slots (pending edits included)."""

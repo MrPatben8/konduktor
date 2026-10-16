@@ -44,7 +44,8 @@ from pathlib import Path
 from ...core.export import ExportPayload, ExportTrack, WrittenLibrary
 from ...core.cue_colors import effective_color
 from ..rekordbox import anlz_writer as W
-from ..rekordbox import artwork, palette, timebase
+from ..rekordbox import artwork, memory_palette, palette, timebase
+from ..rekordbox.cue_types import MAX_MEMORY_CUES
 from ..rekordbox.beatgrid import beats_from_markers
 from ..rekordbox.projection import render_key
 from .capabilities import capabilities_for
@@ -359,15 +360,28 @@ class OneLibraryExporter:
         too far along.
         """
         out: list[dict] = []
-        for cue in (item.cues.cues if item.cues else []):
+        memory = 0
+        for cue in sorted(item.cues.cues if item.cues else [], key=lambda c: c.start):
             is_loop = cue.type == "loop" or cue.length > 0
-            # A hot cue carries what Konduktor SHOWS — stored colour, else the
-            # type's (blue cue, green loop) — as a rekordbox palette CODE, which
-            # is what rekordbox draws from; "unset" draws its own defaults. A
-            # memory cue keeps rekordbox's own "unset".
-            code, rgb = palette.code_for(cue.color if cue.role == "memory" else effective_color(cue))
+            is_memory = cue.role == "memory" or cue.slot is None
+            if is_memory:
+                # rekordbox keeps 10 (earliest first; the rest are dropped, per
+                # the lossiness rule). A memory cue's colour is PCP2 byte 28 from
+                # its own 8-colour palette; the hot-cue code + RGB stay zero.
+                if memory >= MAX_MEMORY_CUES:
+                    continue
+                memory += 1
+                code, rgb = 0, (0, 0, 0)
+                color_id = memory_palette.anlz_byte(memory_palette.nearest_code(cue.color))
+            else:
+                # What Konduktor SHOWS — stored colour, else the type's (blue cue,
+                # green loop) — as a rekordbox palette CODE, which is what
+                # rekordbox draws from; "unset" draws its own defaults.
+                code, rgb = palette.code_for(effective_color(cue))
+                color_id = 0
             out.append({
-                "hot_cue": 0 if cue.role == "memory" or cue.slot is None else cue.slot + 1,
+                "color_id": color_id,
+                "hot_cue": 0 if is_memory else cue.slot + 1,
                 "kind": 2 if is_loop else 1,
                 "time_ms": int(round(timebase.to_pioneer(cue.start, off) * 1000)),
                 "loop_ms": (int(round(timebase.to_pioneer(cue.start + cue.length, off) * 1000))

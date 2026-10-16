@@ -216,8 +216,9 @@ with tempfile.TemporaryDirectory() as d:
         # writable hot cue with a padlock.
         check("ordinary hot cues are editable",
               all(c.editable for c in tc.cues if c.role == "hotcue" and c.type != "loop"))
-        check("memory cues are preserved but not editable",
-              all(not c.editable for c in tc.cues if c.role == "memory"))
+        check("memory cues are editable and addressed by id",
+              all(c.editable and c.id for c in tc.cues
+                  if c.role == "memory" and c.readonly_reason is None))
         check("loops are editable like any other hot cue",
               all(c.editable for c in tc.cues if c.type == "loop" and c.role == "hotcue"))
         check("an uneditable cue always says why",
@@ -427,11 +428,10 @@ with tempfile.TemporaryDirectory() as d:
     check("a Traktor-only cue type is Unsupported",
           _raises(lambda: adapter.set_cue(cue_track.id, slot=2, start_sec=1.0,
                                           cue_type="fade_in"), Unsupported))
-    # Rekordbox is the ONLY platform with memory cues, so they stay
-    # preserved-but-uneditable under the two-platform promotion rule.
-    check("memory cues are shown but not writable",
+    # A memory cue has no slot; set_cue is for pads only.
+    check("set_cue refuses role=memory (memory cues have their own commands)",
           _raises(lambda: adapter.set_cue(cue_track.id, slot=1, start_sec=1.0,
-                                          cue_type="cue", role="memory"), Unsupported))
+                                          cue_type="cue", role="memory"), InvalidCommand))
     # Slot 0 is the FIRST pad, not an error: it is Kind=1 natively.
     tc = adapter.set_cue(cue_track.id, slot=0, start_sec=1.0, cue_type="cue")
     first = [c for c in tc.cues if c.slot == 0]

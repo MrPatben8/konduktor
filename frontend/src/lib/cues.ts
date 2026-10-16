@@ -11,7 +11,7 @@ const TYPE_COLORS: Record<CueType, string> = {
   load: '#ffd23d', // yellow
   loop: '#3ddc84', // green
 }
-const MEMORY_COLOR = '#9aa1b2' // gray
+const MEMORY_COLOR = '#9aa1b2' // gray: an unknown type
 
 export const CUE_TYPE_LABELS: Record<CueType, string> = {
   cue: 'Cue',
@@ -43,7 +43,8 @@ const TYPE_ICONS: Record<CueType, IconName> = {
  */
 export function cueColor(cue: CuePoint): string {
   if (cue.color) return cue.color
-  if (cue.role === 'memory') return MEMORY_COLOR
+  // A memory cue's type colours it just as a hot cue's does (decided
+  // 2026-10-16) — Traktor draws both by type. Mirrors `core/cue_colors.py`.
   return TYPE_COLORS[cue.type] ?? MEMORY_COLOR
 }
 

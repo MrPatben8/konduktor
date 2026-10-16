@@ -139,15 +139,29 @@ check("every hot cue keeps the pad it was on",
 check("a loop stays a loop, with its length",
       got_by_slot[0].type == "loop" and abs(got_by_slot[0].length - 1.875) < 0.001)
 
-# Traktor has no memory cues, so they degrade into spare pads rather than being
-# dropped — the settled lossiness rule.
+# Memory cues cross AS memory cues — Traktor's cues on no pad (HOTCUE="-1"),
+# decided 2026-10-16 once Traktor was measured keeping them. They used to be
+# promoted to spare pads.
 n_memory = sum(1 for c in src_cues.cues if c.role != "hotcue")
-check("memory cues are preserved in spare slots, not dropped",
-      len(got.cues) == len(src_hot) + n_memory, f"{len(got.cues)} cues")
-check("and they do not overwrite a hot cue",
-      len({c.slot for c in got.cues}) == len(got.cues))
-check("every imported cue occupies a real pad",
-      all(c.role == "hotcue" and c.slot is not None for c in got.cues))
+padless = [c for c in dest._store.model_entry(ids[0]).cue_v2
+           if c.grid is None and c.hotcue == -1]
+check("every memory cue is written as a memory cue (a CUE_V2 on no pad)",
+      len(padless) == n_memory and n_memory > 0, f"{len(padless)} of {n_memory}")
+check("and no extra pad is taken",
+      sorted(c.slot for c in got.cues if c.role == "hotcue") == sorted(src_hot))
+# The demo track's memory loop starts exactly where pad A's loop does. Traktor
+# draws a pad and a memory cue at one START as ONE marker (measured), so the
+# projection shows it once, as the pad (decided 2026-10-16).
+pad_starts = {round(c.start, 3) for c in got.cues if c.role == "hotcue"}
+got_memory = [c for c in got.cues if c.role == "memory"]
+check("a memory cue is shown unless a pad sits on its START",
+      len(got_memory) + sum(1 for c in padless
+                            if round((c.start - dest._store.time_offset_ms(
+                                dest._store.model_entry(ids[0]))) / 1000, 3) in pad_starts)
+      == n_memory,
+      f"{len(got_memory)} shown, pads at {sorted(pad_starts)}")
+check("a shown memory cue has no pad and an id",
+      all(c.slot is None and c.id for c in got_memory))
 
 # `set_analysed_grid` would place Traktor's beat-1 companion on pad A. That both
 # invents a cue the source never had and displaces the imported pad A cue — it
@@ -230,7 +244,9 @@ many = TrackCues(
     grid_markers=[GridMarker(start=0.0, bpm=120.0)],
     cues=[CuePoint(type="cue", role="hotcue", start=float(i), length=0.0, slot=i)
           for i in range(8)]
-    + [CuePoint(type="cue", role="memory", start=99.0, length=0.0, slot=None)],
+    + [CuePoint(type="cue", role="memory", start=99.0, length=0.0, slot=None),
+       # A pad past Traktor's bank: displaced, and with no spare pad left.
+       CuePoint(type="cue", role="hotcue", start=50.0, length=0.0, slot=9)],
 )
 crowded_id = dest2.add_tracks([NewTrack(
     track=Track(id="ignored", title="Crowded", bpm=120.0),
@@ -238,11 +254,15 @@ crowded_id = dest2.add_tracks([NewTrack(
     cues=many,
 )])[0]
 crowded = dest2.track_cues(crowded_id)
-check("the bank is filled but not overflowed", len(crowded.cues) == 8, str(len(crowded.cues)))
-check("the hot cues are the ones that survived",
-      sorted(c.slot for c in crowded.cues) == list(range(8)))
-check("the memory cue that would not fit is dropped, not misplaced",
-      all(c.start < 99.0 for c in crowded.cues))
+crowded_hot = [c for c in crowded.cues if c.role == "hotcue"]
+check("the bank is filled but not overflowed", len(crowded_hot) == 8, str(len(crowded_hot)))
+check("the hot cues keep their own pads",
+      sorted(c.slot for c in crowded_hot) == list(range(8))
+      and all(c.start == float(c.slot) for c in crowded_hot))
+check("the memory cue stays a memory cue, and a displaced hot cue with no spare "
+      "pad becomes one — nothing is dropped",
+      sorted(round(c.start) for c in crowded.cues if c.role == "memory") == [50, 99],
+      str([(c.role, c.start) for c in crowded.cues]))
 
 print("== the source slot ==")
 # A source is a library read FROM, open alongside the loaded one. The whole slot

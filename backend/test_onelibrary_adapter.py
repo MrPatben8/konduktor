@@ -317,8 +317,10 @@ memory = [c for c in cues.cues if c.role == "memory"]
 check("the memory cue is preserved", len(memory) == 1)
 check("it has no slot", memory[0].slot is None)
 check("it is the same loop, at the same place", abs(memory[0].start - (40.0 - OFF)) < 0.001)
-check("on an editable drive every hot cue is editable, no memory cue is",
-      all(c.editable == (c.role == "hotcue") for c in cues.cues))
+check("on an editable drive every cue is editable, memory cues included",
+      all(c.editable for c in cues.cues))
+check("a memory cue is addressed by a content-derived id",
+      memory[0].id is not None and memory[0].id.startswith("m:"), str(memory[0].id))
 _browse = OneLibraryAdapter(DRIVE, read_only=True)
 check("on a browsing drive no cue is editable",
       all(not c.editable for c in _browse.track_cues(one.id).cues))

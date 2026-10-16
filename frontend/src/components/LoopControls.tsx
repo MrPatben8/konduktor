@@ -1,4 +1,5 @@
 import { Icon } from '../lib/icons'
+import { ModeSwitch } from './ModeSwitch'
 
 /** One size, 1/32 → 32 beats, shared by beat loops AND beat jump: the number a
  *  DJ has in their head ("4 beats") should not differ between the two. */
@@ -90,25 +91,17 @@ export function LoopControls({
   // A beat jump needs a grid; moving a manual loop does not.
   const canMove = ready && (loopActive || hasGrid)
 
-  const tab = (m: LoopMode, text: string, title: string) => (
-    <button
-      onClick={() => onMode(m)}
-      title={title}
-      aria-pressed={mode === m}
-      className={`h-[17px] rounded-[7px] px-[7px] text-[9px] font-bold tracking-[0.08em] transition-colors ${
-        mode === m ? 'btn-primary' : 'text-faint hover:text-text'
-      }`}
-    >
-      {text}
-    </button>
-  )
-
   return (
     <div className="flex shrink-0 items-center gap-2">
-      <div role="group" aria-label="Loop mode" className="well flex h-10 flex-col justify-center gap-0.5 rounded-[10px] p-0.5">
-        {tab('beat', 'BEAT', 'Beat loops, sized in beats')}
-        {tab('manual', 'MAN', 'Manual loops: set IN and OUT')}
-      </div>
+      <ModeSwitch
+        label="Loop mode"
+        value={mode}
+        onChange={onMode}
+        options={[
+          { value: 'beat', text: 'BEAT', title: 'Beat loops, sized in beats' },
+          { value: 'manual', text: 'MAN', title: 'Manual loops: set IN and OUT' },
+        ]}
+      />
 
       {mode === 'beat' ? (
         <div role="group" aria-label="Loop size" className={`${CLUSTER} font-mono`}>

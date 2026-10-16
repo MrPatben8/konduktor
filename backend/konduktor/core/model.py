@@ -144,8 +144,8 @@ PlaylistNode.model_rebuild()
 class CuePoint(BaseModel):
     name: str | None = None
     type: CueType = "cue"
-    # "memory" cues have no bank slot. Only Rekordbox has them, so they are
-    # modelled and preserved but not yet editable anywhere.
+    # A "memory" cue has no bank slot: Rekordbox's / OneLibrary's memory cues,
+    # Traktor's cues on no pad (HOTCUE="-1"). Addressed by `id`, not `slot`.
     role: CueRole = "hotcue"
     start: float  # seconds
     length: float  # seconds (>0 for loops)
@@ -158,6 +158,10 @@ class CuePoint(BaseModel):
     # Index of the grid marker this cue mirrors, where the platform pairs them.
     # A display hint only; None on platforms that do not.
     grid_marker: int | None = None
+    # The handle the memory-cue commands take (None on a hot cue, which is
+    # addressed by slot). Opaque and adapter-defined; an edit of THIS cue may
+    # change it, which is fine because every command returns fresh TrackCues.
+    id: str | None = None
 
 
 class GridMarker(BaseModel):

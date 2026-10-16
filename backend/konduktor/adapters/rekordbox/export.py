@@ -58,7 +58,7 @@ from sqlalchemy import text
 
 from ...core.export import ExportPayload, ExportTrack, WrittenLibrary
 from ...core.cue_colors import effective_color
-from . import new_content, palette
+from . import memory_palette, new_content, palette
 from . import timebase
 from .beatgrid import beats_from_markers
 from .capabilities import capabilities_for
@@ -199,24 +199,30 @@ class RekordboxExporter:
         from .adapter import RekordboxAdapter
 
         adapter = RekordboxAdapter(library)
-        # The store, not the adapter's commands: the adapter refuses memory cues
-        # (editing them in a user's library is off-limits) and takes no colour.
-        # Building a NEW library is neither an edit nor lossy by choice, so the
-        # exporter writes both — through the same `_write_cue` every edit uses.
+        # The store, not the adapter's commands: the adapter's set_cue takes no
+        # colour and its memory-cue command takes only a swatch. A NEW library
+        # maps any source colour to the nearest one instead — through the same
+        # `_write_cue` every edit uses.
         store = adapter._store
         try:
             for item in payload.tracks:
                 track_id = ids.get(item.source_id)
                 if track_id is None or not item.cues:
                     continue
-                for cue in item.cues.cues:
+                memory = 0
+                for cue in sorted(item.cues.cues, key=lambda c: c.start):
                     if cue.role == "memory" or cue.slot is None:
-                        # rekordbox's own "unset" for a memory cue with no colour.
-                        code, _rgb = palette.code_for(cue.color)
+                        # rekordbox keeps 10 (earliest first; the rest are
+                        # dropped, per the lossiness rule). Colour: the memory
+                        # palette's nearest swatch, else rekordbox's "unset".
+                        if memory >= store.MAX_MEMORY_CUES:
+                            continue
                         store.add_memory_cue(
                             track_id, start_sec=cue.start, cue_type=cue.type,
-                            length_sec=cue.length, name=cue.name, color_code=code or None,
+                            length_sec=cue.length, name=cue.name,
+                            color_code=memory_palette.nearest_code(cue.color),
                         )
+                        memory += 1
                         continue
                     # What Konduktor SHOWS — stored colour, else the type's (blue
                     # cue, green loop) — as a palette code, which is what

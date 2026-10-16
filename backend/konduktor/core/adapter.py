@@ -318,6 +318,29 @@ class LibraryAdapter(Protocol):
     def delete_cue(self, track_id: str, slot: int) -> TrackCues: ...
     def place_cues(self, track_id: str, cues: list, *, overwrite: bool = False) -> TrackCues: ...
 
+    # ---- commands: memory cues --------------------------------------------
+    # Cues on no pad, addressed by `CuePoint.id`. Gated on `cues.memory_cues`.
+    # Past `cues.max_memory_cues` -> InvalidCommand; an unknown id -> NotFound;
+    # `color` is from `cues.memory_palette` (Unsupported where memory_color is
+    # "none"). There is deliberately no move: rekordbox has none either, so a
+    # move is a delete and an add.
+    def add_memory_cue(
+        self,
+        track_id: str,
+        *,
+        start_sec: float,
+        cue_type: str,
+        length_sec: float = 0.0,
+        name: str | None = None,
+        color: str | None = None,
+    ) -> TrackCues: ...
+    def rename_memory_cue(self, track_id: str, cue_id: str, name: str | None) -> TrackCues: ...
+    # A POINT type from `cues.types` (Traktor: cue / fade in / fade out / load);
+    # a loop is not retyped. Unsupported where the platform has one point type.
+    def set_memory_cue_type(self, track_id: str, cue_id: str, cue_type: str) -> TrackCues: ...
+    def set_memory_cue_color(self, track_id: str, cue_id: str, color: str | None) -> TrackCues: ...
+    def delete_memory_cue(self, track_id: str, cue_id: str) -> TrackCues: ...
+
     # ---- commands: beatgrid ---------------------------------------------
     def add_grid_marker(self, track_id: str, start_sec: float, bpm: float | None = None) -> TrackCues: ...
     def move_grid_marker(self, track_id: str, index: int, start_sec: float) -> TrackCues: ...

@@ -114,7 +114,7 @@ def to_track_cues(cues: list, grid_markers: list[GridMarker]) -> TrackCues:
 
     `cues` are already generic — see `store.cues` for why that boundary sits
     where it does — so this is the assembly point rather than a translation.
-    Nothing here is editable: a OneLibrary drive is read-only in Konduktor, and
-    `capabilities.writable` says so at the library level.
+    Each cue already says whether it is editable (the store knows whether the
+    drive was opened for editing or is only being browsed).
     """
     return TrackCues(grid_markers=grid_markers, grid_locked=False, cues=list(cues))
