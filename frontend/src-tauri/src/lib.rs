@@ -26,16 +26,30 @@
 // it — so it is killed only once the app really exits. If the webview does not
 // acknowledge within ~2 s (hung, or not loaded yet), the app quits anyway: a
 // broken page must never make the app unquittable.
+//
+// UPDATING rides on that same handshake (UpdateDialog.tsx). The page finds the
+// release (its own GitHub check); `update_download` fetches THAT release's
+// `latest.json`, downloads + verifies the package with tauri-plugin-updater and
+// STAGES it on disk; `update_restart` then asks to quit like Cmd+Q does. The
+// package is installed only in `exit_now`, after the sidecar is dead: on macOS
+// the sidecar lazily loads native libraries from inside the bundle being
+// replaced, and on Windows its .exe in the install folder is locked while it
+// runs. Cancel in the Save / Discard prompt keeps the update staged, so the
+// next ordinary quit installs it (without relaunching). A failed install is
+// written to `failed.json` for the next launch's dialog to report.
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use tauri::ipc::Channel;
 use tauri::window::Color;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 /// Holds the running sidecar child so we can terminate it on exit.
 struct Sidecar(Mutex<Option<CommandChild>>);
@@ -67,15 +81,105 @@ struct Quit {
     acked: AtomicBool,
 }
 
+/// A downloaded, verified update waiting for the app to exit.
+struct StagedUpdate {
+    update: Update,
+    /// The package on disk (~150 MB: not worth holding in memory all session).
+    path: PathBuf,
+    /// Relaunch once installed: set by `update_restart`, cleared by Cancel.
+    relaunch: bool,
+}
+
+struct Staged(Mutex<Option<StagedUpdate>>);
+
+/// Download progress for the update dialog.
+#[derive(Clone, Serialize)]
+struct UpdateProgress {
+    downloaded: u64,
+    total: Option<u64>,
+}
+
+/// An install that failed at exit, reported by the next launch.
+#[derive(Serialize, serde::Deserialize)]
+struct UpdateFailure {
+    version: String,
+    error: String,
+}
+
+const REPO: &str = "MrPatben8/konduktor";
+
+/// The frozen backend's executable, in the bundled `sidecar/` folder (staged
+/// into src-tauri/binaries/ by backend/build_sidecar.*).
+fn sidecar_exe(app: &AppHandle) -> Result<PathBuf, String> {
+    let exe = if cfg!(windows) { "konduktor-sidecar.exe" } else { "konduktor-sidecar" };
+    let dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join("sidecar").join(exe))
+}
+
 fn kill_sidecar(app: &AppHandle) {
     if let Some(child) = app.state::<Sidecar>().0.lock().unwrap().take() {
         let _ = child.kill();
     }
 }
 
+/// Windows only: `kill` asks the OS to end the process and returns at once,
+/// and the installer must not find the sidecar's .exe still locked. Opening a
+/// running executable for writing is refused, so poll that (up to ~5 s).
+fn wait_for_sidecar_exit(app: &AppHandle) {
+    if !cfg!(windows) {
+        return;
+    }
+    let Ok(exe) = sidecar_exe(app) else { return };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if std::fs::OpenOptions::new().write(true).open(&exe).is_ok() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn update_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_cache_dir().ok().map(|dir| dir.join("update"))
+}
+
+/// Install a staged update, if any. Runs at exit with the sidecar already dead.
+/// On Windows a successful install never returns (the updater starts the
+/// installer and exits the process); on macOS the new bundle is in place and
+/// a requested relaunch starts it.
+fn install_staged(app: &AppHandle) {
+    let Some(staged) = app.state::<Staged>().0.lock().unwrap().take() else { return };
+    let StagedUpdate { update, path, relaunch } = staged;
+    let version = update.version.clone();
+    wait_for_sidecar_exit(app);
+    // Not re-verified: `download` checked the signature before staging, and
+    // whoever could alter the app's cache folder could alter the app itself.
+    let result = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|bytes| {
+        update.restart_after_install(relaunch).install(bytes).map_err(|e| e.to_string())
+    });
+    let _ = std::fs::remove_file(&path);
+    match result {
+        Ok(()) if relaunch => app.restart(),
+        Ok(()) => {}
+        Err(error) => {
+            log::error!("update to {version} failed to install: {error}");
+            if let Some(dir) = update_dir(app) {
+                let failure = UpdateFailure { version, error };
+                if let Ok(json) = serde_json::to_vec(&failure) {
+                    let _ = std::fs::write(dir.join("failed.json"), json);
+                }
+            }
+            if relaunch {
+                app.restart(); // back into the version that is still installed
+            }
+        }
+    }
+}
+
 fn exit_now(app: &AppHandle) {
     app.state::<Quit>().allowed.store(true, Ordering::SeqCst);
     kill_sidecar(app);
+    install_staged(app);
     app.exit(0);
 }
 
@@ -121,20 +225,12 @@ fn start_backend(app: &AppHandle) {
     let gen = app.state::<Backend>().generation.fetch_add(1, Ordering::SeqCst) + 1;
     set_status(app, gen, BackendStatus::Starting);
 
-    // The frozen backend lives in the bundled `sidecar/` folder (staged into
-    // src-tauri/binaries/ by backend/build_sidecar.*).
-    let exe = if cfg!(windows) { "konduktor-sidecar.exe" } else { "konduktor-sidecar" };
-    let spawned = app
-        .path()
-        .resource_dir()
-        .map_err(|e| e.to_string())
-        .and_then(|dir| {
-            let program = dir.join("sidecar").join(exe);
-            app.shell()
-                .command(&program)
-                .spawn()
-                .map_err(|e| format!("{}: {e}", program.display()))
-        });
+    let spawned = sidecar_exe(app).and_then(|program| {
+        app.shell()
+            .command(&program)
+            .spawn()
+            .map_err(|e| format!("{}: {e}", program.display()))
+    });
     let (mut rx, child) = match spawned {
         Ok(pair) => pair,
         Err(e) => {
@@ -220,10 +316,15 @@ fn quit_ack(app: AppHandle) {
     app.state::<Quit>().acked.store(true, Ordering::SeqCst);
 }
 
-/// The user chose Cancel: forget the request.
+/// The user chose Cancel: forget the request. A staged update stays staged
+/// but no longer relaunches; the next ordinary quit installs it.
 #[tauri::command]
 fn quit_cancel(app: AppHandle) {
     app.state::<Quit>().acked.store(false, Ordering::SeqCst);
+    if let Some(staged) = app.state::<Staged>().0.lock().unwrap().as_mut() {
+        staged.relaunch = false;
+        let _ = app.emit("konduktor://update-deferred", ());
+    }
 }
 
 /// Quit for real (nothing unsaved, or Save / Discard has finished).
@@ -232,11 +333,130 @@ fn quit_now(app: AppHandle) {
     exit_now(&app);
 }
 
+/// Refuse up front what the macOS install could not do: replace a bundle on
+/// a read-only volume (run from the DMG), a translocated copy, or a folder this
+/// user cannot write. (The updater's own fallback for the last asks for an
+/// admin password from the main thread, which the quit path may be blocking.)
+#[cfg(target_os = "macos")]
+fn check_installable() -> Result<(), String> {
+    const MOVE_IT: &str = "Move Konduktor to your Applications folder, open it from there, then try again.";
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let bundle = tauri_plugin_updater::extract_path_from_executable(&exe).map_err(|e| e.to_string())?;
+    if bundle.to_string_lossy().contains("/AppTranslocation/") {
+        return Err(MOVE_IT.into());
+    }
+    let parent = bundle.parent().ok_or_else(|| MOVE_IT.to_string())?;
+    let probe = parent.join(format!(".konduktor-update-check-{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(_) => Err(MOVE_IT.into()),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_installable() -> Result<(), String> {
+    Ok(())
+}
+
+/// Download the update published with release `tag`, verify it and stage it
+/// for installation at exit. Returns the version staged.
+#[tauri::command]
+async fn update_download(
+    app: AppHandle,
+    tag: String,
+    on_progress: Channel<UpdateProgress>,
+) -> Result<String, String> {
+    check_installable()?;
+    let manifest = format!("https://github.com/{REPO}/releases/download/{tag}/latest.json");
+    let url = manifest.parse().map_err(|e| format!("{manifest}: {e}"))?;
+    let update = app
+        .updater_builder()
+        .endpoints(vec![url])
+        .and_then(|b| b.build())
+        .map_err(|e| e.to_string())?
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("{tag} is not newer than this version."))?;
+
+    let mut downloaded = 0u64;
+    let mut last_sent = Instant::now();
+    let bytes = update
+        .download(
+            |chunk, total| {
+                downloaded += chunk as u64;
+                // Chunks arrive every few KB: a few updates a second is plenty.
+                if last_sent.elapsed() >= Duration::from_millis(100) {
+                    last_sent = Instant::now();
+                    let _ = on_progress.send(UpdateProgress { downloaded, total });
+                }
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let dir = update_dir(&app).ok_or("No cache folder to download into.")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{}.pkg", update.version));
+    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    drop(bytes);
+
+    let version = update.version.clone();
+    let previous = app
+        .state::<Staged>()
+        .0
+        .lock()
+        .unwrap()
+        .replace(StagedUpdate { update, path: path.clone(), relaunch: false });
+    if let Some(old) = previous.filter(|old| old.path != path) {
+        let _ = std::fs::remove_file(old.path);
+    }
+    Ok(version)
+}
+
+/// Quit, install the staged update and relaunch. Goes through the ordinary
+/// quit request, so unsaved changes are asked about first.
+#[tauri::command]
+fn update_restart(app: AppHandle) -> Result<(), String> {
+    match app.state::<Staged>().0.lock().unwrap().as_mut() {
+        Some(staged) => staged.relaunch = true,
+        None => return Err("No update has been downloaded.".into()),
+    }
+    request_quit(&app);
+    Ok(())
+}
+
+/// The last update's install failure, if any — reported once.
+#[tauri::command]
+fn update_take_failure(app: AppHandle) -> Option<UpdateFailure> {
+    let path = update_dir(&app)?.join("failed.json");
+    let bytes = std::fs::read(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Packages left by a run that never exited normally (crash, force quit).
+fn clear_stale_updates(app: &AppHandle) {
+    let Some(dir) = update_dir(app) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        if entry.path().extension().is_some_and(|ext| ext == "pkg") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Sidecar(Mutex::new(None)))
+        .manage(Staged(Mutex::new(None)))
         .manage(Backend { status: Mutex::new(BackendStatus::Starting), generation: AtomicU64::new(0) })
         .manage(Quit { allowed: AtomicBool::new(false), acked: AtomicBool::new(false) })
         .invoke_handler(tauri::generate_handler![
@@ -244,7 +464,10 @@ pub fn run() {
             backend_restart,
             quit_ack,
             quit_cancel,
-            quit_now
+            quit_now,
+            update_download,
+            update_restart,
+            update_take_failure
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -264,6 +487,7 @@ pub fn run() {
                 )?;
             }
 
+            clear_stale_updates(app.handle());
             start_backend(app.handle());
 
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))

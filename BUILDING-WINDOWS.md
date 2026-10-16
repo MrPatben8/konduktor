@@ -88,8 +88,13 @@ cd ..
 
 # 2) Build the app (its beforeBuildCommand runs the Vite build)
 cd frontend
-npx tauri build
+npx tauri build --config src-tauri/tauri.unsigned.conf.json
 ```
+
+The `--config` override skips the in-app updater packages, which are signed
+with the release key that only CI holds (`TAURI_SIGNING_PRIVATE_KEY`). With
+that key set in the environment, plain `npx tauri build` makes them too.
+`build.ps1` picks the right one by itself.
 
 `build_sidecar.ps1` uses `backend\.venv\Scripts\python.exe` when it exists (else
 whatever `python` resolves to), so the venv doesn't need to be activated. It
@@ -117,8 +122,8 @@ folder (`tauri.windows.conf.json` → `bundle.resources`), where `lib.rs` spawns
 ## Rebuilding after changes
 
 If you changed **backend** Python, run `.\build.ps1` (or `build_sidecar.ps1`,
-then `npx tauri build`). Frontend-only changes just need
-`.\build.ps1 -SkipSidecar` (or `npx tauri build`).
+then `npx tauri build` as above). Frontend-only changes just need
+`.\build.ps1 -SkipSidecar`.
 
 ## Not part of this build: the stem engine
 

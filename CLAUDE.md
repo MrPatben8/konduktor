@@ -1035,10 +1035,28 @@ Two independent apps that talk over HTTP:
     stem engine publishes `engine-v*` releases in the same repo — and,
     if its tag's **semver part** is newer than `__APP_VERSION__` — build-number
     `-b<N>` bumps don't count — shows an update dialog with the release's
-    "What's Changed" bullets; Download opens the release page in the system
-    browser via `@tauri-apps/plugin-shell` `open` — falls back to `window.open`
-    outside Tauri; "Skip this version" persists `skippedUpdateVersion` to
-    userprefs via `/api/prefs`; all failures are silent).
+    "What's Changed" bullets; "Skip this version" persists
+    `skippedUpdateVersion` to userprefs via `/api/prefs`; check failures are
+    silent. **In the desktop app, Update installs it** (decided 2026-10-16,
+    [the discussion](.claude/discussions/discuss-self-update-2026-10-16.md)):
+    `update_download` (lib.rs, tauri-plugin-updater) reads THAT release's
+    `latest.json`, downloads with progress in the dialog, verifies the
+    signature and STAGES the package in app-cache; `update_restart` then
+    quits through the ordinary quit request, so QuitGuard asks about unsaved
+    edits. The package is installed in `exit_now`, only AFTER the sidecar is
+    killed — on macOS the running backend lazily loads native libraries from
+    inside the bundle being replaced, on Windows its `.exe` is locked (the
+    shell waits until it can open it for writing) — then the app relaunches.
+    Cancel in QuitGuard keeps it staged (`konduktor://update-deferred`) and the
+    next ordinary quit installs it without relaunching. On macOS a bundle run
+    from the DMG, translocated, or in a folder the user cannot write is
+    refused BEFORE downloading (the updater's own admin-password fallback
+    runs on the main thread, which the quit path may hold). Any failure shows
+    its reason + "Open release page" (the old Download, still the button in a
+    plain browser); an install that failed at exit is written to
+    `failed.json` and reported by the next launch (`update_take_failure`).
+    The updater's crate is built WITHOUT its `zip` feature — only for v1-style
+    zipped Windows installers, and every zip 4.x is yanked.
   - **Stem playback** (decided 2026-09-30): a stem FILE always loads its four
     stems (`trackStemsFor` / `trackStemUrl` in `api.ts`) and the deck plays
     their SUM, as Traktor's stem deck does — the mix stream is never decoded,
@@ -1771,7 +1789,16 @@ that number and nothing else — everything derives from it:
 - **CI release** — `.github/workflows/build.yml` reads it with
   `jq .version frontend/package.json` and tags each push
   `v<version>-b<run_number>` (release name `Konduktor v<version>-b<run_number>`).
-  The `-b<N>` suffix keeps every push's tag/release unique.
+  The `-b<N>` suffix keeps every push's tag/release unique. Each release also
+  carries the in-app updater's `latest.json` (`.github/scripts/updater_manifest.py`:
+  `version` = package.json's, `darwin-aarch64` → `Konduktor.app.tar.gz`,
+  `windows-x86_64` → the NSIS `-setup.exe`, each with its signature inlined).
+  `bundle.createUpdaterArtifacts` signs those with the updater key: the
+  repo secrets `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD`, public half in
+  `tauri.conf.json` `plugins.updater.pubkey`. **Losing the private key means
+  installed copies can never update themselves again** — it is backed up
+  outside the repo. A local build without it passes
+  `--config src-tauri/tauri.unsigned.conf.json` (`build.ps1` does so itself).
 - **NOT a source**: `src-tauri/Cargo.toml` `version` is inert Rust crate metadata
   (Tauri uses the config's `../package.json`); don't treat it as the app version.
 
