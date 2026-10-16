@@ -1305,5 +1305,41 @@ with tempfile.TemporaryDirectory() as d:
     check("both cues stay in the file",
           sum(1 for c in entry.cue_v2 if c.grid is None and c.hotcue == -1) == 2)
 
+print("== Q. '>' and quotes in attribute values round-trip (Traktor leaves '>' raw) ==")
+# The real collection's queries hold no '>', so Traktor-written values with one
+# are injected into a copy: Traktor 4.5's default "Recently added" smartlist,
+# a '<' query (Traktor escapes it), and '>' / name='x' in a comment and a file
+# name. All four once came back self-closed ("<X .../>"), which Traktor never
+# writes, and a quoting step rewrote name='x' into a bare '"' (malformed XML).
+import re as _re  # noqa: E402
+
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    data = REAL.read_bytes()
+    queries = list(_re.finditer(rb'QUERY="[^"]*"', data))
+    swaps = [
+        (queries[0].group(0), b'QUERY="$IMPORTDATE >= MONTHS_AGO(1)"'),
+        (queries[1].group(0), b'QUERY="$RATING &lt; 3"'),
+        (_re.search(rb' COMMENT="[^"]*"', data).group(0), b" COMMENT=\"Classic > Move key='8A'\""),
+        (_re.search(rb' FILE="[^"]*"', data).group(0), b' FILE="Break Down > Build Up.wav"'),
+    ]
+    for old, new in swaps:
+        data = data.replace(old, new, 1)
+    work.write_bytes(data)
+    store = TraktorStore(work)
+    out = store._render()
+    check("no-op render is byte-identical", out == data, f"{diff_count(data, out)} lines differ")
+    check("nothing is self-closed ('/>' — Traktor never writes it)", b"/>" not in out)
+
+    entry = store._nml.collection.entry[0]
+    tid = f"{entry.location.volume}{entry.location.dir}{entry.location.file}"
+    store.set_track_metadata(tid, {"comment": "x > y key='8A' \"z\""})
+    store.save()
+    saved = work.read_bytes()
+    check("an edited comment with '>' keeps </INFO>",
+          b"COMMENT=\"x > y key='8A' &quot;z&quot;\"" in saved and b"/>" not in saved)
+    reread = TraktorStore(work)._nml.collection.entry[0].info.comment
+    check("…and reads back unchanged", reread == "x > y key='8A' \"z\"", repr(reread))
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

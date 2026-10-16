@@ -1220,6 +1220,12 @@ serialization path.** It enforces:
   cue lines, in Traktor's shape (`HOTCUE="-1"`, `n.n.`), add + delete
   round-trips byte for byte, new cues (hot ones too) are INSERTED by START,
   and a pad + memory cue at one START project once, as the pad.
+  And **`>` / quotes in attribute values** (Q): Traktor leaves `>` raw, and
+  an empty element holding one (4.5's default "Recently added" query
+  `$IMPORTDATE >= MONTHS_AGO(1)`, a comment, a file name) once came back
+  self-closed (`/>`, which Traktor never writes); a value containing
+  `name='x'` once came back with a bare `"` (malformed). Both were in the
+  fork's `format_traktor_layout`, fixed there (2026-10-16).
   The guard that catches serialization regressions like the lxml reformatting bug.
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched;

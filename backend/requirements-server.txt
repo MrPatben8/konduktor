@@ -14,5 +14,5 @@ Pillow>=11  # a Rekordbox add writes the cover's artwork files
 dulwich>=0.22  # version history, beside the library
 platformdirs>=4.0
 # From GitHub, NOT PyPI — see requirements.txt for why.
-traktor-nml-utils @ git+https://github.com/MrPatben8/traktor-nml-utils.git@39a9c15f29d6b0ea2ce61cd7d548501eea38319d
+traktor-nml-utils @ git+https://github.com/MrPatben8/traktor-nml-utils.git@d7f472aaf5be53e53921de351e948233e9c1d1e8
 pyrekordbox @ git+https://github.com/dylanljones/pyrekordbox.git@43137cb91f8297c768d2a8bdce5b27b2225f0a2d
