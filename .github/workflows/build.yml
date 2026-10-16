@@ -201,11 +201,24 @@ jobs:
           pattern: konduktor-*
           path: artifacts   # → artifacts/konduktor-macOS/…, artifacts/konduktor-Windows/…
 
+      # The release's files under user-facing names, the in-app updater's
+      # latest.json (the app reads releases/download/<tag>/latest.json) and the
+      # notes' Download section. The .sig files are folded into latest.json and
+      # not uploaded themselves.
+      - name: Release assets
+        run: |
+          python3 .github/scripts/release_assets.py artifacts release \
+            --version "${{ steps.version.outputs.version }}" \
+            --tag "v${{ steps.version.outputs.version }}-b${{ github.run_number }}" \
+            --repo "${{ github.repository }}"
+
       # Release notes from the "Patch notes" section of the PR that merged this
       # commit into main (dev → main merges carry many features in one PR, so
       # its title alone says little). Written under "What's Changed", the
       # heading the app's update dialog reads. No PR (a manual run, a direct
-      # push) or no such section → GitHub's generated notes, as before.
+      # push) or no such section → GitHub's generated notes, as before. The
+      # Download section always comes first (the action puts the body above
+      # generated notes); the dialog reads only "What's Changed".
       - name: Patch notes from the merged PR
         id: notes
         env:
@@ -230,23 +243,14 @@ jobs:
                   section.append(line)
           notes = "\n".join(section).strip()
           found = bool(notes)
-          if found:
-              with open("release-notes.md", "w", encoding="utf-8") as f:
-                  f.write("## What's Changed\n\n" + notes + "\n")
+          with open("release-notes.md", "w", encoding="utf-8") as f:
+              f.write(open("release/download.md", encoding="utf-8").read())
+              if found:
+                  f.write("\n## What's Changed\n\n" + notes + "\n")
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"found={'true' if found else 'false'}\n")
           print("Using the PR's patch notes." if found else "No patch notes section; using generated notes.")
           EOF
-
-      # The in-app updater's manifest for THIS release (the app's update
-      # dialog finds the release, then reads releases/download/<tag>/latest.json).
-      # The .sig files are folded into it and not uploaded themselves.
-      - name: Updater manifest
-        run: |
-          python3 .github/scripts/updater_manifest.py artifacts \
-            --version "${{ steps.version.outputs.version }}" \
-            --tag "v${{ steps.version.outputs.version }}-b${{ github.run_number }}" \
-            --repo "${{ github.repository }}"
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -254,11 +258,11 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}-b${{ github.run_number }}
           name: Konduktor v${{ steps.version.outputs.version }}-b${{ github.run_number }}
           target_commitish: ${{ github.sha }}
-          body_path: ${{ steps.notes.outputs.found == 'true' && 'release-notes.md' || '' }}
+          body_path: release-notes.md
           generate_release_notes: ${{ steps.notes.outputs.found != 'true' }}
           fail_on_unmatched_files: true
           files: |
-            artifacts/**/*.dmg
-            artifacts/**/*-setup.exe
-            artifacts/**/*.app.tar.gz
-            artifacts/latest.json
+            release/*.dmg
+            release/*.exe
+            release/*.tar.gz
+            release/latest.json

@@ -1790,9 +1790,15 @@ that number and nothing else — everything derives from it:
   `jq .version frontend/package.json` and tags each push
   `v<version>-b<run_number>` (release name `Konduktor v<version>-b<run_number>`).
   The `-b<N>` suffix keeps every push's tag/release unique. Each release also
-  carries the in-app updater's `latest.json` (`.github/scripts/updater_manifest.py`:
-  `version` = package.json's, `darwin-aarch64` → `Konduktor.app.tar.gz`,
-  `windows-x86_64` → the NSIS `-setup.exe`, each with its signature inlined).
+  carries its files under user-facing names, laid out by
+  `.github/scripts/release_assets.py`: `Konduktor-<v>-macOS.dmg`,
+  `Konduktor-<v>-Windows-Setup.exe` (also the Windows update package),
+  `Konduktor-<v>-app-updater.tar.gz` (the macOS update package) and the
+  in-app updater's `latest.json` (`version` = package.json's, each platform's
+  URL + signature inlined; the name is fixed — the app asks for it by name).
+  The notes open with a "Download" section linking the two installers, above
+  the PR's patch notes or GitHub's generated ones; the update dialog reads
+  only "What's Changed" and skips "Download" when falling back.
   `bundle.createUpdaterArtifacts` signs those with the updater key: the
   repo secrets `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD`, public half in
   `tauri.conf.json` `plugins.updater.pubkey`. **Losing the private key means
