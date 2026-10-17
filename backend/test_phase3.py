@@ -191,6 +191,16 @@ check("'add' adds it again (Traktor can hold a track twice)", r["added"] == 1 an
 r = client.post(f"/api/playlists/{target}/add",
                 json={"track_ids": track_ids[4:5], "duplicates": "ask"}).json()
 check("'ask' with nothing duplicated simply adds", r["status"] == "added" and r["added"] == 1)
+more = [t["id"] for t in client.get("/api/tracks", params={"limit": 50}).json()["items"]
+        if t["id"] not in track_ids][:2]
+before = [t["id"] for t in client.get(f"/api/playlists/{target}/tracks").json()]
+r = client.post(f"/api/playlists/{target}/add", json={"track_ids": more[:1], "index": 1}).json()
+after = [t["id"] for t in client.get(f"/api/playlists/{target}/tracks").json()]
+check("an index inserts there (a drop between rows)",
+      r["added"] == 1 and after == before[:1] + more[:1] + before[1:])
+client.post(f"/api/playlists/{target}/add", json={"track_ids": more[1:2], "index": 999})
+after = [t["id"] for t in client.get(f"/api/playlists/{target}/tracks").json()]
+check("an index past the end appends", after[-1] == more[1])
 check("capabilities say Traktor holds duplicates",
       client.get("/api/capabilities").json()["playlists"]["duplicates"] is True)
 

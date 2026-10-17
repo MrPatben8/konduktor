@@ -30,7 +30,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { Track, TrackOrigin } from '../api'
-import { beginDrag, useDragPayload, useDropTarget } from '../lib/drag'
+import { beginDrag, isForeign, useDragPayload, useDropTarget, type TracksOrFiles } from '../lib/drag'
 import { hasMod } from '../lib/modKey'
 import { TRACK_COLUMNS } from '../lib/trackColumns'
 
@@ -76,6 +76,11 @@ interface Props {
   /** Where dragged rows come from: whose ids they are, and the editable
    *  playlist they leave on a Cmd/Ctrl-drag (move). Defaults to the collection. */
   dragFrom?: { origin: TrackOrigin; playlistId?: string }
+  /** Things from outside the library dropped on the table — files from the
+   *  OS, a Files folder's or a device's rows — headed for this view's
+   *  playlist. `index` is the insertion line while `reorder` is enabled (the
+   *  rows ARE the entry list then), else null: appended. */
+  foreignDrop?: { label: string; onDrop: (p: TracksOrFiles, index: number | null) => void }
   /** Delete/Backspace removes the selected tracks from this view. */
   onRemove?: (ids: string[]) => void
   /** `viewIds` is every row's id in the order shown (sorted, filtered). */
@@ -285,6 +290,7 @@ export function TrackTable({
   positions,
   marked,
   reorder,
+  foreignDrop,
   dragFrom,
   onRemove,
   onRowContextMenu,
@@ -447,14 +453,25 @@ export function TrackTable({
     }
   }, [tableKey])
 
-  const [dropRef, dropHint] = useDropTarget<{ drop: number }>({
+  // The table's own rows (reorder) and, where `foreignDrop` is given,
+  // things from outside the library (see the prop).
+  const foreignDropRef = useRef(foreignDrop)
+  foreignDropRef.current = foreignDrop
+  const [dropRef, dropHint] = useDropTarget<{ drop: number | null }>({
     hint: (p, at) => {
-      if (p.kind !== 'tracks' || p.source !== tableKey || !reorderRef.current?.enabled) return null
+      const own = p.kind === 'tracks' && p.source === tableKey
+      if (!own && !(foreignDropRef.current && isForeign(p))) return null
+      if (!reorderRef.current?.enabled) return own ? null : { drop: null }
       const top = bodyRef.current?.getBoundingClientRect().top ?? 0
       return { drop: Math.max(0, Math.min(rowsRef.current.length, Math.round((at.y - top) / ROW_HEIGHT))) }
     },
+    label: (p) => (p.kind === 'tracks' && p.source === tableKey ? null : (foreignDropRef.current?.label ?? null)),
     onDrop: (p, { drop }) => {
-      if (p.kind !== 'tracks') return
+      if (p.kind !== 'tracks' || p.source !== tableKey) {
+        if (isForeign(p)) foreignDropRef.current?.onDrop(p, drop)
+        return
+      }
+      if (drop === null) return
       const ids = new Set(p.ids)
       const rs = rowsRef.current.map((r) => r.original)
       const kept = rs.filter((t) => !ids.has(t.id))
@@ -547,7 +564,9 @@ export function TrackTable({
     <div
       ref={scrollerRef}
       data-drag-scroll={bodyOffset.header}
-      className="h-full overflow-auto px-1.5"
+      className={`h-full overflow-auto px-1.5 ${
+        dropHint && dropHint.drop === null ? 'rounded-lg outline-2 -outline-offset-2 outline-accent' : ''
+      }`}
       onClick={(e) => {
         // A click in the empty space below the rows clears the selection.
         const t = e.target as HTMLElement
@@ -621,7 +640,7 @@ export function TrackTable({
               </div>
             )
           })}
-          {dropHint && (
+          {dropHint && dropHint.drop !== null && (
             <div
               className="pointer-events-none absolute left-0 z-10 h-0.5 w-full bg-accent"
               style={{ top: dropHint.drop * ROW_HEIGHT - 1 }}

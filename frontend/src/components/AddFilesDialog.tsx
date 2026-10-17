@@ -32,7 +32,10 @@ import { FolderPicker } from './FolderPicker'
  * A playlist or export target still needs the files in the collection first —
  * both hold collection track ids — so the dialog says so rather than doing it
  * silently. Files the collection already holds are not added again, but still
- * go into the target.
+ * go into the target. A PLAYLIST target can be unticked (`usePlaylistToggle`,
+ * on each time, never remembered — decided 2026-10-17): a drop on a playlist
+ * is usually meant for it, but a drop on its open table may only be "into
+ * the collection" aimed loosely.
  */
 
 const POLL_MS = 300
@@ -47,6 +50,25 @@ export interface AddTarget {
   kind: 'playlist' | 'export'
   id: string
   name: string
+  /** A playlist: insert at this position among its entries (a drop between
+   *  its rows); absent appends. */
+  index?: number | null
+}
+
+/** The add dialogs' "Also add to <playlist>" tick: on, unless unticked this
+ *  time. Answers the target actually in force (null = the collection only).
+ *  Exports have no tick — "Add to export" is the whole of that gesture. */
+export function usePlaylistToggle(requested: AddTarget | null | undefined) {
+  const [on, setOn] = useState(true)
+  const offered = requested?.kind === 'playlist'
+  const target = offered && !on ? null : (requested ?? null)
+  const toggle = offered ? (
+    <label className="flex cursor-pointer items-center gap-2 text-xs text-muted">
+      <input type="checkbox" checked={on} onChange={(e) => setOn(e.target.checked)} className="accent-accent" />
+      Also add to “{requested.name}”
+    </label>
+  ) : null
+  return { target, toggle }
 }
 
 /** Where tracks headed for the collection come from: another library's or a
@@ -74,8 +96,9 @@ function removableWarning(p: FolderAddPreview, newCount: number): string {
   return `${what} on ${where}. They will go missing from your collection whenever ${unplugged} unplugged.`
 }
 
-export function AddFilesDialog({ trackIds, target, note, onClose, onDone, onError }: Props) {
+export function AddFilesDialog({ trackIds, target: requested, note, onClose, onDone, onError }: Props) {
   const qc = useQueryClient()
+  const { target, toggle } = usePlaylistToggle(requested)
   // The LIBRARY's capabilities (this dialog is mounted outside the browsed
   // view's swapped context). A library that places its own audio — a stick —
   // decides copy vs in place itself, so there is nothing to ask.
@@ -115,6 +138,7 @@ export function AddFilesDialog({ trackIds, target, note, onClose, onDone, onErro
     mode: places ? 'copy' : (mode ?? 'reference'),
     destination: !places && mode === 'copy' ? folder : null,
     playlist_id: target?.kind === 'playlist' ? target.id : null,
+    playlist_index: target?.kind === 'playlist' ? (target.index ?? null) : null,
     export_id: target?.kind === 'export' ? target.id : null,
   }
 
@@ -255,6 +279,7 @@ export function AddFilesDialog({ trackIds, target, note, onClose, onDone, onErro
           <div className="space-y-4 px-5 py-4 text-sm">
             {!job && (
               <>
+                {toggle}
                 {target && (
                   <div className="text-xs text-muted">
                     {target.kind === 'playlist' ? 'Playlists' : 'Exports'} hold tracks from your

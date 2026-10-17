@@ -13,6 +13,9 @@ const plural = (n: number) => `${n} track${n === 1 ? '' : 's'}`
  * elsewhere they are skipped and the message says so. Nothing is asked when
  * there are none.
  *
+ * `index` inserts them at that position (a drop between a playlist's rows);
+ * without it they are appended.
+ *
  * `moveFrom` is a Cmd/Ctrl-drag out of another (editable) playlist: once the
  * tracks are in the target they leave the source. Cancelling the duplicates
  * question cancels the move too.
@@ -25,9 +28,10 @@ export async function addTracksToPlaylist(opts: {
   ids: string[]
   duplicatesAllowed: boolean
   moveFrom?: string
+  index?: number | null
 }): Promise<string | null> {
-  const { qc, playlist, ids, duplicatesAllowed, moveFrom } = opts
-  let res = await api.addEntries(playlist.id, ids, duplicatesAllowed ? 'ask' : 'skip')
+  const { qc, playlist, ids, duplicatesAllowed, moveFrom, index = null } = opts
+  let res = await api.addEntries(playlist.id, ids, duplicatesAllowed ? 'ask' : 'skip', index)
   if (res.status === 'duplicates') {
     const fresh = ids.length - res.duplicates
     const all = fresh === 0
@@ -47,7 +51,7 @@ export async function addTracksToPlaylist(opts: {
       tone: 'primary',
     })
     if (choice === null) return null
-    res = await api.addEntries(playlist.id, ids, choice === 'alt' || all ? 'add' : 'skip')
+    res = await api.addEntries(playlist.id, ids, choice === 'alt' || all ? 'add' : 'skip', index)
   }
 
   let moved = false

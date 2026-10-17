@@ -6,7 +6,7 @@ import { useCaps } from '../lib/capabilities'
 import { placedAudioSummary } from '../lib/platformCopy'
 import type { AddTarget } from './AddFilesDialog'
 import { FolderPicker } from './FolderPicker'
-import { useServerImportFolder } from './AddFilesDialog'
+import { useServerImportFolder, usePlaylistToggle } from './AddFilesDialog'
 
 /**
  * Import a browsed device into the loaded collection.
@@ -41,8 +41,9 @@ interface Props {
   onError: (msg: string) => void
 }
 
-export function ImportDialog({ playlistId, trackIds, target, deviceLabel, onClose, onDone, onError }: Props) {
+export function ImportDialog({ playlistId, trackIds, target: requested, deviceLabel, onClose, onDone, onError }: Props) {
   const qc = useQueryClient()
+  const { target, toggle } = usePlaylistToggle(requested)
   // The BASE folder, and whether to put this device's audio in its own
   // subfolder of it. Kept apart rather than as one path because they are two
   // different decisions: where your music lives, and how one import is filed
@@ -91,6 +92,7 @@ export function ImportDialog({ playlistId, trackIds, target, deviceLabel, onClos
     track_ids: trackIds ?? [],
     folder_name: deviceLabel,
     into_playlist: target?.kind === 'playlist' ? target.id : null,
+    into_playlist_index: target?.kind === 'playlist' ? (target.index ?? null) : null,
     export_id: target?.kind === 'export' ? target.id : null,
   }
 
@@ -203,6 +205,7 @@ export function ImportDialog({ playlistId, trackIds, target, deviceLabel, onClos
         <div className="space-y-4 px-5 py-4 text-sm">
           {!job && (
             <>
+              {toggle}
               {places && p && (
                 <div className="rounded well px-3 py-2 text-xs text-muted">
                   {placedAudioSummary(caps.save, p.copied ?? 0, p.in_place ?? 0)}

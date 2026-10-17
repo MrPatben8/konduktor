@@ -172,9 +172,16 @@ with TestClient(main.app) as c:
     got = ROOT / "folder-1.m4a"
     got.write_bytes(r.content)
     check("…and serves them", r.status_code == 200 and np.array_equal(decode(got), decode(stem, 2)))
-    kinds = {t["id"]: t["media_kind"] for t in listing.json()["tracks"]}
-    check("the listing marks the stem file as a stem track and the MP3 as audio",
-          kinds.get(str(stem)) == "stem" and kinds.get(str(plain)) == "audio", str(kinds))
+    # All three files are HELD, and a held file's row IS the collection track
+    # (decided 2026-10-10): its id and media_kind are the collection's, so the
+    # MP3 whose entry carries <STEMS> lists as a stem track. What the FILE says
+    # is checked on loose files below.
+    body = listing.json()
+    kinds = {t["id"]: t["media_kind"] for t in body["tracks"]}
+    check("held files list as their collection tracks, mapped back to the files",
+          body["files"].get(stem_id) == str(stem) and body["files"].get(tagged_id) == str(tagged), str(body["files"]))
+    check("…with the collection's media kind",
+          kinds.get(tagged_id) == "stem" and kinds.get(plain_id) == "audio", str(kinds))
 
     print("== adding a stem file to the collection ==")
     extra_dir = ROOT / "More"
@@ -182,7 +189,11 @@ with TestClient(main.app) as c:
     extra = extra_dir / "Other.stem.m4a"
     shutil.copy2(stem, extra)
     extra_plain = make_mp3(extra_dir / "Other.mp3", seed=9)
-    assert c.get("/api/folder/tracks", params={"path": str(extra_dir)}).status_code == 200
+    loose = c.get("/api/folder/tracks", params={"path": str(extra_dir)})
+    assert loose.status_code == 200
+    kinds = {t["id"]: t["media_kind"] for t in loose.json()["tracks"]}
+    check("a LOOSE stem file lists as a stem track (its box), the MP3 beside it as audio",
+          kinds.get(str(extra)) == "stem" and kinds.get(str(extra_plain)) == "audio", str(kinds))
     pl_id = c.post("/api/playlists", json={"name": "Stem Adds"}).json()["id"]
     job = c.post("/api/folder/add", json={"track_ids": [str(extra), str(extra_plain)],
                                           "mode": "reference", "playlist_id": pl_id}).json()

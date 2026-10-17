@@ -467,6 +467,8 @@ export interface ImportRequest {
   /** Every imported track (and any already held) also goes into this
    *  collection playlist / export — a drop of device tracks on one. */
   into_playlist?: string | null
+  /** Where in it (a drop between rows); null appends. */
+  into_playlist_index?: number | null
   export_id?: string | null
 }
 
@@ -533,6 +535,8 @@ export interface FolderAddRequest {
   /** Required for `copy`. */
   destination?: string | null
   playlist_id?: string | null
+  /** Where in it (a drop between rows); null appends. */
+  playlist_index?: number | null
   export_id?: string | null
 }
 
@@ -1058,11 +1062,12 @@ export const api = {
   /** Append tracks. `duplicates` decides tracks already there: skip them,
    *  add them again (where `playlists.duplicates`), or `ask` — nothing changes
    *  and the answer's `status: 'duplicates'` says how many, to ask and resend. */
-  addEntries: (nodeId: string, trackIds: string[], duplicates: 'skip' | 'add' | 'ask' = 'skip') =>
+  /** `index`: insert at this position among the current entries; null appends. */
+  addEntries: (nodeId: string, trackIds: string[], duplicates: 'skip' | 'add' | 'ask' = 'skip', index: number | null = null) =>
     send<{ status: 'added' | 'duplicates'; added: number; duplicates: number; count: number }>(
       'POST',
       `/api/playlists/${encodeURIComponent(nodeId)}/add`,
-      { track_ids: trackIds, duplicates },
+      { track_ids: trackIds, duplicates, index },
     ),
   /** Move a tree node to `index` among `parentId`'s children (null = top
    *  level), counted without it. Answers its id AFTER the move. */
