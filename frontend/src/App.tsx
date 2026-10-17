@@ -6,7 +6,7 @@ import { CapabilitiesContext, slotLabeller } from './lib/capabilities'
 import { readOnlyNotice, removalNote, writeHint } from './lib/platformCopy'
 import { invalidateTrackLists } from './lib/trackQueries'
 import { addTracksToPlaylist } from './lib/addTracks'
-import { useDragPayload, useDropTarget } from './lib/drag'
+import { isForeign, useDragPayload, useDropTarget, type TracksOrFiles } from './lib/drag'
 import { useNativeFileDrop } from './lib/fileDrop'
 import { api, type AnalyzeOptions, type AnalyzeResult, type CueBatchResult, type AutoCueSlot, type PlaylistNode, type StemBatchResult, type Track, type TrackOrigin } from './api'
 import { confirmDiscardUnsaved } from './lib/unsaved'
@@ -383,10 +383,10 @@ export default function App() {
   // menu and the drag ask about duplicates alike.
   const duplicatesAllowed = !!capabilities.data?.playlists.duplicates
   const addToPlaylist = useCallback(
-    async (uuid: string, ids: string[]) => {
+    async (uuid: string, ids: string[], index: number | null = null) => {
       try {
         const name = addablePlaylists.find((p) => p.id === uuid)?.name ?? 'playlist'
-        const msg = await addTracksToPlaylist({ qc, playlist: { id: uuid, name }, ids, duplicatesAllowed })
+        const msg = await addTracksToPlaylist({ qc, playlist: { id: uuid, name }, ids, duplicatesAllowed, index })
         if (msg) notify('success', msg)
       } catch (e) {
         onError((e as Error).message)
@@ -439,7 +439,7 @@ export default function App() {
       // rows, nothing to add first — straight into the target, if there is one.
       const held = r.tracks.filter((t) => r.files[t.id]).map((t) => t.id)
       if (held.length === r.tracks.length) {
-        if (target?.kind === 'playlist') void addToPlaylist(target.id, held)
+        if (target?.kind === 'playlist') void addToPlaylist(target.id, held, target.index)
         else if (target) void addToExport(target.id, held)
         else
           notify(
@@ -473,7 +473,7 @@ export default function App() {
         const files = folderFilesRef.current
         // Rows that are all collection tracks already: nothing to add first.
         if (ids.every((id) => files[id])) {
-          if (target.kind === 'playlist') void addToPlaylist(target.id, ids)
+          if (target.kind === 'playlist') void addToPlaylist(target.id, ids, target.index)
           else void addToExport(target.id, ids)
         } else setAdding({ ids: ids.map((id) => files[id] ?? id), target })
       } else if (origin === 'device') setImportDrop({ ids, target })
@@ -666,6 +666,31 @@ export default function App() {
     return find(playlists.data ?? [])
   }, [source, playlists.data])
   const playlistEditable = canEdit && !!playlistNode?.can_reorder
+  // Files, a Files folder's rows or a device's dropped on the open playlist's
+  // table: added to the collection and — unless the dialog's tick is cleared —
+  // into this playlist at the insertion line (decided 2026-10-17). A library
+  // that cannot add tracks leaves the drop to App's root target, which says why.
+  const playlistDrop = useMemo(() => {
+    if (!playlistEditable || !canAddFiles || source.kind !== 'playlist' || !playlistNode?.can_add_tracks) return undefined
+    const { id, name } = playlistNode
+    return {
+      label: `Add to ${name}…`,
+      onDrop: (p: TracksOrFiles, index: number | null) => {
+        const target: AddTarget = { kind: 'playlist', id, name, index }
+        if (p.kind === 'files') void dropFiles(p.paths, target)
+        else if (p.origin === 'folder' || p.origin === 'device') addForeign(p.origin, p.ids, target)
+      },
+    }
+  }, [playlistEditable, canAddFiles, source, playlistNode, dropFiles, addForeign])
+  // The same where no table is drawn: an empty playlist, or filters hiding
+  // every row (never both at once, so they share the one target).
+  const [emptyDropRef, emptyDropOver] = useDropTarget<true>({
+    hint: (p) => (playlistDrop && isForeign(p) ? true : null),
+    label: () => playlistDrop?.label ?? null,
+    onDrop: (p) => {
+      if (isForeign(p)) playlistDrop?.onDrop(p, null)
+    },
+  })
   // A playlist's own 1-based positions, so the # column still means "where in
   // the playlist" once the view is sorted or filtered.
   const playlistPositions = useMemo(() => {
@@ -1763,14 +1788,24 @@ export default function App() {
               />
             )
           ) : tracks.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center gap-2 text-muted">
+            <div
+              ref={emptyDropRef}
+              className={`flex h-full flex-col items-center justify-center gap-2 text-muted ${
+                emptyDropOver ? 'rounded-lg outline-2 -outline-offset-2 outline-accent' : ''
+              }`}
+            >
               <div className="text-lg">This playlist is empty</div>
               <div className="text-sm text-faint">
                 Go to <span className="text-text">All Tracks</span>, select tracks, and add them here.
               </div>
             </div>
           ) : filtered.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center gap-1 text-muted">
+            <div
+              ref={emptyDropRef}
+              className={`flex h-full flex-col items-center justify-center gap-1 text-muted ${
+                emptyDropOver ? 'rounded-lg outline-2 -outline-offset-2 outline-accent' : ''
+              }`}
+            >
               <div className="text-lg">No tracks match</div>
               <div className="text-sm text-faint">Try clearing some filters.</div>
             </div>
@@ -1787,6 +1822,7 @@ export default function App() {
                   : undefined
               }
               onRemove={playlistEditable ? confirmRemoveFromPlaylist : undefined}
+              foreignDrop={playlistDrop}
               dragFrom={{
                 origin: 'collection',
                 playlistId: playlistEditable && source.kind === 'playlist' ? source.id : undefined,

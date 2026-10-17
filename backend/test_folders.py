@@ -181,7 +181,9 @@ with TestClient(main.app, raise_server_exceptions=False) as c:
     three_dir = music / "Deeper"
     c.get("/api/folder/tracks", params={"path": str(three_dir)})
     dest = Path(tempfile.mkdtemp()) / "Imported"
-    req = {"track_ids": [str(three_dir / "three.flac")], "mode": "copy", "destination": str(dest)}
+    # Dropped between the playlist's rows: inserted there, not appended.
+    req = {"track_ids": [str(three_dir / "three.flac")], "mode": "copy", "destination": str(dest),
+           "playlist_id": playlist, "playlist_index": 1}
     p = c.post("/api/folder/add/preview", json=req).json()
     check("the preview sizes the copy", p["total_bytes"] > 0, str(p))
     job = wait(c, c.post("/api/folder/add", json=req).json())
@@ -191,6 +193,8 @@ with TestClient(main.app, raise_server_exceptions=False) as c:
     check("the entry points at the copy", a.audio_path(copied_id) == dest / "three.flac",
           str(a.audio_path(copied_id)))
     check("the original is untouched", (three_dir / "three.flac").is_file())
+    check("it went into the playlist AT the index", a.playlist_entries(playlist) == [added, copied_id, new],
+          str(a.playlist_entries(playlist)))
     check("copy without a destination is refused",
           c.post("/api/folder/add", json={"track_ids": [str(one)], "mode": "copy"}).status_code == 400)
     check("an unscanned file cannot be added",

@@ -511,7 +511,10 @@ with tempfile.TemporaryDirectory() as d:
           _raises(lambda: adapter.set_cue_color(cue_track.id, 6, red), NotFound))
 
     print("== beatgrid edits ==")
-    grid_track = next((t for t in adapter.tracks if t.bpm), None)
+    # Long enough for a marker at 60 s: a grid is stored per beat, only up to
+    # the track's end, and the library's first BPM track became a 1 s Sampler
+    # WAV ("House 1"), where a marker at 60 s simply vanished.
+    grid_track = next((t for t in adapter.tracks if t.bpm and (t.length or 0) >= 90), None)
     if grid_track:
         check("a gridded track starts with at least one marker",
               len(adapter.track_cues(grid_track.id).grid_markers) >= 1)

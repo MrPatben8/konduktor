@@ -317,6 +317,7 @@ def run(
     folder_name: str | None = None,
     reference: bool = False,
     into_playlist: str | None = None,
+    into_playlist_index: int | None = None,
 ) -> dict:
     """Perform the import. Returns a summary dict for the job result.
 
@@ -332,7 +333,8 @@ def run(
     `reference` adds each file WHERE IT IS instead of copying it, so there is no
     destination and nothing to roll back. `into_playlist` appends every planned
     track — the new ones and those the destination already held — to one of the
-    destination's playlists before the save, so both land in one commit.
+    destination's playlists before the save, so both land in one commit;
+    `into_playlist_index` inserts them there instead (a drop between rows).
 
     A destination that PLACES ITS OWN AUDIO (`tracks.places_audio`: a OneLibrary
     stick) overrides both: `dest.place_audio` names each copy's target, or says
@@ -446,9 +448,9 @@ def run(
             handle.progress(message="Adding to the playlist…")
             current = dest.playlist_entries(into_playlist) or []
             have = set(current)
-            dest.set_playlist_entries(
-                into_playlist, current + [i for i in all_ids if i not in have]
-            )
+            fresh = [i for i in all_ids if i not in have]
+            at = len(current) if into_playlist_index is None else max(0, min(len(current), into_playlist_index))
+            dest.set_playlist_entries(into_playlist, current[:at] + fresh + current[at:])
 
         playlists_made = _rebuild_playlists(
             source, dest, plan, by_source, folder_name, handle

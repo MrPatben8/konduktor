@@ -49,7 +49,10 @@ Two independent apps that talk over HTTP:
       (nothing changes, the count comes back so the UI can ask and resend);
       `add` only where `capabilities.playlists.duplicates` — Traktor only, since
       OneLibrary's `playlist_content` is keyed on (playlist, content) and
-      rekordbox's tolerance of a repeat is unmeasured.
+      rekordbox's tolerance of a repeat is unmeasured. An optional `index`
+      inserts among the CURRENT entries (a drop between a table's rows);
+      folder add (`playlist_index`) and device import (`into_playlist_index`)
+      take the same.
     - `capabilities.py` — `Capabilities`: what the loaded library can persist, so
       the UI can gate controls instead of branching on the platform.
     - `query.py` (`TrackIndex`) — all query/filter/sort/facet/stats logic, over
@@ -955,7 +958,14 @@ Two independent apps that talk over HTTP:
     20 px edge after a 250 ms dwell — any less and the first/last visible row
     could not be dropped on. Targets: playlist + export rows (Sidebar,
     ExportsSection), the tree's zones, the table's reorder, and the DECK
-    (App), which loads the grabbed row paused, in its own origin.
+    (App), which loads the grabbed row paused, in its own origin. An open
+    editable playlist's TABLE (and its empty / no-match state) also takes
+    files and Files/device rows (`TrackTable.foreignDrop`, `drag.isForeign`;
+    decided 2026-10-17): the add dialog opens with the playlist as target at
+    the insertion line — appended while sorted/filtered — and both add
+    dialogs offer "Also add to <playlist>" (`usePlaylistToggle`), ticked
+    every time, never remembered; unticked = the collection only. Wherever
+    a playlist is the target, the sidebar's drop included.
     **Files from Finder / Explorer** (decided 2026-10-13) ride the same store
     as a `files` payload: `lib/fileDrop.ts` feeds Tauri's `onDragDropEvent`
     (real paths; a plain browser has none, so no file drop there) through

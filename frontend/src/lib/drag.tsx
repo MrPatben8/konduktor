@@ -52,6 +52,11 @@ export type DragPayload =
 /** What a playlist or export row takes: track rows, or files from the OS. */
 export type TracksOrFiles = Exclude<DragPayload, { kind: 'node' }>
 
+/** From outside the library: files from the OS, or a Files folder's or a
+ *  device's rows — what has to be ADDED before a playlist can hold it. */
+export const isForeign = (p: DragPayload): p is TracksOrFiles =>
+  p.kind === 'files' || (p.kind === 'tracks' && (p.origin === 'folder' || p.origin === 'device'))
+
 export interface DropPoint {
   x: number
   y: number

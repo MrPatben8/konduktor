@@ -27,6 +27,9 @@ class AddEntries(BaseModel):
     # where `playlists.duplicates`, else skipped), or "ask" — change nothing and
     # report how many, so the UI can ask and send again with skip/add.
     duplicates: Literal["skip", "add", "ask"] = "skip"
+    # Insert at this position among the playlist's CURRENT entries (a drop
+    # between rows); None appends. Clamped to the list.
+    index: int | None = None
 
 
 class MovePlaylist(BaseModel):
@@ -545,6 +548,7 @@ class ImportRequest(BaseModel):
     # drop): every imported track — and every one the collection already
     # holds — goes into it, as folder add does.
     into_playlist: str | None = None
+    into_playlist_index: int | None = None  # where in it (see AddEntries.index)
     export_id: str | None = None
 
 
@@ -613,6 +617,7 @@ class FolderAddRequest(BaseModel):
     mode: Literal["copy", "reference"]
     destination: str | None = None  # required for `copy`
     playlist_id: str | None = None
+    playlist_index: int | None = None  # where in it (see AddEntries.index)
     export_id: str | None = None
 
 

@@ -1309,7 +1309,8 @@ def add_entries(playlist_uuid: str, body: AddEntries) -> dict:
         return {"status": "duplicates", "id": playlist_uuid, "added": 0,
                 "duplicates": len(dupes), "count": len(current)}
     added = list(body.track_ids) if mode == "add" else [t for t in body.track_ids if t not in have]
-    n = a.set_playlist_entries(playlist_uuid, current + added) if added else len(current)
+    at = len(current) if body.index is None else max(0, min(len(current), body.index))
+    n = a.set_playlist_entries(playlist_uuid, current[:at] + added + current[at:]) if added else len(current)
     return {"status": "added", "id": playlist_uuid, "added": len(added),
             "duplicates": len(dupes), "count": n}
 
@@ -2572,6 +2573,7 @@ def folder_add(body: FolderAddRequest) -> JobStatus:
             source, dest, plan, handle,
             reference=in_place or body.mode == "reference",
             into_playlist=body.playlist_id,
+            into_playlist_index=body.playlist_index,
         )
         # Export sets are Konduktor's own data, not the library's, so they are
         # updated after the library has been saved rather than inside it.
@@ -2658,6 +2660,7 @@ def start_import(body: ImportRequest) -> JobStatus:
     def work(handle):
         result = importer.run(
             source, dest, plan, handle, folder_name=folder_name, into_playlist=body.into_playlist,
+            into_playlist_index=body.into_playlist_index,
         )
         # As folder add: an export set is Konduktor's data, updated afterwards.
         if body.export_id is not None and library is not None:
