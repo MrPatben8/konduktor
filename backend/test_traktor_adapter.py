@@ -332,5 +332,25 @@ if gridded is not None:
           all(c.type != "grid" for c in cues.cues) and
           gridded.cue_count == len(cues.cues))
 
+print("== track colour ==")
+# `INFO@COLOR` 1-7, measured in Traktor 4.5 (kit T1): Red ... Magenta, menu order.
+from konduktor.adapters.traktor import projection, track_palette  # noqa: E402
+
+_entry = next(e for e in adapter._store.iter_entries() if e.info is not None)
+_was = _entry.info.color
+_seen = []
+for _code in (None, 0, 1, 4, 7, 8):
+    _entry.info.color = _code
+    _t = projection.to_track(_entry)
+    _seen.append((_t.color, _t.color_hex))
+_entry.info.color = _was
+check("Traktor's track colours project by name + display RGB (none for absent/0/unknown)",
+      _seen == [(None, None), (None, None), ("red", "#FB413E"), ("green", "#52FA52"),
+                ("pink", "#FA51EB"), (None, None)], str(_seen))
+check("Traktor offers seven colours, Violet as purple and Magenta as pink",
+      [s.color for s in adapter.capabilities().tracks.colors]
+      == ["red", "orange", "yellow", "green", "blue", "purple", "pink"])
+check("aqua (rekordbox's) is stored as Traktor's Blue", track_palette.code_for("aqua") == 5)
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

@@ -1159,6 +1159,18 @@ Two independent apps that talk over HTTP:
   Hot / Mem toggle shows on `cues.memory_cues`, + Memory refuses past
   `cues.max_memory_cues`, and a memory cue's swatches are `cues.memory_palette`
   where `cues.memory_color` is `palette` (its own 8, not `palette`'s 16).
+  **Track colour** (decided 2026-10-17, [the discussion](.claude/discussions/discuss-track-colour-2026-10-17.md)):
+  shown as the Type column's icon in `Track.color_hex`; set from the context
+  menu's **Colour ▸** (swatches from `tracks.colors`, + No Color, the whole
+  selection, `PATCH /api/tracks/color`) — nowhere else. `Track.color` is a
+  neutral NAME (`TrackColor`: pink red orange yellow green aqua blue purple),
+  which is what crosses platforms; each adapter's `track_palette.py` maps its
+  codes to it BY NAME, not hue: Traktor `INFO@COLOR` 1-7 = Red Orange Yellow
+  Green Blue Violet(purple) Magenta(pink), measured (kit T1), no file tag;
+  rekordbox `ColorID` / OneLibrary `color_id` / pdb `color_id` 1-8 = Pink…
+  Purple, 0 none. Traktor's Blue LOOKS like rekordbox's Aqua but crosses as
+  Blue (the name is the DJ's category); aqua arriving in Traktor becomes Blue.
+  Unmeasured: what Traktor leaves after "None" (Konduktor removes the attribute).
   Carried but deliberately unused until a second adapter
   exists: `slot_labels: 'letter'`, `loops: 'separate_bank'`.
 - `lib/trackColumns.tsx` — single source of truth for the library table's
@@ -1244,6 +1256,10 @@ serialization path.** It enforces:
   self-closed (`/>`, which Traktor never writes); a value containing
   `name='x'` once came back with a bare `"` (malformed). Both were in the
   fork's `format_traktor_layout`, fixed there (2026-10-16).
+  And **track colour** (R): `set_track_color` changes one line, that
+  entry's `<INFO>`, with `COLOR` last as Traktor writes it; aqua is stored as
+  Blue; clearing restores the original bytes; and a Traktor 4.5 collection
+  holding coloured tracks (when on the machine) renders byte-identically.
   The guard that catches serialization regressions like the lxml reformatting bug.
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched;
@@ -1650,6 +1666,9 @@ frontend at `http://localhost:5173`.
   `add_entry` write BOTH, the text in the collection's majority notation
   (`TraktorStore.key_notation()`; an empty collection — an export — takes a
   Traktor-native source's own, so Traktor→Traktor keeps the user's).
+- **Track colour** = `INFO@COLOR`, 1-7 in the Color menu's order (Red …
+  Magenta), the LAST attribute of `<INFO>`; collection-only (`_COLLECTION_ONLY_FIELDS`).
+  See `track_palette.py`.
 - **Beatgrid = an ORDERED LIST of markers**, never a single BPM + anchor.
   Traktor stores each as a `CUE_V2 TYPE="4"` with its own `<GRID BPM>` child
   (flexible beatgrids, 3.4+); `<TEMPO BPM>` mirrors the **first marker by

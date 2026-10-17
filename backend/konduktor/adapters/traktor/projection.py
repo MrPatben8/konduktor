@@ -9,7 +9,7 @@ import re
 
 from ...core import musical_key
 from ...core.model import CuePoint, GridMarker, HotcueChip, Track, TrackCues
-from . import beatgrid, timebase
+from . import beatgrid, timebase, track_palette
 from .cue_types import NATIVE_TO_CUE_TYPE
 
 # Traktor displays keys in Open Key ("10m" / "8d") or Camelot ("8A" / "8B"),
@@ -172,6 +172,8 @@ def to_track(e) -> Track:
         grid_marker_count=len(markers),
         grid_locked=bool(e.lock),
         media_kind="stem" if getattr(e, "stems", None) is not None else "audio",
+        color=track_palette.color_for(info.color if info else None),
+        color_hex=track_palette.hex_for(info.color if info else None),
     )
 
 

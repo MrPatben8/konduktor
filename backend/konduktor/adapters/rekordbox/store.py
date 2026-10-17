@@ -47,7 +47,7 @@ from ...core.adapter import (
 from ...core.edit_journal import EditJournal
 from ...core.grid_edit import ReplaceGridCommands
 from ...core.pathmap import PathMapping, stored_form
-from . import memory_palette, timebase
+from . import memory_palette, timebase, track_palette
 from .cue_types import MAX_MEMORY_CUES, beat_loop_size, kind_for, role_and_slot
 
 log = logging.getLogger(__name__)
@@ -556,6 +556,24 @@ class RekordboxStore(ReplaceGridCommands):
         self._db.flush()
         self._db.session.expire(row)
 
+    # ---- writes: track colour ---------------------------------------------
+    def set_track_color(self, track_id: str, color: str | None) -> None:
+        """`djmdContent.ColorID`, a 1-based id into `djmdColor` (see
+        `track_palette`). Cleared = "0", as on the uncoloured rows of the local
+        library (a few hold NULL; both read as none)."""
+        new = track_palette.id_for(color)
+        if color is not None and not new:
+            raise InvalidCommand(f"Not a track colour: {color!r}")
+        row = self.content(track_id)
+        before = row.ColorID
+        if track_palette.id_for(track_palette.color_for(before)) == new:
+            return
+        row.ColorID = str(new)
+        self._journal.record("track", "set", track_id, "color", before, row.ColorID)
+        # A foreign key into djmdColor: flush + expire, as for the others.
+        self._db.flush()
+        self._db.session.expire(row)
+
     # ---- writes: playlists ------------------------------------------------
     def _playlist(self, node_id: str):
         t = self._tables
@@ -761,6 +779,7 @@ class RekordboxStore(ReplaceGridCommands):
         # Rekordbox's ("10m" is "Cm" here), and a row it already has is reused.
         content.KeyID = self._key_id(track.key_wheel, track.key_mode)
         content.ContentLink = new_content.CONTENT_LINK
+        content.ColorID = str(track_palette.id_for(track.color))
         if stored != audio:
             # pyrekordbox reads the file where it IS; the row names it as the
             # library stores every other path (the server's mapping, inverted).

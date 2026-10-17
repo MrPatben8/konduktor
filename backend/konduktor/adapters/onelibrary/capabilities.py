@@ -36,7 +36,7 @@ from ...core.capabilities import (
     SaveCapabilities,
     TrackCapabilities,
 )
-from ..rekordbox import memory_palette, palette
+from ..rekordbox import memory_palette, palette, track_palette
 from ..rekordbox.cue_types import MAX_MEMORY_CUES, WRITABLE_CUE_TYPES
 
 # Pads A-H. Unlike `djmdCue.Kind`, the ANLZ slot number is a dense 1-based index,
@@ -87,6 +87,8 @@ def capabilities_for(
             addable=not read_only,
             removable=not read_only,
             key_writable=not read_only,
+            # `content.color_id`, rekordbox's eight; the pdb row follows at Save.
+            colors=[] if read_only else list(track_palette.SWATCHES),
             places_audio=True,
             # `artwork` gates EDITING, which Rekordbox does not do yet either
             # (parity). Reading works: `store.cover_art` follows

@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .capabilities import CueRole, CueType, MediaKind, PlaylistKind
+from .capabilities import CueRole, CueType, MediaKind, PlaylistKind, TrackColor
 
 
 class HotcueChip(BaseModel):
@@ -71,6 +71,11 @@ class Track(BaseModel):
     grid_marker_count: int = 0
     grid_locked: bool = False
     media_kind: MediaKind = "audio"
+    # The track's colour tag: the neutral identity (what crosses platforms) and
+    # the platform's own display colour for it, both mapped from the stored
+    # code by the adapter. None = no colour.
+    color: TrackColor | None = None
+    color_hex: str | None = None
 
 
 class TrackPage(BaseModel):

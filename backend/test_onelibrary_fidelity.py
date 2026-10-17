@@ -442,6 +442,49 @@ check("setting 12A reuses the stick's '12A' row instead of adding 'Dbm'",
                                               if r2["title"] == target.title))["key_id"]) == names["12A"])
 g.close()
 
+print("== track colour ==")
+# `content.color_id` (1 Pink .. 8 Purple, 0 none); the pdb track row's
+# `color_id` byte uses the same ids, and Goober's two agree on every track.
+from konduktor.adapters.rekordbox import pdb  # noqa: E402
+
+goober = Path(tempfile.mkdtemp(prefix="konduktor-olfid-colour-")) / "Goober"
+shutil.copytree(FIXTURE.parent / "onelibrary-goober", goober, ignore=shutil.ignore_patterns("after"))
+pdb_path = goober / "PIONEER" / "rekordbox" / "export.pdb"
+
+
+def pdb_colours() -> dict:
+    return {pdb.row_id(pdb.TRACKS, r): pdb.track_fields(r)[0]["color_id"]
+            for r in pdb.table_rows(pdb_path.read_bytes(), pdb.TRACKS)}
+
+
+before = dump(db_of(goober))
+check("rekordbox's own pdb carries the same colour ids as the database",
+      pdb_colours() == {int(r["content_id"]): int(r["color_id"] or 0) for r in before["content"].values()},
+      str(pdb_colours()))
+g = OneLibraryAdapter(goober)
+check("an editable stick offers rekordbox's eight colours",
+      [s.color for s in g.capabilities().tracks.colors]
+      == ["pink", "red", "orange", "yellow", "green", "aqua", "blue", "purple"])
+check("a browsed one offers none",
+      OneLibraryAdapter(goober, read_only=True).capabilities().tracks.colors == [])
+g.set_track_color(next(x for x in g.tracks if x.color == "green").id, "green")
+check("setting the colour it has is not an edit", g.dirty is False)
+red = next(t for t in g.tracks if t.color == "red")
+t = g.set_track_color(red.id, "blue")
+check("the projection shows it at once", (t.color, t.color_hex) == ("blue", "#1F4EED"), str(t))
+g.save()
+changes = diff(before, dump(db_of(goober)))
+check("exactly content.color_id changes (2 = Red -> 7 = Blue)",
+      len(changes) == 1 and changes[0][3] == {"color_id": (2, 7)}, describe(changes))
+cid = int(changes[0][1]) if changes else None
+check("and the pdb's track row follows", pdb_colours().get(cid) == 7, str(pdb_colours()))
+g.set_track_color(red.id, None)
+g.save()
+check("No Color stores 0, in both",
+      dump(db_of(goober))["content"][changes[0][1]]["color_id"] == 0 and pdb_colours().get(cid) == 0)
+check("an unknown colour is refused", _raises(lambda: g.set_track_color(red.id, "teal"), Exception))
+g.close()
+
 print()
 print("RESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

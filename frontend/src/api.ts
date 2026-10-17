@@ -39,6 +39,10 @@ export interface Track {
   grid_marker_count: number
   grid_locked: boolean
   media_kind: MediaKind
+  /** The track's colour tag — the platform-neutral identity — and the
+   *  library's own display colour for it; both null when uncoloured. */
+  color: TrackColor | null
+  color_hex: string | null
 }
 
 /** One occupied hotcue slot, as the library table previews it. */
@@ -117,6 +121,15 @@ export type Platform = string
 export type CueRole = 'hotcue' | 'memory'
 export type CueType = 'cue' | 'fade_in' | 'fade_out' | 'load' | 'loop'
 export type MediaKind = 'audio' | 'stem' | 'video'
+/** A track colour tag; each library maps its own palette onto these by name. */
+export type TrackColor = 'pink' | 'red' | 'orange' | 'yellow' | 'green' | 'aqua' | 'blue' | 'purple'
+/** One track colour a library offers, in its own menu order. */
+export interface ColorSwatch {
+  color: TrackColor
+  hex: string
+  /** The platform's own name for it ("Violet" in Traktor). */
+  label: string
+}
 export type PlaylistKind = 'folder' | 'playlist' | 'smart'
 export type TrackField =
   | 'title' | 'artist' | 'album' | 'genre' | 'label' | 'remixer'
@@ -279,6 +292,8 @@ export interface Capabilities {
     audio_destination: 'host' | 'library'
     /** Added files can be left where they are rather than copied. */
     reference: boolean
+    /** The track colours this library can store; empty = no track colour. */
+    colors: ColorSwatch[]
   }
   playlists: {
     folders: boolean
@@ -1072,6 +1087,11 @@ export const api = {
 
   editTrack: (trackId: string, fields: Record<string, string | number | null>) =>
     send<{ status: string }>('PATCH', '/api/tracks', { track_id: trackId, fields }),
+  setTrackColor: (trackIds: string[], color: TrackColor | null) =>
+    send<{ status: string; tracks: Track[] }>('PATCH', '/api/tracks/color', {
+      track_ids: trackIds,
+      color,
+    }),
   artUrl: (trackId: string) =>
     `${API_BASE}/api/tracks/art?track_id=${encodeURIComponent(trackId)}`,
   audioUrl: (trackId: string) =>

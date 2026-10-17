@@ -60,6 +60,7 @@ from .schemas import (
     LibraryInfo,
     PlatformOption,
     EditTrack,
+    SetTrackColor,
     Facets,
     FileTagOutcome,
     CreateExportSet,
@@ -1318,6 +1319,17 @@ def edit_track(body: EditTrack) -> dict:
     """Edit a single track's safe metadata fields (in-memory; persisted on save)."""
     require_adapter().set_track_metadata(body.track_id, body.fields)
     return {"status": "updated", "id": body.track_id}
+
+
+@app.patch("/api/tracks/color")
+def set_track_color(body: SetTrackColor) -> dict:
+    """Set (or clear) the colour tag of every given track (in-memory; persisted
+    on save). Gated on `tracks.colors`: the platform's swatches."""
+    a = require_adapter()
+    if not a.capabilities().tracks.colors:
+        raise Unsupported("This library cannot store a track colour")
+    tracks = [a.set_track_color(tid, body.color) for tid in body.track_ids]
+    return {"status": "updated", "tracks": [t for t in tracks if t is not None]}
 
 
 @app.get("/api/tracks/art")
