@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react'
 import { nativeDragEnd, nativeDragMove, nativeDragStart } from './drag'
 
+const IS_WINDOWS = /Windows/.test(navigator.userAgent)
+
 /**
  * Files dragged in from Finder / Explorer, fed into the window's ONE drag
  * store (`lib/drag.tsx`) as a `files` payload, so the targets that take track
@@ -48,8 +50,12 @@ export function useNativeFileDrop(enabled: boolean, onBrowserDrop: () => void) {
     void (async () => {
       const { getCurrentWebview } = await import('@tauri-apps/api/webview')
       const off = await getCurrentWebview().onDragDropEvent(({ payload }) => {
-        // Tauri reports PHYSICAL pixels; the page works in CSS pixels.
-        const scale = window.devicePixelRatio || 1
+        // Tauri calls the position PHYSICAL, but only Windows (WebView2:
+        // ScreenToClient) really reports device pixels. macOS (WKWebView) and
+        // Linux (WebKitGTK) report the view's own points — CSS pixels already —
+        // so dividing there put the ghost at half the cursor's position on a
+        // Retina screen (wry 0.55).
+        const scale = IS_WINDOWS ? window.devicePixelRatio || 1 : 1
         const at = 'position' in payload ? { x: payload.position.x / scale, y: payload.position.y / scale } : null
         switch (payload.type) {
           case 'enter':
