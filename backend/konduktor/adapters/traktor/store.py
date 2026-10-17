@@ -53,7 +53,7 @@ from ...core.pathmap import PathMapping, stored_form
 from ...core.relocate import PathGroup
 from ...core.stem_file import NML_STEMS_JSON, nml_stems_for
 from ...schemas import PlaylistNode
-from . import beatgrid, timebase
+from . import beatgrid, timebase, track_palette
 from .locations import os_path_to_location, resolve_path
 from ...core import musical_key
 from .projection import iso_date, musical_key_value, traktor_date, with_memory_ids
@@ -446,7 +446,8 @@ class TraktorStore:
     EDITABLE_FIELDS = {"title", "artist", "album", "rating", "comment2"} | _INFO_FIELDS
     # Fields that live only in the collection: Traktor itself writes no file tag
     # for "Comment 2" (verified on an m4a it had just edited), so neither do we.
-    _COLLECTION_ONLY_FIELDS = {"comment2"}
+    # Nor for the track colour (kit T1: no audio file's mtime moved).
+    _COLLECTION_ONLY_FIELDS = {"comment2", "color"}
 
     def set_track_metadata(self, track_id: str, fields: dict) -> None:
         with self._lock:
@@ -544,6 +545,27 @@ class TraktorStore:
             self._journal.record("track", "set", track_id, "key", before, entry.info.key)
             self.dirty = True
 
+    # ---- track colour -----------------------------------------------------
+    def set_track_color(self, track_id: str, color: str | None) -> None:
+        """INFO@COLOR (see `track_palette`). Cleared = the attribute removed, as
+        every never-coloured entry has it; what Traktor itself leaves after
+        "None" (absent, or `COLOR="0"`) is not yet measured (kit T1 step 3)."""
+        code = track_palette.code_for(color)
+        if color is not None and code is None:
+            raise InvalidCommand(f"Not a track colour: {color!r}")
+        with self._lock:
+            entry = self._entry_by_key.get(track_id)
+            if entry is None:
+                raise PlaylistError(f"Track not found: {track_id}")
+            before = entry.info.color if entry.info is not None else None
+            if before == code:
+                return
+            if entry.info is None:
+                entry.info = Infotype()
+            entry.info.color = code
+            self._journal.record("track", "set", track_id, "color", before, code)
+            self.dirty = True
+
     # ---- adding tracks --------------------------------------------------
     def add_entry(self, track, audio_path: Path) -> str:
         """Append a brand-new ENTRY for `audio_path` and return its track id.
@@ -598,6 +620,7 @@ class TraktorStore:
                 # attribute at all rather than a zero.
                 ranking=(max(0, min(5, int(getattr(track, "rating", 0) or 0))) * 51) or None,
                 playtime=getattr(track, "length", None) or None,
+                color=track_palette.code_for(getattr(track, "color", None)),
             )
             album = None
             if getattr(track, "album", None):

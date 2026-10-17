@@ -16,6 +16,7 @@ Field conventions are read off a real rekordbox 7 export rather than guessed:
 from __future__ import annotations
 
 from ...core.model import GridMarker, Track, TrackCues
+from ..rekordbox import track_palette
 from ..rekordbox.projection import parse_key
 
 
@@ -106,6 +107,8 @@ def to_track(row, drive_path: str | None = None, *, stem: bool = False) -> Track
         grid_locked=False,  # OneLibrary has no grid lock
         # What the FILE is, as the deck plays it — see the Rekordbox projection.
         media_kind="stem" if stem else "audio",
+        color=track_palette.color_for(getattr(row, "color_id", None)),
+        color_hex=track_palette.hex_for(getattr(row, "color_id", None)),
     )
 
 

@@ -78,10 +78,17 @@ function whatsChanged(body: string | null): string[] {
   const lines = body.split(/\r?\n/)
   const start = lines.findIndex((l) => /^#{2,4}\s+what'?s changed/i.test(l.trim()))
   const out: string[] = []
+  // Every release body opens with a "Download" section (build.yml): the
+  // fallback must not list the installer links as changes.
+  let inDownload = false
   for (const raw of lines.slice(start + 1)) {
     const line = raw.trim()
     if (start !== -1 && (/^#{1,4}\s/.test(line) || line.startsWith('**Full Changelog**'))) break
-    if (line) {
+    if (/^#{1,4}\s/.test(line)) {
+      inDownload = /^#{1,4}\s+download/i.test(line)
+      continue
+    }
+    if (line && !inDownload) {
       out.push(
         line.replace(/^[*-]\s+/, '').replace(/\s+by\s+@[\w-]+\s+in\s+https?:\/\/\S+$/i, ''),
       )

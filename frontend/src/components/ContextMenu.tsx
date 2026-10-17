@@ -19,6 +19,10 @@ export type MenuItem =
       selected: string | null
       onPick: (color: string | null) => void
       disabled?: boolean
+      /** Names for the swatches (tooltips), else the hex is shown. */
+      labels?: string[]
+      /** The uncoloured choice's wording; "Default" when omitted. */
+      noneLabel?: string
     }
   | { separator: true }
 
@@ -259,13 +263,13 @@ function SwatchGrid({
   return (
     <div className="px-3 pb-2 pt-1" onMouseEnter={onEnter}>
       <div className="grid w-max grid-cols-8 gap-1.5">
-        {item.swatches.map((color) => (
+        {item.swatches.map((color, i) => (
           <button
             key={color}
             role="menuitemradio"
             aria-checked={selected === color.toUpperCase()}
-            aria-label={color}
-            title={color}
+            aria-label={item.labels?.[i] ?? color}
+            title={item.labels?.[i] ?? color}
             disabled={item.disabled}
             onClick={() => pick(color)}
             className={`h-4 w-4 rounded-full transition-transform disabled:cursor-default disabled:opacity-40 ${ring(
@@ -289,7 +293,7 @@ function SwatchGrid({
             selected === null ? 'outline outline-2 outline-offset-1 outline-white' : ''
           }`}
         />
-        Default
+        {item.noneLabel ?? 'Default'}
       </button>
     </div>
   )

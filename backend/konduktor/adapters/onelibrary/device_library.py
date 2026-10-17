@@ -121,10 +121,10 @@ def rebuild(existing: bytes, session) -> bytes | None:
     # ---- tracks -----------------------------------------------------------------
     old_tracks = {pdb.row_id(pdb.TRACKS, r): r for r in pdb.table_rows(existing, pdb.TRACKS)}
     want = {}
-    for (cid, title, artist, remixer, album, genre, label, rating, bpm, year, released,
+    for (cid, title, artist, remixer, album, genre, label, rating, color, bpm, year, released,
          comment, *fresh) in session.execute(text(
             "SELECT content_id, title, artist_id_artist, artist_id_remixer, album_id, genre_id, "
-            "label_id, rating, bpmx100, releaseYear, releaseDate, djComment, "
+            "label_id, rating, color_id, bpmx100, releaseYear, releaseDate, djComment, "
             "path, fileName, fileSize, fileType, bitrate, bitDepth, samplingRate, length, "
             "analysisDataFilePath, dateAdded, key_id, image_id FROM content")):
         cid = int(cid)
@@ -134,7 +134,8 @@ def rebuild(existing: bytes, session) -> bytes | None:
             fields, strings = _fresh_track(cid, *fresh)
         fields = {**fields, "artist_id": artist or 0, "remixer_id": remixer or 0,
                   "album_id": album or 0, "genre_id": genre or 0, "label_id": label or 0,
-                  "rating": max(0, min(5, int(rating or 0))), "tempo": int(bpm or 0),
+                  "rating": max(0, min(5, int(rating or 0))), "color_id": int(color or 0),
+                  "tempo": int(bpm or 0),
                   "year": int(year or 0)}
         strings = {**strings, "title": title or "", "comment": comment or "",
                    "release_date": released or ""}

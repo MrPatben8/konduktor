@@ -226,6 +226,21 @@ export default function App() {
     [qc, notify, onError, writeHintText],
   )
 
+  // The context menu's Colour ▸ — swatches are this library's own (by hex in
+  // the menu, sent as the neutral colour name), applied to the whole selection.
+  const trackColors = capabilities.data?.tracks.colors ?? []
+  const setTrackColor = (ids: string[], hex: string | null) => {
+    const swatch = trackColors.find((s) => s.hex === hex) ?? null
+    api
+      .setTrackColor(ids, swatch?.color ?? null)
+      .then(() => {
+        invalidateTrackLists(qc)
+        const what = swatch ? `Colour set to ${swatch.label}` : 'Colour cleared'
+        notify('success', `${what}${ids.length > 1 ? ` on ${ids.length} tracks` : ''} — ${writeHintText}`)
+      })
+      .catch((e) => onError((e as Error).message))
+  }
+
 
   // NOTE: all hooks must run on every render (Rules of Hooks). Data queries are
   // gated with `enabled: loaded` so they don't fire before a collection is open;
@@ -1213,6 +1228,25 @@ export default function App() {
             // whose every save is refused, so it is not offered at all.
             ...(canEdit && !viewingDevice && menu.ids.length === 1
               ? [{ label: 'Edit Tags…', onClick: gated(() => setEditing(menu.track)) }]
+              : []),
+            ...(canEdit && !viewingDevice && trackColors.length
+              ? [
+                  {
+                    label: 'Colour',
+                    submenu: [
+                      {
+                        swatches: trackColors.map((s) => s.hex),
+                        labels: trackColors.map((s) => s.label),
+                        noneLabel: 'No Color',
+                        // A multi-selection may hold several colours, so none
+                        // is marked ('' matches no swatch and is not "none").
+                        selected: menu.ids.length === 1 ? menu.track.color_hex : '',
+                        onPick: (hex: string | null) =>
+                          menuLoose.length ? void askToAdd(menuLoose) : setTrackColor(menu.ids, hex),
+                      },
+                    ],
+                  },
+                ]
               : []),
             ...(canAnalyze
               ? [
