@@ -58,7 +58,7 @@ from sqlalchemy import text
 
 from ...core.export import ExportPayload, ExportTrack, WrittenLibrary
 from ...core.cue_colors import effective_color
-from . import memory_palette, new_content, palette
+from . import memory_palette, new_content, palette, track_palette
 from . import timebase
 from .beatgrid import beats_from_markers
 from .capabilities import capabilities_for
@@ -313,6 +313,7 @@ class RekordboxExporter:
         # export would put "10m" where Rekordbox shows "Cm".
         content.KeyID = self._lookup(db, "key", render_key(track.key_wheel, track.key_mode))
         content.ContentLink = CONTENT_LINK
+        content.ColorID = str(track_palette.id_for(track.color))
         db.flush()
         return content
 

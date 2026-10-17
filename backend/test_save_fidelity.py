@@ -63,6 +63,14 @@ def _raises_playlist(fn) -> bool:
     return False
 
 
+def _raises_any(fn) -> bool:
+    try:
+        fn()
+    except Exception:
+        return True
+    return False
+
+
 def tag_lines(b: bytes) -> list[str]:
     return b.replace(b"><", b">\n<").decode("utf-8", "replace").splitlines()
 
@@ -1340,6 +1348,48 @@ with tempfile.TemporaryDirectory() as d:
           b"COMMENT=\"x > y key='8A' &quot;z&quot;\"" in saved and b"/>" not in saved)
     reread = TraktorStore(work)._nml.collection.entry[0].info.comment
     check("…and reads back unchanged", reread == "x > y key='8A' \"z\"", repr(reread))
+
+print("== R. track colour (INFO@COLOR) is localized, Traktor's shape, reversible ==")
+# Measured in Traktor 4.5 (kit T1): COLOR="1".."7" (Red..Magenta), the LAST
+# attribute of <INFO>; no file tag. Cleared = no attribute (unmeasured what
+# Traktor itself leaves after "None"; absent is what an uncoloured entry has).
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    original = work.read_bytes()
+    store = TraktorStore(work)
+    entry = next(e for e in store._nml.collection.entry if e.info is not None and e.info.color is None)
+    loc = entry.location
+    tid = f"{loc.volume}{loc.dir}{loc.file}"
+    store.set_track_color(tid, "blue")
+    store.save()
+    coloured = work.read_bytes()
+    o_s, o_e = _entry_span_by_file(original, loc.file)
+    c_s, c_e = _entry_span_by_file(coloured, loc.file)
+    check("only that ENTRY changes",
+          original[:o_s] + original[o_e:] == coloured[:c_s] + coloured[c_e:])
+    check("in one line: its <INFO>, with COLOR last, as Traktor writes it",
+          diff_count(original[o_s:o_e], coloured[c_s:c_e]) == 2  # one line: - and +
+          and _re.search(rb'<INFO [^>]* COLOR="5">', coloured[c_s:c_e]) is not None)
+    store = TraktorStore(work)
+    store.set_track_color(tid, "aqua")
+    check("aqua (rekordbox's) is stored as Traktor's Blue: a no-op", store.dirty is False)
+    store.set_track_color(tid, "purple")
+    check("purple is Traktor's Violet (6)",
+          store._entry_by_key[tid].info.color == 6)
+    store.set_track_color(tid, None)
+    store.save()
+    check("clearing restores the original bytes", work.read_bytes() == original)
+    check("an unknown colour is refused",
+          _raises_any(lambda: TraktorStore(work).set_track_color(tid, "teal")))
+
+_KIT = Path.home() / "Documents/Native Instruments/Traktor 4.5.0/collection.nml"
+if _KIT.exists() and b'COLOR="' in _KIT.read_bytes():
+    data = _KIT.read_bytes()
+    check("a Traktor 4.5 collection with coloured tracks renders byte-identically",
+          TraktorStore(_KIT)._render() == data)
+else:
+    print("  [SKIP] no coloured Traktor 4.5 collection on this machine")
 
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

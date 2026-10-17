@@ -153,7 +153,8 @@ for i, (title, artist, key) in enumerate((("One", "Artist A", (8, "minor")), ("T
     png = __import__("io").BytesIO()
     Image.new("RGB", (300, 300), (40 * i, 90, 160)).save(png, format="PNG")
     t = Track(id=f"src{i}", title=title, artist=artist, album="LP", genre="House", bpm=125.0,
-              key_wheel=key[0], key_mode=key[1], length=6, rating=i + 1, filepath=str(audio))
+              key_wheel=key[0], key_mode=key[1], length=6, rating=i + 1, filepath=str(audio),
+              color=("purple", None, "aqua")[i])
     tracks.append(ExportTrack(track=t, destination=audio, art=(png.getvalue(), "image/png"),
                               cues=TrackCues(track_id=t.id, grid_markers=[GridMarker(start=0.0, bpm=125.0)],
                                              cues=[CuePoint(type="cue", role="hotcue", start=1.0, length=0.0, slot=0)])))
@@ -174,6 +175,8 @@ check("a track with no key has key 0", lib.tracks[1]["key_id"] == 0)
 check("bpm x100, rating, file type, bitmask as rekordbox writes them",
       all(t["tempo"] == 12500 and t["u6"] == 11 and t["bitmask"] == 0xC0700 and t["u5"] == 0x29 for t in lib.tracks)
       and [t["rating"] for t in lib.tracks] == [1, 2, 3])
+check("the track colour is the 1-based id (Purple 8, none 0, Aqua 6)",
+      [t["color_id"] for t in lib.tracks] == [8, 0, 6], str([t["color_id"] for t in lib.tracks]))
 check("the file path is drive-relative", lib.tracks[0]["file_path"] == "/Contents/House/One.wav", lib.tracks[0]["file_path"])
 check("no computer's masterDbId is claimed", all(t["u3"] == 0 and t["u4"] == 0 for t in lib.tracks))
 tree = {p["name"]: p for p in lib.playlists}

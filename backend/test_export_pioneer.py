@@ -58,13 +58,19 @@ cued = next(t for t in src.tracks
 chosen = [flexible, cued]
 
 
+COLOURS = ["purple", "aqua"]
+
+
 def build(root: Path) -> ExportPayload:
     items = []
     for i, track in enumerate(chosen):
         audio = root / ("House" if i % 2 else "Techno") / Path(track.filepath).name
         audio.parent.mkdir(parents=True, exist_ok=True)
         audio.write_bytes(b"\0" * 4096)
-        items.append(ExportTrack(track=track, destination=audio,
+        # A colour each, as the generic name crosses (Traktor's Violet is
+        # `purple`; `aqua` is rekordbox's own, with no Traktor swatch).
+        coloured = track.model_copy(update={"color": COLOURS[i % len(COLOURS)]})
+        items.append(ExportTrack(track=coloured, destination=audio,
                                  cues=src.track_cues(track.id)))
     return ExportPayload(
         name="GIG", tracks=items,
@@ -135,6 +141,10 @@ for platform, reopen in (
     check("bpm survived",
           all(abs((by_title[t.title].bpm or 0) - (t.bpm or 0)) < 0.02
               for t in chosen if t.bpm))
+
+    check("the track colour crossed by name",
+          [by_title[t.title].color for t in chosen] == COLOURS[:len(chosen)],
+          str([by_title[t.title].color for t in chosen]))
 
     print(f"-- {platform}: the key was CONVERTED, not copied")
     for track in chosen:

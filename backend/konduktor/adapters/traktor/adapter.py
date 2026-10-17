@@ -156,6 +156,12 @@ class TraktorAdapter:
         self._refresh(track_id)
         return self._index.get(track_id)
 
+    def set_track_color(self, track_id: str, color: str | None) -> Track | None:
+        with _translate():
+            self._store.set_track_color(track_id, color)
+        self._refresh(track_id)
+        return self._index.get(track_id)
+
     def set_cover_art(self, track_id: str, data: bytes, mime: str) -> None:
         with _translate():
             self._store.set_track_art(track_id, data, mime)

@@ -44,7 +44,7 @@ from pathlib import Path
 from ...core.export import ExportPayload, ExportTrack, WrittenLibrary
 from ...core.cue_colors import effective_color
 from ..rekordbox import anlz_writer as W
-from ..rekordbox import artwork, memory_palette, palette, timebase
+from ..rekordbox import artwork, memory_palette, palette, timebase, track_palette
 from ..rekordbox.cue_types import MAX_MEMORY_CUES
 from ..rekordbox.beatgrid import beats_from_markers
 from ..rekordbox.projection import render_key
@@ -209,13 +209,13 @@ class OneLibraryExporter:
 
         con.execute(
             "INSERT INTO content (content_id, title, titleForSearch, bpmx100, length, "
-            "trackNo, artist_id_artist, album_id, genre_id, label_id, key_id, image_id, "
+            "trackNo, artist_id_artist, album_id, genre_id, label_id, key_id, color_id, image_id, "
             "djComment, rating, releaseDate, dateAdded, path, fileName, fileSize, "
             "fileType, bitrate, bitDepth, samplingRate, isHotCueAutoLoadOn, "
             "isKuvoDeliverStatusOn, masterDbId, masterContentId, "
             "analysisDataFilePath, analysedBits, contentLink, hasModified, cueUpdateCount, "
             "analysisDataUpdateCount, informationUpdateCount) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 content_id, track.title, (track.title or "").lower(),
                 int(round((track.bpm or 0) * 100)) or None, track.length,
@@ -229,6 +229,7 @@ class OneLibraryExporter:
                 # where the deck expects "Cm". Rendered from the parsed wheel.
                 self._lookup(con, "key", lookups["key"],
                              render_key(track.key_wheel, track.key_mode)),
+                track_palette.id_for(track.color),
                 image_id,
                 track.comment, track.rating or 0, track.release_date,
                 date.today().isoformat(), rel, item.destination.name, size,

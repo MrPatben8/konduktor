@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from ...core import musical_key
 from ...core.model import CuePoint, GridMarker, HotcueChip, Track, TrackCues
-from . import beatgrid, memory_palette, palette, timebase
+from . import beatgrid, memory_palette, palette, timebase, track_palette
 from .cue_types import cue_type, kind_for, role_and_slot
 
 # Rekordbox names keys musically ("Abm", "F", "Ebm") — but its key table also
@@ -127,6 +127,8 @@ def to_track(row, cue_kinds=(), *, stem: bool = False) -> Track:
         # file's mix, but Konduktor's deck plays its stems, and the Type column
         # must not disagree with the deck.
         media_kind="stem" if stem else "audio",
+        color=track_palette.color_for(getattr(row, "ColorID", None)),
+        color_hex=track_palette.hex_for(getattr(row, "ColorID", None)),
     )
 
 

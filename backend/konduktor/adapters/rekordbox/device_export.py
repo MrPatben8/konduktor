@@ -41,7 +41,7 @@ from datetime import date
 from pathlib import Path
 
 from ...core.export import ExportPayload, ExportTrack, WrittenLibrary
-from . import artwork, pdb
+from . import artwork, pdb, track_palette
 from .projection import render_key
 
 log = logging.getLogger(__name__)
@@ -138,6 +138,7 @@ class RekordboxDeviceExporter:
                     "id": n, "year": year, "sample_depth": bit_depth or 0,
                     "duration": min(int(track.length or 0), 0xFFFF),
                     "u5": ANALYSED, "rating": max(0, min(5, int(track.rating or 0))),
+                    "color_id": track_palette.id_for(track.color),
                     "u6": _file_type(item.destination), "u7": 3,
                 },
                 {

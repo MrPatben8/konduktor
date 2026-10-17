@@ -218,6 +218,9 @@ class RemoteAdapter:
     def set_key(self, track_id, wheel, mode):
         return self._call("set_key", track_id=track_id, wheel=wheel, mode=mode)
 
+    def set_track_color(self, track_id, color):
+        return self._call("set_track_color", track_id=track_id, color=color)
+
     def set_cue(self, track_id, *, slot, start_sec, cue_type, length_sec=0.0, role="hotcue", name=None):
         return self._call("set_cue", track_id=track_id, slot=slot, start_sec=start_sec,
                           cue_type=cue_type, length_sec=length_sec, role=role, name=name)

@@ -438,6 +438,25 @@ check("refusing leaves nothing dirty", adapter.dirty is False)
 check("an unknown track is a NotFound, not an Unsupported",
       _raises(lambda: adapter.audio_path("no-such-track"), NotFound))
 
+print("== track colour ==")
+# Goober (`fixtures/onelibrary-goober`) is a stick coloured in rekordbox:
+# `content.color_id` 1-based into the `color` table (1 Pink, 2 Red, 5 Green).
+from konduktor.adapters.rekordbox import track_palette  # noqa: E402
+
+_gdir = Path(tempfile.mkdtemp(prefix="konduktor-ol-colour-")) / "goober"
+shutil.copytree(FIXTURE.parent / "onelibrary-goober", _gdir)
+_goober = OneLibraryAdapter(_gdir)
+_colours = {t.title: (t.color, t.color_hex) for t in _goober.tracks}
+check("rekordbox's track colours project by name + display RGB",
+      _colours.get("Nemean - Doomed") == ("red", "#E13121")
+      and _colours.get("Sleepnet - Lapse") == ("green", "#65DB41")
+      and _colours.get("Life Is A Loop - Grand Prix") == ("pink", "#E577EF"), str(_colours))
+check("an uncoloured track has none", _colours.get("Demo Track 2") == (None, None))
+_goober.close()
+check("the palette maps ids both ways",
+      [track_palette.id_for(track_palette.color_for(i)) for i in range(9)] == list(range(9))
+      and track_palette.color_for("0") is None and track_palette.color_for(9) is None)
+
 print("== reads that answer rather than refuse ==")
 check("cover art is absent, not an error", adapter.cover_art(one.id) is None)
 # A drive stores everything relative to its own root, so it cannot have stale

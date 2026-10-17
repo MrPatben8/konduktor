@@ -55,7 +55,7 @@ from ...core.grid_edit import ReplaceGridCommands
 from ...core.model import CuePoint
 from ... import paths
 from . import beatgrid, cues as cue_reader, memory_cues
-from ..rekordbox import anlz_file, palette, timebase
+from ..rekordbox import anlz_file, palette, timebase, track_palette
 from ..rekordbox.cue_types import MAX_MEMORY_CUES
 from ..rekordbox import anlz_writer as W
 from ..rekordbox import beatgrid as rb_beatgrid
@@ -563,6 +563,23 @@ class OneLibraryStore(ReplaceGridCommands):
         # The lookups are FOREIGN KEYS: setting an id does not move the ORM's
         # cached relationship, so re-projecting now would read the OLD name back
         # and report a successful edit as a no-op. Flush, then expire the row.
+        db.flush()
+        db.session.expire(row)
+
+    def set_track_color(self, track_id: str, color: str | None) -> None:
+        """`content.color_id`, a 1-based id into the `color` table (see
+        `track_palette`); 0 = none, as rekordbox exports an uncoloured track.
+        Not a file tag; the pdb's track row follows at Save (`device_library`)."""
+        new = track_palette.id_for(color)
+        if color is not None and not new:
+            raise InvalidCommand(f"Not a track colour: {color!r}")
+        db = self._require_db()
+        row = self.content(track_id)
+        before = row.color_id
+        if int(before or 0) == new:
+            return
+        row.color_id = new
+        self._journal.record("track", "set", track_id, "color", before, new)
         db.flush()
         db.session.expire(row)
 
@@ -1182,7 +1199,7 @@ class OneLibraryStore(ReplaceGridCommands):
             "isrc, djPlayCount, isHotCueAutoLoadOn, isKuvoDeliverStatusOn, kuvoDeliveryComment, "
             "masterDbId, masterContentId, analysisDataFilePath, analysedBits, contentLink, "
             "hasModified) VALUES (:cid, :title, NULL, '', :bpm, :length, 0, 0, :artist, :remixer, "
-            ":album, :genre, :label, :key, 0, :image, :comment, :rating, :year, :released, "
+            ":album, :genre, :label, :key, :color, :image, :comment, :rating, :year, :released, "
             ":added, :created, :path, :file, :size, :type, :bitrate, :depth, :rate, '', 0, 1, 1, "
             "'', 0, :cid, :anlz, :bits, :link, 0)"), {
                 "cid": cid, "title": getattr(track, "title", None) or final.stem,
@@ -1192,6 +1209,7 @@ class OneLibraryStore(ReplaceGridCommands):
                 "label": lookup("Label", track.label),
                 # Rendered from the parsed wheel: a source's "10m" means nothing here.
                 "key": self._key_id(track.key_wheel, track.key_mode),
+                "color": track_palette.id_for(getattr(track, "color", None)),
                 "image": image_id, "comment": track.comment or "",
                 "rating": max(0, min(5, int(track.rating or 0))), "year": year, "released": released,
                 "added": datetime.now().strftime("%Y-%m-%d"), "created": created, "path": rel,

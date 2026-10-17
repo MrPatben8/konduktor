@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from .capabilities import Capabilities
+from .capabilities import Capabilities, TrackColor
 from .model import Facets, PlaylistNode, Stats, Track, TrackCues, TrackPage
 from .pathmap import PathMapping
 from .relocate import PathGroup
@@ -296,6 +296,9 @@ class LibraryAdapter(Protocol):
     # analysis writes. Each platform renders it in its own notation (and its own
     # analysed-key field, where it has one). Gated on `tracks.key_writable`.
     def set_key(self, track_id: str, wheel: int, mode: str) -> Track | None: ...
+    # The track's colour tag (None clears it), mapped onto the platform's own
+    # palette by name. Gated on `tracks.colors` being non-empty.
+    def set_track_color(self, track_id: str, color: TrackColor | None) -> Track | None: ...
     def set_cover_art(self, track_id: str, data: bytes, mime: str) -> None: ...
     def cover_art(self, track_id: str) -> tuple[bytes, str] | None: ...
 

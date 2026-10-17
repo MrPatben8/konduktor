@@ -30,7 +30,7 @@ from ...core.capabilities import (
     SaveCapabilities,
     TrackCapabilities,
 )
-from . import memory_palette, palette
+from . import memory_palette, palette, track_palette
 from .cue_types import MAX_MEMORY_CUES, WRITABLE_CUE_TYPES
 
 # Rekordbox's addressable hot cue bank. The pads are labelled A-H; the stored
@@ -93,6 +93,8 @@ def capabilities_for(
             removable=True,
             addable=True,
             key_writable=True,
+            # `djmdContent.ColorID`, rekordbox's eight (see `track_palette`).
+            colors=list(track_palette.SWATCHES),
             artwork=False,
             artwork_note=None,
         ),

@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .core.capabilities import CueRole, CueType
+from .core.capabilities import CueRole, CueType, TrackColor
 
 
 class CreatePlaylist(BaseModel):
@@ -38,6 +38,13 @@ class MovePlaylist(BaseModel):
 class EditTrack(BaseModel):
     track_id: str
     fields: dict[str, str | int | None]
+
+
+class SetTrackColor(BaseModel):
+    """The context menu's Colour ▸: one colour (None = No Color) for a selection."""
+
+    track_ids: list[str]
+    color: TrackColor | None = None
 
 
 class FileTagOutcome(BaseModel):

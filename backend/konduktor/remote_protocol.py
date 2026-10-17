@@ -38,7 +38,8 @@ from .core.model import AutoHotcue, Track, TrackCues
 #: 1.2 — `/v1/folder/*`: the content folder browsed as a Files tree.
 #: 1.3 — memory cues: `add_memory_cue`, `rename_memory_cue`,
 #:       `set_memory_cue_type`, `set_memory_cue_color`, `delete_memory_cue`.
-API_VERSION: tuple[int, int] = (1, 3)
+#: 1.4 — track colour: `set_track_color`, `Track.color` / `color_hex`.
+API_VERSION: tuple[int, int] = (1, 4)
 
 #: How long a session survives without a heartbeat, and how often the holder
 #: sends one. Long enough to ride out a Wi-Fi blip or a switch to the fallback
@@ -77,7 +78,8 @@ _READ = (
 )
 _MUTATING = (
     "create_playlist", "create_folder", "rename_playlist", "delete_playlist",
-    "move_playlist", "set_playlist_entries", "remove_tracks", "set_track_metadata", "set_key", "set_cue",
+    "move_playlist", "set_playlist_entries", "remove_tracks", "set_track_metadata", "set_key",
+    "set_track_color", "set_cue",
     "set_cue_type", "set_cue_color", "delete_cue", "place_cues", "add_memory_cue",
     "rename_memory_cue", "set_memory_cue_type", "set_memory_cue_color", "delete_memory_cue", "add_grid_marker",
     "move_grid_marker", "set_grid_marker_bpm", "delete_grid_marker", "replace_grid",

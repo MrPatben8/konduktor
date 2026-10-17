@@ -952,5 +952,29 @@ with tempfile.TemporaryDirectory() as d:
           len(dump(work)["djmdKey"]) == len(after["djmdKey"]))
     adapter.close()
 
+    print("== L: track colour is djmdContent.ColorID, one row + the counter ==")
+    clean_copy(REAL, work)
+    before = dump(work)
+    adapter = RekordboxAdapter(work)
+    t1 = adapter.tracks[0]
+    got = adapter.set_track_color(t1.id, "aqua")
+    check("the projection updates immediately", (got.color, got.color_hex) == ("aqua", "#55BBF1"), str(got))
+    adapter.save()
+    changes = diff(before, dump(work))
+    content = [c for c in changes if c[0] == "djmdContent"]
+    check("exactly the track row and the counter change",
+          {t for t, _, _, _ in changes} == {"djmdContent", "agentRegistry"} and len(changes) == 2,
+          describe(changes))
+    check("ColorID '6' (Aqua, 1-based into djmdColor)",
+          content and content[0][3].get("ColorID", (None, None))[1] == "6", str(content and content[0][3]))
+    before = dump(work)
+    adapter.set_track_color(t1.id, None)
+    adapter.save()
+    changes = diff(before, dump(work))
+    check("No Color writes '0'",
+          [c[3].get("ColorID", (None, None))[1] for c in changes if c[0] == "djmdContent"] == ["0"],
+          describe(changes))
+    adapter.close()
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

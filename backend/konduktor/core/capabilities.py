@@ -36,6 +36,20 @@ CueType = Literal["cue", "fade_in", "fade_out", "load", "loop"]
 CueRole = Literal["hotcue", "memory"]
 MediaKind = Literal["audio", "stem", "video"]
 PlaylistKind = Literal["folder", "playlist", "smart"]
+# A track's colour tag, as a platform-neutral IDENTITY — what crosses between
+# libraries. Each adapter maps its own codes to and from these BY NAME (decided
+# 2026-10-17, `.claude/discussions/discuss-track-colour-2026-10-17.md`): eight
+# names because rekordbox has eight; Traktor's seven cover all but `aqua`,
+# which it receives as its Blue.
+TrackColor = Literal["pink", "red", "orange", "yellow", "green", "aqua", "blue", "purple"]
+
+
+class ColorSwatch(BaseModel):
+    """One track colour a library offers, in its own menu order."""
+
+    color: TrackColor
+    hex: str  # the platform's own display colour
+    label: str  # the platform's own name for it ("Violet" in Traktor)
 
 
 class CueCapabilities(BaseModel):
@@ -107,6 +121,9 @@ class TrackCapabilities(BaseModel):
     # Whether added files can be left where they are ("reference") rather than
     # copied. False where the library cannot see this computer's files at all.
     reference: bool = True
+    # The track colours this library can store (`set_track_color`), in its own
+    # menu order. Empty: the platform has no track colour.
+    colors: list[ColorSwatch] = []
 
 
 class PlaylistCapabilities(BaseModel):

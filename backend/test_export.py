@@ -66,11 +66,14 @@ chosen = [flexible, cued, plain]
 dest = Path(tempfile.mkdtemp()) / "GIG"
 dest.mkdir(parents=True)
 items = []
+# Colours by generic name: `aqua` is rekordbox's, which Traktor stores as Blue.
+COLOURS = {flexible.id: "aqua", cued.id: "pink", plain.id: None}
 for track in chosen:
     audio = dest / "Music" / "Library" / Path(track.filepath).name
     audio.parent.mkdir(parents=True, exist_ok=True)
     audio.write_bytes(b"\0" * 64)
-    items.append(ExportTrack(track=track, destination=audio, cues=src.track_cues(track.id)))
+    items.append(ExportTrack(track=track.model_copy(update={"color": COLOURS[track.id]}),
+                             destination=audio, cues=src.track_cues(track.id)))
 
 payload = ExportPayload(
     name="GIG",
@@ -125,6 +128,11 @@ check("artist survived", by_title[plain.title].artist == plain.artist)
 # preference their exported library should not silently change.
 if plain.key:
     check("key notation is copied, not converted", by_title[plain.title].key == plain.key)
+
+check("track colours cross by name: aqua -> Blue (5), pink -> Magenta (7), none -> no COLOR",
+      [by_title[t.title].color for t in chosen] == ["blue", "pink", None]
+      and 'COLOR="5"' in text and 'COLOR="7"' in text and text.count(' COLOR="') == 2,
+      str([by_title[t.title].color for t in chosen]))
 
 print("== the playlist tree ==")
 tree = {}
