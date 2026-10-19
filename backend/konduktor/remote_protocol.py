@@ -41,7 +41,8 @@ from .core.model import AutoHotcue, Track, TrackCues
 #: 1.4 — track colour: `set_track_color`, `Track.color` / `color_hex`.
 #: 1.5 — loudness: `/v1/loudness/get`, `PUT /v1/loudness`, and `loudness` on
 #:       `/v1/stems/stage` (the server keeps a remote library's measurements).
-API_VERSION: tuple[int, int] = (1, 5)
+#: 1.6 — auto gain: `set_auto_gain`, `Track.auto_gain_db`.
+API_VERSION: tuple[int, int] = (1, 6)
 
 #: How long a session survives without a heartbeat, and how often the holder
 #: sends one. Long enough to ride out a Wi-Fi blip or a switch to the fallback
@@ -81,7 +82,7 @@ _READ = (
 _MUTATING = (
     "create_playlist", "create_folder", "rename_playlist", "delete_playlist",
     "move_playlist", "set_playlist_entries", "remove_tracks", "set_track_metadata", "set_key",
-    "set_track_color", "set_cue",
+    "set_track_color", "set_auto_gain", "set_cue",
     "set_cue_type", "set_cue_color", "delete_cue", "place_cues", "add_memory_cue",
     "rename_memory_cue", "set_memory_cue_type", "set_memory_cue_color", "delete_memory_cue", "add_grid_marker",
     "move_grid_marker", "set_grid_marker_bpm", "delete_grid_marker", "replace_grid",
@@ -248,6 +249,9 @@ def pack_analysis(prepared) -> str | None:
         **({} if prepared.key is None else {
             "key": np.array([prepared.key.pitch_class, prepared.key.wheel,
                              prepared.key.mode == "minor", prepared.key.confidence], dtype=np.float64)}),
+        **({} if getattr(prepared, "loudness", None) is None else {
+            "loudness": np.array([prepared.loudness.lufs, prepared.loudness.rms, prepared.loudness.true_peak,
+                                  prepared.loudness.lra, prepared.loudness.plr], dtype=np.float64)}),
     )
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
@@ -276,4 +280,10 @@ def unpack_analysis(text: str | None):
             pitch, wheel, minor, confidence = z["key"]
             key = KeyResult(pitch_class=int(pitch), mode="minor" if minor else "major",
                             wheel=int(wheel), confidence=float(confidence))
-    return PreparedAnalysis(measured=measured, markers=markers, key=key)
+        loud = None
+        if "loudness" in z:
+            from .core.loudness import Loudness
+
+            lufs, rms, tp, lra, plr = (float(v) for v in z["loudness"])
+            loud = Loudness(lufs=lufs, rms=rms, true_peak=tp, lra=lra, plr=plr)
+    return PreparedAnalysis(measured=measured, markers=markers, key=key, loudness=loud)

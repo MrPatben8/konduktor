@@ -71,6 +71,7 @@ def capabilities_for(path: Path, editable_fields: list[str]) -> Capabilities:
             key_writable=True,
             # INFO@COLOR, seven colours (measured, see `track_palette`).
             colors=list(track_palette.SWATCHES),
+            auto_gain=True,
             # `.mp4` covers stem files (`.stem.mp4`). Traktor also reads WMA,
             # but only on Windows, and a file added on one OS must play on both.
             audio_formats=[".mp3", ".wav", ".aif", ".aiff", ".flac", ".m4a", ".mp4", ".ogg"],

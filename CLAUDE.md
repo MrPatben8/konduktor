@@ -778,6 +778,34 @@ Two independent apps that talk over HTTP:
     the true peak; never carried over): `convert.stem_loudness` after the
     build, stored at publish by the shared `_end_step` — remotely, the value
     rides `/v1/stems/stage`.
+  - **Auto gain** — the DJ app's OWN per-track gain, written from Konduktor's
+    loudness (decided + MEASURED 2026-10-19, [the discussion](.claude/discussions/discuss-gain-normalization-2026-10-19.md),
+    kits G1/G2: `backend/dev_gain_kit.py`, `dev_gain_kit_g2.py`). Generic
+    command `set_auto_gain(track_id, loudness)` (gated on
+    `tracks.auto_gain`; `Track.auto_gain_db` = the app's current value, None =
+    none): the ADAPTER turns a measurement into its own value, so no platform
+    constant reaches `core/`. Always from LUFS (the measure both apps level on).
+    **Traktor** (`adapters/traktor/gain.py`): the deck reads `LOUDNESS@
+    PERCEIVED_DB`; Traktor's own = -9.2 - LUFS (sd 0.8 over 120 tracks,
+    `backend/bench_traktor_gain.py` — a stem file measured as its stem SUM);
+    written PERCEIVED = ANALYZED, PEAK = -true peak; collection-only (no file
+    tag). A written value is KEPT; on an AUDIO_ID-empty entry Traktor's first
+    analysis overwrites only ANALYZED; its Analyze > Gain overwrites all three.
+    **rekordbox** (`adapters/rekordbox/gain.py`): one `djmdMixerParam` row,
+    Gain = float32 halves, linear, = 10^((-10 - LUFS)/20) (exact on its WAVs,
+    +0.24 dB on MP3 songs); Peak = the CLIPPED sample peak (<= 0 dB); rows
+    created through the ORM (`ID` and `UUID` both UUID strings, `rb_local_usn`
+    stamped); the projection reads all rows in ONE query (`mixer_gains`). A
+    track with no row plays at 0.0 dB and loading never creates one, so
+    **rekordbox's add measures loudness and writes the row** (`add_analysis.
+    prepare(measure_loudness=True)`, `PreparedAnalysis.loudness` — on a remote
+    it rides the packed analysis), and the measurement reaches this computer's
+    store through the adapter's optional `on_loudness` hook, set by `AppState`.
+    **No stick format carries a gain** (diffed across two exports), so
+    OneLibrary has no `auto_gain`. Analyze's **Gain** tick (`gain` /
+    `replace_gain`): fills tracks without one unless Replace, measuring first
+    where the loudness is missing or stale (a fresh measurement is reused —
+    no decode, no download); the deck's Analyze fills a missing one.
   - `prefs.py` — persisted user prefs (`userprefs.json` in the per-OS app-data
     dir). Last-opened collection (global AND per-platform), library column
     layout, prep-deck zoom, import destination. Best-effort, but **every
@@ -1057,7 +1085,10 @@ Two independent apps that talk over HTTP:
     where loudness is all that can be done it is pre-ticked. The Replace
     questions (loudness: "Measure again") are inside the dialog, never a
     second popup, and never remembered: the grid's only when BPM AND Grid are
-    ticked, since with one tick adjusting the grid is the point. Every count
+    ticked, since with one tick adjusting the grid is the point. A **Gain**
+    tick (`gainWhy`) writes the DJ app's auto gain (see "Auto gain"); the
+    context menu's **Mastering ▸** opens the same dialog for ONE option
+    (`preset`: Auto gain… / Measure loudness), which saves no ticks. Every count
     and the "Analyze N" button come from `/api/tracks/analyze/preview`, i.e.
     the backend's own `plan_grid`. The finished job's toast says what was
     written and skipped, by reason. The deck's one-click Analyze writes the
@@ -1243,6 +1274,9 @@ Two independent apps that talk over HTTP:
     every unmeasured track loudest. `Track.loudness` is NOT the backend's: App
     joins `/api/loudness` into the rows (`['loudness', origin, hash of ids]`),
     only while a Mastering column is visible; analyses invalidate `['loudness']`.
+    A sixth, **Auto Gain** (`Track.auto_gain_db`, the DJ app's own value, `—`
+    when none), sits in the same submenu but is NOT in `MASTERING_COLUMNS`: it
+    comes with the track, so showing it fetches nothing.
   - Data flow: the whole library is fetched once (`/api/tracks?limit=20000`);
     filtering and sorting happen **client-side** for instant interaction. Edits
     apply in-memory (server holds them) and the sidebar **Save to Traktor**
@@ -1327,6 +1361,10 @@ serialization path.** It enforces:
   entry's `<INFO>`, with `COLOR` last as Traktor writes it; aqua is stored as
   Blue; clearing restores the original bytes; and a Traktor 4.5 collection
   holding coloured tracks (when on the machine) renders byte-identically.
+  And **auto gain** (S): `set_auto_gain` changes one line, that entry's
+  `<LOUDNESS>`, in Traktor's 6-decimal form (PERCEIVED = ANALYZED = -9.2 -
+  LUFS); an entry without one gains a single line between TEMPO and
+  MUSICAL_KEY; the same value again is not dirty; never a file tag.
   The guard that catches serialization regressions like the lxml reformatting bug.
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched;
@@ -1433,7 +1471,11 @@ serialization path.** It enforces:
   mirror in ROW order, rename touching only `Comment` (+ the USN pyrekordbox
   stamps on every cue write — rekordbox's own leave it NULL, and it has
   accepted ours), the 11th refused with nothing changed, delete removing the
-  row outright.
+  row outright. And **auto gain** (M): a track without one gains exactly one
+  `djmdMixerParam` INSERT (UUID-string `ID`/`UUID`, USN stamped, Gain =
+  10^((-10 - LUFS)/20) as float32 halves, Peak clipped at 1.0) + the counter;
+  the same value is not dirty, a new one UPDATES that row only, it projects
+  after a reopen; and every track ADDED (J) arrives with its row.
 - `test_onelibrary_adapter.py` — the third adapter against the same contract.
   Unlike the Rekordbox tests it needs **nothing installed and nothing plugged
   in**: it runs against `fixtures/onelibrary/`, a real rekordbox 7 export trimmed
@@ -1559,9 +1601,13 @@ serialization path.** It enforces:
   the run's (BPM alone: single grids adjusted, flexible skipped, bare in
   full); a skipped track is never decoded and grid+key share ONE decode; a
   grid that cannot be fitted still gets its key; the deck's Analyze writes
-  the key too and never fails on it. The decode is `main._decode_for_analysis`
+  the key too and never fails on it. And **Gain**: the preview's counts match
+  the run's; a track without an auto gain gets -9.2 - LUFS, measured first,
+  one with one is left alone unless `replace_gain`, and a fresh measurement is
+  reused rather than decoded again. The decode is `main._decode_for_analysis`
   (the seam the fakes replace); `test_key_detect.py` runs the route once with
-  the REAL decode and detectors on a generated F-minor 124 BPM WAV.
+  the REAL decode and detectors on a generated F-minor 124 BPM WAV. (Its
+  app-data is a temp folder: the routes write the loudness store.)
 - `test_bulk_remove.py` — the context menu's **Remove ▸** routes
   (`/api/tracks/grid/clear`, `/api/tracks/cue/clear`, `/api/tracks/remove`):
   locked grids are kept, clearing hotcues empties the whole bank (loops and the
@@ -1674,7 +1720,8 @@ serialization path.** It enforces:
   content folder as a drive: listed first, confined, held files ticked off,
   auditioned with one download, an add IN PLACE (no upload, the held one not
   added twice, both into the playlist, analysed here when the server reports
-  a lead).
+  a lead). And auto gain: computed here from the SERVER's stored measurement
+  (no new download), written on the server, saved into its collection.
 - `test_remote_stems.py` — Convert to Stems on a remote with the FAKE engine:
   the plan's transfer and two-machine space, Replace parks and swaps ON THE
   SERVER (saved file untouched until Save, which deletes the parked
@@ -1983,8 +2030,10 @@ that number and nothing else — everything derives from it:
     files and artwork (`NewTrack.art`, else the file's embedded cover) are
     held until save and written BEFORE the grids and commit, then
     `contentFile` rows hash what was written (`_m`/`_s` unlisted, as
-    Rekordbox does); a failed save removes them. Key, mixer gain and phrases
-    are Rekordbox's own analysis and are not written. The row and file
+    Rekordbox does); a failed save removes them. The key is detected and the
+    mixer gain measured (`djmdMixerParam`, see "Auto gain" — without a row a
+    track plays at 0.0 dB); mixer phrases are Rekordbox's own analysis and are
+    not written. The row and file
     builders live in `adapters/rekordbox/new_content.py`, shared with the
     Rekordbox Library exporter.
   - **`jobs.py` + `importer.py`** — the app's first long-running operation.

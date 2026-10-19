@@ -13,22 +13,28 @@ interface Props {
   gridWhy: string | null
   /** Why a key cannot be stored here; null = it can. */
   keyWhy: string | null
+  /** Why the DJ app's auto gain cannot be written here; null = it can. */
+  gainWhy: string | null
+  /** Opened for ONE option (the context menu's Mastering ▸ Auto gain… /
+   *  Measure loudness): only it is ticked, and the remembered ticks are left
+   *  as they were. */
+  preset?: keyof What
   onRun: (opts: AnalyzeOptions) => Promise<void>
   onClose: () => void
   onError: (msg: string) => void
 }
 
-type What = Pick<AnalyzeOptions, 'bpm' | 'grid' | 'key' | 'loudness'>
+type What = Pick<AnalyzeOptions, 'bpm' | 'grid' | 'key' | 'loudness' | 'gain'>
 const PREF_KEY = 'analyzeWhat'
-// Loudness off unless asked for once: it adds a decode per track.
-const DEFAULT_WHAT: What = { bpm: true, grid: true, key: true, loudness: false }
+// Loudness and gain off unless asked for once: they add a decode per track.
+const DEFAULT_WHAT: What = { bpm: true, grid: true, key: true, loudness: false, gain: false }
 
 /** The remembered ticks; anything malformed falls back to the default. */
 function loadWhat(prefs: Record<string, unknown> | undefined): What {
   const saved = prefs?.[PREF_KEY] as Partial<What> | undefined
   if (!saved || typeof saved !== 'object') return DEFAULT_WHAT
   const pick = (k: keyof What) => (typeof saved[k] === 'boolean' ? (saved[k] as boolean) : DEFAULT_WHAT[k])
-  return { bpm: pick('bpm'), grid: pick('grid'), key: pick('key'), loudness: pick('loudness') }
+  return { bpm: pick('bpm'), grid: pick('grid'), key: pick('key'), loudness: pick('loudness'), gain: pick('gain') }
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
@@ -40,48 +46,58 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
  * halves of a beatgrid — BPM alone keeps the downbeat, Grid alone keeps the
  * tempo — and the grid Replace tick only guards a FULL re-analysis (both
  * ticked). Loudness goes to Konduktor's own store, so it is never disabled
- * (decided 2026-10-19). The ticks are remembered; the Replace ticks never
- * are — overwriting is a decision about THESE tracks.
+ * (decided 2026-10-19). Gain writes the DJ app's own auto gain from the
+ * loudness, only where a track has none unless Replace. The ticks are
+ * remembered; the Replace ticks never are — overwriting is a decision about
+ * THESE tracks.
  */
-export function AnalyzeDialog({ ids, origin, gridWhy, keyWhy, onRun, onClose, onError }: Props) {
+export function AnalyzeDialog({ ids, origin, gridWhy, keyWhy, gainWhy, preset, onRun, onClose, onError }: Props) {
   const qc = useQueryClient()
   const prefs = useQuery({ queryKey: ['prefs'], queryFn: api.getPrefs })
   const [what, setWhat] = useState<What | null>(null)
   const [replaceGrid, setReplaceGrid] = useState(false)
   const [replaceKey, setReplaceKey] = useState(false)
   const [replaceLoudness, setReplaceLoudness] = useState(false)
+  const [replaceGain, setReplaceGain] = useState(false)
   const [busy, setBusy] = useState(false)
   const gridEditable = gridWhy === null
   const keyWritable = keyWhy === null
+  const gainWritable = gainWhy === null
 
   // Hydrate once from prefs, masked by what can be stored here. Where loudness
   // is ALL that can be done (a device, loose files), it is ticked.
   useEffect(() => {
     if (what || prefs.isPending) return
+    if (preset) {
+      setWhat({ bpm: false, grid: false, key: false, loudness: false, gain: false, [preset]: true })
+      return
+    }
     const w = loadWhat(prefs.data as Record<string, unknown> | undefined)
     setWhat({
       bpm: w.bpm && gridEditable,
       grid: w.grid && gridEditable,
       key: w.key && keyWritable,
-      loudness: w.loudness || (!gridEditable && !keyWritable),
+      gain: w.gain && gainWritable,
+      loudness: w.loudness || (!gridEditable && !keyWritable && !gainWritable),
     })
-  }, [what, prefs.isPending, prefs.data, gridEditable, keyWritable])
+  }, [what, preset, prefs.isPending, prefs.data, gridEditable, keyWritable, gainWritable])
 
   const opts: AnalyzeOptions | null = what && {
     ...what,
     replace_grid: what.bpm && what.grid && replaceGrid,
     replace_key: what.key && replaceKey,
     replace_loudness: what.loudness && replaceLoudness,
+    replace_gain: what.gain && replaceGain,
     origin,
   }
   const preview = useQuery({
     queryKey: ['analyze-preview', ids, opts],
     queryFn: () => api.analyzePreview(ids, opts!),
-    enabled: !!opts && (opts.bpm || opts.grid || opts.key || opts.loudness),
+    enabled: !!opts && (opts.bpm || opts.grid || opts.key || opts.loudness || opts.gain),
     placeholderData: keepPreviousData,
   })
   const p: AnalyzePreview | undefined = preview.data
-  const nothingTicked = !!what && !(what.bpm || what.grid || what.key || what.loudness)
+  const nothingTicked = !!what && !(what.bpm || what.grid || what.key || what.loudness || what.gain)
   const count = nothingTicked ? 0 : (p?.tracks_to_analyze ?? 0)
 
   useEffect(() => {
@@ -94,19 +110,22 @@ export function AnalyzeDialog({ ids, origin, gridWhy, keyWhy, onRun, onClose, on
     if (!opts || busy || count === 0) return
     setBusy(true)
     // A tick that was disabled here keeps what it was: analysing a device's
-    // loudness must not forget that the collection's keys are wanted.
+    // loudness must not forget that the collection's keys are wanted. A
+    // one-option run (a preset) remembers nothing.
     const saved = loadWhat(prefs.data as Record<string, unknown> | undefined)
-    api
-      .patchPrefs({
-        [PREF_KEY]: {
-          bpm: gridEditable ? opts.bpm : saved.bpm,
-          grid: gridEditable ? opts.grid : saved.grid,
-          key: keyWritable ? opts.key : saved.key,
-          loudness: opts.loudness,
-        },
-      })
-      .then((x) => qc.setQueryData(['prefs'], x))
-      .catch(() => {})
+    if (!preset)
+      api
+        .patchPrefs({
+          [PREF_KEY]: {
+            bpm: gridEditable ? opts.bpm : saved.bpm,
+            grid: gridEditable ? opts.grid : saved.grid,
+            key: keyWritable ? opts.key : saved.key,
+            gain: gainWritable ? opts.gain : saved.gain,
+            loudness: opts.loudness,
+          },
+        })
+        .then((x) => qc.setQueryData(['prefs'], x))
+        .catch(() => {})
     try {
       await onRun(opts)
     } catch (e) {
@@ -184,6 +203,8 @@ export function AnalyzeDialog({ ids, origin, gridWhy, keyWhy, onRun, onClose, on
           {toggle('grid', 'Grid', 'Find where the downbeats fall', gridEditable, gridWhy ?? '')}
           {toggle('key', 'Key', 'Detect the musical key', keyWritable, keyWhy ?? '')}
           {toggle('loudness', 'Loudness', 'Measure LUFS, RMS, true peak and dynamics', true, '')}
+          {toggle('gain', 'Auto gain', "Set the DJ app's own gain from the loudness (measured first if needed)",
+            gainWritable, gainWhy ?? '')}
         </div>
 
         <div className={`space-y-1.5 px-5 py-3 text-sm text-muted ${preview.isFetching ? 'opacity-70' : ''}`}>
@@ -208,6 +229,19 @@ export function AnalyzeDialog({ ids, origin, gridWhy, keyWhy, onRun, onClose, on
               <label className="flex shrink-0 items-center gap-1.5 text-xs">
                 <input type="checkbox" checked={replaceLoudness} onChange={(e) => setReplaceLoudness(e.target.checked)} />
                 Measure again
+              </label>
+            </div>
+          )}
+          {p && what?.gain && p.with_gain > 0 && (
+            <div className="flex items-center justify-between gap-3">
+              <span>
+                <span className="tabular-nums text-text">{p.with_gain}</span>{' '}
+                {p.with_gain === 1 ? 'already has an auto gain' : 'already have an auto gain'}
+              </span>
+              <label className="flex shrink-0 items-center gap-1.5 text-xs"
+                title="Replacing puts Konduktor's measure in place of the DJ app's own">
+                <input type="checkbox" checked={replaceGain} onChange={(e) => setReplaceGain(e.target.checked)} />
+                Replace {p.with_gain === 1 ? 'it' : 'them'}
               </label>
             </div>
           )}

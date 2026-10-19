@@ -367,6 +367,24 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
   loudnessColumn('true_peak', 'True Peak', 'dBTP', true),
   loudnessColumn('lra', 'LRA', 'LU'),
   loudnessColumn('plr', 'PLR', 'dB'),
+  // The DJ app's own auto gain (Traktor's deck gain, rekordbox's Auto Gain),
+  // from the backend's Track — not Konduktor's loudness store — so showing it
+  // fetches nothing. None sorts last, like an unmeasured loudness.
+  col.accessor((t) => t.auto_gain_db ?? undefined, {
+    id: 'auto_gain',
+    header: 'Auto Gain',
+    size: 104,
+    sortUndefined: 'last',
+    cell: (c) => {
+      const v = c.getValue() as number | undefined
+      if (v == null) return <span className="text-faint" title="No auto gain: Mastering ▸ Auto gain… sets one">—</span>
+      return (
+        <span className="whitespace-nowrap font-mono text-xs tabular-nums text-muted">
+          {formatLoudness(v, 'dB', true)}
+        </span>
+      )
+    },
+  }),
 ]
 
 function loudnessColumn(field: 'lufs' | 'rms' | 'true_peak' | 'lra' | 'plr', header: string, unit: string,
@@ -392,14 +410,17 @@ function loudnessColumn(field: 'lufs' | 'rms' | 'true_peak' | 'lra' | 'plr', hea
   })
 }
 
-/** The Mastering columns, in order: the column chooser's "Mastering ▸". */
+/** The loudness columns: shown, they fetch `/api/loudness` (see App). */
 export const MASTERING_COLUMNS: readonly string[] = ['lufs', 'rms', 'true_peak', 'lra', 'plr']
+/** The column chooser's "Mastering ▸", in order: loudness, then auto gain. */
+const MASTERING_MENU: readonly string[] = [...MASTERING_COLUMNS, 'auto_gain']
 const MASTERING_LABELS: Record<string, string> = {
   lufs: 'LUFS (integrated loudness)',
   rms: 'RMS (loudest sections)',
   true_peak: 'True Peak',
   lra: 'LRA (loudness range)',
   plr: 'PLR (peak to loudness)',
+  auto_gain: "Auto Gain (the DJ app's)",
 }
 
 // Traktor dates arrive as "YYYY/M/D" strings; show them compactly (or raw).
@@ -414,7 +435,7 @@ function formatDate(v: string | null): string {
  *  `group` puts a column in a submenu (the Mastering columns). */
 export const COLUMN_MENU: { id: string; label: string; group?: 'mastering' }[] = TRACK_COLUMNS.map((c) => {
   const id = c.id as string
-  const mastering = MASTERING_COLUMNS.includes(id)
+  const mastering = MASTERING_MENU.includes(id)
   return {
     id,
     label: MASTERING_LABELS[id] ?? (typeof c.header === 'string' ? c.header : id),

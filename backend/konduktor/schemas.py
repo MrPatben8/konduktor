@@ -171,15 +171,19 @@ class AnalyzeRequest(BaseModel):
     `replace_key` lets detection overwrite a key the track already has.
     Loudness is measured into Konduktor's own store (`loudness_store.py`), so
     it needs no capability and works for any `origin`; BPM / Grid / Key only
-    for the loaded library."""
+    for the loaded library. `gain` writes the DJ app's own auto gain from the
+    track's loudness (measured first where it has none, or a stale one) —
+    only where the track has none, unless `replace_gain`."""
     track_ids: list[str]
     bpm: bool = True
     grid: bool = True
     key: bool = False
     loudness: bool = False
+    gain: bool = False
     replace_grid: bool = False
     replace_key: bool = False
     replace_loudness: bool = False
+    replace_gain: bool = False
     origin: LoudnessOrigin = "collection"
 
 
@@ -207,6 +211,11 @@ class AnalyzePreview(BaseModel):
     loudness_measure: int = 0
     loudness_existing: int = 0  # skipped: measured, Replace not ticked
     with_loudness: int = 0      # tracks measured and not stale (the Replace tick's count)
+    # Auto gain (the DJ app's own field): a track that has one is skipped
+    # unless Replace is ticked.
+    gain_set: int = 0
+    gain_existing: int = 0      # skipped: has an auto gain, Replace not ticked
+    with_gain: int = 0          # tracks that have one (the Replace tick's count)
 
 
 class LoudnessRequest(BaseModel):

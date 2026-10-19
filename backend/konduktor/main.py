@@ -1557,7 +1557,13 @@ def auto_grid(body: AutoGridRequest) -> TrackCues:
     try:  # so is loudness, into Konduktor's own store — always re-measured here
         looked = _loud_lookup("collection", [body.track_id]).get(body.track_id)
         if looked is not None:
-            _measure_loudness(looked[0], looked[1], path)
+            values = _measure_loudness(looked[0], looked[1], path)
+            # ...and the DJ app's auto gain, where the track has none yet.
+            track = a.track(body.track_id)
+            caps = a.capabilities()
+            if (values is not None and caps.tracks.auto_gain and caps.writable
+                    and track is not None and track.auto_gain_db is None):
+                a.set_auto_gain(body.track_id, values)
     except _AnalysisError as ex:
         log.warning("no loudness for %s: %s", body.track_id, ex)
     except Exception:  # noqa: BLE001
@@ -1655,17 +1661,19 @@ def _analyse_grid(a, track_id: str, step: GridStep = GridStep("full"), *,
 
 
 def _require_analysable(body: AnalyzeRequest) -> None:
-    if not (body.bpm or body.grid or body.key or body.loudness):
-        raise HTTPException(400, "Nothing to analyse: tick BPM, Grid, Key or Loudness")
-    if not (body.bpm or body.grid or body.key):
+    if not (body.bpm or body.grid or body.key or body.loudness or body.gain):
+        raise HTTPException(400, "Nothing to analyse: tick BPM, Grid, Key, Gain or Loudness")
+    if not (body.bpm or body.grid or body.key or body.gain):
         return  # loudness: Konduktor's own store, so any track, any library
     if body.origin != "collection":
-        raise HTTPException(400, "BPM, grid and key are analysed only for the library's own tracks")
+        raise HTTPException(400, "BPM, grid, key and gain are analysed only for the library's own tracks")
     caps = require_adapter().capabilities()
     if (body.bpm or body.grid) and not caps.grid.editable:
         raise HTTPException(422, "This library's beatgrids cannot be edited")
     if body.key and not caps.tracks.key_writable:
         raise HTTPException(422, "This library's keys cannot be written")
+    if body.gain and not (caps.tracks.auto_gain and caps.writable):
+        raise HTTPException(422, "This library has no auto gain to write")
 
 
 def _grid_step(a, track, body: AnalyzeRequest, *, exact: bool) -> GridStep:
@@ -1686,6 +1694,10 @@ def _wants_key(track, body: AnalyzeRequest) -> bool:
     return body.key and (track.key_wheel is None or body.replace_key)
 
 
+def _wants_gain(track, body: AnalyzeRequest) -> bool:
+    return body.gain and (track.auto_gain_db is None or body.replace_gain)
+
+
 @app.post("/api/tracks/analyze/preview", response_model=AnalyzePreview)
 def analyze_preview(body: AnalyzeRequest) -> AnalyzePreview:
     """Counts for the Analyze dialog, from the same `plan_grid` the run uses
@@ -1693,6 +1705,8 @@ def analyze_preview(body: AnalyzeRequest) -> AnalyzePreview:
     a = require_adapter() if body.origin == "collection" else None
     looked = _loud_lookup(body.origin, body.track_ids) if body.loudness or a is None else {}
     out = AnalyzePreview(total=0)
+    # Gain needs a measurement; one the run would make anyway is not "busy"
+    # twice, so only the gain's own decision is counted here.
     for tid in dict.fromkeys(body.track_ids):
         if a is not None:
             track = a.track(tid)
@@ -1718,6 +1732,14 @@ def analyze_preview(body: AnalyzeRequest) -> AnalyzePreview:
                     out.key_set += 1
                 else:
                     out.key_existing += 1
+            if track.auto_gain_db is not None:
+                out.with_gain += 1
+            if body.gain:
+                if _wants_gain(track, body):
+                    out.gain_set += 1
+                    busy = True
+                else:
+                    out.gain_existing += 1
         if body.loudness:
             _target, facts, entry = looked.get(tid, (None, None, None))
             fresh = entry is not None and not entry.stale(facts)
@@ -1749,7 +1771,8 @@ def _analyse_one(a, track_id: str, body: AnalyzeRequest, result: dict) -> None:
     reported and does not stop the others: a track whose grid cannot be fitted
     (a one-shot) can still have a key, and the reverse."""
     try:
-        looked = _loud_lookup(body.origin, [track_id]).get(track_id) if body.loudness or a is None else None
+        wanted = body.loudness or body.gain or a is None
+        looked = _loud_lookup(body.origin, [track_id]).get(track_id) if wanted else None
     except HTTPException:  # the source went away mid-run
         looked = None
     if a is not None:
@@ -1775,13 +1798,25 @@ def _analyse_one(a, track_id: str, body: AnalyzeRequest, result: dict) -> None:
         want_loud = body.replace_loudness or entry is None or entry.stale(facts)
         if not want_loud:
             result["loudness"]["existing"] += 1
+    want_gain = a is not None and _wants_gain(track, body)
+    if body.gain and not want_gain:
+        result["gain"]["existing"] += 1
+    gain_values = None
+    if want_gain and looked is not None and not want_loud:
+        _target, facts, entry = looked
+        if entry is not None and not entry.stale(facts):
+            gain_values = entry.values  # measured and fresh: no decode for the gain
     want_grid = step.action in ("full", "bpm", "phase")
-    if not (want_grid or want_key or want_loud):
+    if not (want_grid or want_key or want_loud or want_gain):
         return
-    path = src.audio_path(sid)
-    if path is None or not path.exists():
-        result["failed"].append({"title": title, "reason": "Audio file not found (is the drive mounted?)"})
-        return
+    # A gain from a fresh measurement needs no audio (on a remote library,
+    # asking for the path would download the file).
+    path = None
+    if want_grid or want_key or want_loud or gain_values is None:
+        path = src.audio_path(sid)
+        if path is None or not path.exists():
+            result["failed"].append({"title": title, "reason": "Audio file not found (is the drive mounted?)"})
+            return
     wrote = False
     if want_grid or want_key:
         try:
@@ -1807,15 +1842,31 @@ def _analyse_one(a, track_id: str, body: AnalyzeRequest, result: dict) -> None:
                     wrote = True
             except (AdapterError, ValueError) as ex:
                 result["failed"].append({"title": title, "reason": f"Key: {ex}"})
-    if want_loud:
+    measured_now = False
+    if want_loud or (want_gain and gain_values is None):
         try:
-            if _measure_loudness(looked[0], looked[1], path) is None:
-                result["loudness"]["none"] += 1
-            else:
-                result["loudness"]["measured"] += 1
-                wrote = True
+            gain_values = _measure_loudness(looked[0], looked[1], path) if looked is not None else None
+            measured_now = True
+            if want_loud:
+                if gain_values is None:
+                    result["loudness"]["none"] += 1
+                else:
+                    result["loudness"]["measured"] += 1
+                    wrote = True
         except (_AnalysisError, AdapterError) as ex:
             result["failed"].append({"title": title, "reason": f"Loudness: {ex}"})
+            want_gain = False
+    if want_gain:
+        if gain_values is None:
+            if measured_now or looked is not None:
+                result["gain"]["none"] += 1
+        else:
+            try:
+                a.set_auto_gain(track_id, gain_values)
+                result["gain"]["set"] += 1
+                wrote = True
+            except AdapterError as ex:
+                result["failed"].append({"title": title, "reason": f"Gain: {ex}"})
     if wrote:
         result["analysed"].append(track_id)
 
@@ -1829,6 +1880,7 @@ def _analyze_job(a, body: AnalyzeRequest):
             "grid": {"full": 0, "bpm": 0, "phase": 0, "locked": 0, "existing": 0, "flexible": 0},
             "key": {"set": 0, "existing": 0, "none": 0},
             "loudness": {"measured": 0, "existing": 0, "none": 0},
+            "gain": {"set": 0, "existing": 0, "none": 0},
         }
         handle.progress(done=0, total=len(ids))
         for i, track_id in enumerate(ids):

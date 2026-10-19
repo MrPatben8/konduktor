@@ -833,8 +833,14 @@ with tempfile.TemporaryDirectory() as d:
           == {("agentRegistry", "UPDATE")}, describe(changes))
     check("into the tables Rekordbox writes for a new track",
           new_rows <= {"djmdContent", "djmdCue", "contentCue", "contentFile",
-                       "djmdArtist", "djmdKey"}, str(sorted(new_rows)))
+                       "djmdArtist", "djmdKey", "djmdMixerParam"}, str(sorted(new_rows)))
     after = dump(work)
+    # rekordbox's own add analyses an auto gain; without a row a track plays at
+    # 0.0 dB and loading never creates one (kit G2). The generated kick tracks
+    # are measurable, so each gets its row.
+    gains = {r["ContentID"] for r in after["djmdMixerParam"].values()}
+    check("every added track arrives with an auto gain (a djmdMixerParam row)",
+          all(i in gains for i in ids), str(sorted(set(ids) - gains)))
     rows = {i: after["djmdContent"][i] for i in ids}
     plain_row, prepped_row = rows[ids[0]], rows[ids[1]]
     check("the row is filled from the file",
@@ -974,6 +980,58 @@ with tempfile.TemporaryDirectory() as d:
     check("No Color writes '0'",
           [c[3].get("ColorID", (None, None))[1] for c in changes if c[0] == "djmdContent"] == ["0"],
           describe(changes))
+    adapter.close()
+
+    print("== M: auto gain is one djmdMixerParam row (+ the counter), as rekordbox writes it ==")
+    # Measured (kit G2): Gain = 10^((-10 - LUFS)/20) as float32 halves; Peak =
+    # the clipped sample peak; a track with no row plays at 0.0 dB.
+    import struct as _struct
+
+    from konduktor.core.loudness import Loudness
+
+    def _lin(hi, lo):
+        return _struct.unpack(">f", _struct.pack(">I", ((hi & 0xFFFF) << 16) | (lo & 0xFFFF)))[0]
+
+    clean_copy(REAL, work)
+    before = dump(work)
+    adapter = RekordboxAdapter(work)
+    bare = next((t for t in adapter.tracks if t.auto_gain_db is None), None)
+    if bare is None:
+        print("  [SKIP] every track already has a MixerParam row")
+    else:
+        measured = Loudness(lufs=-13.0, rms=-11.0, true_peak=2.5, lra=6.0, plr=15.5)
+        got = adapter.set_auto_gain(bare.id, measured)
+        check("the projection updates immediately", got is not None and abs(got.auto_gain_db - 3.0) < 1e-4,
+              str(got and got.auto_gain_db))
+        adapter.save()
+        after = dump(work)
+        changes = diff(before, after)
+        check("exactly one MixerParam INSERT and the counter",
+              {t for t, _, _, _ in changes} == {"djmdMixerParam", "agentRegistry"} and len(changes) == 2,
+              describe(changes))
+        new = [c for c in changes if c[0] == "djmdMixerParam"]
+        if new:
+            row = new[0][3]
+            check("ContentID, UUID-string ID and UUID, stamped with a USN",
+                  row["ContentID"] == bare.id and len(row["ID"]) == 36 and len(row["UUID"]) == 36
+                  and row["rb_local_usn"] is not None, str(row))
+            check("Gain = 10^((-10 - LUFS)/20) as float32 halves",
+                  abs(_lin(row["GainHigh"], row["GainLow"]) - 10 ** (3.0 / 20)) < 1e-6, str(row))
+            check("Peak clipped at 0 dBFS (1.0) as rekordbox's own is",
+                  abs(_lin(row["PeakHigh"], row["PeakLow"]) - 1.0) < 1e-6, str(row))
+        before = after
+        adapter.set_auto_gain(bare.id, measured)
+        check("writing the same gain again is not an edit", not adapter.dirty)
+        adapter.set_auto_gain(bare.id, Loudness(lufs=-8.0, rms=-6.0, true_peak=-1.0, lra=4.0, plr=7.0))
+        adapter.save()
+        changes = diff(before, dump(work))
+        check("a new value UPDATES that row only (+ the counter)",
+              sorted((t, k) for t, _, k, _ in changes) == [("agentRegistry", "UPDATE"), ("djmdMixerParam", "UPDATE")],
+              describe(changes))
+        reopened = RekordboxAdapter(work)
+        check("the gain projects after a reopen (-2.0 dB)",
+              abs((reopened.track(bare.id).auto_gain_db or 0) + 2.0) < 1e-4)
+        reopened.close()
     adapter.close()
 
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")

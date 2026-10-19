@@ -263,6 +263,25 @@ with tempfile.TemporaryDirectory() as d:
     check("storing without the session is refused (423)", r.status_code == 423, r.text[:200])
     check("…and a measurement leaves nothing unsaved", not c.get("/api/state").json()["dirty"])
 
+    print("== auto gain: computed here from the server's measurement, written on the server ==")
+    r = c.post("/api/tracks/analyze", json={"track_ids": [target], "bpm": False, "grid": False,
+                                             "gain": True, "replace_gain": True})
+    job = r.json()
+    for _ in range(200):
+        j = c.get(f"/api/jobs/{job['id']}").json()
+        if j["state"] != "running":
+            break
+        time.sleep(0.05)
+    lufs = vals[target]["lufs"]
+    got = c.get("/api/tracks", params={"limit": 20000}).json()
+    row = next((t for t in got["items"] if t["id"] == target), None)
+    check("the gain is -9.2 - LUFS, from the stored measurement (no new download)",
+          j["state"] == "done" and j["result"]["gain"]["set"] == 1 and row is not None
+          and abs(row["auto_gain_db"] - (-9.2 - lufs)) < 1e-4 and downloads == [target], str(j)[:300])
+    c.post("/api/save")
+    check("…and Save writes it into the server's collection",
+          b'PERCEIVED_DB="%.6f"' % round(-9.2 - lufs, 6) in work.read_bytes())
+
     print("== export, from the server's library ==")
     dest = root / "stick"
     r = c.post("/api/exports", json={"name": "Gig", "targets": ["traktor"], "destination": str(dest)})

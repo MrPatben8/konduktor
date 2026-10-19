@@ -76,6 +76,10 @@ class Track(BaseModel):
     # code by the adapter. None = no colour.
     color: TrackColor | None = None
     color_hex: str | None = None
+    # The DJ app's own auto gain for the track in dB (Traktor's deck gain,
+    # rekordbox's Auto Gain), as the adapter reads it. None = the track has
+    # none, which is what "fill where missing" looks for.
+    auto_gain_db: float | None = None
 
 
 class TrackPage(BaseModel):

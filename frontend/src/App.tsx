@@ -104,7 +104,9 @@ export default function App() {
   // run is placing cues on.
   // The Analyze dialog's selection, and whose ids they are (a device's or a
   // folder's loose files can only have their loudness measured).
-  const [analyzing, setAnalyzing] = useState<{ ids: string[]; origin: TrackOrigin } | null>(null)
+  const [analyzing, setAnalyzing] = useState<
+    { ids: string[]; origin: TrackOrigin; preset?: 'loudness' | 'gain' } | null
+  >(null)
   const [cueBatch, setCueBatch] = useState<{ ids: string[]; withoutGrid: number } | null>(null)
   const [batchJob, setBatchJob] = useState<{ id: string; kind: 'grid' | 'cues' | 'stems' } | null>(null)
   // Convert to Stems: the dialog's selection, a finished run's Details, and a
@@ -779,6 +781,7 @@ export default function App() {
         g.phase ? `${plural(g.phase, 'grid')} at its BPM` : '',
         r.key.set ? plural(r.key.set, 'key') : '',
         r.loudness?.measured ? `loudness of ${r.loudness.measured}` : '',
+        r.gain?.set ? `auto gain of ${r.gain.set}` : '',
       ].filter(Boolean)
       const skipped = [
         g.existing ? `${g.existing} with a grid` : '',
@@ -786,6 +789,7 @@ export default function App() {
         g.flexible ? `${g.flexible} multi-tempo` : '',
         r.key.existing ? `${r.key.existing} with a key` : '',
         r.loudness?.existing ? `${r.loudness.existing} already measured` : '',
+        r.gain?.existing ? `${r.gain.existing} with an auto gain` : '',
       ].filter(Boolean)
       parts = [
         `${cancelled ? 'Cancelled — analyzed' : 'Analyzed'} ${plural(r.analysed.length, 'track')}` +
@@ -793,6 +797,7 @@ export default function App() {
         skipped.length ? `skipped ${skipped.join(', ')}` : '',
         r.key.none ? `no key found in ${r.key.none}` : '',
         r.loudness?.none ? `nothing to measure in ${r.loudness.none} (silent or under 3 s)` : '',
+        r.gain?.none ? `no auto gain for ${r.gain.none} (silent or under 3 s)` : '',
       ]
     } else {
       const r = job.result as unknown as CueBatchResult
@@ -1000,6 +1005,7 @@ export default function App() {
   // Grid / Key with a reason where they cannot be stored.
   const canAnalyzeGrid = !!capabilities.data?.grid.editable
   const canAnalyzeKey = !!capabilities.data?.tracks.key_writable
+  const canAutoGain = !!capabilities.data?.tracks.auto_gain
   const analyzeOrigin = (ids: string[]): TrackOrigin =>
     viewingDevice ? 'device' : viewingFolder && ids.some((id) => !folderFiles[id]) ? 'folder' : 'collection'
   /** Why BPM / Grid / Key cannot be analysed for these tracks at all, if so. */
@@ -1329,6 +1335,30 @@ export default function App() {
               disabled: !!batchJob,
               onClick: () => setAnalyzing({ ids: menu.ids, origin: analyzeOrigin(menu.ids) }),
             },
+            // Level work in one place: the same Analyze run, opened for one
+            // option (its remembered ticks untouched).
+            {
+              label: 'Mastering',
+              submenu: [
+                {
+                  label: 'Auto gain…',
+                  hint: batchJob ? 'busy' : undefined,
+                  disabled: !!batchJob || analyzeRefusal(analyzeOrigin(menu.ids)) !== null || !canAutoGain,
+                  title:
+                    analyzeRefusal(analyzeOrigin(menu.ids)) ??
+                    (canAutoGain ? undefined : 'This library has no auto gain'),
+                  onClick: () =>
+                    setAnalyzing({ ids: menu.ids, origin: analyzeOrigin(menu.ids), preset: 'gain' }),
+                },
+                {
+                  label: 'Measure loudness',
+                  hint: batchJob ? 'busy' : undefined,
+                  disabled: !!batchJob,
+                  onClick: () =>
+                    setAnalyzing({ ids: menu.ids, origin: analyzeOrigin(menu.ids), preset: 'loudness' }),
+                },
+              ],
+            },
             // The deck's ✨ Auto covers a single loaded track, with its
             // existing cues shown; this is the same template over the selection.
             ...(canAutoCue
@@ -1460,6 +1490,8 @@ export default function App() {
           origin={analyzing.origin}
           gridWhy={analyzeRefusal(analyzing.origin) ?? (canAnalyzeGrid ? null : "This library's beatgrids cannot be edited")}
           keyWhy={analyzeRefusal(analyzing.origin) ?? (canAnalyzeKey ? null : 'This library cannot store a key')}
+          gainWhy={analyzeRefusal(analyzing.origin) ?? (canAutoGain ? null : 'This library has no auto gain')}
+          preset={analyzing.preset}
           onRun={(opts) => runAnalysis(analyzing.ids, opts)}
           onClose={() => setAnalyzing(null)}
           onError={onError}

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from .capabilities import Capabilities, TrackColor
+from .loudness import Loudness
 from .model import Facets, PlaylistNode, Stats, Track, TrackCues, TrackPage
 from .pathmap import PathMapping
 from .relocate import PathGroup
@@ -110,13 +111,16 @@ class PreparedAnalysis:
     its own copy and the result travels with the track. `measured` is a
     `core.waveform.Analysis` measured with the file's own time-base lead,
     `markers` the detected grid (empty: none found) and `key` the detected
-    `core.key_detect.KeyResult` (None: not asked for, or none found). Absent,
-    the adapter decodes as before.
+    `core.key_detect.KeyResult` (None: not asked for, or none found), and
+    `loudness` the file's `core.loudness.Loudness` where the platform keeps an
+    auto gain (None: not asked for, or not measurable). Absent, the adapter
+    decodes as before.
     """
 
     measured: object
     markers: list = field(default_factory=list)
     key: object | None = None
+    loudness: object | None = None
 
 
 @dataclass
@@ -299,6 +303,12 @@ class LibraryAdapter(Protocol):
     # The track's colour tag (None clears it), mapped onto the platform's own
     # palette by name. Gated on `tracks.colors` being non-empty.
     def set_track_color(self, track_id: str, color: TrackColor | None) -> Track | None: ...
+    # The DJ app's auto gain, computed BY THE ADAPTER from the track's measured
+    # loudness (the platform's reference level is platform knowledge: Traktor
+    # levels to -9.2 LUFS, rekordbox to -10, both measured 2026-10-19). Writes
+    # whatever is there; whether to (fill vs replace) is the caller's call.
+    # Gated on `tracks.auto_gain`.
+    def set_auto_gain(self, track_id: str, loudness: Loudness) -> Track | None: ...
     def set_cover_art(self, track_id: str, data: bytes, mime: str) -> None: ...
     def cover_art(self, track_id: str) -> tuple[bytes, str] | None: ...
 

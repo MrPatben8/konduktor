@@ -158,6 +158,9 @@ class AppState:
         if saved:
             adapter.set_path_mapping(PathMapping.make(saved["from"], saved["to"]))
         self.path, self.adapter = path, adapter
+        # A measurement the adapter makes while adding a track (rekordbox's add
+        # writes the auto gain from one) is kept for the Mastering columns.
+        adapter.on_loudness = self._keep_loudness
         caps = adapter.capabilities()
         # No sidecar beside a removable library: writing to a user's USB stick to
         # satisfy Konduktor's own bookkeeping is not a trade worth making. Those
@@ -187,6 +190,14 @@ class AppState:
         self.services.baseline()
         for hook in self.open_hooks:
             hook(adapter)
+
+    def _keep_loudness(self, path, values) -> None:
+        from . import loudness_store
+
+        try:
+            self.loudness.put(loudness_store.file_facts(path), values)
+        except OSError:
+            log.warning("could not store the loudness of %s", path, exc_info=True)
 
     def _release_previous(self) -> None:
         previous = self.adapter

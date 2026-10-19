@@ -410,6 +410,12 @@ class OneLibraryAdapter:
         self._refresh(track_id)
         return self._index.get(track_id)
 
+    def set_auto_gain(self, track_id: str, loudness) -> Track | None:
+        # Measured (kit G2): no stick format carries an auto gain — not the
+        # database, not export.pdb, not the analysis files. `tracks.auto_gain`
+        # is False, so nothing offers it.
+        raise Unsupported("A OneLibrary drive has no auto gain: level a stick by normalising its audio")
+
     def set_cover_art(self, track_id: str, data: bytes, mime: str) -> None:
         self._refuse("Editing cover art")
 

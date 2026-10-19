@@ -221,6 +221,9 @@ class RemoteAdapter:
     def set_track_color(self, track_id, color):
         return self._call("set_track_color", track_id=track_id, color=color)
 
+    def set_auto_gain(self, track_id, loudness):
+        return self._call("set_auto_gain", track_id=track_id, loudness=loudness)
+
     def set_cue(self, track_id, *, slot, start_sec, cue_type, length_sec=0.0, role="hotcue", name=None):
         return self._call("set_cue", track_id=track_id, slot=slot, start_sec=start_sec,
                           cue_type=cue_type, length_sec=length_sec, role=role, name=name)
@@ -332,7 +335,8 @@ class RemoteAdapter:
                     checkpoint(f"Analysing {item.track.title or source.name} ({n}/{total})", step=n, of=total)
                 has_grid = bool(item.cues and item.cues.grid_markers)
                 analysis = add_analysis.prepare(source, lead=lead, detect=not has_grid,
-                                                detect_key=item.track.key_wheel is None)
+                                                detect_key=item.track.key_wheel is None,
+                                                measure_loudness=self.capabilities().tracks.auto_gain)
             art = rp.WireArt(data=base64.b64encode(item.art[0]).decode("ascii"), mime=item.art[1]) \
                 if item.art else None
             wire.append(rp.WireNewTrack(track=item.track, audio_path=key, cues=item.cues, art=art,

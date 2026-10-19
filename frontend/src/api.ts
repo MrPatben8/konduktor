@@ -43,6 +43,9 @@ export interface Track {
    *  library's own display colour for it; both null when uncoloured. */
   color: TrackColor | null
   color_hex: string | null
+  /** The DJ app's own auto gain in dB (Traktor's deck gain, rekordbox's Auto
+   *  Gain); null = the track has none. */
+  auto_gain_db: number | null
   /** The Mastering columns' values — NOT part of the backend's `Track`: joined
    *  in client-side from `/api/loudness` (Konduktor's own store, keyed by the
    *  FILE), and only while a Mastering column is shown. Absent = unmeasured. */
@@ -311,6 +314,8 @@ export interface Capabilities {
     reference: boolean
     /** The track colours this library can store; empty = no track colour. */
     colors: ColorSwatch[]
+    /** The library keeps a per-track auto gain (`Track.auto_gain_db`). */
+    auto_gain: boolean
   }
   playlists: {
     folders: boolean
@@ -617,9 +622,12 @@ export interface AnalyzeOptions {
   grid: boolean
   key: boolean
   loudness: boolean
+  /** Write the DJ app's auto gain from the loudness (measured first if needed). */
+  gain: boolean
   replace_grid: boolean
   replace_key: boolean
   replace_loudness: boolean
+  replace_gain: boolean
   origin: TrackOrigin
 }
 
@@ -643,6 +651,10 @@ export interface AnalyzePreview {
   loudness_existing: number
   /** Measured and not stale — the loudness Replace tick's count. */
   with_loudness: number
+  gain_set: number
+  gain_existing: number
+  /** Tracks with an auto gain — the gain Replace tick's count. */
+  with_gain: number
 }
 
 /** What an Analyze run did. */
@@ -652,6 +664,7 @@ export interface AnalyzeResult {
   grid: { full: number; bpm: number; phase: number; locked: number; existing: number; flexible: number }
   key: { set: number; existing: number; none: number }
   loudness: { measured: number; existing: number; none: number }
+  gain: { set: number; existing: number; none: number }
 }
 
 /** What a batch Auto Hotcues run did. `tracks` got the template (whatever it

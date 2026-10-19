@@ -174,6 +174,8 @@ def to_track(e) -> Track:
         media_kind="stem" if getattr(e, "stems", None) is not None else "audio",
         color=track_palette.color_for(info.color if info else None),
         color_hex=track_palette.hex_for(info.color if info else None),
+        # The deck's gain knob reads PERCEIVED_DB (kit G1).
+        auto_gain_db=e.loudness.perceived_db if e.loudness is not None else None,
     )
 
 

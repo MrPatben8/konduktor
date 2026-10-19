@@ -47,7 +47,7 @@ from ...core.adapter import (
 from ...core.edit_journal import EditJournal
 from ...core.grid_edit import ReplaceGridCommands
 from ...core.pathmap import PathMapping, stored_form
-from . import memory_palette, timebase, track_palette
+from . import gain, memory_palette, timebase, track_palette
 from .cue_types import MAX_MEMORY_CUES, beat_loop_size, kind_for, role_and_slot
 
 log = logging.getLogger(__name__)
@@ -573,6 +573,49 @@ class RekordboxStore(ReplaceGridCommands):
         # A foreign key into djmdColor: flush + expire, as for the others.
         self._db.flush()
         self._db.session.expire(row)
+
+    # ---- auto gain ------------------------------------------------------------
+    def _mixer_row(self, track_id: str):
+        return (self._db.query(self._tables.DjmdMixerParam)
+                .filter(self._tables.DjmdMixerParam.ContentID == str(track_id)).first())
+
+    def mixer_gains(self) -> dict[str, float]:
+        """``{track_id: auto gain dB}`` for every track with a row — ONE query, so
+        the projection never lazy-loads a relationship per track."""
+        t = self._tables.DjmdMixerParam
+        out = {}
+        for content_id, low, high in self._db.query(t.ContentID, t.GainLow, t.GainHigh).all():
+            if content_id is not None and low is not None and high is not None:
+                out[str(content_id)] = t._get_db(low, high)
+        return out
+
+    def mixer_gain(self, track_id: str) -> float | None:
+        row = self._mixer_row(track_id)
+        if row is None or row.GainLow is None or row.GainHigh is None:
+            return None
+        return row.Gain
+
+    def set_auto_gain(self, track_id: str, loudness) -> None:
+        """The track's `djmdMixerParam` row (see `gain`), created as rekordbox
+        creates its own — `ID` and `UUID` both UUID strings — and through the
+        ORM, so `commit()` stamps `rb_local_usn`. Writing the halves already
+        there leaves the library clean."""
+        self.content(track_id)  # NotFound for an unknown track
+        gain_db, peak_db = gain.values(loudness)
+        t = self._tables.DjmdMixerParam
+        g_low, g_high = t._set_db(gain_db)
+        p_low, p_high = t._set_db(peak_db)
+        row = self._mixer_row(track_id)
+        before = None if row is None else (row.GainHigh, row.GainLow, row.PeakHigh, row.PeakLow)
+        after = (g_high, g_low, p_high, p_low)
+        if before == after:
+            return
+        if row is None:
+            row = t(ID=str(uuid.uuid4()), ContentID=str(track_id), UUID=str(uuid.uuid4()))
+            self._db.add(row)
+        row.GainHigh, row.GainLow, row.PeakHigh, row.PeakLow = after
+        self._journal.record("track", "set", track_id, "auto_gain", before, after)
+        self._db.flush()
 
     # ---- writes: playlists ------------------------------------------------
     def _playlist(self, node_id: str):

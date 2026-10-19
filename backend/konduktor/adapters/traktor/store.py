@@ -38,6 +38,7 @@ from traktor_nml_utils.models.collection import (
     Infotype,
     MusicalKeytype,
     Locationtype,
+    Loudnesstype,
     Nodetype,
     Playlisttype,
     Primarykeytype,
@@ -54,7 +55,7 @@ from ...core.pathmap import PathMapping, stored_form
 from ...core.relocate import PathGroup
 from ...core.stem_file import NML_STEMS_JSON, nml_stems_for
 from ...schemas import PlaylistNode
-from . import beatgrid, timebase, track_palette
+from . import beatgrid, gain, timebase, track_palette
 from .locations import os_path_to_location, resolve_path
 from ...core import musical_key
 from .projection import iso_date, musical_key_value, traktor_date, with_memory_ids
@@ -448,7 +449,8 @@ class TraktorStore:
     # Fields that live only in the collection: Traktor itself writes no file tag
     # for "Comment 2" (verified on an m4a it had just edited), so neither do we.
     # Nor for the track colour (kit T1: no audio file's mtime moved).
-    _COLLECTION_ONLY_FIELDS = {"comment2", "color"}
+    # Nor for its auto gain (LOUDNESS is Traktor's own analysis output).
+    _COLLECTION_ONLY_FIELDS = {"comment2", "color", "auto_gain"}
 
     def set_track_metadata(self, track_id: str, fields: dict) -> None:
         with self._lock:
@@ -565,6 +567,24 @@ class TraktorStore:
                 entry.info = Infotype()
             entry.info.color = code
             self._journal.record("track", "set", track_id, "color", before, code)
+            self.dirty = True
+
+    # ---- auto gain --------------------------------------------------------
+    def set_auto_gain(self, track_id: str, loudness) -> None:
+        """`<LOUDNESS>` from a measurement (see `gain`). The element is replaced
+        whole; a write of the values already there leaves the store clean."""
+        peak, perceived, analyzed = gain.values(loudness)
+        with self._lock:
+            entry = self._entry_by_key.get(track_id)
+            if entry is None:
+                raise PlaylistError(f"Track not found: {track_id}")
+            old = entry.loudness
+            before = None if old is None else (old.peak_db, old.perceived_db, old.analyzed_db)
+            after = (peak, perceived, analyzed)
+            if before == after:
+                return
+            entry.loudness = Loudnesstype(peak_db=peak, perceived_db=perceived, analyzed_db=analyzed)
+            self._journal.record("track", "set", track_id, "auto_gain", before, after)
             self.dirty = True
 
     # ---- adding tracks --------------------------------------------------

@@ -20,6 +20,9 @@ from types import SimpleNamespace
 import numpy as np
 
 REAL = Path(__file__).resolve().parents[1] / "collection.nml"
+# Loudness (and its store) is measured by these routes too: keep it out of the
+# real app-data. Set before konduktor is imported.
+os.environ["KONDUKTOR_DATA_DIR"] = tempfile.mkdtemp(prefix="konduktor-grid-batch-appdata-")
 
 failed = False
 
@@ -338,6 +341,46 @@ with tempfile.TemporaryDirectory() as d:
         main.key_detect.detect_key_samples = lambda y, sr: (_ for _ in ()).throw(RuntimeError("boom"))
         r = c.post("/api/tracks/grid/auto", json={"track_id": bare[1]})
         check("…and a failing key never fails the grid", r.status_code == 200, r.text[:200])
+
+        # Gain: the DJ app's auto gain from the stored loudness — measured
+        # first where there is none, skipped where the track has a gain unless
+        # Replace. Traktor's value is -9.2 - LUFS (kit G1).
+        from konduktor.core.loudness import Loudness
+
+        measured: list[str] = []
+        main.loudness.measure_file = lambda p: (measured.append(str(p))
+                                                or Loudness(lufs=-12.0, rms=-10.0, true_peak=-1.0, lra=5.0, plr=11.0))
+        has = [t.id for t in a.tracks if t.auto_gain_db is not None][:2]
+        lacks = [t.id for t in a.tracks if t.auto_gain_db is None][:2]
+        # A file of its own per track: the store is keyed by the FILE.
+        files = {}
+        for n, tid in enumerate(has + lacks):
+            files[tid] = Path(d) / f"gain-{n}.bin"
+            files[tid].write_bytes(b"x" * (100 + n))
+        a.audio_path = lambda tid: files.get(tid, Path(__file__))
+        gain_only = {"bpm": False, "grid": False, "key": False, "gain": True}
+        pv = c.post("/api/tracks/analyze/preview", json={"track_ids": has + lacks, **gain_only}).json()
+        check("preview: Gain fills the tracks without one, skips the rest",
+              (pv["gain_set"], pv["gain_existing"], pv["with_gain"], pv["tracks_to_analyze"])
+              == (len(lacks), len(has), len(has), len(lacks)), str(pv))
+        before_has = {t: a.track(t).auto_gain_db for t in has}
+        res = run(track_ids=has + lacks, **gain_only)
+        check("the run's counts match the preview",
+              (res["gain"]["set"], res["gain"]["existing"]) == (len(lacks), len(has)), str(res["gain"]))
+        check("…a missing gain is written as -9.2 - LUFS",
+              all(abs(a.track(t).auto_gain_db - 2.8) < 1e-6 for t in lacks),
+              str([a.track(t).auto_gain_db for t in lacks]))
+        check("…measuring each track first (it had no loudness)", len(measured) == len(lacks), str(measured))
+        check("…and an existing gain is left alone", {t: a.track(t).auto_gain_db for t in has} == before_has)
+        measured.clear()
+        res = run(track_ids=has, replace_gain=True, **gain_only)
+        check("Replace gain overwrites them", res["gain"]["set"] == len(has)
+              and all(abs(a.track(t).auto_gain_db - 2.8) < 1e-6 for t in has), str(res["gain"]))
+        check("…measuring the tracks that had no loudness", len(measured) == len(has), str(measured))
+        measured.clear()
+        res = run(track_ids=lacks, replace_gain=True, **gain_only)
+        check("a fresh measurement is reused, not decoded again",
+              res["gain"]["set"] == len(lacks) and measured == [], str(measured))
         check("nothing reached disk", work.read_bytes() == REAL.read_bytes())
 
 print("== BPM alone / Grid alone write through the hand-edit commands ==")
