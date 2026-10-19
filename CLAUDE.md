@@ -149,6 +149,22 @@ Two independent apps that talk over HTTP:
       always skipped. `main._analyse_grid` writes each through the hand-edit
       command for the same thing — `set_grid_marker_bpm(0)` / `move_grid_marker(0)`
       — so companions, marker names and time bases behave as for a hand edit.
+    - `loudness.py` — **loudness measurement**, the Mastering columns
+      (decided 2026-10-19, [the discussion](.claude/discussions/discuss-loudness-analysis-2026-10-19.md)):
+      integrated LUFS (BS.1770-4 / R128 gating), LRA (Tech 3342), true peak
+      (4x oversampled below 96 kHz), PLR (= true peak − LUFS) and **RMS = the
+      DR meter's convention**: power in non-overlapping 3 s blocks, channels
+      averaged, the mean of the LOUDEST 20%, AES17 sine-referenced (a full-scale
+      sine reads 0 dB, a square +3) — unweighted, so beside LUFS it shows bass
+      weight, and a long intro does not pull it down. It decodes on its OWN, at
+      the file's rate and channels: the analysis decode (mono 22.05 kHz) cannot
+      serve BS.1770 (it sums channel POWERS) nor true peak. Streams in chunks
+      from per-100 ms sums, so memory stays at seconds of audio; ~1 s per
+      track. Matches FFmpeg's `ebur128` (in PyAV's wheel — `test_loudness.py`
+      uses it as the reference meter) to 0.01 LU; on an inter-sample peak it is
+      closer to exact than FFmpeg's interpolator. Mixed In Key, the requester's
+      reference, shows no RMS or LUFS at all (researched), so nothing was
+      matched. `VERSION` bumps make stored values stale.
     - `key_detect.py` + `key_model.npz` — **musical key detection**: a small
       CNN (Korzeniowski & Widmer 2017 — five 5x5 convs, a per-frame dense layer
       over the WHOLE pitch axis, since a key is not pitch-invariant, logits
@@ -733,6 +749,29 @@ Two independent apps that talk over HTTP:
     `RelocateDialog` always asks — found volumes ticked, ambiguous ones a
     radio with nothing preselected, missing ones "Not connected" with a
     "Map by hand…" link to `PathMappingDialog`; no backdrop-click dismiss.
+  - `loudness_store.py` — **where loudness lives: Konduktor's own store, keyed
+    by the audio file's PATH** (SQLite in app-data; stdlib, so the server has it
+    too) — never the library, never file tags (a measurement can be redone
+    from the audio, and nothing but Konduktor would read a tag). Size + mtime
+    are recorded but are NOT the key: a changed file keeps its value, shown
+    STALE (dimmed, still sorted on, offered for re-analysis), because a changed
+    mtime almost always means another app rewrote the tags. `AppState._save`
+    `refresh`es the facts of every file Konduktor itself just tagged, so its
+    own writes never stale a value; `/api/library/remap-paths` `remap`s the
+    keys. Written AT ONCE, outside the edit/Save cycle — never dirty, survives
+    Discard. `STATE.loudness` is this computer's store, or for a remote library
+    `RemoteLoudnessStore` (the SERVER's: `/v1/loudness/get`, `PUT /v1/loudness`
+    — session required, not `touch`ed). `main._loud_target(origin, id)` picks
+    source + store per id: collection = the library's; device / Files folder =
+    this computer's; a folder id that is not a listed file falls back to the
+    collection (a folder view's held rows). `/api/loudness` serves a list's
+    values through `audio_facts` (never downloads); Analyze's Loudness tick and
+    `/api/tracks/loudness` (the deck where no grid can be written) measure, for
+    ANY origin — BPM / Grid / Key stay collection-only (400 otherwise). Convert
+    to Stems RE-measures a stem file whose original was measured (AAC can move
+    the true peak; never carried over): `convert.stem_loudness` after the
+    build, stored at publish by the shared `_end_step` — remotely, the value
+    rides `/v1/stems/stage`.
   - `prefs.py` — persisted user prefs (`userprefs.json` in the per-OS app-data
     dir). Last-opened collection (global AND per-platform), library column
     layout, prep-deck zoom, import destination. Best-effort, but **every
@@ -1004,9 +1043,13 @@ Two independent apps that talk over HTTP:
     shown where Save is pressed). `Toast` takes an optional `action`;
     `StatusJob.unit: 'bytes'` shows a download in MB. Every background job's status-bar entry reads label + count · a bar SPLIT horizontally when the job reports per-item progress (top = the current item's `fraction`, 0-100 %; bottom = the whole job, (done + fraction) / total, so 99 % into the first of two tracks reads ~50 %) — a single bar otherwise; two colours in one bar was tried and read as confusing · its `status` ("separating 41 %") at its natural width · the item's name LAST (the only part that truncates; full name on hover). The section is a FIXED width (560 px; the view name on the left gives way instead) and everything BEFORE the bar is fixed (count sized for its largest value, "cancelling…" as a status, not a label), so neither a long name nor a phase change moves the bar. The status deliberately has no fixed slot: it is after the bar, and a slot left a gap before the name. `Job.fraction`/`status` come from `JobHandle.progress(fraction=, status=)` and reset whenever `done` advances; a stem conversion maps decode / separate / encode onto a track's 0-1 by measured shares.
     `AnalyzeDialog` (the context menu's **Analyze…**, decided 2026-10-04:
-    BPM / Grid / Key ticks, remembered as `analyzeWhat`, each disabled with a
-    reason where the library cannot store it — offered when EITHER grids or
-    keys are writable; the Replace questions are inside the dialog, never a
+    BPM / Grid / Key / Loudness ticks, remembered as `analyzeWhat` (a tick that
+    was disabled keeps its saved value), BPM / Grid / Key each disabled with a
+    reason where they cannot be stored (`gridWhy` / `keyWhy`: a device, loose
+    files, a read-only library). Loudness is never disabled, so the item is
+    offered for ANY selection, with the selection's `origin` (2026-10-19);
+    where loudness is all that can be done it is pre-ticked. The Replace
+    questions (loudness: "Measure again") are inside the dialog, never a
     second popup, and never remembered: the grid's only when BPM AND Grid are
     ticked, since with one tick adjusting the grid is the point. Every count
     and the "Analyze N" button come from `/api/tracks/analyze/preview`, i.e.
@@ -1186,6 +1229,14 @@ Two independent apps that talk over HTTP:
 - `lib/trackColumns.tsx` — single source of truth for the library table's
     columns (defs, default widths/visibility/order, the Columns-menu list, the
     inline `InlineEdit` cell, and the `TableMeta.onEditField` augmentation).
+    The five **Mastering** columns (LUFS, RMS, True Peak, LRA, PLR; hidden by
+    default) sit in the header chooser's first submenu (`COLUMN_MENU`'s
+    `group`); cells carry their unit (`formatLoudness`), stale = dimmed with a
+    tooltip. Their accessor returns `undefined` when unmeasured with
+    `sortUndefined: 'last'` — TanStack sorts `null` as 0, which would rank
+    every unmeasured track loudest. `Track.loudness` is NOT the backend's: App
+    joins `/api/loudness` into the rows (`['loudness', origin, hash of ids]`),
+    only while a Mastering column is visible; analyses invalidate `['loudness']`.
   - Data flow: the whole library is fetched once (`/api/tracks?limit=20000`);
     filtering and sorting happen **client-side** for instant interaction. Edits
     apply in-memory (server holds them) and the sidebar **Save to Traktor**
@@ -1456,6 +1507,22 @@ serialization path.** It enforces:
   model), loudness / sample-rate invariance, None for silence, and the numpy
   convolution against a direct implementation. Accuracy on real music is
   `bench_key_detect.py`'s job (GiantSteps + any folder of key-tagged files).
+- `test_loudness.py` — loudness measurement on GENERATED signals against
+  FFmpeg's `ebur128` through PyAV (integrated ±0.1 LU, LRA ±0.3, true peak
+  ±0.2 dB, 44.1/48 kHz, mono), the standard's anchors (a -23 dBFS 1 kHz stereo
+  sine = -23.0 LUFS; an inter-sample peak = -6.02 dBTP), RMS's definition (a
+  full-scale sine 0.0, a square +3.01, a long quiet intro moves nothing),
+  silence / under 3 s = None, chunked feeding equals one pass, and real files
+  at their own rate and channels.
+- `test_loudness_store.py` — the store (stale on facts or version, remap with
+  the new path winning, concurrent writers) and the routes on generated FLACs:
+  a Files folder measured with BPM refused, preview counts = the run's, skip
+  unless Replace, a touched file stale with its value kept, the deck route,
+  the same file's value seen from the collection, a Save's own tag write not
+  staling it, Discard keeping it, a remap carrying it, a device's undecodable
+  stubs reported per track. `test_stems_batch.py` / `test_remote_stems.py`
+  pin the stem re-measure, `test_remote_adapter.py` the server-side store
+  (423 without the session, 503 once taken over).
 - `test_auto_hotcues.py` — Auto Hotcues in three layers: `structure.analyse`
   on SYNTHETIC audio with known sections (the intro with a kick is not a drop;
   no breakdown after the last drop), `plan`'s outcomes and beat-counted offsets

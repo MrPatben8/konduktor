@@ -24,6 +24,7 @@ human summary, and this module versions them.
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from pathlib import Path
@@ -34,6 +35,8 @@ from .core.adapter import LibraryAdapter
 from .core.pathmap import PathMapping
 from .relocation import RelocationCheck
 from .services import LibraryServices, LocalServices
+
+log = logging.getLogger(__name__)
 
 
 class AppState:
@@ -74,6 +77,21 @@ class AppState:
         # restore, which reopens): how a Konduktor SERVER re-applies the path
         # mapping its configuration names, which lives in no prefs file.
         self.open_hooks: list = []
+        # A remote library's loudness store (on its server); None = this
+        # computer's own. Read through `loudness`.
+        self._remote_loudness = None
+
+    @property
+    def loudness(self):
+        """Where the loaded library's loudness measurements live: the server's
+        store for a remote library, this computer's otherwise (see
+        `loudness_store.py`). Not tied to the adapter: a measurement belongs to
+        the FILE, so it outlives opening another library."""
+        if self._remote_loudness is not None:
+            return self._remote_loudness
+        from . import loudness_store
+
+        return loudness_store.local()
 
     @property
     def loaded(self) -> bool:
@@ -189,6 +207,7 @@ class AppState:
         self.adapter = None
         self.remote = None
         self.remote_config = None
+        self._remote_loudness = None
 
     def open_remote(self, opened) -> None:
         """Make an already-connected remote library THE library.
@@ -211,6 +230,7 @@ class AppState:
             # The server keeps its own ledger of converted tracks; nothing of a
             # remote library's lives in this computer's.
             self.pending = opened.pending
+            self._remote_loudness = opened.loudness
             self.recovery = None
             # A remote library's files are not on this computer's drives.
             self.relocation = None
@@ -229,6 +249,15 @@ class AppState:
     def _save(self):
         outcome = self.adapter.save()
         commit = self.services.commit_save(self.adapter, outcome)
+        # Konduktor itself just rewrote these files' tags: a loudness value
+        # measured before must not read as stale because of it. (On a remote
+        # library the server's own save does this; the client's store skips it.)
+        written = [r.file for r in outcome.tag_results if getattr(r, "ok", False) and getattr(r, "file", None)]
+        if written:
+            try:
+                self.loudness.refresh(written)
+            except Exception:  # noqa: BLE001 — bookkeeping must never fail a save
+                log.warning("could not refresh loudness facts after save", exc_info=True)
         # The swap is now on disk: what it replaced can go. After the library
         # write, so a failed save deletes nothing; here rather than in the save
         # route, because import and path remap save too.

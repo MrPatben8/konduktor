@@ -360,7 +360,7 @@ class RemoteAdapter:
         return self.client.stems_plan(body)
 
     def stage_stem(self, track_id: str, target: str, local: Path, *, bit_rate: int,
-                   duration: float, progress=None) -> dict:
+                   duration: float, loudness: dict | None = None, progress=None) -> dict:
         import hashlib
 
         digest = hashlib.sha256()
@@ -369,7 +369,8 @@ class RemoteAdapter:
                 digest.update(chunk)
         try:
             return self.client.stems_stage(track_id, target, local, sha256=digest.hexdigest(),
-                                           bit_rate=bit_rate, duration=duration, progress=progress)
+                                           bit_rate=bit_rate, duration=duration, loudness=loudness,
+                                           progress=progress)
         except SessionLost as ex:
             self.session.lost(ex.holder)
             raise

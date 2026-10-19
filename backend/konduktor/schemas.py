@@ -157,17 +157,30 @@ class AutoGridRequest(BaseModel):
     track_id: str
 
 
+#: Whose ids a loudness request names: the loaded library's, the open device's
+#: (the sidebar's Devices), or the Files trees' (a file path; `server:` + the
+#: path on a remote's server). A folder id that is not a listed file is taken
+#: as the loaded library's — a folder view's held rows ARE collection tracks.
+LoudnessOrigin = Literal["collection", "device", "folder"]
+
+
 class AnalyzeRequest(BaseModel):
     """The Analyze dialog's choices. BPM and Grid are independent halves of a
     beatgrid (`core/grid_plan`); `replace_grid` only guards a FULL re-analysis
     (both ticked), since with one tick adjusting the grid is the point.
-    `replace_key` lets detection overwrite a key the track already has."""
+    `replace_key` lets detection overwrite a key the track already has.
+    Loudness is measured into Konduktor's own store (`loudness_store.py`), so
+    it needs no capability and works for any `origin`; BPM / Grid / Key only
+    for the loaded library."""
     track_ids: list[str]
     bpm: bool = True
     grid: bool = True
     key: bool = False
+    loudness: bool = False
     replace_grid: bool = False
     replace_key: bool = False
+    replace_loudness: bool = False
+    origin: LoudnessOrigin = "collection"
 
 
 class AnalyzePreview(BaseModel):
@@ -189,6 +202,38 @@ class AnalyzePreview(BaseModel):
     key_set: int = 0
     key_existing: int = 0      # skipped: has a key, Replace not ticked
     with_key: int = 0          # tracks that have a key (the Replace tick's count)
+    # Loudness (Konduktor's own store): a measured, not stale track is skipped
+    # unless Replace is ticked.
+    loudness_measure: int = 0
+    loudness_existing: int = 0  # skipped: measured, Replace not ticked
+    with_loudness: int = 0      # tracks measured and not stale (the Replace tick's count)
+
+
+class LoudnessRequest(BaseModel):
+    origin: LoudnessOrigin = "collection"
+    track_ids: list[str]
+
+
+class LoudnessValue(BaseModel):
+    """One file's measurement (`core/loudness.py`). `stale`: the file changed
+    since it was measured (or the measurement has) — shown dimmed, still sorted
+    on, and offered for re-analysis."""
+    lufs: float
+    rms: float
+    true_peak: float
+    lra: float
+    plr: float
+    stale: bool = False
+
+
+class LoudnessValues(BaseModel):
+    """Measured tracks only, by the ids asked for."""
+    values: dict[str, LoudnessValue] = {}
+
+
+class MeasureLoudnessRequest(BaseModel):
+    origin: LoudnessOrigin = "collection"
+    track_id: str
 
 
 class AutoGridBatchRequest(BaseModel):

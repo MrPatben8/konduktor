@@ -1,7 +1,7 @@
 // Central definition of the library table's columns: the TanStack column defs,
-// their default widths/visibility/order, and the (id,label) list the "Columns"
-// menu renders. Both TrackTable and the Toolbar menu read from here so they stay
-// in sync. Column layout (visibility, order, sizing) is persisted to userprefs.
+// their default widths/visibility/order, and the (id,label) list the header's
+// right-click column chooser renders. TrackTable and that menu both read from
+// here so they stay in sync. Column layout (visibility, order, sizing) is persisted to userprefs.
 //
 // Safe metadata fields are inline-editable: double-click a cell value to edit it
 // (the right-click "Edit Tags" dialog remains for multi-field edits). Editing is
@@ -15,7 +15,7 @@ import {
   type VisibilityState,
 } from '@tanstack/react-table'
 import type { Track } from '../api'
-import { formatBpm, formatDuration, keyColor } from './format'
+import { formatBpm, formatDuration, formatLoudness, keyColor } from './format'
 import { cueTypeColor } from './cues'
 import { RatingStars } from '../components/RatingStars'
 
@@ -358,7 +358,49 @@ export const TRACK_COLUMNS: ColumnDef<Track, any>[] = [
       )
     },
   }),
+  // The Mastering columns (`core/loudness.py`), grouped in the column chooser.
+  // Unmeasured is `undefined`, never null: TanStack sorts null as 0, which
+  // would rank every unmeasured track as the loudest; `sortUndefined: 'last'`
+  // keeps them at the bottom whichever way the column is sorted.
+  loudnessColumn('lufs', 'LUFS', 'LUFS'),
+  loudnessColumn('rms', 'RMS', 'dB'),
+  loudnessColumn('true_peak', 'True Peak', 'dBTP', true),
+  loudnessColumn('lra', 'LRA', 'LU'),
+  loudnessColumn('plr', 'PLR', 'dB'),
 ]
+
+function loudnessColumn(field: 'lufs' | 'rms' | 'true_peak' | 'lra' | 'plr', header: string, unit: string,
+                        signed = false): ColumnDef<Track, any> {
+  return col.accessor((t) => t.loudness?.[field], {
+    id: field,
+    header,
+    size: field === 'lufs' || field === 'true_peak' ? 112 : 96,
+    sortUndefined: 'last',
+    cell: (c) => {
+      const v = c.getValue() as number | undefined
+      if (v == null) return <span className="text-faint">—</span>
+      const stale = c.row.original.loudness?.stale
+      return (
+        <span
+          className={`whitespace-nowrap font-mono text-xs tabular-nums ${stale ? 'text-faint' : 'text-muted'}`}
+          title={stale ? 'File changed since analysed — Analyze again to refresh' : undefined}
+        >
+          {formatLoudness(v, unit, signed)}
+        </span>
+      )
+    },
+  })
+}
+
+/** The Mastering columns, in order: the column chooser's "Mastering ▸". */
+export const MASTERING_COLUMNS: readonly string[] = ['lufs', 'rms', 'true_peak', 'lra', 'plr']
+const MASTERING_LABELS: Record<string, string> = {
+  lufs: 'LUFS (integrated loudness)',
+  rms: 'RMS (loudest sections)',
+  true_peak: 'True Peak',
+  lra: 'LRA (loudness range)',
+  plr: 'PLR (peak to loudness)',
+}
 
 // Traktor dates arrive as "YYYY/M/D" strings; show them compactly (or raw).
 function formatDate(v: string | null): string {
@@ -368,11 +410,17 @@ function formatDate(v: string | null): string {
   return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`
 }
 
-/** (id, label) pairs for the header's column chooser, in definition order. */
-export const COLUMN_MENU: { id: string; label: string }[] = TRACK_COLUMNS.map((c) => ({
-  id: c.id as string,
-  label: typeof c.header === 'string' ? c.header : (c.id as string),
-}))
+/** (id, label) pairs for the header's column chooser, in definition order.
+ *  `group` puts a column in a submenu (the Mastering columns). */
+export const COLUMN_MENU: { id: string; label: string; group?: 'mastering' }[] = TRACK_COLUMNS.map((c) => {
+  const id = c.id as string
+  const mastering = MASTERING_COLUMNS.includes(id)
+  return {
+    id,
+    label: MASTERING_LABELS[id] ?? (typeof c.header === 'string' ? c.header : id),
+    ...(mastering ? { group: 'mastering' as const } : {}),
+  }
+})
 
 export const DEFAULT_COLUMN_ORDER: string[] = TRACK_COLUMNS.map((c) => c.id as string)
 

@@ -1,71 +1,87 @@
 import { createPortal } from 'react-dom'
 import { useEffect, useState, type ReactNode } from 'react'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type AnalyzeOptions, type AnalyzePreview } from '../api'
+import { api, type AnalyzeOptions, type AnalyzePreview, type TrackOrigin } from '../api'
 
 interface Props {
   /** The selected tracks. */
   ids: string[]
-  /** The library can write beatgrids (BPM and Grid). */
-  gridEditable: boolean
-  /** The library can store a key. */
-  keyWritable: boolean
+  /** Whose ids they are: a device's or a folder's loose files can only have
+   *  their loudness measured. */
+  origin: TrackOrigin
+  /** Why BPM and Grid cannot be analysed here; null = they can. */
+  gridWhy: string | null
+  /** Why a key cannot be stored here; null = it can. */
+  keyWhy: string | null
   onRun: (opts: AnalyzeOptions) => Promise<void>
   onClose: () => void
   onError: (msg: string) => void
 }
 
-type What = Pick<AnalyzeOptions, 'bpm' | 'grid' | 'key'>
+type What = Pick<AnalyzeOptions, 'bpm' | 'grid' | 'key' | 'loudness'>
 const PREF_KEY = 'analyzeWhat'
-const DEFAULT_WHAT: What = { bpm: true, grid: true, key: true }
+// Loudness off unless asked for once: it adds a decode per track.
+const DEFAULT_WHAT: What = { bpm: true, grid: true, key: true, loudness: false }
 
 /** The remembered ticks; anything malformed falls back to the default. */
 function loadWhat(prefs: Record<string, unknown> | undefined): What {
   const saved = prefs?.[PREF_KEY] as Partial<What> | undefined
   if (!saved || typeof saved !== 'object') return DEFAULT_WHAT
   const pick = (k: keyof What) => (typeof saved[k] === 'boolean' ? (saved[k] as boolean) : DEFAULT_WHAT[k])
-  return { bpm: pick('bpm'), grid: pick('grid'), key: pick('key') }
+  return { bpm: pick('bpm'), grid: pick('grid'), key: pick('key'), loudness: pick('loudness') }
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
 /**
  * The context menu's "Analyze…" (decided 2026-10-04): which of BPM / Grid /
- * Key to analyse, with the "already has one — replace?" questions folded in so
- * there is never a second popup. BPM and Grid are independent halves of a
- * beatgrid — BPM alone keeps the downbeat, Grid alone keeps the tempo — and
- * the grid Replace tick only guards a FULL re-analysis (both ticked). The
- * ticks are remembered; the Replace ticks never are — overwriting is a
- * decision about THESE tracks.
+ * Key / Loudness to analyse, with the "already has one — replace?" questions
+ * folded in so there is never a second popup. BPM and Grid are independent
+ * halves of a beatgrid — BPM alone keeps the downbeat, Grid alone keeps the
+ * tempo — and the grid Replace tick only guards a FULL re-analysis (both
+ * ticked). Loudness goes to Konduktor's own store, so it is never disabled
+ * (decided 2026-10-19). The ticks are remembered; the Replace ticks never
+ * are — overwriting is a decision about THESE tracks.
  */
-export function AnalyzeDialog({ ids, gridEditable, keyWritable, onRun, onClose, onError }: Props) {
+export function AnalyzeDialog({ ids, origin, gridWhy, keyWhy, onRun, onClose, onError }: Props) {
   const qc = useQueryClient()
   const prefs = useQuery({ queryKey: ['prefs'], queryFn: api.getPrefs })
   const [what, setWhat] = useState<What | null>(null)
   const [replaceGrid, setReplaceGrid] = useState(false)
   const [replaceKey, setReplaceKey] = useState(false)
+  const [replaceLoudness, setReplaceLoudness] = useState(false)
   const [busy, setBusy] = useState(false)
+  const gridEditable = gridWhy === null
+  const keyWritable = keyWhy === null
 
-  // Hydrate once from prefs, masked by what this library can store.
+  // Hydrate once from prefs, masked by what can be stored here. Where loudness
+  // is ALL that can be done (a device, loose files), it is ticked.
   useEffect(() => {
     if (what || prefs.isPending) return
     const w = loadWhat(prefs.data as Record<string, unknown> | undefined)
-    setWhat({ bpm: w.bpm && gridEditable, grid: w.grid && gridEditable, key: w.key && keyWritable })
+    setWhat({
+      bpm: w.bpm && gridEditable,
+      grid: w.grid && gridEditable,
+      key: w.key && keyWritable,
+      loudness: w.loudness || (!gridEditable && !keyWritable),
+    })
   }, [what, prefs.isPending, prefs.data, gridEditable, keyWritable])
 
   const opts: AnalyzeOptions | null = what && {
     ...what,
     replace_grid: what.bpm && what.grid && replaceGrid,
     replace_key: what.key && replaceKey,
+    replace_loudness: what.loudness && replaceLoudness,
+    origin,
   }
   const preview = useQuery({
     queryKey: ['analyze-preview', ids, opts],
     queryFn: () => api.analyzePreview(ids, opts!),
-    enabled: !!opts && (opts.bpm || opts.grid || opts.key),
+    enabled: !!opts && (opts.bpm || opts.grid || opts.key || opts.loudness),
     placeholderData: keepPreviousData,
   })
   const p: AnalyzePreview | undefined = preview.data
-  const nothingTicked = !!what && !(what.bpm || what.grid || what.key)
+  const nothingTicked = !!what && !(what.bpm || what.grid || what.key || what.loudness)
   const count = nothingTicked ? 0 : (p?.tracks_to_analyze ?? 0)
 
   useEffect(() => {
@@ -77,8 +93,18 @@ export function AnalyzeDialog({ ids, gridEditable, keyWritable, onRun, onClose, 
   const run = async () => {
     if (!opts || busy || count === 0) return
     setBusy(true)
+    // A tick that was disabled here keeps what it was: analysing a device's
+    // loudness must not forget that the collection's keys are wanted.
+    const saved = loadWhat(prefs.data as Record<string, unknown> | undefined)
     api
-      .patchPrefs({ [PREF_KEY]: { bpm: opts.bpm, grid: opts.grid, key: opts.key } })
+      .patchPrefs({
+        [PREF_KEY]: {
+          bpm: gridEditable ? opts.bpm : saved.bpm,
+          grid: gridEditable ? opts.grid : saved.grid,
+          key: keyWritable ? opts.key : saved.key,
+          loudness: opts.loudness,
+        },
+      })
       .then((x) => qc.setQueryData(['prefs'], x))
       .catch(() => {})
     try {
@@ -154,9 +180,10 @@ export function AnalyzeDialog({ ids, gridEditable, keyWritable, onRun, onClose, 
         </div>
 
         <div className="space-y-0.5 px-3 pt-3">
-          {toggle('bpm', 'BPM', 'Detect the tempo', gridEditable, "This library's beatgrids cannot be edited")}
-          {toggle('grid', 'Grid', 'Find where the downbeats fall', gridEditable, "This library's beatgrids cannot be edited")}
-          {toggle('key', 'Key', 'Detect the musical key', keyWritable, "This library cannot store a key")}
+          {toggle('bpm', 'BPM', 'Detect the tempo', gridEditable, gridWhy ?? '')}
+          {toggle('grid', 'Grid', 'Find where the downbeats fall', gridEditable, gridWhy ?? '')}
+          {toggle('key', 'Key', 'Detect the musical key', keyWritable, keyWhy ?? '')}
+          {toggle('loudness', 'Loudness', 'Measure LUFS, RMS, true peak and dynamics', true, '')}
         </div>
 
         <div className={`space-y-1.5 px-5 py-3 text-sm text-muted ${preview.isFetching ? 'opacity-70' : ''}`}>
@@ -170,6 +197,17 @@ export function AnalyzeDialog({ ids, gridEditable, keyWritable, onRun, onClose, 
               <label className="flex shrink-0 items-center gap-1.5 text-xs">
                 <input type="checkbox" checked={replaceKey} onChange={(e) => setReplaceKey(e.target.checked)} />
                 Replace {p.with_key === 1 ? 'it' : 'them'}
+              </label>
+            </div>
+          )}
+          {p && what?.loudness && p.with_loudness > 0 && (
+            <div className="flex items-center justify-between gap-3">
+              <span>
+                <span className="tabular-nums text-text">{p.with_loudness}</span> already measured
+              </span>
+              <label className="flex shrink-0 items-center gap-1.5 text-xs">
+                <input type="checkbox" checked={replaceLoudness} onChange={(e) => setReplaceLoudness(e.target.checked)} />
+                Measure again
               </label>
             </div>
           )}

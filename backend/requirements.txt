@@ -16,6 +16,9 @@ platformdirs>=4.0
 # ~150MB; numba/llvmlite ship Python 3.14 wheels (verified). No torch/native build.
 librosa>=0.11
 scikit-learn>=1.5
+# Imported directly (not only through librosa): loudness K-weighting and
+# true-peak oversampling (core/loudness.py), grid detection, structure.
+scipy>=1.11
 # Traktor Pro 4 (NML v20) support requires the GitHub master (v4.0.0),
 # NOT the stale PyPI release (3.1.0), which cannot parse v4 files.
 #

@@ -39,7 +39,9 @@ from .core.model import AutoHotcue, Track, TrackCues
 #: 1.3 — memory cues: `add_memory_cue`, `rename_memory_cue`,
 #:       `set_memory_cue_type`, `set_memory_cue_color`, `delete_memory_cue`.
 #: 1.4 — track colour: `set_track_color`, `Track.color` / `color_hex`.
-API_VERSION: tuple[int, int] = (1, 4)
+#: 1.5 — loudness: `/v1/loudness/get`, `PUT /v1/loudness`, and `loudness` on
+#:       `/v1/stems/stage` (the server keeps a remote library's measurements).
+API_VERSION: tuple[int, int] = (1, 5)
 
 #: How long a session survives without a heartbeat, and how often the holder
 #: sends one. Long enough to ride out a Wi-Fi blip or a switch to the fallback

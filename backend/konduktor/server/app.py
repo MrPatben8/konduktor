@@ -20,6 +20,7 @@ it.
 """
 from __future__ import annotations
 
+import json
 import logging
 import mimetypes
 import os
@@ -32,7 +33,7 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Reques
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from .. import __version__, exports
+from .. import __version__, exports, loudness_store
 from .. import remote_protocol as rp
 from ..app_state import AppState
 from ..core import registry
@@ -528,6 +529,31 @@ def create_app(server: Server) -> FastAPI:
                            {"library_id": server.state.library_id, "sets": doc["sets"]})
         return {"status": "saved"}
 
+    # ---- loudness (the Mastering columns) ------------------------------------------
+    # The server KEEPS a remote library's measurements (`loudness_store.py`, in
+    # its data folder) so every computer sees them; the computer that opened
+    # the library measures, since the server never decodes.
+    @app.post("/v1/loudness/get")
+    def loudness_get(body: dict = Body(...)) -> dict:
+        paths = body.get("paths")
+        if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+            raise HTTPException(400, "Expected {'paths': [...]}")
+        found = loudness_store.local().get(paths)
+        return {"entries": [entry.wire(path) for path, entry in found.items()]}
+
+    @app.put("/v1/loudness")
+    def loudness_put(body: dict = Body(...),
+                     token: str | None = Header(None, alias=rp.SESSION_HEADER)) -> dict:
+        session(token)  # not `touch`ed: a measurement is not an edit to leave unsaved
+        entries = body.get("entries")
+        if not isinstance(entries, list):
+            raise HTTPException(400, "Expected {'entries': [...]}")
+        try:
+            loudness_store.local().put_entries(entries)
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(400, "Unreadable loudness entries")
+        return {"status": "saved", "count": len(entries)}
+
     # ---- Convert to Stems: the library side ---------------------------------------
     # The SEPARATION runs on the computer that opened the library (the server
     # never decodes audio); what lives here is everything about the FILES and the
@@ -586,13 +612,20 @@ def create_app(server: Server) -> FastAPI:
 
     @app.put("/v1/stems/stage")
     async def stems_stage(request: Request, track_id: str, target: str, sha256: str,
-                          bit_rate: int, duration: float,
+                          bit_rate: int, duration: float, loudness: str | None = None,
                           token: str | None = Header(None, alias=rp.SESSION_HEADER)) -> dict:
         import hashlib
 
+        from ..core.loudness import Loudness
         from ..stems.pending import partial_name, source_facts
 
         session(token)
+        measured = None
+        if loudness:  # the stem file's measurement, stored when it is published
+            try:
+                measured = Loudness.from_dict(json.loads(loudness)).as_dict()
+            except (ValueError, KeyError, TypeError):
+                raise HTTPException(400, "Unreadable loudness")
         source, dest = stem_item(track_id, target)
         if dest.exists():
             raise HTTPException(409, f"A stem file already exists: {dest.name}")
@@ -617,7 +650,8 @@ def create_app(server: Server) -> FastAPI:
             pending.leftovers = [lo for lo in pending.leftovers if lo["partial"] != str(partial)]
             pending.leftovers.append({
                 "source": str(source), "facts": source_facts(source), "partial": str(partial),
-                "written": {"bit_rate": bit_rate, "duration": duration, "size": size},
+                "written": {"bit_rate": bit_rate, "duration": duration, "size": size,
+                            **({"loudness": measured} if measured else {})},
             })
             pending._write()
         return {"partial": str(partial), "size": size}

@@ -43,6 +43,23 @@ export interface Track {
    *  library's own display colour for it; both null when uncoloured. */
   color: TrackColor | null
   color_hex: string | null
+  /** The Mastering columns' values — NOT part of the backend's `Track`: joined
+   *  in client-side from `/api/loudness` (Konduktor's own store, keyed by the
+   *  FILE), and only while a Mastering column is shown. Absent = unmeasured. */
+  loudness?: Loudness
+}
+
+/** One file's loudness (`core/loudness.py`): integrated LUFS, RMS of the
+ *  loudest 3 s blocks (dB, AES17), true peak (dBTP), loudness range (LU) and
+ *  PLR (true peak − LUFS, dB). `stale`: the file changed since it was measured
+ *  — shown dimmed, still sorted on. */
+export interface Loudness {
+  lufs: number
+  rms: number
+  true_peak: number
+  lra: number
+  plr: number
+  stale: boolean
 }
 
 /** One occupied hotcue slot, as the library table previews it. */
@@ -590,16 +607,20 @@ export interface JobStatus {
   finished_at: number | null
 }
 
-/** What a batch grid analysis did, per track outcome. */
 /** What the Analyze dialog asks for. BPM and Grid are independent halves of
  *  a beatgrid: BPM alone keeps the downbeat, Grid alone keeps the tempo.
- *  `replace_grid` only guards a FULL re-analysis (both ticked). */
+ *  `replace_grid` only guards a FULL re-analysis (both ticked). Loudness goes
+ *  to Konduktor's own store, so it works for any `origin`; BPM / Grid / Key
+ *  only for the loaded library's tracks. */
 export interface AnalyzeOptions {
   bpm: boolean
   grid: boolean
   key: boolean
+  loudness: boolean
   replace_grid: boolean
   replace_key: boolean
+  replace_loudness: boolean
+  origin: TrackOrigin
 }
 
 /** What an Analyze run WOULD do — the backend's `plan_grid`, per track. */
@@ -618,6 +639,10 @@ export interface AnalyzePreview {
   key_existing: number
   /** Tracks with a key — the key Replace tick's count. */
   with_key: number
+  loudness_measure: number
+  loudness_existing: number
+  /** Measured and not stale — the loudness Replace tick's count. */
+  with_loudness: number
 }
 
 /** What an Analyze run did. */
@@ -626,6 +651,7 @@ export interface AnalyzeResult {
   failed: { title: string; reason: string }[]
   grid: { full: number; bpm: number; phase: number; locked: number; existing: number; flexible: number }
   key: { set: number; existing: number; none: number }
+  loudness: { measured: number; existing: number; none: number }
 }
 
 /** What a batch Auto Hotcues run did. `tracks` got the template (whatever it
@@ -1140,6 +1166,13 @@ export const api = {
    *  lands on the track, so refetch the track lists. */
   autoGrid: (trackId: string) =>
     send<TrackCues>('POST', '/api/tracks/grid/auto', { track_id: trackId }),
+  /** The Mastering columns' values for these tracks — measured ones only. */
+  loudness: (origin: TrackOrigin, trackIds: string[]) =>
+    send<{ values: Record<string, Loudness> }>('POST', '/api/loudness', { origin, track_ids: trackIds }),
+  /** Measure one track's loudness now (the deck's Analyze where it cannot
+   *  write a grid: a read-only library, a device, a loose file). */
+  measureLoudness: (origin: TrackOrigin, trackId: string) =>
+    send<Loudness>('POST', '/api/tracks/loudness', { origin, track_id: trackId }),
   /** Auto Hotcues over many tracks, one template for all, as a job. A track
    *  without a grid gets one analysed first. The finished job's `result` is a
    *  `CueBatchResult`. */
