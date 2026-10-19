@@ -204,6 +204,16 @@ for enc in encoders:
     covr = MP4(str(out)).tags.get("covr")
     check(f"{enc}: the cover art is copied", bool(covr) and bytes(covr[0]) == COVER)
 
+# Traktor on Windows skips a FIXED 1024 samples of priming where macOS honours
+# the edit list: Apple-encoded stems (2112) sat ~25 ms early on a PC
+# (2026-10-19). So the default encoder is FFmpeg's on every platform, and what
+# it writes primes exactly 1024 — the commercial stems' value.
+from konduktor.core import mp4_edit  # noqa: E402
+check("the default encoder is FFmpeg's aac, on every platform", sf.default_encoder() == "aac")
+w = sf.build(MP3, tmp / "Default.stem.m4a", fake_separate)
+prime = round((mp4_edit.priming_seconds(w.path) or 0) * SR)
+check("a default-built stem file primes exactly 1024 samples", prime == 1024, str(prime))
+
 w = sf.build(MP3_128, tmp / "low.stem.m4a", fake_separate, encoder="aac")
 check("a 128 kbps source is encoded at the 256 kbps floor", w.bit_rate == 256_000, str(w.bit_rate))
 w = sf.build(FLAC_SRC, tmp / "Lossless.stem.m4a", fake_separate, encoder="aac")

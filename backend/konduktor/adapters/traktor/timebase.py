@@ -11,8 +11,12 @@ stores — grid markers, cues, loops — sits
 samples LATER than the same moment in the decoded audio: ~51.2 ms at 44.1 kHz,
 ~47.0 ms at 48 kHz. The rule is in SAMPLES. An MP3 WITHOUT a header is decoded
 the same way by both sides (nothing to skip, nothing to trim), so its offset is
-0 — as is every other format: WAV, AIFF, FLAC and AAC (Traktor honours the MP4
-edit list) line up to the sample.
+0 — as is every other format: WAV, AIFF, FLAC and AAC line up to the sample.
+AAC with a caveat this module cannot fix: Traktor on macOS honours the MP4
+edit list, Traktor on WINDOWS skips a fixed 1024 samples instead (2026-10-19:
+Apple-encoded files, priming 2112, sat ~25 ms early on a PC; 1024-primed ones
+did not). One collection serves both, so the offset stays 0 and Konduktor
+writes its own stem files at 1024 (`stem_file.default_encoder`).
 
 Measured 2026-09-30 in Traktor 4.5 ("kit 4", see the stem-conversion discussion
 log): hotcues Konduktor wrote on a synthetic kick, blinded, landed on it only

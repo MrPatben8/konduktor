@@ -205,8 +205,13 @@ Two independent apps that talk over HTTP:
       8-20 kHz bands for moments (twoloop: never). The separation is a CALLBACK —
       the backend never imports torch; the engine (below) supplies it, the
       tests a fake. Measured traps: FFmpeg's resampler upmixes mono at -3 dB,
-      so mono is duplicated by hand; resampling does not move time; both
-      encoders (`aac_at` on macOS, `aac` elsewhere) are timing-exact but decode
+      so mono is duplicated by hand; resampling does not move time; the
+      encoder is FFmpeg's `aac` on EVERY OS, never Apple's `aac_at`
+      (`default_encoder`): Traktor on macOS honours the MP4 edit list but on
+      WINDOWS skips a fixed 1024 samples of priming, so `aac_at`'s 2112 put a
+      stem file ~25 ms early on a PC (2026-10-19: exactly the 9 of 148 stems on
+      a stick that Konduktor had encoded with `aac_at` were off, Reset fixed
+      each; `aac` and every commercial stem prime 1024). Both decode
       up to ~2 frames LONGER, so length checks allow 0..2048 samples and the
       duration reported is the source's; AAC pre-echo fools threshold onsets,
       so alignment is checked by cross-correlation. **Two JSON literals**: the

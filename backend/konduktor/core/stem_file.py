@@ -5,8 +5,10 @@ stem files (see the stem-conversion discussion log): an `ipod` MP4 with FIVE
 AAC-LC stereo 44.1 kHz streams — stream 0 the full mix and 1-4 drums / bass /
 synths / vox — streams 1-4 not enabled (`disposition` 0, so a player that knows
 nothing of stems plays the mix), and a `moov/udta/stem` box holding JSON that
-names and colours the stems. Traktor 4.5 loads such a file as stems and honours
-the MP4 edit list, so a stem file's time base is the decoded audio's own.
+names and colours the stems. Traktor 4.5 loads such a file as stems. On macOS
+it honours the MP4 edit list; on Windows it skips a fixed 1024 samples of
+priming — so the file must prime exactly 1024 (`default_encoder`), and then its
+time base is the decoded audio's own on both.
 
 Platform-independent on purpose: the separation itself is a callback
 (`separate`) so this module never imports torch — the stem ENGINE supplies it
@@ -39,7 +41,6 @@ import fractions
 import json
 import queue
 import struct
-import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -117,11 +118,18 @@ class Written:
 
 
 def default_encoder() -> str:
-    """Apple's AudioToolbox encoder on macOS (the better AAC encoder there),
-    FFmpeg's own elsewhere. Both are timing-exact in Traktor (kit 1)."""
-    import av
+    """FFmpeg's own `aac`, on EVERY platform — never Apple's `aac_at`.
 
-    return "aac_at" if sys.platform == "darwin" and "aac_at" in av.codecs_available else "aac"
+    Both are timing-exact in Traktor on macOS (kit 1), which honours the MP4
+    edit list. Traktor on WINDOWS does not: it skips a fixed 1024 samples of
+    priming, which is what `aac` (and every commercial stem file measured)
+    primes — but `aac_at` primes 2112, so its files sat 1088 samples (~25 ms)
+    early on a PC. Found 2026-10-19: of 148 stem files on one stick, exactly the
+    9 Konduktor had encoded with `aac_at` were off in Windows Traktor, every one,
+    and Reset fixed each; a 1024-primed one beside them was not. The cost is
+    speed: `aac_at` encodes several times faster on a Mac.
+    """
+    return "aac"
 
 
 def choose_bitrate(source: Source) -> int:
