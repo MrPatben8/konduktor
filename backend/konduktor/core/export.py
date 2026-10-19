@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Protocol, runtime_checkable
 
 from .capabilities import Capabilities
+from .loudness import Loudness
 from .model import Track, TrackCues
 
 if TYPE_CHECKING:
@@ -58,6 +59,13 @@ class ExportTrack:
     #: not decode an unchanged track again. Either may be None.
     fingerprint: str | None = None
     analysis_cache: "AnalysisCache | None" = field(default=None, repr=False)
+    #: The COPY's loudness (the source's, moved by `gain_db` when the run
+    #: normalised it), set only when the run writes the DJ app's auto gain —
+    #: a writer whose platform keeps one (`writes_auto_gain`) writes it from
+    #: this; None = write none.
+    loudness: Loudness | None = None
+    #: The level change the copy got (0.0: copied as it is).
+    gain_db: float = 0.0
 
     def waveform(self, *, lead: float = 0.0):
         """`waveform.analyse()` of the copied audio — the call every exporter that

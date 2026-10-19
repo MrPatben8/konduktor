@@ -1,8 +1,9 @@
 import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type ExportPreview, type ExportSet, type JobStatus } from '../api'
+import { api, type ExportPreview, type ExportRunOptions, type ExportSet, type JobStatus, type NormalizeOptions } from '../api'
 import { FolderPicker } from './FolderPicker'
+import { LevelInput, useAppSetting } from './AppSettings'
 
 /**
  * Run an export: confirm what is about to happen, then watch it happen.
@@ -46,6 +47,15 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
   // Remembered on the set (sent with the click), so a stick's next export
   // starts from the same answer. Older sets without it read as on.
   const [lockGrids, setLockGrids] = useState(set.lock_grids ?? true)
+  // Remembered on the set the same way (decided 2026-10-19). The level starts
+  // from the set's own, else Normalize's app settings.
+  const [normalise, setNormalise] = useState(set.normalise ?? false)
+  const [autoGain, setAutoGain] = useState(set.auto_gain ?? true)
+  const defaultMeasure = useAppSetting('levelMeasure')
+  const defaultTarget = useAppSetting('levelTarget')
+  const defaultCeiling = useAppSetting('levelCeiling')
+  const [level, setLevel] = useState<NormalizeOptions | null>(set.level ?? null)
+  const levelNow: NormalizeOptions = level ?? { measure: defaultMeasure, target: defaultTarget, ceiling: defaultCeiling }
   const pollRef = useRef<number | null>(null)
   // The set as last saved from here: `set` is a snapshot, and a destination
   // changed in this dialog must reach the preview and the run.
@@ -60,10 +70,20 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
   const lockable = set.targets.some(
     (id) => platforms.data?.find((p) => p.platform === id)?.locks_grids,
   )
+  // Only where a target keeps an auto gain — no stick format does (kit G2).
+  const gainTargets = set.targets.filter(
+    (id) => platforms.data?.find((p) => p.platform === id)?.writes_auto_gain,
+  )
+  const options: ExportRunOptions = {
+    ...(lockable ? { lock_grids: lockGrids } : {}),
+    normalise,
+    ...(gainTargets.length ? { auto_gain: autoGain } : {}),
+    level: levelNow,
+  }
 
   const preview = useQuery<ExportPreview>({
-    queryKey: ['export-preview', set.id, current.destination],
-    queryFn: () => api.exportPreview(set.id),
+    queryKey: ['export-preview', set.id, current.destination, options],
+    queryFn: () => api.exportPreview(set.id, options),
     enabled: !job,
     staleTime: 0,
     gcTime: 0,
@@ -124,7 +144,7 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
   const start = async () => {
     setStarting(true)
     try {
-      setJob(await api.runExport(set.id, lockable ? { lock_grids: lockGrids } : {}))
+      setJob(await api.runExport(set.id, options))
       qc.invalidateQueries({ queryKey: ['exports'] })
     } catch (e) {
       onError((e as Error).message)
@@ -259,6 +279,74 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
                           </span>
                         </span>
                       </label>
+                    )}
+                    <label className="flex cursor-pointer items-start gap-2.5">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={normalise}
+                        onChange={(e) => setNormalise(e.target.checked)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm text-text">Normalise audio</span>
+                        <span className="block text-xs text-faint">
+                          Brings every copy to one level, so the stick plays level on any player.
+                          Your own files are never changed.
+                        </span>
+                      </span>
+                    </label>
+                    {normalise && (
+                      <div className="ml-6 space-y-1.5 text-xs">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted">Level by</span>
+                          <select
+                            className="rounded-lg well px-2 py-1 text-xs text-text outline-none"
+                            value={levelNow.measure}
+                            onChange={(e) => setLevel({ ...levelNow, measure: e.target.value as 'lufs' | 'rms' })}
+                          >
+                            <option value="lufs">LUFS</option>
+                            <option value="rms">RMS (loudest sections)</option>
+                          </select>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted">Target</span>
+                          <LevelInput value={levelNow.target} unit={levelNow.measure === 'lufs' ? 'LUFS' : 'dB'}
+                            min={-30} max={0} onCommit={(v) => setLevel({ ...levelNow, target: v })} />
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted" title="A raise stops here, so nothing clips">Peak ceiling</span>
+                          <LevelInput value={levelNow.ceiling} unit="dBTP" min={-12} max={0}
+                            onCommit={(v) => setLevel({ ...levelNow, ceiling: v })} />
+                        </div>
+                        <div className="text-faint">
+                          {p.normalised} cop{p.normalised === 1 ? 'y changes' : 'ies change'} level
+                          {(p.level_counts.unsupported ?? 0) > 0 &&
+                            ` · ${p.level_counts.unsupported} in a format that can’t be changed losslessly`}
+                          {(p.level_counts.hot_peak_left ?? 0) > 0 && ` · ${p.level_counts.hot_peak_left} with a hot peak, left alone`}
+                        </div>
+                      </div>
+                    )}
+                    {gainTargets.length > 0 && (
+                      <label className="flex cursor-pointer items-start gap-2.5">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5"
+                          checked={autoGain}
+                          onChange={(e) => setAutoGain(e.target.checked)}
+                        />
+                        <span className="min-w-0">
+                          <span className="block text-sm text-text">Auto gain</span>
+                          <span className="block text-xs text-faint">
+                            Sets {gainTargets.map(nameOf).join(' and ')}’s auto gain from each track’s
+                            loudness, so tracks load at matching levels.
+                          </span>
+                        </span>
+                      </label>
+                    )}
+                    {p.to_measure > 0 && (
+                      <div className="text-xs text-faint">
+                        {p.to_measure} track{p.to_measure === 1 ? ' is' : 's are'} measured first (about a second each).
+                      </div>
                     )}
                     <div className="text-xs text-faint">
                       Writes a library for {set.targets.map(nameOf).join(' and ')}, sharing one copy

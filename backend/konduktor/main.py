@@ -669,6 +669,9 @@ def update_export(set_id: str, body: UpdateExportSet) -> ExportSetOut:
         targets=body.targets,
         destination=body.destination,
         lock_grids=body.lock_grids,
+        normalise=body.normalise,
+        auto_gain=body.auto_gain,
+        level=body.level.model_dump() if body.level is not None else None,
     )
     return ExportSetOut(**updated.as_dict())
 
@@ -769,11 +772,36 @@ def export_playlist_tracks(set_id: str, playlist_id: str) -> list[Track]:
     return tracks
 
 
+def _export_options(found, body: RunExport | None) -> dict:
+    """The run's options: the body's where given, else the set's own; a level
+    the set does not keep comes from the app settings (Normalize's defaults)."""
+    normalise = body.normalise if body is not None and body.normalise is not None else found.normalise
+    auto_gain = body.auto_gain if body is not None and body.auto_gain is not None else found.auto_gain
+    if body is not None and body.level is not None:
+        raw = body.level.model_dump()
+    elif found.level is not None:
+        raw = found.level
+    else:
+        p = prefs.load_prefs()
+        raw = {"measure": p.get("levelMeasure", "lufs"), "target": p.get("levelTarget", -9.0),
+               "ceiling": p.get("levelCeiling", -1.0)}
+    try:
+        level = exporter.Level(measure=raw["measure"] if raw["measure"] in ("lufs", "rms") else "lufs",
+                               target=float(raw["target"]), ceiling=float(raw["ceiling"]))
+    except (KeyError, TypeError, ValueError):
+        level = exporter.Level()
+    # Only where some target keeps an auto gain — a stick has none to write.
+    writes_gain = any(getattr(core_export.for_platform(t), "writes_auto_gain", False) for t in found.targets)
+    return {"store": STATE.loudness, "level": level if normalise else None,
+            "auto_gain": bool(auto_gain and writes_gain)}
+
+
 @app.post("/api/exports/{set_id}/preview", response_model=ExportPreview)
-def preview_export(set_id: str) -> ExportPreview:
-    """What this export would do, right now. Never cached — the set is live."""
+def preview_export(set_id: str, body: RunExport | None = None) -> ExportPreview:
+    """What this export would do, right now, with the run dialog's options as
+    ticked. Never cached — the set is live."""
     found = _require_set(set_id)
-    built = exporter.plan(require_adapter(), found)
+    built = exporter.plan(require_adapter(), found, **_export_options(found, body))
     return ExportPreview(**built.as_dict(exporter.space_for(built)))
 
 
@@ -789,16 +817,22 @@ def run_export(set_id: str, body: RunExport | None = None) -> JobStatus:
     so the next export of the same stick starts from the same answer.
     """
     found = _require_set(set_id)
-    if body is not None and body.lock_grids is not None and body.lock_grids != found.lock_grids:
-        found = exports.update(_require_library_id(), set_id, lock_grids=body.lock_grids)
+    if body is not None:
+        changes = {k: v for k, v in (("lock_grids", body.lock_grids), ("normalise", body.normalise),
+                                     ("auto_gain", body.auto_gain)) if v is not None}
+        if body.level is not None:
+            changes["level"] = body.level.model_dump()
+        if changes:
+            found = exports.update(_require_library_id(), set_id, **changes)
     adapter = require_adapter()
-    built = exporter.plan(adapter, found)
+    options = _export_options(found, None)
+    built = exporter.plan(adapter, found, **options)
     if built.blocked:
         raise HTTPException(409, built.blocked)
     # A Konduktor setting, read when the export starts.
     root_folder = bool(prefs.load_prefs().get("exportRootFolder", False))
     job = JOBS.submit("export", lambda handle: exporter.run(
-        adapter, found, built, handle, root_folder=root_folder, lock_grids=found.lock_grids))
+        adapter, found, built, handle, root_folder=root_folder, lock_grids=found.lock_grids, **options))
     return JobStatus(**job.as_dict())
 
 
@@ -849,6 +883,7 @@ def export_targets() -> list[PlatformOption]:
             drive_root=bool(getattr(exporter, "drive_root", False)),
             computer_only=bool(getattr(exporter, "computer_only", False)),
             locks_grids=bool(getattr(exporter, "locks_grids", False)),
+            writes_auto_gain=bool(getattr(exporter, "writes_auto_gain", False)),
         ))
     # Targets with no reader of their own (the stick's legacy Device Library):
     # listed too, or registering one would not make it selectable.
@@ -868,6 +903,7 @@ def export_targets() -> list[PlatformOption]:
             drive_root=bool(getattr(exporter, "drive_root", False)),
             computer_only=bool(getattr(exporter, "computer_only", False)),
             locks_grids=bool(getattr(exporter, "locks_grids", False)),
+            writes_auto_gain=bool(getattr(exporter, "writes_auto_gain", False)),
         ))
     # Each exporter states its own place; a platform with no exporter (not yet a
     # target, shown disabled) goes last. Stable, so equal places keep their order.

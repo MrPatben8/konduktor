@@ -241,6 +241,9 @@ class PlatformOption(BaseModel):
     #: As an export TARGET: its library can store a grid lock, so the export's
     #: "Lock beatgrids" option means something there.
     locks_grids: bool = False
+    #: As an export TARGET: its library keeps the DJ app's auto gain, so the
+    #: export's "Auto gain" option means something there (no stick format does).
+    writes_auto_gain: bool = False
 
 
 class RemapSample(BaseModel):

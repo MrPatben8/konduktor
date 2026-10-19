@@ -848,6 +848,29 @@ Two independent apps that talk over HTTP:
     `NormalizeDialog` (measure / target / ceiling from the app settings
     `levelMeasure`/`levelTarget`/`levelCeiling`, overridable per run; the
     per-track plan; the lossless-is-permanent warning), SaveBar's notice.
+  - **Export: Normalise audio + Auto gain** (the run dialog's two ticks,
+    remembered on the set: `ExportSet.normalise` (default off),
+    `auto_gain` (default on — rekordbox plays a track without a gain row at
+    0.0 dB), `level` ({measure, target, ceiling}; None = Normalize's app
+    settings, `main._export_options`)). The preview takes the same body as the
+    run, so its counts are for the ticks as they stand. `exporter.plan` takes
+    `store` / `level` / `auto_gain`: each source's FRESH stored loudness
+    (`PlannedTrack.loudness`), its copy's gain from the shared `plan_gain`
+    (`set_level`); a source with none is `to_measure` and the run measures it
+    first, into the store (`_measure_missing`, before the destination is
+    touched), then settles its level and reuse (`assign_reuse`). The copy step
+    writes a levelled copy through `level_edit.apply` + `verify` instead of
+    `copy_file` — the source is never touched. **The manifest records each
+    copy's `gain_db`** (missing = 0) and `_reusable` requires it equal, so a
+    re-export at the same level copies nothing and another level re-copies
+    only the copies whose gain changes. **`_fingerprint` includes a non-zero
+    gain**: the waveform cache is keyed by the SOURCE, and a levelled copy
+    draws differently. `ExportTrack.loudness` = the COPY's level (`shifted`),
+    set only with Auto gain; writers with `writes_auto_gain`
+    (`PlatformOption.writes_auto_gain`) write it — Traktor replays
+    `set_auto_gain` after `add_tracks` (kit G1: an AUDIO_ID-less entry keeps
+    PERCEIVED_DB through Traktor's first analysis), the Rekordbox Library
+    through its replay store's `set_auto_gain`. No stick target has one.
   - `prefs.py` — persisted user prefs (`userprefs.json` in the per-OS app-data
     dir). Last-opened collection (global AND per-platform), library column
     layout, prep-deck zoom, import destination. Best-effort, but **every
@@ -1639,6 +1662,17 @@ serialization path.** It enforces:
   drawn waveforms: OneLibrary (fixture) and rekordbox (temp copy) get the
   waveform tags rewritten at Save with every other ANLZ tag byte-identical,
   and the file size follows.
+- `test_export_level.py` — an export to Traktor + Rekordbox Library +
+  OneLibrary at once from generated MP3/FLAC/WAV (one WAV a quiet track with
+  a hot peak), through the routes: Auto gain offered only where a target
+  keeps one; every source measured once into the store; sources
+  byte-identical; each levelled copy == its source at the manifest's gain,
+  the hot-peak one a byte-identical copy; Traktor's gain = -9.2 and the
+  Rekordbox Library's = -10 minus the COPY's LUFS; the set remembers its
+  options; a same-level re-export keeps every file (same inodes); a new
+  target re-writes only the copy whose gain changed; Normalise off restores
+  the source bytes with the gain from the source's LUFS; Auto gain off writes
+  none; a levelled copy has its own waveform-cache key.
 - `test_auto_hotcues.py` — Auto Hotcues in three layers: `structure.analyse`
   on SYNTHETIC audio with known sections (the intro with a kick is not a drop;
   no breakdown after the last drop), `plan`'s outcomes and beat-counted offsets

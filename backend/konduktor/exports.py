@@ -66,6 +66,16 @@ class ExportSet:
     #: first load (it re-measures the BPM — 174 can come back as 87 — and the
     #: grid drifts). Remembered per set: it is a decision about this stick.
     lock_grids: bool = True
+    #: The run's "Normalise audio": the copies (never the sources) brought to
+    #: one level. Off by default — it changes the audio on the stick.
+    normalise: bool = False
+    #: The run's "Auto gain": the DJ app's gain written from each copy's
+    #: loudness, where the target keeps one. On by default, like the lock:
+    #: without it rekordbox plays an exported track at 0.0 dB.
+    auto_gain: bool = True
+    #: Normalise's measure / target / ceiling for this set ({"measure",
+    #: "target", "ceiling"}); None = the app settings at run time.
+    level: dict | None = None
     created: float = 0.0
     modified: float = 0.0
 
@@ -158,6 +168,20 @@ def _write_doc(library_id: str, doc: dict) -> None:
         paths.write_json(_store_path(library_id), doc)
 
 
+def _level(raw) -> dict | None:
+    """A stored level, checked: anything malformed reads as None (the app
+    settings), never as a half-filled one."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        measure = raw.get("measure", "lufs")
+        if measure not in ("lufs", "rms"):
+            return None
+        return {"measure": measure, "target": float(raw["target"]), "ceiling": float(raw["ceiling"])}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _load(library_id: str) -> dict[str, ExportSet]:
     data = _read_doc(library_id)
     raw = data.get("sets") if isinstance(data, dict) else None
@@ -175,6 +199,9 @@ def _load(library_id: str) -> dict[str, ExportSet]:
                     playlist_ids=list(values.get("playlist_ids") or []),
                     track_ids=list(values.get("track_ids") or []),
                     lock_grids=bool(values.get("lock_grids", True)),
+                    normalise=bool(values.get("normalise", False)),
+                    auto_gain=bool(values.get("auto_gain", True)),
+                    level=_level(values.get("level")),
                     created=float(values.get("created") or 0.0),
                     modified=float(values.get("modified") or 0.0),
                 )
@@ -267,8 +294,11 @@ def update(library_id: str, set_id: str, **fields) -> ExportSet | None:
             setattr(found, key, fields[key])
     if fields.get("targets"):
         found.targets = list(dict.fromkeys(fields["targets"]))
-    if fields.get("lock_grids") is not None:
-        found.lock_grids = bool(fields["lock_grids"])
+    for key in ("lock_grids", "normalise", "auto_gain"):
+        if fields.get(key) is not None:
+            setattr(found, key, bool(fields[key]))
+    if fields.get("level") is not None:
+        found.level = _level(fields["level"])
     found.modified = time.time()
     _save(library_id, sets)
     return found

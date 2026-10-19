@@ -407,6 +407,9 @@ class ExportSetOut(BaseModel):
     playlist_ids: list[str] = []
     track_ids: list[str] = []   # loose tracks only
     lock_grids: bool = True
+    normalise: bool = False
+    auto_gain: bool = True
+    level: dict | None = None
     created: float = 0.0
     modified: float = 0.0
 
@@ -417,17 +420,31 @@ class CreateExportSet(BaseModel):
     destination: str
 
 
+class ExportLevel(BaseModel):
+    """Normalise audio's measure / target / ceiling (see `exporter.Level`)."""
+    measure: Literal["lufs", "rms"] = "lufs"
+    target: float = Field(-9.0, ge=-30.0, le=0.0)
+    ceiling: float = Field(-1.0, ge=-12.0, le=0.0)
+
+
 class UpdateExportSet(BaseModel):
     name: str | None = None
     targets: list[str] | None = None
     destination: str | None = None
     lock_grids: bool | None = None
+    normalise: bool | None = None
+    auto_gain: bool | None = None
+    level: ExportLevel | None = None
 
 
 class RunExport(BaseModel):
-    #: The run dialog's "Lock beatgrids" — remembered on the set. None keeps the
-    #: set's own answer.
+    #: The run dialog's options — each remembered on the set. None keeps the
+    #: set's own answer. The preview takes the same body, so its counts are
+    #: for the options as ticked.
     lock_grids: bool | None = None
+    normalise: bool | None = None
+    auto_gain: bool | None = None
+    level: ExportLevel | None = None
 
 
 class ExportSetMembers(BaseModel):
@@ -461,6 +478,8 @@ class ExportPreview(BaseModel):
 
     tracks: int = 0
     exportable: int = 0
+    #: Copies from the last export kept rather than copied again.
+    unchanged: int = 0
     missing: list[str] = []
     playlists: list[str] = []
     total_bytes: int = 0
@@ -475,6 +494,12 @@ class ExportPreview(BaseModel):
     #: Targets whose library is only found at a drive's root, when the
     #: destination is not one. A warning — the export can still run.
     not_drive_root: list[str] = []
+    #: Normalise audio: copies whose level changes, and every `level_plan`
+    #: outcome by count. `to_measure`: sources the run measures first (no
+    #: stored loudness), for Normalise or Auto gain.
+    normalised: int = 0
+    to_measure: int = 0
+    level_counts: dict[str, int] = {}
 
 
 class FsPlace(BaseModel):

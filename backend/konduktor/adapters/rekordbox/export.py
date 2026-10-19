@@ -111,6 +111,9 @@ class RekordboxExporter:
     drive_root = False
     #: `djmdContent.Analysed` bit 0x80 — from `TrackCues.grid_locked`.
     locks_grids = True
+    #: `djmdMixerParam` from `ExportTrack.loudness` (without a row a track
+    #: plays at 0.0 dB in rekordbox; kit G2).
+    writes_auto_gain = True
 
     def capabilities(self):
         """What a Rekordbox library can hold, with no library to read.
@@ -209,7 +212,12 @@ class RekordboxExporter:
         try:
             for item in payload.tracks:
                 track_id = ids.get(item.source_id)
-                if track_id is None or not item.cues:
+                if track_id is None:
+                    continue
+                if item.loudness is not None:
+                    # The same row an Analyze writes (`RekordboxStore.set_auto_gain`).
+                    store.set_auto_gain(track_id, item.loudness)
+                if not item.cues:
                     continue
                 memory = 0
                 for cue in sorted(item.cues.cues, key=lambda c: c.start):

@@ -360,6 +360,8 @@ export interface PlatformOption {
   computer_only?: boolean
   /** As an export target: its library can store a grid lock. */
   locks_grids?: boolean
+  /** As an export target: its library keeps the DJ app's auto gain. */
+  writes_auto_gain?: boolean
 }
 
 export interface EditState {
@@ -832,6 +834,12 @@ export interface ExportSet {
   /** Lock every exported grid, so Traktor does not re-analyse a track when it
    *  is first loaded. Set from the run dialog and remembered here. */
   lock_grids: boolean
+  /** Normalise the COPIES' audio (the sources are never touched). */
+  normalise: boolean
+  /** Write the DJ app's auto gain, where a target keeps one. */
+  auto_gain: boolean
+  /** Normalise's measure / target / ceiling; null = the app settings. */
+  level: NormalizeOptions | null
   created: number
   modified: number
 }
@@ -877,6 +885,20 @@ export interface ExportPreview {
   /** Targets whose library is only found at a drive's root, when the destination
    *  is not one. A warning — the export can still run. */
   not_drive_root: string[]
+  /** Normalise audio: copies whose level changes, and each outcome's count. */
+  normalised: number
+  level_counts: Record<string, number>
+  /** Sources the run measures first (no stored loudness). */
+  to_measure: number
+}
+
+/** The run dialog's options; each is remembered on the set. Omitted = the
+ *  set's own answer. */
+export interface ExportRunOptions {
+  lock_grids?: boolean
+  normalise?: boolean
+  auto_gain?: boolean
+  level?: NormalizeOptions
 }
 
 export interface FsPlace {
@@ -1106,10 +1128,11 @@ export const api = {
   // reason rather than hiding them — an absent option reads as a missing
   // feature, a disabled one reads as a roadmap.
   exportTargets: () => getJSON<PlatformOption[]>('/api/export-targets'),
-  exportPreview: (id: string) =>
-    send<ExportPreview>('POST', `/api/exports/${encodeURIComponent(id)}/preview`, {}),
+  // The preview takes the run dialog's options as ticked, so its counts match.
+  exportPreview: (id: string, body: ExportRunOptions = {}) =>
+    send<ExportPreview>('POST', `/api/exports/${encodeURIComponent(id)}/preview`, body),
   // The run dialog's options travel with the click; the set remembers them.
-  runExport: (id: string, body: { lock_grids?: boolean } = {}) =>
+  runExport: (id: string, body: ExportRunOptions = {}) =>
     send<JobStatus>('POST', `/api/exports/${encodeURIComponent(id)}/run`, body),
 
   // ---- path remapping (per-collection OS-path prefix translation) ----
