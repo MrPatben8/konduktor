@@ -174,10 +174,14 @@ check("with its tempo changes",
 check("and its marker positions",
       [round(m.start, 3) for m in out_grid.grid_markers]
       == [round(m.start, 3) for m in src_grid.grid_markers])
-# Ben's decision: exported grids are NOT locked, so they stay editable like any
-# other track. If Traktor turns out to re-analyse and flatten them, this is what
-# makes that visible rather than hidden behind a lock.
-check("grids are not locked", not by_title[flexible.title].grid_locked)
+# A grid crosses with the lock it had: unlocked at the source, unlocked here.
+# Locking every grid is the run's "Lock beatgrids" option (below), because
+# Traktor DID turn out to re-analyse an unlocked exported track on first load.
+check("each track keeps its source's lock",
+      [by_title[t.title].grid_locked for t in chosen] == [t.grid_locked for t in chosen],
+      str([(t.title, t.grid_locked, by_title[t.title].grid_locked) for t in chosen]))
+check("and only a locked one has LOCK written",
+      text.count(' LOCK="1"') == sum(1 for t in chosen if t.grid_locked))
 
 src_cues = src.track_cues(cued.id)
 out_cues = back.track_cues(by_title[cued.title].id)
@@ -277,6 +281,42 @@ check("the audio is really there",
       all((dest / r).stat().st_size == 300_000 for r in rel))
 check("the result re-opens as a library",
       len(TraktorDriver().open(dest / "collection.nml").tracks) == len(built.exportable))
+
+print("== Lock beatgrids ==")
+check("a new export set locks by default", exports.get(LIB, eset.id).lock_grids is True)
+check("and remembers being told not to",
+      exports.update(LIB, eset.id, lock_grids=False).lock_grids is False
+      and exports.get(LIB, eset.id).lock_grids is False)
+exports.update(LIB, eset.id, lock_grids=True)
+gridded = src.track_cues(flexible.id).model_copy(update={"grid_locked": False})
+bare = gridded.model_copy(update={"grid_markers": []})
+check("on: a grid is locked", exporter._locked(gridded, True).grid_locked)
+check("on: a track with no grid is not (Traktor would never give it one)",
+      not exporter._locked(bare, True).grid_locked)
+check("off: the source's own lock is kept",
+      exporter._locked(gridded.model_copy(update={"grid_locked": True}), False).grid_locked
+      and not exporter._locked(gridded, False).grid_locked)
+lock_dest = Path(tempfile.mkdtemp()) / "LOCKED"
+lset = exports.create(LIB, name="LOCKED", targets=["traktor"], destination=str(lock_dest))
+exports.add(LIB, lset.id, playlist_ids=[source_pl.id], track_ids=[ad.tracks[3].id])
+lset = exports.get(LIB, lset.id)
+ljob = JOBS.submit("export", lambda h: exporter.run(
+    ad, lset, exporter.plan(ad, lset), h, lock_grids=True))
+while not ljob.finished:
+    time.sleep(0.02)
+check("a locked export finishes", ljob.state == "done", f"{ljob.state}: {ljob.error}")
+ltext = (lock_dest / "collection.nml").read_text(encoding="utf-8")
+lback = TraktorDriver().open(lock_dest / "collection.nml")
+with_grid = [t for t in lback.tracks if t.grid_marker_count]
+check("every exported track with a grid is locked",
+      with_grid and all(t.grid_locked for t in with_grid),
+      str([(t.title, t.grid_locked) for t in lback.tracks]))
+check("none without one is",
+      not any(t.grid_locked for t in lback.tracks if not t.grid_marker_count))
+# Measured in Traktor 4.5: LOCK="1" then LOCK_MODIFICATION_TIME, ISO, UTC.
+check("written as Traktor writes it: LOCK then an ISO LOCK_MODIFICATION_TIME",
+      len(re.findall(r' LOCK="1" LOCK_MODIFICATION_TIME="\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d"',
+                     ltext)) == len(with_grid))
 
 print("== Konduktor only ever deletes what Konduktor wrote ==")
 mine = dest / "MY OWN NOTES.txt"

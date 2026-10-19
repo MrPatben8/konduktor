@@ -66,6 +66,8 @@ class TraktorExporter:
     menu_order = 20
     library_filename = "collection.nml"
     drive_root = False
+    #: `LOCK` — honoured from `TrackCues.grid_locked` by `add_tracks`.
+    locks_grids = True
 
     def capabilities(self):
         """What a Traktor library can hold — answered with no library to read.

@@ -22,6 +22,7 @@ import copy
 import math
 import threading
 import uuid as uuidlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 from traktor_nml_utils import (
@@ -1210,9 +1211,19 @@ class TraktorStore:
             self.dirty = True
 
     def set_lock(self, track_id: str, locked: bool) -> None:
+        """Lock or unlock a track's grid.
+
+        Locking writes what Traktor 4.5 writes (measured 2026-10-19):
+        ``LOCK="1"`` plus ``LOCK_MODIFICATION_TIME``, an ISO time in UTC to the
+        second. What Traktor leaves on UNLOCK is unmeasured, so unlocking only
+        removes ``LOCK``, as it always has.
+        """
         with self._lock:
             entry = self._entry_or_raise(track_id)
             entry.lock = 1 if locked else None
+            if locked:
+                entry.lock_modification_time = (
+                    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"))
             self._note("lock", "on" if locked else "off", track_id)
             self.dirty = True
 

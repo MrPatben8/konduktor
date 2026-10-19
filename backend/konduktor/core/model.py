@@ -234,6 +234,9 @@ class PlatformOption(BaseModel):
     #: As an export TARGET: its library is only ever read on a computer, never
     #: from a drive — so it does nothing beside a stick format.
     computer_only: bool = False
+    #: As an export TARGET: its library can store a grid lock, so the export's
+    #: "Lock beatgrids" option means something there.
+    locks_grids: bool = False
 
 
 class RemapSample(BaseModel):

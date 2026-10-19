@@ -433,12 +433,30 @@ def _folder_paths(adapter) -> dict[str, list[str]]:
 # ---- running -----------------------------------------------------------------
 
 
+def _locked(cues, lock_grids: bool):
+    """The cues as exported: with `lock_grids`, a grid is LOCKED.
+
+    The lock rides on the generic `TrackCues.grid_locked`, the same flag a
+    source's own lock arrives in, so a writer reads one signal and never learns
+    which of the two set it. Unlocked Traktor re-analyses an exported track on
+    its first load (it has no AUDIO_ID, which cannot be computed), re-measuring
+    the BPM — a 174 track can come back as 87 — and drifting the grid; a
+    locked grid is left alone. A track with no grid is never locked: that
+    would stop Traktor ever giving it one.
+    """
+    if lock_grids and cues is not None and cues.grid_markers and not cues.grid_locked:
+        return cues.model_copy(update={"grid_locked": True})
+    return cues
+
+
 def run(adapter, export_set, built: ExportPlan, handle: JobHandle, *,
-        root_folder: bool = False) -> dict:
+        root_folder: bool = False, lock_grids: bool = False) -> dict:
     """Copy what changed, then write every target's library over the audio.
 
     `root_folder` nests the playlists in a folder named after the export (the
     "Put exported playlists in a folder" setting); otherwise they sit at the top.
+    `lock_grids` locks every exported track that HAS a grid (`_locked`); off,
+    each track keeps the source's own lock.
 
     Rolls back EVERYTHING this run wrote on cancel or on any failure —
     including the libraries of targets that had already been written when a
@@ -530,7 +548,7 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle, *,
                 ExportTrack(
                     track=adapter.track(planned.track_id),
                     destination=target,
-                    cues=adapter.track_cues(planned.track_id),
+                    cues=_locked(adapter.track_cues(planned.track_id), lock_grids),
                     art=_cover(adapter, planned.track_id),
                     fingerprint=_fingerprint(planned),
                     analysis_cache=cache,

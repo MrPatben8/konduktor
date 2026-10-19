@@ -109,6 +109,8 @@ class RekordboxExporter:
     computer_only = True
     library_filename = "master.db"
     drive_root = False
+    #: `djmdContent.Analysed` bit 0x80 — from `TrackCues.grid_locked`.
+    locks_grids = True
 
     def capabilities(self):
         """What a Rekordbox library can hold, with no library to read.
@@ -332,7 +334,9 @@ class RekordboxExporter:
         """
         rel = new_content.anlz_rel(str(content.UUID))
         content.AnalysisDataPath = rel
-        content.Analysed = 105        # what a rekordbox-analysed track carries
+        content.Analysed = new_content.ANALYSED
+        if item.cues is not None and item.cues.grid_locked:
+            content.Analysed |= new_content.ANALYSED_LOCKED
         content.AnalysisUpdated = 1
         db.flush()
 

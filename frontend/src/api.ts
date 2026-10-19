@@ -334,6 +334,8 @@ export interface PlatformOption {
   drive_root?: boolean
   /** As an export target: only ever read on a computer, never from a drive. */
   computer_only?: boolean
+  /** As an export target: its library can store a grid lock. */
+  locks_grids?: boolean
 }
 
 export interface EditState {
@@ -740,6 +742,9 @@ export interface ExportSet {
   playlist_ids: string[]
   /** LOOSE tracks only — tracks a referenced playlist supplies are not listed. */
   track_ids: string[]
+  /** Lock every exported grid, so Traktor does not re-analyse a track when it
+   *  is first loaded. Set from the run dialog and remembered here. */
+  lock_grids: boolean
   created: number
   modified: number
 }
@@ -982,7 +987,10 @@ export const api = {
   exports: () => getJSON<ExportSet[]>('/api/exports'),
   createExport: (body: { name: string; targets: string[]; destination: string }) =>
     send<ExportSet>('POST', '/api/exports', body),
-  updateExport: (id: string, body: Partial<Pick<ExportSet, 'name' | 'targets' | 'destination'>>) =>
+  updateExport: (
+    id: string,
+    body: Partial<Pick<ExportSet, 'name' | 'targets' | 'destination' | 'lock_grids'>>,
+  ) =>
     send<ExportSet>('PATCH', `/api/exports/${encodeURIComponent(id)}`, body),
   deleteExport: (id: string) =>
     send<{ deleted: boolean }>('DELETE', `/api/exports/${encodeURIComponent(id)}`),
@@ -1013,8 +1021,9 @@ export const api = {
   exportTargets: () => getJSON<PlatformOption[]>('/api/export-targets'),
   exportPreview: (id: string) =>
     send<ExportPreview>('POST', `/api/exports/${encodeURIComponent(id)}/preview`, {}),
-  runExport: (id: string) =>
-    send<JobStatus>('POST', `/api/exports/${encodeURIComponent(id)}/run`, {}),
+  // The run dialog's options travel with the click; the set remembers them.
+  runExport: (id: string, body: { lock_grids?: boolean } = {}) =>
+    send<JobStatus>('POST', `/api/exports/${encodeURIComponent(id)}/run`, body),
 
   // ---- path remapping (per-collection OS-path prefix translation) ----
   getPathMapping: () => getJSON<PathMapping>('/api/library/path-mapping'),

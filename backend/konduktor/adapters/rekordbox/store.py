@@ -788,7 +788,7 @@ class RekordboxStore(ReplaceGridCommands):
         track_uuid = str(content.UUID)
         rel = new_content.anlz_rel(track_uuid)
         content.AnalysisDataPath = rel
-        content.Analysed = 105        # what a rekordbox-analysed track carries
+        content.Analysed = new_content.ANALYSED
         content.AnalysisUpdated = 1
         files = new_content.anlz_files(audio, measured, [] if with_grid else None)
         for suffix, data in files.items():

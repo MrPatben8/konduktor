@@ -1536,8 +1536,13 @@ serialization path.** It enforces:
   above all that **`<LOCATION>` is volume-relative** — an export writing host
   paths would work perfectly on the machine that made it and resolve to nothing
   at the gig. Also that a flexible multi-marker grid and hot-cue PADS survive,
-  grids are not locked, loose tracks get their "Other" playlist, and re-exporting
-  into the same folder replaces rather than appends.
+  each grid keeps its source's lock, loose tracks get their "Other" playlist, and
+  re-exporting into the same folder replaces rather than appends. **Lock
+  beatgrids** (the run's option): a new set locks by default and remembers being
+  told not to; on, every exported track WITH a grid is locked (never one without
+  — Traktor would never give it a grid), written as Traktor 4.5 writes it
+  (`LOCK="1"` then `LOCK_MODIFICATION_TIME`, ISO, UTC); `test_export_pioneer.py`
+  pins the Rekordbox Library's `Analysed` 233 vs 105.
   It then runs a real export end to end (the source library is built with the
   exporter itself, so its LOCATIONs point at audio that exists) and pins the
   safety rules with teeth: a folder Konduktor did NOT write is refused, and
@@ -1948,8 +1953,23 @@ that number and nothing else — everything derives from it:
   target** for v1, source is whatever library is loaded, **mirror the source
   folder structure** (so filename collisions cannot happen), playlists are **live
   links removable only as a whole**, re-export **clears the destination first**,
-  cancel **rolls back**, key notation **mirrors the source**, grids are **not
-  locked**, no whole-library export.
+  cancel **rolls back**, key notation **mirrors the source**, no whole-library
+  export. Grids were first left **unlocked**, and that went wrong: an exported
+  Traktor entry has no `AUDIO_ID` (Traktor's analysis fingerprint, which cannot
+  be computed), so Traktor re-analyses it on its first load — re-measuring the
+  BPM (a 174 track came back as 87) and drifting the grid. So the run dialog has
+  **Lock beatgrids** (decided 2026-10-19; `ExportSet.lock_grids`, default on,
+  sent with the run and remembered on the set; shown where a target's
+  `PlatformOption.locks_grids`). It rides on the generic `TrackCues.grid_locked`
+  (`exporter._locked`), the flag a source's own lock already arrives in, so off
+  still carries each track's own lock; Traktor writes `LOCK` +
+  `LOCK_MODIFICATION_TIME` (UTC), the Rekordbox Library sets bit 0x80 of
+  `djmdContent.Analysed` (105 -> 233, measured by locking tracks in rekordbox
+  7). The stick formats carry NO lock: rekordbox 7's own device export of two
+  locked tracks left OneLibrary `analysedBits` and the pdb's `u5` at 41, as on
+  every unlocked track (measured on Hardy, 2026-10-19), so neither stick
+  exporter sets `locks_grids`. The Rekordbox ADAPTER does not yet
+  read or write that bit (`grid.lockable` stays false).
   Verified against the real collection: Traktor stores `VOLUME="Hardy"` plus a
   **volume-relative** `DIR`, never a host path — so a USB export is portable by
   construction, and the `.nml` cannot be written until the destination is known.

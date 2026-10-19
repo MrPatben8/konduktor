@@ -36,11 +36,18 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
   const qc = useQueryClient()
   const [job, setJob] = useState<JobStatus | null>(null)
   const [starting, setStarting] = useState(false)
+  // Remembered on the set (sent with the click), so a stick's next export
+  // starts from the same answer. Older sets without it read as on.
+  const [lockGrids, setLockGrids] = useState(set.lock_grids ?? true)
   const pollRef = useRef<number | null>(null)
 
   // Platform names for wording the facts the preview and result carry as ids.
   const platforms = useQuery({ queryKey: ['export-targets'], queryFn: api.exportTargets })
   const nameOf = (id: string) => platforms.data?.find((p) => p.platform === id)?.name ?? id
+  // Offered only where a target can store a lock — a stick format cannot.
+  const lockable = set.targets.some(
+    (id) => platforms.data?.find((p) => p.platform === id)?.locks_grids,
+  )
 
   const preview = useQuery<ExportPreview>({
     queryKey: ['export-preview', set.id],
@@ -83,7 +90,8 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
   const start = async () => {
     setStarting(true)
     try {
-      setJob(await api.runExport(set.id))
+      setJob(await api.runExport(set.id, lockable ? { lock_grids: lockGrids } : {}))
+      qc.invalidateQueries({ queryKey: ['exports'] })
     } catch (e) {
       onError((e as Error).message)
     } finally {
@@ -177,6 +185,23 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
                       drive, and this folder isn’t one — players won’t see it unless you move the
                       folder’s contents to a drive’s top level.
                     </div>
+                  )}
+                  {lockable && (
+                    <label className="flex cursor-pointer items-start gap-2.5">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={lockGrids}
+                        onChange={(e) => setLockGrids(e.target.checked)}
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-sm text-text">Lock beatgrids</span>
+                        <span className="block text-xs text-faint">
+                          Stops tracks being re-analysed when they’re loaded, which can change the
+                          BPM or move the grid.
+                        </span>
+                      </span>
+                    </label>
                   )}
                   <div className="text-xs text-faint">
                     Writes a library for {set.targets.map(nameOf).join(' and ')}, sharing one copy

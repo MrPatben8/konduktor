@@ -34,6 +34,12 @@ from . import artwork
 #: only what is written: 0x2C060E.
 CONTENT_LINK = 2885134
 
+#: `djmdContent.Analysed` as a rekordbox-analysed track carries it, and the bit
+#: rekordbox 7 sets beside it when the grid is LOCKED (the padlock in Grid Edit):
+#: measured 2026-10-19 by locking two tracks — 105 -> 233, nothing else changed.
+ANALYSED = 105
+ANALYSED_LOCKED = 0x80
+
 
 def anlz_rel(track_uuid: str) -> str:
     """`djmdContent.AnalysisDataPath` for a track. Rekordbox derives it from

@@ -347,6 +347,7 @@ class ExportSetOut(BaseModel):
     destination: str
     playlist_ids: list[str] = []
     track_ids: list[str] = []   # loose tracks only
+    lock_grids: bool = True
     created: float = 0.0
     modified: float = 0.0
 
@@ -361,6 +362,13 @@ class UpdateExportSet(BaseModel):
     name: str | None = None
     targets: list[str] | None = None
     destination: str | None = None
+    lock_grids: bool | None = None
+
+
+class RunExport(BaseModel):
+    #: The run dialog's "Lock beatgrids" — remembered on the set. None keeps the
+    #: set's own answer.
+    lock_grids: bool | None = None
 
 
 class ExportSetMembers(BaseModel):

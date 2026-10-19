@@ -62,6 +62,10 @@ class ExportSet:
     destination: str = ""  # OS path of the folder the export is written into
     playlist_ids: list[str] = field(default_factory=list)
     track_ids: list[str] = field(default_factory=list)   # loose tracks only
+    #: Lock every exported grid, so Traktor does not re-analyse a track on its
+    #: first load (it re-measures the BPM — 174 can come back as 87 — and the
+    #: grid drifts). Remembered per set: it is a decision about this stick.
+    lock_grids: bool = True
     created: float = 0.0
     modified: float = 0.0
 
@@ -170,6 +174,7 @@ def _load(library_id: str) -> dict[str, ExportSet]:
                     destination=values.get("destination") or "",
                     playlist_ids=list(values.get("playlist_ids") or []),
                     track_ids=list(values.get("track_ids") or []),
+                    lock_grids=bool(values.get("lock_grids", True)),
                     created=float(values.get("created") or 0.0),
                     modified=float(values.get("modified") or 0.0),
                 )
@@ -251,7 +256,8 @@ def create(library_id: str, *, name: str, targets: list[str], destination: str) 
 
 
 def update(library_id: str, set_id: str, **fields) -> ExportSet | None:
-    """Rename, retarget or relocate a set. Unknown fields are ignored."""
+    """Rename, retarget or relocate a set, or change its options. Unknown fields
+    are ignored."""
     sets = _load(library_id)
     found = sets.get(set_id)
     if found is None:
@@ -261,6 +267,8 @@ def update(library_id: str, set_id: str, **fields) -> ExportSet | None:
             setattr(found, key, fields[key])
     if fields.get("targets"):
         found.targets = list(dict.fromkeys(fields["targets"]))
+    if fields.get("lock_grids") is not None:
+        found.lock_grids = bool(fields["lock_grids"])
     found.modified = time.time()
     _save(library_id, sets)
     return found

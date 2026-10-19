@@ -78,6 +78,7 @@ from .schemas import (
     FsListing,
     FsPlace,
     UpdateExportSet,
+    RunExport,
     AddGridMarker,
     GridMarkerEdit,
     ReplaceGrid,
@@ -655,6 +656,7 @@ def update_export(set_id: str, body: UpdateExportSet) -> ExportSetOut:
         name=body.name,
         targets=body.targets,
         destination=body.destination,
+        lock_grids=body.lock_grids,
     )
     return ExportSetOut(**updated.as_dict())
 
@@ -764,14 +766,19 @@ def preview_export(set_id: str) -> ExportPreview:
 
 
 @app.post("/api/exports/{set_id}/run", response_model=JobStatus)
-def run_export(set_id: str) -> JobStatus:
+def run_export(set_id: str, body: RunExport | None = None) -> JobStatus:
     """Start the export on a background thread; poll `/api/jobs/{id}`.
 
     Planned again HERE rather than trusting whatever the preview showed: a
     playlist can be edited, a file deleted or a drive unplugged between looking
     and clicking, and the plan carries the destination-safety check.
+
+    The dialog's options arrive with the click and are remembered on the set,
+    so the next export of the same stick starts from the same answer.
     """
     found = _require_set(set_id)
+    if body is not None and body.lock_grids is not None and body.lock_grids != found.lock_grids:
+        found = exports.update(_require_library_id(), set_id, lock_grids=body.lock_grids)
     adapter = require_adapter()
     built = exporter.plan(adapter, found)
     if built.blocked:
@@ -779,7 +786,7 @@ def run_export(set_id: str) -> JobStatus:
     # A Konduktor setting, read when the export starts.
     root_folder = bool(prefs.load_prefs().get("exportRootFolder", False))
     job = JOBS.submit("export", lambda handle: exporter.run(
-        adapter, found, built, handle, root_folder=root_folder))
+        adapter, found, built, handle, root_folder=root_folder, lock_grids=found.lock_grids))
     return JobStatus(**job.as_dict())
 
 
@@ -829,6 +836,7 @@ def export_targets() -> list[PlatformOption]:
             removable=bool(getattr(d, "removable", False)),
             drive_root=bool(getattr(exporter, "drive_root", False)),
             computer_only=bool(getattr(exporter, "computer_only", False)),
+            locks_grids=bool(getattr(exporter, "locks_grids", False)),
         ))
     # Targets with no reader of their own (the stick's legacy Device Library):
     # listed too, or registering one would not make it selectable.
@@ -847,6 +855,7 @@ def export_targets() -> list[PlatformOption]:
             removable=bool(getattr(exporter, "drive_root", False)),
             drive_root=bool(getattr(exporter, "drive_root", False)),
             computer_only=bool(getattr(exporter, "computer_only", False)),
+            locks_grids=bool(getattr(exporter, "locks_grids", False)),
         ))
     # Each exporter states its own place; a platform with no exporter (not yet a
     # target, shown disabled) goes last. Stable, so equal places keep their order.

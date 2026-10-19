@@ -242,6 +242,10 @@ class TraktorAdapter:
             # invent one outside Auto Grid), and it occupies pad A — which
             # silently displaced the imported track's own pad A cue.
             self.replace_grid(track_id, markers)
+        if cues.grid_locked:
+            # The source's lock, or an export's "Lock beatgrids". Unlocked, an
+            # added entry (no AUDIO_ID) is re-analysed on its first load.
+            self._store.set_lock(track_id, True)
 
         slots = self.capabilities().cues.hotcue_slots
         taken = {c.slot for c in self.track_cues(track_id).cues if c.slot is not None}
