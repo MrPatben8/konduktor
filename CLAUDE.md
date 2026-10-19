@@ -164,7 +164,13 @@ Two independent apps that talk over HTTP:
       uses it as the reference meter) to 0.01 LU; on an inter-sample peak it is
       closer to exact than FFmpeg's interpolator. Mixed In Key, the requester's
       reference, shows no RMS or LUFS at all (researched), so nothing was
-      matched. `VERSION` bumps make stored values stale.
+      matched. `VERSION` bumps make stored values stale (2: stem files).
+      **A stem FILE is measured as its four stems SUMMED** (one demux pass,
+      `_measure_stem_sum`), not its mix stream — what a stem deck plays and
+      what Traktor's gain measures: commercial mix streams are mastered ~2.8 dB
+      (up to 5.3) hotter than their stems sum to. `bench_traktor_gain.py`
+      (any folder Traktor gain-analysed) fits Traktor's auto-gain against it:
+      `ANALYZED_DB = -9.2 - LUFS`, sd 0.8 dB over 120 tracks (2026-10-19).
     - `key_detect.py` + `key_model.npz` — **musical key detection**: a small
       CNN (Korzeniowski & Widmer 2017 — five 5x5 convs, a per-frame dense layer
       over the WHOLE pitch axis, since a key is not pitch-invariant, logits
@@ -1512,8 +1518,8 @@ serialization path.** It enforces:
   ±0.2 dB, 44.1/48 kHz, mono), the standard's anchors (a -23 dBFS 1 kHz stereo
   sine = -23.0 LUFS; an inter-sample peak = -6.02 dBTP), RMS's definition (a
   full-scale sine 0.0, a square +3.01, a long quiet intro moves nothing),
-  silence / under 3 s = None, chunked feeding equals one pass, and real files
-  at their own rate and channels.
+  silence / under 3 s = None, chunked feeding equals one pass, real files
+  at their own rate and channels, and a stem file read as its stem SUM.
 - `test_loudness_store.py` — the store (stale on facts or version, remap with
   the new path winning, concurrent writers) and the routes on generated FLACs:
   a Files folder measured with BPM refused, preview counts = the run's, skip

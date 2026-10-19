@@ -40,7 +40,7 @@ import numpy as np
 
 #: Bump when a measurement changes: stored values from an older version count
 #: as stale and are offered for re-analysis.
-VERSION = 1
+VERSION = 2  # 2: a stem file is its four stems summed, not its mix stream
 
 _ABS_GATE = -70.0          # LUFS
 _REL_GATE = -10.0          # LU, integrated
@@ -217,7 +217,21 @@ def measure(pcm: np.ndarray, sr: int) -> Loudness | None:
 def measure_file(path: Path | str) -> Loudness | None:
     """Decode `path` at its own rate and channel count (more than two are
     downmixed to stereo; mono stays mono, as BS.1770 and FFmpeg treat it) and
-    measure it as it streams. Raises if the file cannot be decoded."""
+    measure it as it streams. Raises if the file cannot be decoded.
+
+    A stem FILE is measured as its four stems SUMMED — what a stem deck plays
+    (Traktor's and Konduktor's), and what Traktor's own gain analysis measures
+    (decided 2026-10-19 after `bench_traktor_gain.py`: commercial stem files'
+    mix streams are mastered ~2.8 dB, up to 5.3, hotter than their stems sum
+    to; see the gain-normalisation discussion)."""
+    from . import stem_file
+
+    if stem_file.is_stem_file(path):
+        return _measure_stem_sum(path)
+    return _measure_stream(path)
+
+
+def _measure_stream(path: Path | str) -> Loudness | None:
     import av
 
     from . import pyav
@@ -246,4 +260,46 @@ def measure_file(path: Path | str) -> Loudness | None:
         for out in resampler.resample(None):
             pending.append(out.to_ndarray())
         flush()
+    return meter.result()
+
+
+def _measure_stem_sum(path: Path | str) -> Loudness | None:
+    """Streams 1-4 of a stem file, decoded in ONE demux pass and summed as they
+    arrive, so memory stays at seconds of audio. The stems share their encoder
+    priming (they were muxed in lockstep), so sample n of each is the same
+    instant; the sum ends where the shortest stem does."""
+    import av
+
+    from . import pyav
+
+    with pyav.open_input(path) as container:
+        stems = list(container.streams.audio[1:5])
+        if len(stems) < 4:
+            raise ValueError(f"{path}: a stem file with {len(stems)} stems")
+        sr = int(stems[0].codec_context.sample_rate)
+        resamplers = {s.index: av.AudioResampler(format="fltp", layout="stereo", rate=sr) for s in stems}
+        queues: dict[int, list[np.ndarray]] = {s.index: [] for s in stems}
+        meter = _Meter(sr, 2)
+
+        def drain(final: bool = False) -> None:
+            ready = min(sum(a.shape[1] for a in q) for q in queues.values())
+            if ready == 0 or (not final and ready < sr * 5):          # ~5 s per feed
+                return
+            total = np.zeros((2, ready), dtype=np.float32)
+            for idx, q in queues.items():
+                buf = np.concatenate(q, axis=1)
+                total += buf[:, :ready]
+                queues[idx] = [buf[:, ready:]] if buf.shape[1] > ready else []
+            meter.feed(total)
+
+        for packet in container.demux(stems):
+            idx = packet.stream.index
+            for frame in packet.decode():
+                for out in resamplers[idx].resample(frame):
+                    queues[idx].append(out.to_ndarray())
+            drain()
+        for idx, rs in resamplers.items():
+            for out in rs.resample(None):
+                queues[idx].append(out.to_ndarray())
+        drain(final=True)
     return meter.result()

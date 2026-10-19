@@ -163,6 +163,21 @@ with tempfile.TemporaryDirectory() as d:
     r = loudness.measure_file(mono)
     check("a mono file is measured as ONE channel (3 dB under its stereo twin)",
           r is not None and abs(r.lufs + 23.0) <= 0.1, str(r))
+    # A stem file is its four stems SUMMED (what a stem deck plays, and what
+    # Traktor measures), not its mix stream — commercial mixes are mastered
+    # hotter than their stems. Here each stem is an eighth of the mix, so the
+    # sum is the mix at half amplitude: -6.02 dB.
+    from konduktor.core import stem_file
+
+    src = Path(d) / "src.flac"
+    sf.write(src, np.vstack([tone(1000, 10, 44100, 0.5)] * 2).T, 44100)
+    stem = Path(d) / "s.stem.m4a"
+    stem_file.build(src, stem, lambda pcm: [pcm * 0.125] * 4)
+    mix = loudness._measure_stream(stem)
+    summed = loudness.measure_file(stem)
+    check("a stem file measures its stem SUM (6.02 dB under its mix stream)",
+          summed is not None and mix is not None and abs((mix.lufs - summed.lufs) - 6.02) <= 0.1,
+          f"mix {mix and mix.lufs:.2f}, sum {summed and summed.lufs:.2f}")
     try:
         loudness.measure_file(Path(d) / "missing.flac")
         check("a missing file raises", False)
