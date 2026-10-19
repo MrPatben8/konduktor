@@ -241,6 +241,22 @@ with TestClient(main.app) as c:
     check("no LOUDNESS in the exported collection", all(v is None for v in traktor_gains(dest).values()))
     check("no auto gain in the Rekordbox Library", all(v is None for v in rekordbox_gains(dest).values()))
 
+    print("== a file only the file says cannot be levelled (HE-AAC) is copied as it is ==")
+    real_apply = level_edit.apply
+
+    def refuse(src, dst, gain_db):
+        raise level_edit.LevelEditError(f"{Path(src).name}: only AAC-LC can be changed losslessly")
+
+    level_edit.apply = refuse
+    j = wait(c, c.post(f"/api/exports/{s['id']}/run", json={"normalise": True, "auto_gain": True}).json()["id"])
+    level_edit.apply = real_apply
+    check("the export still completes", j["state"] == "done" and j["result"]["normalised"] == 0, str(j.get("error")))
+    check("…every copy byte-identical to its source, recorded at no gain",
+          all(sha(dest / "Contents" / p.name) == before[p.name] for p in sources)
+          and all(g == 0.0 for g in manifest_gains(dest).values()))
+    check("…and the auto gain from the SOURCE's level",
+          all(abs(traktor_gains(dest)[p.name] - (-9.2 - entries[str(p)].values.lufs)) < 1e-3 for p in sources))
+
 print("== the waveform cache is keyed by the level ==")
 p = exporter.PlannedTrack(track_id="t", title="t", source_path=Path("/x.mp3"), destination=None,
                           size=10, mtime_ns=1)

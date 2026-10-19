@@ -35,7 +35,11 @@ check("a quiet one goes up exactly when the peak allows", (s.outcome, s.gain_db)
 s = plan(L(-9.02, -2.0))
 check("within 0.05 dB is at target (lossless)", s.outcome == "at_target" and not s.writes, str(s))
 check("no measurement: unmeasured", plan(None).outcome == "unmeasured")
-check("ALAC / AAC / Ogg: unsupported", all(plan(L(-6, 0), x).outcome == "unsupported" for x in (".m4a", ".ogg", ".opus")))
+check("Ogg / Opus / WMA: unsupported", all(plan(L(-6, 0), x).outcome == "unsupported" for x in (".ogg", ".opus", ".wma")))
+s = plan(L(-6.0, -3.0), ".m4a")
+check("AAC (.m4a, a stem file) is planned in whole steps, like MP3 (aac_gain)",
+      s.outcome == "apply" and abs(s.gain_db / STEP_DB - round(s.gain_db / STEP_DB)) < 1e-6
+      and plan(L(-6.0, -3.0), ".mp4").gain_db == s.gain_db, str(s))
 check("the suffix is case-blind", plan(L(-6.0, 1.0), ".FLAC").outcome == "apply")
 
 print("== the ceiling (a raise never clips) ==")

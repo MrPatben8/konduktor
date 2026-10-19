@@ -815,8 +815,29 @@ Two independent apps that talk over HTTP:
     target; up and down, a raise stopping at the TRUE-PEAK ceiling (outcome
     `capped`, `short_by`); a peak already over the ceiling at/below target is
     left alone (`hot_peak_left`); MP3 in whole steps of 2^(1/4) (1.505 dB),
-    rounding a raise DOWN under the ceiling; ALAC/AAC/Ogg `unsupported` (AAC
-    is Phase 5). `core/level_edit.py` writes a NEW file: MP3 by the lossless
+    rounding a raise DOWN under the ceiling — and AAC (`.m4a`/`.mp4`, stem
+    files) in the SAME steps; Ogg/Opus/WMA `unsupported`. **AAC-LC by
+    `core/aac_gain.py`** (aacgain's edit, decided 2026-10-19 after a spike):
+    every channel's 8-bit `global_gain` +n scales the decode by exactly
+    2^(n/4) (scalefactors and PNS energies are coded from it, intensity is a
+    ratio). Finding a channel pair's second `global_gain` means WALKING the
+    first channel — section data, scalefactors, pulse, TNS and the Huffman
+    spectrum (codeword lengths, plus the unsigned books' sign bits and book
+    11's escapes) — with the standard's codebooks in `core/aac_tables.py`
+    (GENERATED from FFmpeg n7.1 `aactab.c`, every book checked a complete
+    prefix code; do not hand-edit), in numba (~1 s per five-stream stem
+    file). The MP4 side follows `stsz`/`stsc`/`stco|co64` to every frame of
+    EVERY audio track, so a stem file's five streams move alike. Proof per
+    frame: a raw_data_block must end in its last byte, else the file is
+    refused; refused too: HE-AAC/SBR/PS (the ASC, implicit SBR, an SBR FIL),
+    LTP/Main/SSR, 960-sample frames, CCE/PCE, scalefactors out of range. No
+    undo tag (one would grow `moov`); the edit is exactly reversed by the
+    opposite steps. Spike: exact (<= 1e-6 of peak) on every stream of FFmpeg
+    and Apple M4As, generated and 44 commercial stem files, and PNS /
+    intensity / M/S / TNS / mono / 22-48 kHz edge cases. `level_edit.verify`
+    decodes EVERY audio stream. Because only the file can say "HE-AAC", the
+    export copies such a file UNLEVELLED (gain 0, its auto gain from the
+    source) rather than failing. `core/level_edit.py` writes a NEW file: MP3 by the lossless
     frame-gain edit (mp3gain's `global_gain`, CRC-16 recomputed on protected
     frames, the Xing/Info/VBRI frame untouched, mp3gain's APEv2
     `MP3GAIN_UNDO`/`MINMAX` tag, accumulating); WAV/AIFF scaled IN their
@@ -1663,8 +1684,17 @@ serialization path.** It enforces:
   their size and every other chunk byte-identical, 24-bit rounded not
   dithered, 16-bit dithered reproducibly; FLAC 16/24 keeps depth, rate, tags
   and picture.
+- `test_aac_gain.py` — the AAC-LC edit on GENERATED files (FFmpeg stereo /
+  mono / 48 / 22.05 kHz, 48 kb/s with PNS + intensity + M/S, TNS; Apple
+  `aac_at` where present): every frame walked, the decode exact at -2/+3
+  steps, same size, only global_gain bytes differ; a generated stem file's
+  five streams alike, the opposite steps restoring it byte for byte;
+  `level_edit` applying and verifying it, and catching one stream at another
+  level; refusals leaving nothing (HE-AAC, ALAC, out-of-range steps, an
+  existing target, a non-step gain); and the user's kit 4 / kit 5 / Kit Bulk
+  files when present.
 - `test_normalize.py` — through the routes on temp collections pointed at
-  generated MP3/FLAC/WAV: unmeasured tracks counted to measure first; MP3
+  generated MP3/FLAC/WAV/M4A: unmeasured tracks counted to measure first; MP3
   gains whole steps; a raise held by the ceiling; the preview's lossless
   count; the run = the preview, the SAVED collection untouched, each file at
   its own path = the original at the gain with the original parked unchanged,
@@ -1687,7 +1717,9 @@ serialization path.** It enforces:
   options; a same-level re-export keeps every file (same inodes); a new
   target re-writes only the copy whose gain changed; Normalise off restores
   the source bytes with the gain from the source's LUFS; Auto gain off writes
-  none; a levelled copy has its own waveform-cache key.
+  none; a levelled copy has its own waveform-cache key; and a file that
+  cannot be levelled (as HE-AAC) is copied unchanged at gain 0 without
+  failing the export.
 - `test_auto_hotcues.py` — Auto Hotcues in three layers: `structure.analyse`
   on SYNTHETIC audio with known sections (the intro with a kick is not a drop;
   no breakdown after the last drop), `plan`'s outcomes and beat-counted offsets

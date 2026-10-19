@@ -32,8 +32,10 @@ STEP_DB = 20.0 * math.log10(2.0 ** 0.25)
 
 #: Rewritten exactly (PCM scaled, same bit depth).
 EXACT = frozenset({".wav", ".wave", ".aif", ".aiff", ".flac"})
-#: Rewritten by the lossless frame-gain edit, in `STEP_DB` steps.
-STEPPED = frozenset({".mp3"})
+#: Rewritten by a lossless frame-gain edit, in `STEP_DB` steps: MP3's
+#: (`level_edit`) and AAC-LC's (`aac_gain` — an `.m4a`, a stem file; a file
+#: that turns out to be HE-AAC is refused when it is rewritten).
+STEPPED = frozenset({".mp3", ".m4a", ".mp4"})
 
 #: Closer than this to the target (lossless) is "already there".
 _EXACT_TOLERANCE_DB = 0.05

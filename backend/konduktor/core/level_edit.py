@@ -49,8 +49,10 @@ def apply(src: Path | str, dst: Path | str, gain_db: float) -> None:
         raise LevelEditError(f"{dst.name} already exists")
     suffix = src.suffix.lower()
     try:
-        if suffix in STEPPED:
+        if suffix == ".mp3":
             _mp3(src, dst, gain_db)
+        elif suffix in STEPPED:
+            _aac(src, dst, gain_db)
         elif suffix in (".wav", ".wave"):
             shutil.copyfile(src, dst)
             _scale_chunk(dst, _wav_layout(dst), gain_db)
@@ -196,6 +198,21 @@ def _mp3gain_tag(path: Path, steps: int, lo: int, hi: int) -> None:
     tag["MP3GAIN_UNDO"] = f"{undo:+04d},{undo:+04d},N"
     tag["MP3GAIN_MINMAX"] = f"{lo:03d},{hi:03d}"
     tag.save(str(path))
+
+
+# ---- AAC (an .m4a, a stem file): the same edit, in `aac_gain` -----------------
+
+def _aac(src: Path, dst: Path, gain_db: float) -> None:
+    """Every audio stream of the MP4 (a stem file's five alike) moved by the
+    same steps. No undo tag: one would grow `moov` and shift every sample
+    offset; the edit is exactly reversed by the opposite steps."""
+    from . import aac_gain
+
+    steps = mp3_steps(gain_db)
+    try:
+        aac_gain.apply(src, dst, steps)
+    except aac_gain.AacGainError as ex:
+        raise LevelEditError(f"{src.name}: {ex}") from ex
 
 
 # ---- WAV / AIFF: the samples scaled in their own chunk ------------------------
@@ -375,13 +392,20 @@ def _flac(src: Path, dst: Path, gain_db: float) -> None:
 
 # ---- verification ---------------------------------------------------------------
 
-def _frames(path: Path):
+def _audio_streams(path: Path) -> int:
+    from . import pyav
+
+    with pyav.open_input(path) as c:
+        return len(c.streams.audio)
+
+
+def _frames(path: Path, index: int = 0):
     import av
 
     from . import pyav
 
     with pyav.open_input(path) as c:
-        stream = c.streams.audio[0]
+        stream = c.streams.audio[index]
         rs = av.AudioResampler(format="fltp", layout="stereo" if stream.codec_context.channels > 1 else "mono",
                                rate=int(stream.codec_context.sample_rate))
         for frame in c.decode(stream):
@@ -393,9 +417,18 @@ def _frames(path: Path):
 
 def verify(src: Path | str, dst: Path | str, gain_db: float, *, tolerance: float = 1e-3) -> None:
     """Decode both and check `dst` == `src` x 10^(g/20), to within `tolerance`
-    of the source's peak (16-bit dither is ~3e-5). Raises `LevelEditError`."""
+    of the source's peak (16-bit dither is ~3e-5) — EVERY audio stream (a
+    stem file's five). Raises `LevelEditError`."""
+    n_src, n_dst = _audio_streams(Path(src)), _audio_streams(Path(dst))
+    if n_src != n_dst:
+        raise LevelEditError(f"{Path(dst).name}: the number of audio streams changed")
+    for index in range(n_src):
+        _verify_stream(Path(src), Path(dst), gain_db, tolerance, index)
+
+
+def _verify_stream(src: Path, dst: Path, gain_db: float, tolerance: float, index: int) -> None:
     factor = 10.0 ** (gain_db / 20.0)
-    a_iter, b_iter = _frames(Path(src)), _frames(Path(dst))
+    a_iter, b_iter = _frames(src, index), _frames(dst, index)
     a_buf = b_buf = None
     worst = peak = 0.0
     length_a = length_b = 0

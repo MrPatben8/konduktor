@@ -79,16 +79,33 @@ def make_mp3(path: Path, amp: float):
             c.mux(p)
 
 
+def make_m4a(path: Path, amp: float):
+    x = music(amp=amp)
+    with av.open(str(path), "w", format="ipod") as c:
+        s = c.add_stream("aac", rate=44100, layout="stereo")
+        s.bit_rate = 192_000
+        for o in range(0, x.shape[1], 1024):
+            f = av.AudioFrame.from_ndarray(np.ascontiguousarray(x[:, o:o + 1024]), format="fltp", layout="stereo")
+            f.sample_rate, f.pts = 44100, o
+            for p in s.encode(f):
+                c.mux(p)
+        for p in s.encode(None):
+            c.mux(p)
+
+
 def make(path: Path, amp: float):
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix == ".mp3":
         make_mp3(path, amp)
+    elif path.suffix == ".m4a":
+        make_m4a(path, amp)
     else:
         sf.write(str(path), music(amp=amp).T, 44100, subtype="PCM_16")
     return path
 
 
-FILES = [("hot.mp3", 0.9), ("quiet.flac", 0.03), ("hot.wav", 0.8), ("close.mp3", 0.12)]
+FILES = [("hot.mp3", 0.9), ("quiet.flac", 0.03), ("hot.wav", 0.8), ("close.mp3", 0.12), ("hot.m4a", 0.8)]
+LOSSLESS = {".flac", ".wav"}
 
 
 def library(name: str):
@@ -160,13 +177,15 @@ with TestClient(main.app) as c:
     gains = {files[i].name: rows[t].get("gain_db") for i, t in enumerate(ids)}
     check("measured: every track has a plan",
           all(rows[t].get("outcome") for t in ids), str(pv["rows"]))
+    check("an AAC file (.m4a) is levelled in the same whole steps (aac_gain)",
+          abs(gains["hot.m4a"] / STEP_DB - round(gains["hot.m4a"] / STEP_DB)) < 1e-6 and gains["hot.m4a"] < 0, str(gains))
     check("an MP3's gain is a whole number of 1.505 dB steps",
           abs(gains["hot.mp3"] / STEP_DB - round(gains["hot.mp3"] / STEP_DB)) < 1e-6 and gains["hot.mp3"] < 0, str(gains))
     check("the quiet FLAC is raised, but only to the ceiling",
           rows[ids[1]]["outcome"] in ("apply", "capped") and gains["quiet.flac"] > 0
           and before["quiet.flac"].true_peak + gains["quiet.flac"] <= -1.0 + 1e-6, str(rows[ids[1]]))
     check("lossless files are counted (Save makes their change permanent)",
-          pv["lossless"] == sum(1 for i, t in enumerate(ids) if files[i].suffix != ".mp3" and rows[t]["gain_db"]),
+          pv["lossless"] == sum(1 for i, t in enumerate(ids) if files[i].suffix in LOSSLESS and rows[t]["gain_db"]),
           str(pv["lossless"]))
 
     print("== run: new files in place, originals parked, library follows ==")
@@ -191,7 +210,7 @@ with TestClient(main.app) as c:
     state = c.get("/api/state").json()
     check("Save is due: the library is dirty and the pending change is named",
           state["dirty"] and state["pending_gain"]["tracks"] == len(changed)
-          and state["pending_gain"]["lossless"] == sum(1 for p in changed if p.suffix != ".mp3"), str(state))
+          and state["pending_gain"]["lossless"] == sum(1 for p in changed if p.suffix in LOSSLESS), str(state))
     vals = c.post("/api/loudness", json={"track_ids": ids}).json()["values"]
     tracks = {t["id"]: t for t in c.get("/api/tracks", params={"limit": 20000}).json()["items"]}
     for p in changed:

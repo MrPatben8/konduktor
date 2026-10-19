@@ -620,17 +620,26 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle, *,
                 # The file to READ: on this machine that is the source itself;
                 # on a library held by a server, a downloaded copy of it.
                 local = adapter.audio_path(planned.track_id) or planned.source_path
+                levelled = False
                 if planned.gain_db:
                     from .core import level_edit
 
                     handle.progress(message=f"Normalising {planned.title} ({planned.gain_db:+.1f} dB)")
-                    level_edit.apply(local, partial, planned.gain_db)
-                    handle.raise_if_cancelled()
-                    # A copy carried to a gig must be the source at the gain,
-                    # nothing else: decode both and compare.
-                    level_edit.verify(local, partial, planned.gain_db)
-                    advance(planned.size)
-                else:
+                    try:
+                        level_edit.apply(local, partial, planned.gain_db)
+                        handle.raise_if_cancelled()
+                        # A copy carried to a gig must be the source at the
+                        # gain, nothing else: decode both and compare.
+                        level_edit.verify(local, partial, planned.gain_db)
+                        levelled = True
+                        advance(planned.size)
+                    except level_edit.LevelEditError as ex:
+                        # Only the file says some things (HE-AAC in an .m4a):
+                        # such a copy goes as it is, never fails the export.
+                        log.warning("copying %s unlevelled: %s", planned.title, ex)
+                        partial.unlink(missing_ok=True)
+                        planned.gain_db, planned.level_outcome = 0.0, "unsupported"
+                if not levelled:
                     copy_file(local, partial, handle, advance)
                 os.replace(partial, target)
             payload_tracks.append(
