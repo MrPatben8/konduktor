@@ -587,6 +587,23 @@ class TraktorStore:
             self._journal.record("track", "set", track_id, "auto_gain", before, after)
             self.dirty = True
 
+    # ---- a level change (Normalize) ------------------------------------------
+    def audio_changed(self, track_id: str, change) -> None:
+        """The file at this entry changed level in place. Traktor keeps only its
+        size (KB) about it — and was measured (kit G1) to re-analyse nothing on
+        such a change; its LOUDNESS is rewritten separately (`set_auto_gain`).
+        Always journalled, so Save runs even if the size is unchanged (MP3)."""
+        with self._lock:
+            entry = self._entry_by_key.get(track_id)
+            if entry is None:
+                raise PlaylistError(f"Track not found: {track_id}")
+            if entry.info is None:
+                entry.info = Infotype()
+            before = entry.info.filesize
+            entry.info.filesize = int(round(change.size / 1024))
+            self._journal.record("track", "audio", track_id, "level", before, change.gain_db)
+            self.dirty = True
+
     # ---- adding tracks --------------------------------------------------
     def add_entry(self, track, audio_path: Path) -> str:
         """Append a brand-new ENTRY for `audio_path` and return its track id.

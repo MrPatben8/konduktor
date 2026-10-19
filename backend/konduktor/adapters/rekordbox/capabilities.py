@@ -97,6 +97,7 @@ def capabilities_for(
             colors=list(track_palette.SWATCHES),
             # djmdMixerParam (measured, see `gain`).
             auto_gain=True,
+            normalizable=True,
             artwork=False,
             artwork_note=None,
         ),

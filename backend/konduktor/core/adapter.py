@@ -185,6 +185,19 @@ class StemSwap:
     size: int
 
 
+@dataclass(frozen=True)
+class AudioChange:
+    """A track's audio file changed LEVEL in place (Normalize): same path, the
+    samples scaled by `gain_db`. `size` is the new file's size; `measured` the
+    new audio's `core.waveform.Analysis` at the platform's `analysis_lead`,
+    for a platform that stores drawn waveforms (None: it does not). The
+    library's own auto gain is a separate command (`set_auto_gain`)."""
+
+    gain_db: float
+    size: int
+    measured: object | None = None
+
+
 @dataclass
 class StemSwapResult:
     #: Old track id -> the id of the entry that now names the stem file.
@@ -291,6 +304,12 @@ class LibraryAdapter(Protocol):
     # every swap is validated before any is applied, so a clash leaves the
     # library untouched. Gated on `capabilities().tracks.stem_convertible`.
     # `add_to_playlist` receives the entries "add" mode creates, in order.
+    # A track's file changed level in place (see `AudioChange`): what the
+    # library keeps ABOUT the audio follows — its size, its drawn waveforms.
+    # Always an edit (so Save runs), even where nothing visible changes.
+    # Gated on `capabilities().tracks.normalizable`.
+    def audio_changed(self, track_id: str, change: AudioChange) -> Track | None: ...
+
     def apply_stem_swaps(self, swaps: list["StemSwap"], *,
                          add_to_playlist: str | None = None) -> "StemSwapResult": ...
 

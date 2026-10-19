@@ -127,6 +127,9 @@ class TrackCapabilities(BaseModel):
     # The library keeps a per-track auto gain the DJ app applies on load
     # (`set_auto_gain`). False on a stick: no stick format has one (measured).
     auto_gain: bool = False
+    # Tracks' files can be normalised in place: the library follows a level
+    # change (`audio_changed`) and keeps the parked original until Save.
+    normalizable: bool = False
 
 
 class PlaylistCapabilities(BaseModel):

@@ -326,6 +326,11 @@ class EditState(BaseModel):
     stem_job: str | None = None
     # What this open's crash recovery did about an interrupted conversion.
     stem_recovery: dict | None = None
+    # Normalized tracks awaiting Save/Discard: {tracks, lossless} (lossless =
+    # files whose change Save makes permanent).
+    pending_gain: dict | None = None
+    # A running Normalize's job id, so a reloaded page finds it again.
+    normalize_job: str | None = None
     # A remote library's connection: {state, via, machine}. None when local.
     remote: dict | None = None
 
@@ -701,3 +706,12 @@ class JobStatus(BaseModel):
     error: str | None = None
     started_at: float
     finished_at: float | None = None
+
+
+class NormalizeRequest(BaseModel):
+    """Normalize's choices (`gain/normalize.py`, `core/level_plan.py`): the
+    measure brought to `target`, a raise stopping at the true-peak `ceiling`."""
+    track_ids: list[str]
+    measure: Literal["lufs", "rms"] = "lufs"
+    target: float = -9.0
+    ceiling: float = -1.0

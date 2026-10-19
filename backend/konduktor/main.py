@@ -121,6 +121,7 @@ from .schemas import (
     StemEngineInstall,
     StemSideLoad,
     StemConvert,
+    NormalizeRequest,
 )
 
 log = logging.getLogger(__name__)
@@ -409,7 +410,7 @@ def put_path_mapping(body: PathMappingInfo) -> PathMappingInfo:
     """Set (or, with blank prefixes, clear) the current collection's remapping.
     Persists to userprefs AND updates the live store so playback/analysis
     re-resolve immediately — no reopen needed. Never touches the .nml."""
-    _require_no_pending_stems("Changing the path mapping")
+    _require_no_pending("Changing the path mapping")
     a = require_adapter()
     mapping = PathMapping.make(body.from_, body.to)
     prefs.set_path_mapping(
@@ -445,7 +446,7 @@ def remap_paths(body: PathMappingInfo) -> RemapResult:
     playlist references that join to them) to the `to` prefix, then save (a
     version-history commit is written). Destructive and OS-specific — the UI
     warns accordingly."""
-    _require_no_pending_stems("Rewriting paths")
+    _require_no_pending("Rewriting paths")
     mapping = PathMapping.make(body.from_, body.to)
     if mapping.empty:
         raise HTTPException(400, "Both a `from` and `to` prefix are required")
@@ -512,7 +513,7 @@ def answer_relocation(body: RelocationApply) -> RelocationApplied:
     """Answer the check: apply the chosen mappings for THIS SESSION only (no
     mappings = "Not now"). Nothing is written to the library or to prefs, and a
     reopen asks again."""
-    _require_no_pending_stems("Relocating files")
+    _require_no_pending("Relocating files")
     require_adapter()
     check = STATE.relocation
     if check is None:
@@ -958,9 +959,13 @@ def capabilities() -> Capabilities:
 @app.get("/api/state", response_model=EditState)
 def state() -> EditState:
     stem_job = JOBS.active(STEM_JOB)
+    normalize_job = JOBS.active(NORMALIZE_JOB)
     pending = STATE.pending.summary() if STATE.pending is not None else None
     return EditState(dirty=require_adapter().dirty, library=_library_info(),
                      pending_stems=pending if pending and pending["tracks"] else None,
+                     pending_gain=({"tracks": pending["gain_tracks"], "lossless": pending["gain_lossless"]}
+                                   if pending and pending.get("gain_tracks") else None),
+                     normalize_job=normalize_job[0].id if normalize_job else None,
                      stem_job=stem_job[0].id if stem_job else None,
                      stem_recovery=STATE.recovery,
                      remote=STATE.remote.describe() if STATE.remote is not None else None)
@@ -1029,14 +1034,19 @@ def install_stem_engine(body: StemEngineInstall) -> JobStatus:
     return JobStatus(**job.as_dict())
 
 
-def _require_no_pending_stems(what: str) -> None:
-    """Refuse an operation that would SAVE or DROP a stem conversion's swap as a
+def _require_no_pending(what: str) -> None:
+    """Refuse an operation that would SAVE or DROP a pending file change as a
     side effect — import and remap save pending edits, reload and restore drop
-    them — while converted tracks await Save/Discard or a conversion runs."""
+    them — while converted or normalized tracks await Save/Discard, or a
+    conversion or Normalize runs. (Remap and relocation would also move the
+    paths the ledger is keyed by.)"""
     if JOBS.active(STEM_JOB):
         raise HTTPException(409, f"{what} is not possible while tracks are being converted to stems")
+    if JOBS.active(NORMALIZE_JOB):
+        raise HTTPException(409, f"{what} is not possible while tracks are being normalized")
     if STATE.pending is not None and STATE.pending.blocking():
-        raise HTTPException(409, f"{what} is not possible until the converted tracks are saved or discarded")
+        raise HTTPException(409, f"{what} is not possible until the converted or normalized tracks "
+                                 "are saved or discarded")
 
 
 def _stem_options(body):
@@ -1172,7 +1182,7 @@ def discard_changes() -> EditState:
 
 @app.post("/api/reload")
 def reload_collection() -> dict:
-    _require_no_pending_stems("Reloading")
+    _require_no_pending("Reloading")
     if not STATE.loaded:
         raise HTTPException(409, "No collection loaded")
     if STATE.remote is not None:
@@ -1580,7 +1590,8 @@ class _AnalysisError(Exception):
 # beats that no longer exist.
 GRID_JOB = "grid-analysis"
 CUE_JOB = "auto-hotcues"
-BATCH_JOBS = (GRID_JOB, CUE_JOB, STEM_JOB)
+NORMALIZE_JOB = "normalize"
+BATCH_JOBS = (GRID_JOB, CUE_JOB, STEM_JOB, NORMALIZE_JOB)
 
 
 def _stop_batches() -> None:
@@ -1922,6 +1933,56 @@ def auto_grid_batch(body: AutoGridBatchRequest) -> JobStatus:
     `/api/tracks/analyze` so the two cannot drift."""
     return analyze_batch(AnalyzeRequest(track_ids=body.track_ids, bpm=True, grid=True,
                                         key=False, replace_grid=body.replace_existing))
+
+
+# ---- Normalize (the track menu's Mastering ▸ Normalize…) --------------------
+#
+# Changes the audio files' level in place (`gain/normalize.py`): parked
+# originals until Save, like a stem conversion. The library's own tracks only.
+
+
+def _normalize_target(body: NormalizeRequest):
+    a = require_adapter()
+    if STATE.remote is not None:
+        raise HTTPException(409, "Normalize is not available on a remote library yet")
+    caps = a.capabilities()
+    if not (caps.writable and caps.tracks.normalizable):
+        raise HTTPException(422, "This library's audio files cannot be normalized")
+    if not -30.0 <= body.target <= 0.0 or not -12.0 <= body.ceiling <= 0.0:
+        raise HTTPException(400, "Target or ceiling out of range")
+    from .gain import normalize
+
+    return a, normalize.Options(measure=body.measure, target=body.target, ceiling=body.ceiling)
+
+
+@app.post("/api/tracks/normalize/preview")
+def normalize_preview(body: NormalizeRequest) -> dict:
+    """What Normalize would do per track, from the same `plan_gain` the run uses."""
+    from .gain import normalize
+
+    a, opts = _normalize_target(body)
+    return normalize.plan(a, body.track_ids, opts, STATE.loudness, STATE.pending).as_dict()
+
+
+@app.post("/api/tracks/normalize", response_model=JobStatus)
+def normalize_tracks(body: NormalizeRequest) -> JobStatus:
+    """Normalize as a JOB; the new files land at its end as unsaved changes."""
+    from .gain import normalize
+
+    a, opts = _normalize_target(body)
+    _require_no_batch()
+    if JOBS.active("import"):
+        raise HTTPException(409, "Wait for the import to finish")
+
+    def run(handle):
+        return normalize.run(handle, a, body.track_ids, opts, store=STATE.loudness, pending=STATE.pending,
+                             mutation=STATE.mutation, still_current=lambda: STATE.adapter is a)
+
+    try:
+        job = JOBS.submit(NORMALIZE_JOB, run, exclusive_with=BATCH_JOBS + ("import",))
+    except JobBusy:
+        raise HTTPException(409, "Another batch or import is running")
+    return JobStatus(**job.as_dict())
 
 
 # ---- Loudness (the Mastering columns) --------------------------------------
@@ -2299,7 +2360,7 @@ def restore_version(commit_id: str) -> CollectionStatus:
     """Restore the collection to a past version. Writes that version back as a
     NEW forward save (a fresh commit on top of history — never a rewind), then
     reloads. The user should close Traktor first (it overwrites on exit)."""
-    _require_no_pending_stems("Restoring a version")
+    _require_no_pending("Restoring a version")
     require_adapter()
     if not STATE.restore_version(commit_id):
         raise HTTPException(404, f"Version not found: {commit_id}")
@@ -2790,7 +2851,7 @@ def folder_add_preview(body: FolderAddRequest) -> dict:
 @app.post("/api/folder/add", response_model=JobStatus)
 def folder_add(body: FolderAddRequest) -> JobStatus:
     """Add browsed files to the collection. A job, like import: copying can be long."""
-    _require_no_pending_stems("Adding files")
+    _require_no_pending("Adding files")
     in_place = _is_server_add(body)
     if in_place:
         source, dest, plan = _server_add_plan(body)
@@ -2880,7 +2941,7 @@ def import_preview(body: ImportRequest) -> dict:
 @app.post("/api/import", response_model=JobStatus)
 def start_import(body: ImportRequest) -> JobStatus:
     """Start an import. Returns immediately; poll the job for progress."""
-    _require_no_pending_stems("Importing")
+    _require_no_pending("Importing")
     source, dest, destination, plan = _import_plan(body)
     if not plan.importable:
         raise HTTPException(400, "Nothing to import (no tracks, or none of their files exist)")

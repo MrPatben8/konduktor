@@ -159,11 +159,17 @@ def plan(adapter, track_ids: list[str], opts: Options, pending: Pending | None) 
 
     in_library = {str(p) for t in adapter.tracks if (p := adapter.audio_path(t.id)) is not None}
     candidates: list[tuple[str, object, Path]] = []
+    # A track whose level change (Normalize) awaits Save: converting it would
+    # build a stem file from audio Discard is about to put back.
+    held = {i["track_id"] for i in pending.items if i.get("kind") == "gain"} if pending is not None else set()
     for tid in dict.fromkeys(track_ids):
         track = adapter.track(tid)
         src = adapter.audio_path(tid) if track is not None else None
         if track is None:
             result.skipped.append({"track_id": tid, "title": tid, "reason": "not in the library"})
+        elif tid in held:
+            result.skipped.append({"track_id": tid, "title": _title(track),
+                                   "reason": "its level change awaits Save"})
         elif src is None or not Path(src).is_file():
             result.skipped.append({"track_id": tid, "title": _title(track), "reason": "the file is missing"})
         elif sf.is_stem_file(src):

@@ -316,6 +316,8 @@ export interface Capabilities {
     colors: ColorSwatch[]
     /** The library keeps a per-track auto gain (`Track.auto_gain_db`). */
     auto_gain: boolean
+    /** Tracks' files can be normalized in place (`audio_changed`). */
+    normalizable: boolean
   }
   playlists: {
     folders: boolean
@@ -369,6 +371,11 @@ export interface EditState {
   stem_job: string | null
   /** What this open's crash recovery did about an interrupted conversion. */
   stem_recovery: { committed: number; restored: number; kept: number } | null
+  /** Normalized tracks awaiting Save or Discard; `lossless` = files whose
+   *  change Save makes permanent. */
+  pending_gain: { tracks: number; lossless: number } | null
+  /** A running Normalize's job id, so a reloaded page can find it. */
+  normalize_job: string | null
   /** A remote library's connection, null for a local one. */
   remote: RemoteConnection | null
 }
@@ -655,6 +662,47 @@ export interface AnalyzePreview {
   gain_existing: number
   /** Tracks with an auto gain — the gain Replace tick's count. */
   with_gain: number
+}
+
+/** Normalize's choices (`gain/normalize.py`). */
+export interface NormalizeOptions {
+  measure: 'lufs' | 'rms'
+  target: number
+  ceiling: number
+}
+
+/** One track in Normalize's preview — the backend's `plan_gain`. */
+export interface NormalizeRow {
+  track_id: string
+  title: string
+  /** The measure now; null = not measured yet (the run measures it first). */
+  level: number | null
+  /** Why nothing can be done (missing file, already pending). */
+  skip: string | null
+  gain_db?: number
+  outcome?: 'apply' | 'capped' | 'at_target' | 'hot_peak_left' | 'unsupported' | 'unmeasured'
+  short_by?: number
+  lossless?: boolean
+}
+
+export interface NormalizePreview {
+  total: number
+  to_change: number
+  to_measure: number
+  tracks_to_process: number
+  /** Lossless files that would change — permanent once saved. */
+  lossless: number
+  counts: Record<string, number>
+  rows: NormalizeRow[]
+}
+
+/** What a Normalize run did. */
+export interface NormalizeResult {
+  normalised: string[]
+  skipped: { track_id: string; title: string; reason: string }[]
+  failed: { track_id: string; title: string; reason: string }[]
+  counts: Record<string, number>
+  cancelled: boolean
 }
 
 /** What an Analyze run did. */
@@ -1216,6 +1264,11 @@ export const api = {
   stemEngineRemove: () => send<StemEngineStatus>('DELETE', '/api/stems/engine'),
   analyzePreview: (trackIds: string[], opts: AnalyzeOptions) =>
     send<AnalyzePreview>('POST', '/api/tracks/analyze/preview', { track_ids: trackIds, ...opts }),
+  normalizePreview: (trackIds: string[], opts: NormalizeOptions) =>
+    send<NormalizePreview>('POST', '/api/tracks/normalize/preview', { track_ids: trackIds, ...opts }),
+  /** Starts a Normalize job; its `result` is a `NormalizeResult`. */
+  normalize: (trackIds: string[], opts: NormalizeOptions) =>
+    send<JobStatus>('POST', '/api/tracks/normalize', { track_ids: trackIds, ...opts }),
   /** Starts an analysis job; its `result` is an `AnalyzeResult`. */
   analyze: (trackIds: string[], opts: AnalyzeOptions) =>
     send<JobStatus>('POST', '/api/tracks/analyze', { track_ids: trackIds, ...opts }),

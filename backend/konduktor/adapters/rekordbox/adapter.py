@@ -269,6 +269,12 @@ class RekordboxAdapter:
         self._refresh(track_id)
         return self._index.get(track_id)
 
+    def audio_changed(self, track_id: str, change) -> Track | None:
+        self._require_writable("Changing a track's level")
+        self._store.audio_changed(track_id, change)
+        self._refresh(track_id)
+        return self._index.get(track_id)
+
     def set_auto_gain(self, track_id: str, loudness) -> Track | None:
         self._require_writable("Setting the auto gain")
         self._store.set_auto_gain(track_id, loudness)

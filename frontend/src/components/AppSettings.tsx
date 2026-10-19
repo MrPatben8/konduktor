@@ -16,6 +16,11 @@ export const APP_SETTING_DEFAULTS = {
   exportRootFolder: false,
   /** Decimal places on the deck's ELAPSED / REMAIN readouts (0–3). */
   timeReadoutDecimals: 1,
+  /** Normalize's defaults (each run can change them): the measure brought to
+   *  the target, and the true-peak ceiling a raise stops at. */
+  levelMeasure: 'lufs' as 'lufs' | 'rms',
+  levelTarget: -9,
+  levelCeiling: -1,
 }
 
 type AppSettingKey = keyof typeof APP_SETTING_DEFAULTS
@@ -32,6 +37,9 @@ export function AppSettings({ onClose }: { onClose: () => void }) {
   const expandFolders = useAppSetting('expandPlaylistFolders')
   const exportRootFolder = useAppSetting('exportRootFolder')
   const timeDecimals = useAppSetting('timeReadoutDecimals')
+  const levelMeasure = useAppSetting('levelMeasure')
+  const levelTarget = useAppSetting('levelTarget')
+  const levelCeiling = useAppSetting('levelCeiling')
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -120,6 +128,36 @@ export function AppSettings({ onClose }: { onClose: () => void }) {
               </select>
             </label>
           </section>
+          <section className="space-y-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-faint">Normalize</h3>
+            <span className="block text-xs text-faint">
+              The defaults Mastering ▸ Normalize… starts from; each run can change them.
+            </span>
+            <label className="flex items-center justify-between gap-4">
+              <span className="text-sm text-text">Level by</span>
+              <select
+                className="shrink-0 rounded-lg well px-2 py-1 text-sm text-text outline-none"
+                value={levelMeasure}
+                onChange={(e) => void set({ levelMeasure: e.target.value as 'lufs' | 'rms' })}
+              >
+                <option value="lufs">LUFS (integrated loudness)</option>
+                <option value="rms">RMS (loudest sections)</option>
+              </select>
+            </label>
+            <label className="flex items-center justify-between gap-4">
+              <span className="text-sm text-text">Target</span>
+              <LevelInput value={levelTarget} unit={levelMeasure === 'lufs' ? 'LUFS' : 'dB'} min={-30} max={0}
+                onCommit={(v) => void set({ levelTarget: v })} />
+            </label>
+            <label className="flex items-center justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-sm text-text">Peak ceiling</span>
+                <span className="block text-xs text-faint">A raise stops here, so nothing clips.</span>
+              </span>
+              <LevelInput value={levelCeiling} unit="dBTP" min={-12} max={0}
+                onCommit={(v) => void set({ levelCeiling: v })} />
+            </label>
+          </section>
           {error && <div className="text-xs text-pink">{error}</div>}
         </div>
         <div className="flex justify-end gap-2 border-t border-line px-5 py-3">
@@ -130,5 +168,33 @@ export function AppSettings({ onClose }: { onClose: () => void }) {
       </div>
     </div>,
     document.body,
+  )
+}
+
+/** A dB value typed in place, committed on blur / Enter, clamped to its range. */
+export function LevelInput({ value, unit, min, max, onCommit }: {
+  value: number; unit: string; min: number; max: number; onCommit: (v: number) => void
+}) {
+  const [text, setText] = useState(String(value))
+  useEffect(() => setText(String(value)), [value])
+  const commit = () => {
+    const v = Number(text.replace(',', '.'))
+    if (!Number.isFinite(v)) return setText(String(value))
+    const clamped = Math.min(max, Math.max(min, Math.round(v * 10) / 10))
+    setText(String(clamped))
+    if (clamped !== value) onCommit(clamped)
+  }
+  return (
+    <span className="flex shrink-0 items-center gap-1.5">
+      <input
+        className="w-16 rounded-lg well px-2 py-1 text-right font-mono text-sm tabular-nums text-text outline-none"
+        value={text}
+        inputMode="decimal"
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+      />
+      <span className="w-10 text-xs text-faint">{unit}</span>
+    </span>
   )
 }

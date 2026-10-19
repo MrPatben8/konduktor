@@ -617,7 +617,7 @@ def create_app(server: Server) -> FastAPI:
         import hashlib
 
         from ..core.loudness import Loudness
-        from ..stems.pending import partial_name, source_facts
+        from ..pending import partial_name, source_facts
 
         session(token)
         measured = None
@@ -661,7 +661,7 @@ def create_app(server: Server) -> FastAPI:
                       token: str | None = Header(None, alias=rp.SESSION_HEADER)) -> dict:
         """A cancelled batch: delete the files it uploaded (a cancel deletes
         only new files, as on this computer)."""
-        from ..stems.pending import partial_name
+        from ..pending import partial_name
 
         session(token)
         pending = server.state.pending
@@ -677,7 +677,7 @@ def create_app(server: Server) -> FastAPI:
         stem file, park originals (Replace), swap every entry at once."""
         from ..core import stem_file as sf
         from ..stems import convert
-        from ..stems.pending import partial_name
+        from ..pending import partial_name
 
         holder = session(token)
         opts = stem_options(body.get("options") or {})

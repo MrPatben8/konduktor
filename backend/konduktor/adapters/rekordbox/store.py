@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
@@ -124,6 +125,9 @@ class RekordboxStore(ReplaceGridCommands):
         # Grid edits buffered until save(): ANLZ files are written to disk, so
         # applying them at command time would break the save contract.
         self._pending_grids: dict[str, tuple[list, list, list]] = {}
+        # Normalize: drawn waveforms regenerated from the new audio, written
+        # into the track's ANLZ files at save (cues, grid, phrases untouched).
+        self._pending_waveforms: dict[str, object] = {}
         # Analysis/artwork files of removed tracks, `share`-relative, deleted
         # by save() AFTER the commit — a failed commit must leave them in place.
         self._pending_file_removals: set[str] = set()
@@ -163,6 +167,7 @@ class RekordboxStore(ReplaceGridCommands):
         self.close()
         self._journal = EditJournal()
         self._pending_grids.clear()
+        self._pending_waveforms.clear()
         self._pending_file_removals.clear()
         self._pending_new_files.clear()
         self._load()
@@ -1063,6 +1068,7 @@ class RekordboxStore(ReplaceGridCommands):
         # rows after, which hash what was finally written.
         written = self._write_new_files()
         try:
+            self._flush_waveforms()
             self._flush_grids()
             self._add_content_files(written)
             self._commit()
@@ -1551,6 +1557,45 @@ class RekordboxStore(ReplaceGridCommands):
         row = self.content(track_id)
         row.BPM = int(round(ordered[0].bpm * 100)) if ordered else 0
         self._journal.record("grid", "replace" if ordered else "delete", track_id)
+
+    def audio_changed(self, track_id: str, change) -> None:
+        """The file changed level in place (Normalize): `FileSize` follows, and
+        the drawn waveforms are regenerated from the new audio at save (they
+        are drawn from the audio's level; cues, grid and phrases stay)."""
+        row = self.content(track_id)
+        before = row.FileSize
+        row.FileSize = int(change.size)
+        if change.measured is not None:
+            self._pending_waveforms[str(track_id)] = change.measured
+        self._journal.record("track", "audio", track_id, "level", before, change.gain_db)
+        self._db.flush()
+
+    def _flush_waveforms(self) -> None:
+        """Write regenerated waveform tags into existing ANLZ files: `.DAT`
+        PWAV/PWV2, `.EXT` PWV3/PWV5/PWV4, `.2EX` PWV7/PWV6/PWVC — each replaced
+        in place (`AnlzFile.put`), every other tag kept byte for byte."""
+        from . import anlz_file, anlz_writer
+
+        for track_id, measured in list(self._pending_waveforms.items()):
+            rel = getattr(self.content(track_id), "AnalysisDataPath", None)
+            if not rel:
+                continue  # no analysis files: rekordbox draws from its own analysis
+            dat = self.path.parent / "share" / str(rel).lstrip("/\\")
+            ext_tags, two_tags = anlz_writer.waveform_tags(measured.frames.bands)
+            plan = [(dat, anlz_writer.preview_tags(measured.columns.rms, measured.columns.brightness),
+                     ("PPTH", "PVBR", "PQTZ")),
+                    (dat.with_suffix(".EXT"), ext_tags, ("PPTH",)),
+                    (dat.with_suffix(".2EX"), two_tags, ("PPTH",))]
+            for path, tags, after in plan:
+                if not path.is_file():
+                    continue
+                parsed = anlz_file.parse_file(path)
+                for data in tags:
+                    parsed.put(data[:4].decode("latin-1"), data, after=after)
+                partial = path.with_name(f".{path.name}.konduktor-partial")
+                partial.write_bytes(parsed.to_bytes())
+                os.replace(partial, path)
+        self._pending_waveforms.clear()
 
     def _flush_grids(self) -> None:
         """Write buffered grids into their ANLZ files. Called by save().

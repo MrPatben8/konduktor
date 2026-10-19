@@ -8,7 +8,7 @@ import { invalidateTrackLists } from './lib/trackQueries'
 import { addTracksToPlaylist } from './lib/addTracks'
 import { isForeign, useDragPayload, useDropTarget, type TracksOrFiles } from './lib/drag'
 import { useNativeFileDrop } from './lib/fileDrop'
-import { api, type AnalyzeOptions, type AnalyzeResult, type CueBatchResult, type AutoCueSlot, type PlaylistNode, type StemBatchResult, type Track, type TrackOrigin } from './api'
+import { api, type AnalyzeOptions, type AnalyzeResult, type CueBatchResult, type NormalizeOptions, type NormalizeResult, type AutoCueSlot, type PlaylistNode, type StemBatchResult, type Track, type TrackOrigin } from './api'
 import { confirmDiscardUnsaved } from './lib/unsaved'
 import { askConfirm } from './lib/confirm'
 import {
@@ -26,6 +26,7 @@ import { CollectionPicker } from './components/CollectionPicker'
 import { ContextMenu, type MenuItem } from './components/ContextMenu'
 import { EditTagsDialog } from './components/EditTagsDialog'
 import { AnalyzeDialog } from './components/AnalyzeDialog'
+import { NormalizeDialog } from './components/NormalizeDialog'
 import { AutoCueDialog } from './components/AutoCueDialog'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { PathMappingDialog } from './components/PathMappingDialog'
@@ -108,7 +109,8 @@ export default function App() {
     { ids: string[]; origin: TrackOrigin; preset?: 'loudness' | 'gain' } | null
   >(null)
   const [cueBatch, setCueBatch] = useState<{ ids: string[]; withoutGrid: number } | null>(null)
-  const [batchJob, setBatchJob] = useState<{ id: string; kind: 'grid' | 'cues' | 'stems' } | null>(null)
+  const [batchJob, setBatchJob] = useState<{ id: string; kind: 'grid' | 'cues' | 'stems' | 'normalize' } | null>(null)
+  const [normalizing, setNormalizing] = useState<string[] | null>(null)
   // Convert to Stems: the dialog's selection, a finished run's Details, and a
   // running engine download (which outlives the dialog — decided).
   const [stemDialog, setStemDialog] = useState<string[] | null>(null)
@@ -757,7 +759,7 @@ export default function App() {
       return
     }
     if (job.state === 'failed') {
-      const what = kind === 'grid' ? 'Analysis' : 'Auto Hotcues'
+      const what = kind === 'grid' ? 'Analysis' : kind === 'normalize' ? 'Normalize' : 'Auto Hotcues'
       onError(`${what} failed: ${job.error ?? 'unknown error'}`)
       return
     }
@@ -770,7 +772,17 @@ export default function App() {
     let touched: string[]
     let parts: string[]
     let failures: CueBatchResult['failed']
-    if (kind === 'grid') {
+    if (kind === 'normalize') {
+      const r = job.result as unknown as NormalizeResult
+      touched = r.normalised
+      failures = r.failed
+      qc.invalidateQueries({ queryKey: ['state'] })
+      parts = [
+        `${cancelled ? 'Cancelled — normalized' : 'Normalized'} ${plural(r.normalised.length, 'track')}` +
+          (r.normalised.length ? ' — Save to keep the new levels, Discard to undo' : ''),
+        r.skipped.length ? `${r.skipped.length} left as they were` : '',
+      ]
+    } else if (kind === 'grid') {
       const r = job.result as unknown as AnalyzeResult
       touched = r.analysed
       failures = r.failed
@@ -924,6 +936,11 @@ export default function App() {
     if (id && !batchJob) setBatchJob({ id, kind: 'stems' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editState.data?.stem_job])
+  useEffect(() => {
+    const id = editState.data?.normalize_job
+    if (id && !batchJob) setBatchJob({ id, kind: 'normalize' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editState.data?.normalize_job])
   // Tell the user once what crash recovery did about an interrupted conversion.
   const recovery = editState.data?.stem_recovery
   const recoveryShown = useRef<unknown>(null)
@@ -1006,6 +1023,14 @@ export default function App() {
   const canAnalyzeGrid = !!capabilities.data?.grid.editable
   const canAnalyzeKey = !!capabilities.data?.tracks.key_writable
   const canAutoGain = !!capabilities.data?.tracks.auto_gain
+  /** Why Normalize cannot change these tracks' files, if so. */
+  const normalizeRefusal = (ids: string[]): string | null =>
+    analyzeRefusal(analyzeOrigin(ids)) ??
+    (editState.data?.remote
+      ? 'Normalize is not available on a remote library yet'
+      : capabilities.data?.tracks.normalizable
+        ? null
+        : "This library's audio files cannot be normalized")
   const analyzeOrigin = (ids: string[]): TrackOrigin =>
     viewingDevice ? 'device' : viewingFolder && ids.some((id) => !folderFiles[id]) ? 'folder' : 'collection'
   /** Why BPM / Grid / Key cannot be analysed for these tracks at all, if so. */
@@ -1341,6 +1366,13 @@ export default function App() {
               label: 'Mastering',
               submenu: [
                 {
+                  label: 'Normalize…',
+                  hint: batchJob ? 'busy' : undefined,
+                  disabled: !!batchJob || !!normalizeRefusal(menu.ids),
+                  title: normalizeRefusal(menu.ids) ?? undefined,
+                  onClick: () => setNormalizing(menu.ids),
+                },
+                {
                   label: 'Auto gain…',
                   hint: batchJob ? 'busy' : undefined,
                   disabled: !!batchJob || analyzeRefusal(analyzeOrigin(menu.ids)) !== null || !canAutoGain,
@@ -1452,6 +1484,19 @@ export default function App() {
             setBatchJob({ id: job.id, kind: 'stems' })
           }}
           onDownloading={(job) => setEngineJob(job.id)}
+          onError={onError}
+        />
+      )}
+      {normalizing && (
+        <NormalizeDialog
+          ids={normalizing}
+          onRun={async (opts: NormalizeOptions) => {
+            const job = await api.normalize(normalizing, opts)
+            setNormalizing(null)
+            setBatchCancelling(false)
+            setBatchJob({ id: job.id, kind: 'normalize' })
+          }}
+          onClose={() => setNormalizing(null)}
           onError={onError}
         />
       )}
@@ -1934,7 +1979,14 @@ export default function App() {
         job={
           batchJob
             ? {
-                label: batchJob.kind === 'grid' ? 'Analyzing' : batchJob.kind === 'stems' ? 'Converting to stems' : 'Placing hotcues',
+                label:
+                  batchJob.kind === 'grid'
+                    ? 'Analyzing'
+                    : batchJob.kind === 'stems'
+                      ? 'Converting to stems'
+                      : batchJob.kind === 'normalize'
+                        ? 'Normalizing'
+                        : 'Placing hotcues',
                 done: batchJobStatus.data?.done ?? 0,
                 total: batchJobStatus.data?.total ?? 0,
                 detail: batchJobStatus.data?.message,

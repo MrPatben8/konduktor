@@ -555,7 +555,9 @@ Two independent apps that talk over HTTP:
     preflighted per volume (both copies coexist until Save) and for the work
     folder. Replace implies repoint; destination mode mirrors the tree (full
     path, volume first, when the tracks share no folder) and may repoint or add
-    (+ existing / new playlist). **`pending.py` — the ledger** of conversions
+    (+ existing / new playlist). **`pending.py` — the ledger** (now
+    `konduktor/pending.py`, `stems/pending.py` a re-export: it holds
+    Normalize's "gain" items too, see "Normalize") of conversions
     awaiting Save (per library id, atomic): `AppState._save` COMMITS (deletes
     parked originals, retargets export sets — inside `_save`, so import and
     remap saves count too), `discard()` and opening another library RESTORE,
@@ -806,6 +808,46 @@ Two independent apps that talk over HTTP:
     `replace_gain`): fills tracks without one unless Replace, measuring first
     where the loudness is missing or stale (a fresh measurement is reused —
     no decode, no download); the deck's Analyze fills a missing one.
+  - **Normalize** — the track menu's **Mastering ▸ Normalize…** changes the
+    audio FILES' level in place (decided 2026-10-19, same discussion).
+    `core/level_plan.py` (`plan_gain`, pure, shared by preview and run — and
+    the export next): the user's measure (LUFS / loud-section RMS) to a
+    target; up and down, a raise stopping at the TRUE-PEAK ceiling (outcome
+    `capped`, `short_by`); a peak already over the ceiling at/below target is
+    left alone (`hot_peak_left`); MP3 in whole steps of 2^(1/4) (1.505 dB),
+    rounding a raise DOWN under the ceiling; ALAC/AAC/Ogg `unsupported` (AAC
+    is Phase 5). `core/level_edit.py` writes a NEW file: MP3 by the lossless
+    frame-gain edit (mp3gain's `global_gain`, CRC-16 recomputed on protected
+    frames, the Xing/Info/VBRI frame untouched, mp3gain's APEv2
+    `MP3GAIN_UNDO`/`MINMAX` tag, accumulating); WAV/AIFF scaled IN their
+    data/SSND chunk (same size, every other chunk byte-identical); FLAC
+    re-encoded at its depth with every Vorbis comment, picture and
+    application block copied back; 16-bit TPDF-dithered unless exact
+    (seeded: the same edit writes the same bytes). `verify` decodes both in
+    step: result == source x 10^(g/20). `gain/normalize.py`: measure where
+    the loudness is missing/stale, rewrite into `<name>.konduktor-partial`,
+    verify, then ONE end step under `STATE.mutation` — park the original
+    (`.<name>.konduktor-parked`), rename the partial onto the original's OWN
+    name (the path never changes), `audio_changed` (protocol member, gated
+    on `tracks.normalizable`: Traktor FILESIZE; rekordbox `FileSize` + the
+    drawn waveform tags regenerated into the existing ANLZ files at save,
+    `_flush_waveforms`; OneLibrary `fileSize` + the same tags into its edited
+    ANLZ copies, `.2EX` included), the DJ app's auto gain RECOMPUTED from the
+    new level, Konduktor's loudness SHIFTED (`level_plan.shifted`). Ledger
+    states writing -> written -> parked -> published -> swapped -> saving ->
+    saved; `AppState._save` brackets `adapter.save()` with
+    `begin_save`/`mark_saved`, so only a crash INSIDE the save asks the
+    library (`app_state._committed`: auto gain == the new value and != the
+    old; no auto gain = restore). Discard/restore removes the normalised file
+    only if it is recognisably ours and puts `loudness_before` back.
+    `_require_no_pending` (was `_require_no_pending_stems`) covers both kinds
+    and `NORMALIZE_JOB`; a track with a pending item is neither normalised nor
+    converted again. Remote libraries: refused (Phase 4). Routes
+    `/api/tracks/normalize/preview` and `/api/tracks/normalize`;
+    `/api/state.pending_gain` {tracks, lossless} + `normalize_job`. UI:
+    `NormalizeDialog` (measure / target / ceiling from the app settings
+    `levelMeasure`/`levelTarget`/`levelCeiling`, overridable per run; the
+    per-track plan; the lossless-is-permanent warning), SaveBar's notice.
   - `prefs.py` — persisted user prefs (`userprefs.json` in the per-OS app-data
     dir). Last-opened collection (global AND per-platform), library column
     layout, prep-deck zoom, import destination. Best-effort, but **every
@@ -1571,6 +1613,32 @@ serialization path.** It enforces:
   stubs reported per track. `test_stems_batch.py` / `test_remote_stems.py`
   pin the stem re-measure, `test_remote_adapter.py` the server-side store
   (423 without the session, 503 once taken over).
+- `test_level_plan.py` — `plan_gain`'s every outcome: exact lossless gains,
+  the ceiling (capped, short_by), hot peaks left alone (but lowered when hot),
+  MP3 steps (nearest when lowering, never past the ceiling when raising,
+  under one step = nothing), RMS as the measure, the shifted loudness.
+- `test_level_edit.py` — on GENERATED files: MP3 (CBR + Xing + ID3 art,
+  no Xing, ABR, mono, MPEG-2 22 kHz) at -2/+1 steps decodes exactly x 2^(n/4),
+  same frames + only the APE undo tag, source untouched, undo accumulating;
+  non-step gains, out-of-range and existing targets refused leaving nothing;
+  CRC-16's check value; WAV 16/24/float and AIFF 16/24 at -3.7/+2.5 dB keep
+  their size and every other chunk byte-identical, 24-bit rounded not
+  dithered, 16-bit dithered reproducibly; FLAC 16/24 keeps depth, rate, tags
+  and picture.
+- `test_normalize.py` — through the routes on temp collections pointed at
+  generated MP3/FLAC/WAV: unmeasured tracks counted to measure first; MP3
+  gains whole steps; a raise held by the ceiling; the preview's lossless
+  count; the run = the preview, the SAVED collection untouched, each file at
+  its own path = the original at the gain with the original parked unchanged,
+  dirty + `pending_gain`, loudness shifted and fresh, auto gain = -9.2 - new
+  LUFS; reload 409, no second Normalize or stem conversion of a pending
+  track; Save deletes the parked files, writes the new LOUDNESS, changes
+  nothing outside those ENTRYs; Discard restores bytes and loudness; crash
+  recovery for an unsaved change (restored + reported), a save that landed
+  ("saving" + new gain: finished) and one that did not (restored). And the
+  drawn waveforms: OneLibrary (fixture) and rekordbox (temp copy) get the
+  waveform tags rewritten at Save with every other ANLZ tag byte-identical,
+  and the file size follows.
 - `test_auto_hotcues.py` — Auto Hotcues in three layers: `structure.analyse`
   on SYNTHETIC audio with known sections (the intro with a kick is not a drop;
   no breakdown after the last drop), `plan`'s outcomes and beat-counted offsets
