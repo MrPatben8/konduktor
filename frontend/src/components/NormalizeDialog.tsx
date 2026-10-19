@@ -79,6 +79,16 @@ export function NormalizeDialog({ ids, onRun, onClose, onError }: Props) {
     if (c.hot_peak_left) lines.push(`${plural(c.hot_peak_left, 'hot peak')} left alone`)
     if (c.unsupported) lines.push(`${plural(c.unsupported, 'file')} in a format that cannot be changed losslessly`)
     if (c.skipped) lines.push(`${c.skipped} skipped`)
+    const t = p.transfer
+    if (t && (t.download || t.upload)) {
+      const mb = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`)
+      const secs = (t.download + t.upload) / Math.max(t.speed, 1)
+      lines.push(
+        `On the server: ${t.download ? `${mb(t.download)} downloaded, ` : ''}${mb(t.upload)} uploaded` +
+          ` — about ${secs < 90 ? `${Math.max(1, Math.round(secs))} s` : `${Math.round(secs / 60)} min`}` +
+          (t.measured ? '' : ' (estimated)'),
+      )
+    }
     return lines
   }, [p])
 

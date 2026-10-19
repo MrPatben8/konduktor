@@ -1026,11 +1026,7 @@ export default function App() {
   /** Why Normalize cannot change these tracks' files, if so. */
   const normalizeRefusal = (ids: string[]): string | null =>
     analyzeRefusal(analyzeOrigin(ids)) ??
-    (editState.data?.remote
-      ? 'Normalize is not available on a remote library yet'
-      : capabilities.data?.tracks.normalizable
-        ? null
-        : "This library's audio files cannot be normalized")
+    (capabilities.data?.tracks.normalizable ? null : "This library's audio files cannot be normalized")
   const analyzeOrigin = (ids: string[]): TrackOrigin =>
     viewingDevice ? 'device' : viewingFolder && ids.some((id) => !folderFiles[id]) ? 'folder' : 'collection'
   /** Why BPM / Grid / Key cannot be analysed for these tracks at all, if so. */

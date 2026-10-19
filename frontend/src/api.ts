@@ -685,6 +685,8 @@ export interface NormalizeRow {
   outcome?: 'apply' | 'capped' | 'at_target' | 'hot_peak_left' | 'unsupported' | 'unmeasured'
   short_by?: number
   lossless?: boolean
+  /** A remote library: a verified upload at this gain is already on the server. */
+  staged?: boolean
 }
 
 export interface NormalizePreview {
@@ -696,6 +698,8 @@ export interface NormalizePreview {
   lossless: number
   counts: Record<string, number>
   rows: NormalizeRow[]
+  /** A remote library: what this computer downloads, rewrites and uploads. */
+  transfer?: { download: number; upload: number; speed: number; measured: boolean }
 }
 
 /** What a Normalize run did. */

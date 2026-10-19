@@ -709,6 +709,217 @@ def create_app(server: Server) -> FastAPI:
         result["rev"] = server.bump()
         return result
 
+    # ---- Normalize: the library side ---------------------------------------------
+    # Like Convert to Stems: the computer that opened the library downloads,
+    # rewrites + VERIFIES each file and uploads it (the server never decodes
+    # audio); what lives here is the plan, from the server's own loudness store,
+    # the uploads (kept as "written" items in the server's ledger, so a
+    # takeover mid-batch loses nothing — the next run reuses them), and the
+    # end step, under the library's mutation lock.
+    def level_options(body: dict):
+        from ..gain import normalize
+
+        measure = body.get("measure") or "lufs"
+        if measure not in ("lufs", "rms"):
+            raise HTTPException(400, f"Unknown measure {measure!r}")
+        try:
+            return normalize.Options(measure=measure, target=float(body.get("target", -9.0)),
+                                     ceiling=float(body.get("ceiling", -1.0)))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Unreadable target or ceiling")
+
+    def normalizable():
+        caps = server.adapter.capabilities()
+        if not (caps.writable and caps.tracks.normalizable):
+            raise HTTPException(422, "This library's audio files cannot be normalized")
+
+    def gain_source(track_id: str) -> Path:
+        source = server.adapter.audio_path(track_id)
+        if source is None or not Path(source).is_file():
+            raise HTTPException(404, "The track's audio file is missing")
+        return Path(source)
+
+    def waveform_file(track_id: str) -> Path:
+        import hashlib
+
+        from .. import paths
+
+        name = hashlib.sha1(track_id.encode("utf-8")).hexdigest()
+        return paths.app_data_dir() / "gain-waveforms" / f"{name}.npz.b64"
+
+    @app.post("/v1/gain/plan")
+    def gain_plan(body: dict = Body(...)) -> dict:
+        """Normalize's plan, from the server's stored loudness — with what the
+        client needs per row: the source's size (to download), the platform's
+        analysis lead (None: it draws no waveform), and whether a verified
+        upload at this very gain is already here (`staged`)."""
+        from ..gain import normalize
+        from ..pending import source_facts
+
+        normalizable()
+        opts = level_options(body)
+        adapter = server.adapter
+        planned = normalize.plan(adapter, list(body.get("track_ids") or []), opts,
+                                 server.state.loudness, server.state.pending)
+        out = planned.as_dict()
+        lead = getattr(adapter, "analysis_lead", None)
+        for row, wire in zip(planned.rows, out["rows"]):
+            source = row.source if row.source is not None and Path(row.source).is_file() else None
+            wire["source_size"] = source.stat().st_size if source else 0
+            wire["lead"] = lead(source) if (lead is not None and source is not None) else None
+            item = server.state.pending.staged_gain(row.track_id)
+            wire["staged"] = bool(
+                item is not None and item.get("state") == "written" and row.step is not None
+                and abs(float(item.get("gain_db") or 0) - row.step.gain_db) < 1e-6
+                and source is not None and item.get("facts_before") == source_facts(source)
+                and Path(item["partial"]).is_file())
+        return out
+
+    @app.put("/v1/gain/stage")
+    async def gain_stage(request: Request, track_id: str, gain_db: float, sha256: str,
+                         measure: str = "lufs", target: float = -9.0, ceiling: float = -1.0,
+                         token: str | None = Header(None, alias=rp.SESSION_HEADER)) -> dict:
+        """One verified, levelled file, uploaded beside its source as
+        `<name>.konduktor-partial` and recorded as a "written" item. The gain is
+        checked against this server's own plan (its stored loudness), so a
+        stale plan cannot put a file at the wrong level."""
+        import hashlib
+
+        from ..core.level_plan import EXACT, plan_gain
+        from ..pending import parked_name, partial_name, source_facts
+
+        session(token)
+        normalizable()
+        opts = level_options({"measure": measure, "target": target, "ceiling": ceiling})
+        source = gain_source(track_id)
+        facts = server.adapter.audio_facts([track_id]).get(track_id)
+        entry = server.state.loudness.get([facts.key]).get(facts.key) if facts else None
+        if entry is None or entry.stale(facts):
+            raise HTTPException(409, "The track has no current loudness measurement on the server")
+        step = plan_gain(entry.values, source.suffix, measure=opts.measure, target=opts.target,
+                         ceiling=opts.ceiling)
+        if not step.writes or abs(step.gain_db - gain_db) > 1e-6:
+            raise HTTPException(409, "The track's level changed since it was planned; plan again")
+        pending = server.state.pending
+        old = pending.staged_gain(track_id)
+        if old is not None:
+            Path(old["partial"]).unlink(missing_ok=True)
+            pending.drop([old])
+        if pending.holds([track_id]):
+            raise HTTPException(409, "The track has a change awaiting Save")
+        partial = partial_name(source)
+        if partial.exists():
+            raise HTTPException(409, f"{partial.name} is in the way")
+        incoming = source.with_name(f".{source.name}.{secrets.token_hex(4)}{PARTIAL_SUFFIX}")
+        digest = hashlib.sha256()
+        try:
+            with open(incoming, "wb") as out:
+                async for chunk in request.stream():
+                    out.write(chunk)
+                    digest.update(chunk)
+            if digest.hexdigest() != sha256.lower():
+                raise HTTPException(400, "The file arrived damaged (checksum mismatch)")
+            os.replace(incoming, partial)
+        finally:
+            incoming.unlink(missing_ok=True)
+        track = server.adapter.track(track_id)
+        pending.add({
+            "kind": "gain", "track_id": track_id, "source": str(source), "partial": str(partial),
+            "parked": str(parked_name(source)), "gain_db": step.gain_db,
+            "lossless": source.suffix.lower() in EXACT, "state": "written",
+            "facts_before": source_facts(source), "facts_after": source_facts(partial),
+            "loudness_before": entry.wire(facts.key),
+            "gain_before": getattr(track, "auto_gain_db", None),
+        })
+        waveform_file(track_id).unlink(missing_ok=True)
+        return {"partial": str(partial), "gain_db": step.gain_db}
+
+    @app.put("/v1/gain/waveform")
+    async def gain_waveform(request: Request, track_id: str,
+                            token: str | None = Header(None, alias=rp.SESSION_HEADER)) -> dict:
+        """The levelled file's drawn-waveform measurement (a packed analysis,
+        `remote_protocol.pack_analysis`), measured on the client — kept until
+        the end step regenerates the library's waveform tags from it."""
+        session(token)
+        if server.state.pending.staged_gain(track_id) is None:
+            raise HTTPException(409, "Upload the levelled file first")
+        data = b"".join([chunk async for chunk in request.stream()])
+        if rp.unpack_analysis(data.decode("ascii")) is None:
+            raise HTTPException(400, "Unreadable waveform")
+        dest = waveform_file(track_id)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        return {"status": "stored"}
+
+    @app.post("/v1/gain/abandon")
+    def gain_abandon(body: dict = Body(...),
+                     token: str | None = Header(None, alias=rp.SESSION_HEADER)) -> dict:
+        """A cancelled Normalize: delete the files it uploaded, nothing else."""
+        session(token)
+        pending = server.state.pending
+        for track_id in body.get("track_ids") or []:
+            item = pending.staged_gain(track_id)
+            if item is not None:
+                Path(item["partial"]).unlink(missing_ok=True)
+                pending.drop([item])
+            waveform_file(track_id).unlink(missing_ok=True)
+        return {"status": "abandoned"}
+
+    @app.post("/v1/gain/publish")
+    def gain_publish(body: dict = Body(...),
+                     token: str | None = Header(None, alias=rp.SESSION_HEADER)) -> dict:
+        """Normalize's END STEP, here where the files are: park each original,
+        put the uploaded file in its place, and let the library follow (size,
+        waveforms, the recomputed auto gain) — an unsaved change, which the
+        server's Save commits and its Discard undoes."""
+        from ..core.level_plan import GainStep
+        from ..core.loudness import Loudness
+        from ..gain import normalize
+        from ..pending import source_facts
+
+        holder = session(token)
+        normalizable()
+        pending = server.state.pending
+        result = {"normalised": [], "failed": []}
+        with server.state.mutation:
+            for track_id in body.get("track_ids") or []:
+                track = server.adapter.track(track_id)
+                title = (track.title if track else None) or track_id
+                item = pending.staged_gain(track_id)
+                if item is None or item.get("state") != "written" or not Path(item["partial"]).is_file():
+                    result["failed"].append({"track_id": track_id, "title": title,
+                                             "reason": "the levelled file never reached the server"})
+                    continue
+                source = Path(item["source"])
+                if source_facts(source) != item.get("facts_before"):
+                    Path(item["partial"]).unlink(missing_ok=True)
+                    pending.drop([item])
+                    result["failed"].append({"track_id": track_id, "title": title,
+                                             "reason": "the file changed on the server meanwhile"})
+                    continue
+                wave = waveform_file(track_id)
+                measured = None
+                if wave.is_file():
+                    prepared = rp.unpack_analysis(wave.read_text("ascii"))
+                    measured = prepared.measured if prepared is not None else None
+                values = Loudness.from_dict(item["loudness_before"])
+                row = normalize.Row(track_id, title, source)
+                try:
+                    normalize._end_step(server.adapter, row, item, values,
+                                        GainStep(float(item["gain_db"]), "apply"), measured,
+                                        server.state.loudness, pending)
+                    result["normalised"].append(track_id)
+                except Exception as ex:  # noqa: BLE001 — undo that track, keep the rest
+                    log.warning("normalize end step failed for %s", track_id, exc_info=True)
+                    pending._undo_gain(item)
+                    pending.drop([item])
+                    result["failed"].append({"track_id": track_id, "title": title, "reason": str(ex)})
+                finally:
+                    wave.unlink(missing_ok=True)
+        server.lock.touch(holder)
+        result["rev"] = server.bump()
+        return result
+
     @app.get("/v1/stems/pending")
     def stems_pending() -> dict:
         pending = server.state.pending

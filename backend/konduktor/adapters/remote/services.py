@@ -73,7 +73,11 @@ class RemotePending:
             return {"tracks": 0, "parked": 0, "bytes": 0}
 
     def blocking(self) -> bool:
-        return bool(self.summary().get("tracks"))
+        summary = self.summary()
+        return bool(summary.get("tracks") or summary.get("gain_tracks"))
+
+    def holds(self, track_ids) -> set:
+        return set()  # the server's plan says which tracks it holds
 
     def swapped(self) -> list:
         return []

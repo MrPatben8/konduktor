@@ -842,7 +842,22 @@ Two independent apps that talk over HTTP:
     only if it is recognisably ours and puts `loudness_before` back.
     `_require_no_pending` (was `_require_no_pending_stems`) covers both kinds
     and `NORMALIZE_JOB`; a track with a pending item is neither normalised nor
-    converted again. Remote libraries: refused (Phase 4). Routes
+    converted again. **Remote libraries** (`gain/remote_normalize.py`, the
+    stems-style transfer, decided): the server plans (`/v1/gain/plan`: its
+    `normalize.plan` on its own store and ledger, plus per row the source's
+    size, the platform's `analysis_lead` and `staged`); this computer
+    downloads, measures where the server has none (stored back there),
+    rewrites + VERIFIES, measures the levelled file's drawn waveform where
+    there is a lead, and uploads (`PUT /v1/gain/stage` beside the source as
+    `<name>.konduktor-partial`, sha-256 checked and its gain checked against
+    the server's OWN `plan_gain` — 409 if they differ; `PUT /v1/gain/waveform`
+    the packed analysis); the server keeps each as a "written" ledger item
+    (`pending.staged_gain`; staged items do not `hold` a track), and
+    `/v1/gain/publish` runs the ordinary `normalize._end_step` under its
+    mutation lock. Cancel deletes this run's uploads (`/v1/gain/abandon`); a
+    takeover cannot, and the next plan marks them `staged` and publishes them
+    without rewriting. `RemotePending.blocking` counts `gain_tracks`; protocol
+    1.7. The preview adds `transfer`. Routes
     `/api/tracks/normalize/preview` and `/api/tracks/normalize`;
     `/api/state.pending_gain` {tracks, lossless} + `normalize_job`. UI:
     `NormalizeDialog` (measure / target / ceiling from the app settings
@@ -1824,6 +1839,18 @@ serialization path.** It enforces:
   added twice, both into the playlist, analysed here when the server reports
   a lead). And auto gain: computed here from the SERVER's stored measurement
   (no new download), written on the server, saved into its collection.
+- `test_remote_normalize.py` — Normalize on a remote (a real server in a
+  thread, generated audio on it): the server's plan (all to measure first,
+  the transfer, no lead for Traktor); a run measured, rewritten and verified
+  HERE, swapped in ON THE SERVER (the file at its own path = the original at
+  the gain, the original parked, the saved collection untouched, the
+  server's loudness the new level, the mirror's auto gain following it,
+  `pending_gain`, reload 409); Save deletes the parked originals there and
+  writes the new gain; Discard restores the bytes; an upload at a gain the
+  server's plan would not give is refused leaving nothing; Cancel deletes
+  only this run's upload; a takeover keeps the verified upload and the next
+  run publishes it WITHOUT rewriting; a platform with a lead gets the
+  levelled file's waveform measured here and handed to the end step.
 - `test_remote_stems.py` — Convert to Stems on a remote with the FAKE engine:
   the plan's transfer and two-machine space, Replace parks and swaps ON THE
   SERVER (saved file untouched until Save, which deletes the parked

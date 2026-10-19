@@ -1977,10 +1977,14 @@ def auto_grid_batch(body: AutoGridBatchRequest) -> JobStatus:
 # originals until Save, like a stem conversion. The library's own tracks only.
 
 
+def _remote_normalize(adapter) -> bool:
+    """A library held by a server: it plans and swaps, this computer rewrites
+    (`gain/remote_normalize.py`)."""
+    return hasattr(adapter, "normalize_plan")
+
+
 def _normalize_target(body: NormalizeRequest):
     a = require_adapter()
-    if STATE.remote is not None:
-        raise HTTPException(409, "Normalize is not available on a remote library yet")
     caps = a.capabilities()
     if not (caps.writable and caps.tracks.normalizable):
         raise HTTPException(422, "This library's audio files cannot be normalized")
@@ -1997,6 +2001,13 @@ def normalize_preview(body: NormalizeRequest) -> dict:
     from .gain import normalize
 
     a, opts = _normalize_target(body)
+    if _remote_normalize(a):
+        from .gain import remote_normalize
+
+        try:
+            return remote_normalize.plan(a, body.track_ids, opts)
+        except normalize.NormalizeError as ex:
+            raise HTTPException(400, str(ex))
     return normalize.plan(a, body.track_ids, opts, STATE.loudness, STATE.pending).as_dict()
 
 
@@ -2011,6 +2022,11 @@ def normalize_tracks(body: NormalizeRequest) -> JobStatus:
         raise HTTPException(409, "Wait for the import to finish")
 
     def run(handle):
+        if _remote_normalize(a):
+            from .gain import remote_normalize
+
+            return remote_normalize.run(handle, a, body.track_ids, opts,
+                                        still_current=lambda: STATE.adapter is a)
         return normalize.run(handle, a, body.track_ids, opts, store=STATE.loudness, pending=STATE.pending,
                              mutation=STATE.mutation, still_current=lambda: STATE.adapter is a)
 

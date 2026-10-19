@@ -42,7 +42,9 @@ from .core.model import AutoHotcue, Track, TrackCues
 #: 1.5 — loudness: `/v1/loudness/get`, `PUT /v1/loudness`, and `loudness` on
 #:       `/v1/stems/stage` (the server keeps a remote library's measurements).
 #: 1.6 — auto gain: `set_auto_gain`, `Track.auto_gain_db`.
-API_VERSION: tuple[int, int] = (1, 6)
+#: 1.7 — Normalize: `/v1/gain/plan|stage|waveform|abandon|publish`, and
+#:       `gain_tracks` / `gain_lossless` in `/v1/stems/pending`.
+API_VERSION: tuple[int, int] = (1, 7)
 
 #: How long a session survives without a heartbeat, and how often the holder
 #: sends one. Long enough to ride out a Wi-Fi blip or a switch to the fallback
@@ -106,7 +108,7 @@ EXCLUDED: dict[str, str] = {
     "cover_art": "GET /v1/art — bytes",
     "set_cover_art": "PUT /v1/art — bytes",
     "apply_stem_swaps": "the server applies stem swaps itself (POST /v1/stems/publish)",
-    "audio_changed": "the server applies a Normalize itself, at its own end step (not yet remote)",
+    "audio_changed": "the server applies a Normalize itself, at its own end step (POST /v1/gain/publish)",
     "set_path_mapping": "the server's path mapping is its own configuration",
     "set_session_mappings": "the missing-files check searches THIS computer's drives",
     "unresolved_path_groups": "the missing-files check searches THIS computer's drives",

@@ -391,6 +391,47 @@ class RemoteAdapter:
         self._load()  # ids changed (repoint) or entries were added
         return result
 
+    # ---- Normalize (the library side lives on the server) ---------------------------
+    # `gain/remote_normalize.py` drives these: the server plans and swaps, this
+    # computer downloads, rewrites, verifies and uploads.
+    def normalize_plan(self, body: dict) -> dict:
+        return self.client.gain_plan(body)
+
+    def stage_gain(self, track_id: str, local: Path, *, gain_db: float, options: dict,
+                   waveform: str | None = None, progress=None) -> dict:
+        import hashlib
+
+        digest = hashlib.sha256()
+        with open(local, "rb") as f:
+            while chunk := f.read(1 << 20):
+                digest.update(chunk)
+        try:
+            out = self.client.gain_stage(track_id, local, gain_db=gain_db, sha256=digest.hexdigest(),
+                                         options=options, progress=progress)
+            if waveform is not None:
+                self.client.gain_waveform(track_id, waveform)
+            return out
+        except SessionLost as ex:
+            self.session.lost(ex.holder)
+            raise
+
+    def abandon_gain(self, track_ids: list[str]) -> None:
+        self.client.gain_abandon(track_ids)
+
+    def publish_gain(self, track_ids: list[str]) -> dict:
+        try:
+            result = self.client.gain_publish(track_ids)
+        except SessionLost as ex:
+            self.session.lost(ex.holder)
+            raise
+        # The files changed under the same names: their facts (and so the
+        # cache key and every loudness lookup) are new.
+        with self._lock:
+            for track_id in track_ids:
+                self._facts.pop(track_id, None)
+        self._load()
+        return result
+
     # ---- metadata / art ------------------------------------------------------------------
     def set_cover_art(self, track_id, data, mime):
         try:

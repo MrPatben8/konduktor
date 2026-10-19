@@ -159,7 +159,13 @@ class Pending:
         """The given tracks that have an item of EITHER kind in flight — a
         track is converted or normalised once per Save, never both at once."""
         wanted = set(track_ids)
-        return {i["track_id"] for i in self.items if i.get("track_id") in wanted}
+        return {i["track_id"] for i in self.items if i.get("track_id") in wanted and not _staged(i)}
+
+    def staged_gain(self, track_id: str) -> dict | None:
+        """A Normalize item for `track_id` whose verified file is written but
+        not yet in place — on a server, an UPLOAD a takeover interrupted, which
+        the next run reuses rather than downloading and rewriting again."""
+        return next((i for i in self.items if i.get("track_id") == track_id and _staged(i)), None)
 
     def summary(self) -> dict:
         waiting = self.swapped()
@@ -362,6 +368,13 @@ class Pending:
 
 def _published(item: dict) -> bool:
     return item.get("state") in ("published", "parked", "swapped", "committed")
+
+
+def _staged(item: dict) -> bool:
+    """A gain item still WRITING its file: not yet a change to the library.
+    Never held across a run on this computer (one batch at a time; a crash's
+    are cleared at the next open); on a server, an upload awaiting publish."""
+    return _kind(item) == "gain" and item.get("state") in ("writing", "written")
 
 
 def _kind(item: dict) -> str:
