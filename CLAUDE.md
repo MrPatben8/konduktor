@@ -1268,8 +1268,9 @@ Two independent apps that talk over HTTP:
     newest non-draft, non-prerelease `v…` tag — NOT `/releases/latest`, since the
     stem engine publishes `engine-v*` releases in the same repo — and,
     if its tag's **semver part** is newer than `__APP_VERSION__` — build-number
-    `-b<N>` bumps don't count — shows an update dialog with the release's
-    "What's Changed" bullets; "Skip this version" persists
+    `-b<N>` bumps don't count — shows an update dialog with the "What's
+    Changed" bullets of EVERY release newer than the running version (paged,
+    one section per release, newest first); "Skip this version" persists
     `skippedUpdateVersion` to userprefs via `/api/prefs`; check failures are
     silent. **In the desktop app, Update installs it** (decided 2026-10-16,
     [the discussion](.claude/discussions/discuss-self-update-2026-10-16.md)):

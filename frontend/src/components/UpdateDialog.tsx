@@ -7,8 +7,10 @@ import { api } from '../api'
  * Startup update check against GitHub Releases.
  *
  * Compares the running version (`__APP_VERSION__`, baked from package.json at
- * build time) with the latest release's tag (`v<version>-b<N>` — only the
- * semver part counts, so a new build of the same version is NOT an update).
+ * build time) with release tags (`v<version>-b<N>` — only the semver part
+ * counts, so a new build of the same version is NOT an update). The dialog
+ * lists the notes of EVERY release newer than the running one, not just the
+ * latest's.
  * Failures are silent: an update check must never nag about itself.
  * "Skip this version" persists `skippedUpdateVersion` to userprefs.json via
  * the prefs API, keyed by the semver part, so a later version re-triggers.
@@ -36,22 +38,39 @@ interface GithubRelease {
   prerelease?: boolean
 }
 
+const MAX_PAGES = 5
+
 /**
- * The newest APP release. Not `/releases/latest`: that is whichever release
- * GitHub flags "latest", and the same repo also publishes the stem engine on
- * its own `engine-v*` channel — one flagged latest by mistake would make this
- * check go quiet (its tag does not parse as an app version) with no error. So
- * list recent releases (newest first) and take the first app tag.
+ * Every APP release newer than the running version, newest first — the first
+ * is the one offered, and all of their notes are shown, so someone several
+ * versions behind sees everything they are getting. Not `/releases/latest`:
+ * that is whichever release GitHub flags "latest", and the same repo also
+ * publishes the stem engine on its own `engine-v*` channel — one flagged
+ * latest by mistake would make this check go quiet (its tag does not parse as
+ * an app version) with no error. So list releases (newest first) and keep the
+ * app tags, paging until one is not newer than the running version.
  */
-async function fetchLatestRelease(): Promise<GithubRelease> {
-  const res = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=30`, {
-    headers: { Accept: 'application/vnd.github+json' },
-  })
-  if (!res.ok) throw new Error(`GitHub responded ${res.status}`)
-  const releases: GithubRelease[] = await res.json()
-  const app = releases.find((r) => !r.draft && !r.prerelease && /^v\d/.test(r.tag_name))
-  if (!app) throw new Error('No app release found')
-  return app
+async function fetchNewerReleases(): Promise<GithubRelease[]> {
+  const current = parseVersion(__APP_VERSION__)
+  if (!current) return []
+  const newer: GithubRelease[] = []
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const res = await fetch(
+      `https://api.github.com/repos/${REPO}/releases?per_page=100&page=${page}`,
+      { headers: { Accept: 'application/vnd.github+json' } },
+    )
+    if (!res.ok) throw new Error(`GitHub responded ${res.status}`)
+    const releases: GithubRelease[] = await res.json()
+    for (const r of releases) {
+      if (r.draft || r.prerelease) continue
+      const v = parseVersion(r.tag_name)
+      if (!v || !r.tag_name.startsWith('v')) continue
+      if (!isNewer(v, current)) return newer
+      newer.push(r)
+    }
+    if (releases.length < 100) break
+  }
+  return newer
 }
 
 /** The semver triple at the start of a version/tag string ("v0.1.2-b7" → [0,1,2]). */
@@ -163,9 +182,9 @@ export function UpdateCheck() {
   const [skipVersion, setSkipVersion] = useState(false)
   const [phase, setPhase] = useState<Phase>({ kind: 'offer' })
 
-  const release = useQuery({
-    queryKey: ['latestRelease'],
-    queryFn: fetchLatestRelease,
+  const releases = useQuery({
+    queryKey: ['newerReleases'],
+    queryFn: fetchNewerReleases,
     staleTime: Infinity,
     retry: false,
   })
@@ -195,11 +214,10 @@ export function UpdateCheck() {
     }
   }, [phase.kind])
 
-  const latest = release.data
-  const latestVer = latest ? parseVersion(latest.tag_name) : null
-  const currentVer = parseVersion(__APP_VERSION__)
-  const latestSemver = latestVer?.join('.')
-  const updateAvailable = !!(latestVer && currentVer && isNewer(latestVer, currentVer))
+  const newer = releases.data ?? []
+  const latest = newer[0]
+  const latestSemver = latest ? parseVersion(latest.tag_name)?.join('.') : undefined
+  const updateAvailable = !!latest
   const skipped = !!latestSemver && prefs.data?.skippedUpdateVersion === latestSemver
   const failedBefore = lastFailure.data ?? null
   const releasePage = latest?.html_url ?? `https://github.com/${REPO}/releases`
@@ -262,7 +280,10 @@ export function UpdateCheck() {
             ? "Update didn't install"
             : 'Update available'
 
-  const changes = latest ? whatsChanged(latest.body) : []
+  // One section per release the user is skipping past, newest first; a heading
+  // only when there is more than one, so a one-step update reads as before.
+  const sections = newer.map((r) => ({ tag: r.tag_name, changes: whatsChanged(r.body) }))
+  const grouped = sections.length > 1
 
   return createPortal(
     <div
@@ -312,21 +333,32 @@ export function UpdateCheck() {
             </div>
           ) : (
             <>
-              <div className="mb-2 text-xs font-medium text-muted">What's changed</div>
-              {changes.length ? (
-                <ul className="space-y-1.5">
-                  {changes.map((line, i) => (
-                    <li key={i} className="flex gap-2 text-sm text-text">
-                      <span className="text-faint">•</span>
-                      <span className="min-w-0 break-words">
-                        <ChangelogLine text={line} />
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="text-sm text-faint">No release notes.</div>
-              )}
+              <div className="mb-2 text-xs font-medium text-muted">
+                What's changed{grouped ? ` since v${__APP_VERSION__}` : ''}
+              </div>
+              <div className="space-y-4">
+                {sections.map((s) => (
+                  <section key={s.tag}>
+                    {grouped && (
+                      <div className="mb-1.5 text-xs font-semibold text-accent">{s.tag}</div>
+                    )}
+                    {s.changes.length ? (
+                      <ul className="space-y-1.5">
+                        {s.changes.map((line, i) => (
+                          <li key={i} className="flex gap-2 text-sm text-text">
+                            <span className="text-faint">•</span>
+                            <span className="min-w-0 break-words">
+                              <ChangelogLine text={line} />
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="text-sm text-faint">No release notes.</div>
+                    )}
+                  </section>
+                ))}
+              </div>
             </>
           )}
         </div>
