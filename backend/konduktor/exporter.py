@@ -81,6 +81,7 @@ from . import exports
 from .core import registry
 from .core.analysis_cache import CACHE_DIR, AnalysisCache, fingerprint
 from .core.export import ExportPayload, ExportPlaylist, ExportTrack, for_platform
+from .core.level_plan import Measure, plan_gain, shifted
 from .core.pathmap import common_dir_prefix
 from .core.places import is_drive_root, is_os_housekeeping
 from .importer import SPACE_HEADROOM, copy_file, free_bytes
@@ -116,6 +117,26 @@ class PlannedTrack:
     #: kept instead of copied again — possibly a different path from
     #: `destination`, in which case it is moved. None means copy.
     reuse: Path | None = None
+    #: The source's stored loudness when fresh (None: not measured, or stale —
+    #: the run measures it when it needs one).
+    loudness: object | None = None
+    #: The level the copy is written at (`level_plan.plan_gain`; 0.0 = copied
+    #: as it is) and why (None: the run does not normalise).
+    gain_db: float = 0.0
+    level_outcome: str | None = None
+    #: The run needs this source's loudness (it normalises, or writes auto gain).
+    needs_loudness: bool = False
+
+
+@dataclass(frozen=True)
+class Level:
+    """The run's "Normalise audio": every copy brought to `target` in `measure`,
+    a raise stopping at the true-peak `ceiling` — Normalize's rules exactly
+    (`level_plan`), applied to the copy and never to the source."""
+
+    measure: Measure = "lufs"
+    target: float = -9.0
+    ceiling: float = -1.0
 
 
 @dataclass
@@ -147,7 +168,17 @@ class ExportPlan:
         return sum(1 for t in self.exportable if t.reuse is not None)
 
     def as_dict(self, free: int | None = None) -> dict:
+        exportable = self.exportable
+        levels: dict[str, int] = {}
+        for t in exportable:
+            if t.level_outcome:
+                levels[t.level_outcome] = levels.get(t.level_outcome, 0) + 1
         return {
+            # Normalise audio: copies whose level changes, tracks the run
+            # measures first, and every outcome (`level_plan`) by count.
+            "normalised": sum(1 for t in exportable if t.gain_db),
+            "to_measure": sum(1 for t in exportable if t.needs_loudness and t.loudness is None),
+            "level_counts": levels,
             "tracks": len(self.tracks),
             "exportable": len(self.exportable),
             "unchanged": self.unchanged,
@@ -287,6 +318,9 @@ def _record(planned: PlannedTrack, copy: Path) -> dict:
         "mtime_ns": planned.mtime_ns,
         "copy_size": st.st_size,
         "copy_mtime_ns": st.st_mtime_ns,
+        # The level the copy was written at: a copy kept by a later export must
+        # be at the level THAT export wants (missing = 0, every older manifest).
+        "gain_db": planned.gain_db,
     }
 
 
@@ -315,6 +349,11 @@ def _reusable(planned: PlannedTrack, previous: dict[str, tuple[Path, dict]]) -> 
     if (record.get("size"), record.get("mtime_ns")) != (planned.size, planned.mtime_ns):
         return None
     try:
+        if abs(float(record.get("gain_db") or 0.0) - planned.gain_db) > 0.01:
+            return None  # written at another level (Normalise audio changed)
+    except (TypeError, ValueError):
+        return None
+    try:
         st = copy.stat()
     except OSError:
         return None
@@ -328,8 +367,15 @@ def _reusable(planned: PlannedTrack, previous: dict[str, tuple[Path, dict]]) -> 
 # ---- planning ----------------------------------------------------------------
 
 
-def plan(adapter, export_set) -> ExportPlan:
-    """Resolve the set and work out where every file lands. Reads only."""
+def plan(adapter, export_set, *, store=None, level: Level | None = None,
+         auto_gain: bool = False) -> ExportPlan:
+    """Resolve the set and work out where every file lands. Reads only.
+
+    With `level` (Normalise audio) each copy's gain comes from the source's
+    STORED loudness in `store`; with `auto_gain` that loudness is also what the
+    DJ app's gain is written from. A source with none (or a stale one) is
+    measured by the run — and its copy decided then, since whether the
+    previous one can be kept depends on its level."""
     destination = Path(export_set.destination).expanduser()
     built = ExportPlan(destination=destination)
 
@@ -357,7 +403,8 @@ def plan(adapter, export_set) -> ExportPlan:
     root = common_dir_prefix(present) if present else ""
 
     previous = _previous_copies(destination)
-    claimed: set[Path] = set()
+    wants_loudness = store is not None and (level is not None or auto_gain)
+    entries = store.get([f.key for f in facts.values() if f is not None]) if wants_loudness else {}
     for track in tracks:
         source = sources.get(track.id)
         fact = facts.get(track.id)
@@ -371,15 +418,15 @@ def plan(adapter, export_set) -> ExportPlan:
             size=size,
             mtime_ns=mtime_ns,
             missing=not exists,
+            needs_loudness=exists and wants_loudness,
         )
-        if exists:
-            reuse = _reusable(planned, previous)
-            # One kept copy can serve one planned file: two entries sharing a
-            # source would otherwise both try to move it.
-            if reuse is not None and reuse not in claimed:
-                planned.reuse = reuse
-                claimed.add(reuse)
+        if planned.needs_loudness:
+            entry = entries.get(fact.key)
+            planned.loudness = entry.values if entry is not None and not entry.stale(fact) else None
+        if exists and level is not None:
+            set_level(planned, level)
         built.tracks.append(planned)
+    assign_reuse(built, previous)
 
     names = {p.id: p for p in resolved.playlists}
     folders = _folder_paths(adapter)
@@ -402,6 +449,31 @@ def plan(adapter, export_set) -> ExportPlan:
     if not is_drive_root(destination):
         built.not_drive_root = [e.platform for e in exporters if e.drive_root]
     return built
+
+
+def set_level(planned: PlannedTrack, level: Level) -> None:
+    """The copy's gain from the source's loudness (`level_plan.plan_gain`)."""
+    suffix = planned.source_path.suffix if planned.source_path else ""
+    step = plan_gain(planned.loudness, suffix, measure=level.measure, target=level.target,
+                     ceiling=level.ceiling)
+    planned.gain_db, planned.level_outcome = step.gain_db, step.outcome
+
+
+def assign_reuse(built: ExportPlan, previous: dict[str, tuple[Path, dict]]) -> None:
+    """Which planned files keep the previous export's copy. A file whose level
+    is still undecided (normalising, not yet measured) is copied unless the run
+    decides otherwise once it has measured it."""
+    claimed: set[Path] = set()
+    for planned in built.tracks:
+        planned.reuse = None
+        if planned.missing or planned.level_outcome == "unmeasured":
+            continue
+        reuse = _reusable(planned, previous)
+        # One kept copy can serve one planned file: two entries sharing a
+        # source would otherwise both try to move it.
+        if reuse is not None and reuse not in claimed:
+            planned.reuse = reuse
+            claimed.add(reuse)
 
 
 def _relative(source: Path, root: str) -> Path:
@@ -433,12 +505,35 @@ def _folder_paths(adapter) -> dict[str, list[str]]:
 # ---- running -----------------------------------------------------------------
 
 
+def _locked(cues, lock_grids: bool):
+    """The cues as exported: with `lock_grids`, a grid is LOCKED.
+
+    The lock rides on the generic `TrackCues.grid_locked`, the same flag a
+    source's own lock arrives in, so a writer reads one signal and never learns
+    which of the two set it. Unlocked Traktor re-analyses an exported track on
+    its first load (it has no AUDIO_ID, which cannot be computed), re-measuring
+    the BPM — a 174 track can come back as 87 — and drifting the grid; a
+    locked grid is left alone. A track with no grid is never locked: that
+    would stop Traktor ever giving it one.
+    """
+    if lock_grids and cues is not None and cues.grid_markers and not cues.grid_locked:
+        return cues.model_copy(update={"grid_locked": True})
+    return cues
+
+
 def run(adapter, export_set, built: ExportPlan, handle: JobHandle, *,
-        root_folder: bool = False) -> dict:
+        root_folder: bool = False, lock_grids: bool = False, store=None,
+        level: Level | None = None, auto_gain: bool = False) -> dict:
     """Copy what changed, then write every target's library over the audio.
 
     `root_folder` nests the playlists in a folder named after the export (the
     "Put exported playlists in a folder" setting); otherwise they sit at the top.
+    `lock_grids` locks every exported track that HAS a grid (`_locked`); off,
+    each track keeps the source's own lock. `level` (Normalise audio) writes
+    each copy at its planned gain (`core.level_edit`, decode-verified); the
+    source is never touched. `auto_gain` hands every writer the COPY's loudness
+    for the DJ app's gain. Sources with no stored loudness are measured first,
+    into `store` — the same measurement the Mastering columns show.
 
     Rolls back EVERYTHING this run wrote on cancel or on any failure —
     including the libraries of targets that had already been written when a
@@ -473,6 +568,7 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle, *,
     done = 0
     try:
         destination.mkdir(parents=True, exist_ok=True)
+        _measure_missing(adapter, built, handle, store=store, level=level)
         if is_ours(destination):
             handle.progress(message="Replacing the previous export…")
             old = _read_manifest(destination).get("audio") or {}
@@ -489,7 +585,7 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle, *,
             for planned in items:
                 planned.reuse = None
         reused = [t for t in items if t.reuse is not None]
-        handle.progress(total=built.total_bytes)
+        handle.progress(done=0, total=built.total_bytes, unit="bytes")
         # Written before anything moves or is copied, listing every path this
         # run may leave behind, so even a crash (not a cancel — nothing gets to
         # clean up after a crash) leaves a folder the next export can clear.
@@ -524,16 +620,39 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle, *,
                 # The file to READ: on this machine that is the source itself;
                 # on a library held by a server, a downloaded copy of it.
                 local = adapter.audio_path(planned.track_id) or planned.source_path
-                copy_file(local, partial, handle, advance)
+                levelled = False
+                if planned.gain_db:
+                    from .core import level_edit
+
+                    handle.progress(message=f"Normalising {planned.title} ({planned.gain_db:+.1f} dB)")
+                    try:
+                        level_edit.apply(local, partial, planned.gain_db)
+                        handle.raise_if_cancelled()
+                        # A copy carried to a gig must be the source at the
+                        # gain, nothing else: decode both and compare.
+                        level_edit.verify(local, partial, planned.gain_db)
+                        levelled = True
+                        advance(planned.size)
+                    except level_edit.LevelEditError as ex:
+                        # Only the file says some things (HE-AAC in an .m4a):
+                        # such a copy goes as it is, never fails the export.
+                        log.warning("copying %s unlevelled: %s", planned.title, ex)
+                        partial.unlink(missing_ok=True)
+                        planned.gain_db, planned.level_outcome = 0.0, "unsupported"
+                if not levelled:
+                    copy_file(local, partial, handle, advance)
                 os.replace(partial, target)
             payload_tracks.append(
                 ExportTrack(
                     track=adapter.track(planned.track_id),
                     destination=target,
-                    cues=adapter.track_cues(planned.track_id),
+                    cues=_locked(adapter.track_cues(planned.track_id), lock_grids),
                     art=_cover(adapter, planned.track_id),
                     fingerprint=_fingerprint(planned),
                     analysis_cache=cache,
+                    loudness=(shifted(planned.loudness, planned.gain_db)
+                              if auto_gain and planned.loudness is not None else None),
+                    gain_db=planned.gain_db,
                 )
             )
 
@@ -587,6 +706,7 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle, *,
         return {
             "tracks": len(payload_tracks),
             "unchanged": len(reused),
+            "normalised": sum(1 for t in items if t.gain_db),
             "playlists": len(built.playlists),
             "skipped": len(built.tracks) - len(items),
             "destination": str(destination),
@@ -667,7 +787,41 @@ def _rel(path: Path, destination: Path) -> str:
 
 
 def _fingerprint(planned: PlannedTrack) -> str:
-    return fingerprint(planned.source_path, planned.size, planned.mtime_ns)
+    # The waveform cache is keyed by the SOURCE; a copy written at another
+    # level draws differently, so its gain is part of the key — else a
+    # normalised stick would be drawn from the un-levelled measurement.
+    source = planned.source_path if not planned.gain_db else f"{planned.source_path}#gain={planned.gain_db:.4f}"
+    return fingerprint(source, planned.size, planned.mtime_ns)
+
+
+def _measure_missing(adapter, built: ExportPlan, handle: JobHandle, *, store, level: Level | None) -> None:
+    """Measure the sources the run needs a loudness for and has none, store
+    each, then settle their copies' levels and which previous copies can be
+    kept. Before anything at the destination changes, so a cancel here
+    leaves the previous export as it was."""
+    todo = [t for t in built.exportable if t.needs_loudness and t.loudness is None]
+    if not todo or store is None:
+        return
+    from .core import loudness
+
+    for n, planned in enumerate(todo, start=1):
+        handle.raise_if_cancelled()
+        handle.progress(done=n - 1, total=len(todo), unit="tracks",
+                        message=f"Measuring {planned.title} ({n}/{len(todo)})")
+        local = adapter.audio_path(planned.track_id) or planned.source_path
+        try:
+            values = loudness.measure_file(local)
+        except Exception as ex:  # noqa: BLE001 — copied as it is, with no gain
+            log.warning("could not measure %s: %s", planned.title, ex)
+            values = None
+        planned.loudness = values
+        if values is not None:
+            fact = adapter.audio_facts([planned.track_id]).get(planned.track_id)
+            if fact is not None:
+                store.put(fact, values)
+        if level is not None:
+            set_level(planned, level)
+    assign_reuse(built, _previous_copies(Path(built.destination)))
 
 
 def _cover(adapter, track_id: str):

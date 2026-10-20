@@ -43,6 +43,26 @@ export interface Track {
    *  library's own display colour for it; both null when uncoloured. */
   color: TrackColor | null
   color_hex: string | null
+  /** The DJ app's own auto gain in dB (Traktor's deck gain, rekordbox's Auto
+   *  Gain); null = the track has none. */
+  auto_gain_db: number | null
+  /** The Mastering columns' values — NOT part of the backend's `Track`: joined
+   *  in client-side from `/api/loudness` (Konduktor's own store, keyed by the
+   *  FILE), and only while a Mastering column is shown. Absent = unmeasured. */
+  loudness?: Loudness
+}
+
+/** One file's loudness (`core/loudness.py`): integrated LUFS, RMS of the
+ *  loudest 3 s blocks (dB, AES17), true peak (dBTP), loudness range (LU) and
+ *  PLR (true peak − LUFS, dB). `stale`: the file changed since it was measured
+ *  — shown dimmed, still sorted on. */
+export interface Loudness {
+  lufs: number
+  rms: number
+  true_peak: number
+  lra: number
+  plr: number
+  stale: boolean
 }
 
 /** One occupied hotcue slot, as the library table previews it. */
@@ -294,6 +314,10 @@ export interface Capabilities {
     reference: boolean
     /** The track colours this library can store; empty = no track colour. */
     colors: ColorSwatch[]
+    /** The library keeps a per-track auto gain (`Track.auto_gain_db`). */
+    auto_gain: boolean
+    /** Tracks' files can be normalized in place (`audio_changed`). */
+    normalizable: boolean
   }
   playlists: {
     folders: boolean
@@ -334,6 +358,10 @@ export interface PlatformOption {
   drive_root?: boolean
   /** As an export target: only ever read on a computer, never from a drive. */
   computer_only?: boolean
+  /** As an export target: its library can store a grid lock. */
+  locks_grids?: boolean
+  /** As an export target: its library keeps the DJ app's auto gain. */
+  writes_auto_gain?: boolean
 }
 
 export interface EditState {
@@ -345,6 +373,11 @@ export interface EditState {
   stem_job: string | null
   /** What this open's crash recovery did about an interrupted conversion. */
   stem_recovery: { committed: number; restored: number; kept: number } | null
+  /** Normalized tracks awaiting Save or Discard; `lossless` = files whose
+   *  change Save makes permanent. */
+  pending_gain: { tracks: number; lossless: number } | null
+  /** A running Normalize's job id, so a reloaded page can find it. */
+  normalize_job: string | null
   /** A remote library's connection, null for a local one. */
   remote: RemoteConnection | null
 }
@@ -588,16 +621,23 @@ export interface JobStatus {
   finished_at: number | null
 }
 
-/** What a batch grid analysis did, per track outcome. */
 /** What the Analyze dialog asks for. BPM and Grid are independent halves of
  *  a beatgrid: BPM alone keeps the downbeat, Grid alone keeps the tempo.
- *  `replace_grid` only guards a FULL re-analysis (both ticked). */
+ *  `replace_grid` only guards a FULL re-analysis (both ticked). Loudness goes
+ *  to Konduktor's own store, so it works for any `origin`; BPM / Grid / Key
+ *  only for the loaded library's tracks. */
 export interface AnalyzeOptions {
   bpm: boolean
   grid: boolean
   key: boolean
+  loudness: boolean
+  /** Write the DJ app's auto gain from the loudness (measured first if needed). */
+  gain: boolean
   replace_grid: boolean
   replace_key: boolean
+  replace_loudness: boolean
+  replace_gain: boolean
+  origin: TrackOrigin
 }
 
 /** What an Analyze run WOULD do — the backend's `plan_grid`, per track. */
@@ -616,6 +656,59 @@ export interface AnalyzePreview {
   key_existing: number
   /** Tracks with a key — the key Replace tick's count. */
   with_key: number
+  loudness_measure: number
+  loudness_existing: number
+  /** Measured and not stale — the loudness Replace tick's count. */
+  with_loudness: number
+  gain_set: number
+  gain_existing: number
+  /** Tracks with an auto gain — the gain Replace tick's count. */
+  with_gain: number
+}
+
+/** Normalize's choices (`gain/normalize.py`). */
+export interface NormalizeOptions {
+  measure: 'lufs' | 'rms'
+  target: number
+  ceiling: number
+}
+
+/** One track in Normalize's preview — the backend's `plan_gain`. */
+export interface NormalizeRow {
+  track_id: string
+  title: string
+  /** The measure now; null = not measured yet (the run measures it first). */
+  level: number | null
+  /** Why nothing can be done (missing file, already pending). */
+  skip: string | null
+  gain_db?: number
+  outcome?: 'apply' | 'capped' | 'at_target' | 'hot_peak_left' | 'unsupported' | 'unmeasured'
+  short_by?: number
+  lossless?: boolean
+  /** A remote library: a verified upload at this gain is already on the server. */
+  staged?: boolean
+}
+
+export interface NormalizePreview {
+  total: number
+  to_change: number
+  to_measure: number
+  tracks_to_process: number
+  /** Lossless files that would change — permanent once saved. */
+  lossless: number
+  counts: Record<string, number>
+  rows: NormalizeRow[]
+  /** A remote library: what this computer downloads, rewrites and uploads. */
+  transfer?: { download: number; upload: number; speed: number; measured: boolean }
+}
+
+/** What a Normalize run did. */
+export interface NormalizeResult {
+  normalised: string[]
+  skipped: { track_id: string; title: string; reason: string }[]
+  failed: { track_id: string; title: string; reason: string }[]
+  counts: Record<string, number>
+  cancelled: boolean
 }
 
 /** What an Analyze run did. */
@@ -624,6 +717,8 @@ export interface AnalyzeResult {
   failed: { title: string; reason: string }[]
   grid: { full: number; bpm: number; phase: number; locked: number; existing: number; flexible: number }
   key: { set: number; existing: number; none: number }
+  loudness: { measured: number; existing: number; none: number }
+  gain: { set: number; existing: number; none: number }
 }
 
 /** What a batch Auto Hotcues run did. `tracks` got the template (whatever it
@@ -740,6 +835,15 @@ export interface ExportSet {
   playlist_ids: string[]
   /** LOOSE tracks only — tracks a referenced playlist supplies are not listed. */
   track_ids: string[]
+  /** Lock every exported grid, so Traktor does not re-analyse a track when it
+   *  is first loaded. Set from the run dialog and remembered here. */
+  lock_grids: boolean
+  /** Normalise the COPIES' audio (the sources are never touched). */
+  normalise: boolean
+  /** Write the DJ app's auto gain, where a target keeps one. */
+  auto_gain: boolean
+  /** Normalise's measure / target / ceiling; null = the app settings. */
+  level: NormalizeOptions | null
   created: number
   modified: number
 }
@@ -785,6 +889,20 @@ export interface ExportPreview {
   /** Targets whose library is only found at a drive's root, when the destination
    *  is not one. A warning — the export can still run. */
   not_drive_root: string[]
+  /** Normalise audio: copies whose level changes, and each outcome's count. */
+  normalised: number
+  level_counts: Record<string, number>
+  /** Sources the run measures first (no stored loudness). */
+  to_measure: number
+}
+
+/** The run dialog's options; each is remembered on the set. Omitted = the
+ *  set's own answer. */
+export interface ExportRunOptions {
+  lock_grids?: boolean
+  normalise?: boolean
+  auto_gain?: boolean
+  level?: NormalizeOptions
 }
 
 export interface FsPlace {
@@ -982,7 +1100,10 @@ export const api = {
   exports: () => getJSON<ExportSet[]>('/api/exports'),
   createExport: (body: { name: string; targets: string[]; destination: string }) =>
     send<ExportSet>('POST', '/api/exports', body),
-  updateExport: (id: string, body: Partial<Pick<ExportSet, 'name' | 'targets' | 'destination'>>) =>
+  updateExport: (
+    id: string,
+    body: Partial<Pick<ExportSet, 'name' | 'targets' | 'destination' | 'lock_grids'>>,
+  ) =>
     send<ExportSet>('PATCH', `/api/exports/${encodeURIComponent(id)}`, body),
   deleteExport: (id: string) =>
     send<{ deleted: boolean }>('DELETE', `/api/exports/${encodeURIComponent(id)}`),
@@ -1011,10 +1132,12 @@ export const api = {
   // reason rather than hiding them — an absent option reads as a missing
   // feature, a disabled one reads as a roadmap.
   exportTargets: () => getJSON<PlatformOption[]>('/api/export-targets'),
-  exportPreview: (id: string) =>
-    send<ExportPreview>('POST', `/api/exports/${encodeURIComponent(id)}/preview`, {}),
-  runExport: (id: string) =>
-    send<JobStatus>('POST', `/api/exports/${encodeURIComponent(id)}/run`, {}),
+  // The preview takes the run dialog's options as ticked, so its counts match.
+  exportPreview: (id: string, body: ExportRunOptions = {}) =>
+    send<ExportPreview>('POST', `/api/exports/${encodeURIComponent(id)}/preview`, body),
+  // The run dialog's options travel with the click; the set remembers them.
+  runExport: (id: string, body: ExportRunOptions = {}) =>
+    send<JobStatus>('POST', `/api/exports/${encodeURIComponent(id)}/run`, body),
 
   // ---- path remapping (per-collection OS-path prefix translation) ----
   getPathMapping: () => getJSON<PathMapping>('/api/library/path-mapping'),
@@ -1131,6 +1254,13 @@ export const api = {
    *  lands on the track, so refetch the track lists. */
   autoGrid: (trackId: string) =>
     send<TrackCues>('POST', '/api/tracks/grid/auto', { track_id: trackId }),
+  /** The Mastering columns' values for these tracks — measured ones only. */
+  loudness: (origin: TrackOrigin, trackIds: string[]) =>
+    send<{ values: Record<string, Loudness> }>('POST', '/api/loudness', { origin, track_ids: trackIds }),
+  /** Measure one track's loudness now (the deck's Analyze where it cannot
+   *  write a grid: a read-only library, a device, a loose file). */
+  measureLoudness: (origin: TrackOrigin, trackId: string) =>
+    send<Loudness>('POST', '/api/tracks/loudness', { origin, track_id: trackId }),
   /** Auto Hotcues over many tracks, one template for all, as a job. A track
    *  without a grid gets one analysed first. The finished job's `result` is a
    *  `CueBatchResult`. */
@@ -1161,6 +1291,11 @@ export const api = {
   stemEngineRemove: () => send<StemEngineStatus>('DELETE', '/api/stems/engine'),
   analyzePreview: (trackIds: string[], opts: AnalyzeOptions) =>
     send<AnalyzePreview>('POST', '/api/tracks/analyze/preview', { track_ids: trackIds, ...opts }),
+  normalizePreview: (trackIds: string[], opts: NormalizeOptions) =>
+    send<NormalizePreview>('POST', '/api/tracks/normalize/preview', { track_ids: trackIds, ...opts }),
+  /** Starts a Normalize job; its `result` is a `NormalizeResult`. */
+  normalize: (trackIds: string[], opts: NormalizeOptions) =>
+    send<JobStatus>('POST', '/api/tracks/normalize', { track_ids: trackIds, ...opts }),
   /** Starts an analysis job; its `result` is an `AnalyzeResult`. */
   analyze: (trackIds: string[], opts: AnalyzeOptions) =>
     send<JobStatus>('POST', '/api/tracks/analyze', { track_ids: trackIds, ...opts }),

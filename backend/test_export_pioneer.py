@@ -146,6 +146,16 @@ for platform, reopen in (
           [by_title[t.title].color for t in chosen] == COLOURS[:len(chosen)],
           str([by_title[t.title].color for t in chosen]))
 
+    if platform == "rekordbox":
+        # Measured 2026-10-19: rekordbox 7's grid padlock sets bit 0x80 of
+        # `djmdContent.Analysed` (105 -> 233) and nothing else.
+        analysed = {c.Title: c.Analysed for c in back._store._db.get_content()}
+        check("a locked grid is Analysed 233, an unlocked one 105",
+              [analysed[t.title] for t in chosen]
+              == [233 if src.track_cues(t.id).grid_locked else 105 for t in chosen]
+              and any(src.track_cues(t.id).grid_locked for t in chosen),
+              str([(t.title, analysed[t.title]) for t in chosen]))
+
     print(f"-- {platform}: the key was CONVERTED, not copied")
     for track in chosen:
         if not track.key:

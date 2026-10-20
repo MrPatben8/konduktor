@@ -13,6 +13,8 @@ remote library's refusal exactly as it would a local one's.
 """
 from __future__ import annotations
 
+import json
+
 import logging
 import threading
 from pathlib import Path
@@ -277,7 +279,7 @@ class RemoteClient:
         return self.request("POST", "/v1/stems/plan", json=body, timeout=None).json()
 
     def stems_stage(self, track_id: str, target: str, source: Path, *, sha256: str,
-                    bit_rate: int, duration: float, progress=None) -> dict:
+                    bit_rate: int, duration: float, loudness: dict | None = None, progress=None) -> dict:
         def body():
             with open(source, "rb") as f:
                 while chunk := f.read(1 << 20):
@@ -288,7 +290,8 @@ class RemoteClient:
         return self.request(
             "PUT", "/v1/stems/stage",
             params={"track_id": track_id, "target": target, "sha256": sha256,
-                    "bit_rate": bit_rate, "duration": duration},
+                    "bit_rate": bit_rate, "duration": duration,
+                    **({"loudness": json.dumps(loudness)} if loudness else {})},
             content=body(), retry=False, timeout=None,
         ).json()
 
@@ -298,6 +301,35 @@ class RemoteClient:
     def stems_publish(self, items: list[dict], options: dict) -> dict:
         return self.request("POST", "/v1/stems/publish", json={"items": items, "options": options},
                             timeout=None).json()
+
+    # ---- Normalize ------------------------------------------------------------------------
+    def gain_plan(self, body: dict) -> dict:
+        return self.request("POST", "/v1/gain/plan", json=body, timeout=None).json()
+
+    def gain_stage(self, track_id: str, source: Path, *, gain_db: float, sha256: str,
+                   options: dict, progress=None) -> dict:
+        def body():
+            with open(source, "rb") as f:
+                while chunk := f.read(1 << 20):
+                    if progress is not None:
+                        progress(len(chunk))
+                    yield chunk
+
+        return self.request(
+            "PUT", "/v1/gain/stage",
+            params={"track_id": track_id, "gain_db": repr(float(gain_db)), "sha256": sha256, **options},
+            content=body(), retry=False, timeout=None,
+        ).json()
+
+    def gain_waveform(self, track_id: str, packed: str) -> None:
+        self.request("PUT", "/v1/gain/waveform", params={"track_id": track_id},
+                     content=packed.encode("ascii"), retry=False, timeout=None)
+
+    def gain_abandon(self, track_ids: list[str]) -> None:
+        self.request("POST", "/v1/gain/abandon", json={"track_ids": track_ids})
+
+    def gain_publish(self, track_ids: list[str]) -> dict:
+        return self.request("POST", "/v1/gain/publish", json={"track_ids": track_ids}, timeout=None).json()
 
     def stems_pending(self) -> dict:
         return self.request("GET", "/v1/stems/pending").json()
@@ -323,3 +355,10 @@ class RemoteClient:
 
     def put_export_sets(self, doc: dict) -> None:
         self.request("PUT", "/v1/export-sets", json=doc)
+
+    # ---- loudness ----------------------------------------------------------------------
+    def loudness_get(self, paths: list[str]) -> list[dict]:
+        return self.request("POST", "/v1/loudness/get", json={"paths": paths}).json()["entries"]
+
+    def loudness_put(self, entries: list[dict]) -> None:
+        self.request("PUT", "/v1/loudness", json={"entries": entries})

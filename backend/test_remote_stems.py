@@ -137,6 +137,8 @@ with TestClient(main.app) as c:
           and any(s["volume"].startswith("the server") for s in p["space"]), p["space"])
 
     print("== a Replace batch ==")
+    r = c.post("/api/tracks/loudness", json={"track_id": ids[0]})
+    check("(setup) the original's loudness is measured, kept on the server", r.status_code == 200, r.text[:200])
     saved_bytes = work.read_bytes()
     r = c.post("/api/tracks/stems/convert", json={"track_ids": ids[:1], "mode": "replace"})
     job = wait(c, r.json()["id"])
@@ -150,6 +152,12 @@ with TestClient(main.app) as c:
     check("the server's entry now names the stem file", new_id and server_adapter.track(new_id) is not None)
     check("…and the mirror here follows", main.require_adapter().track(new_id) is not None)
     check("the SAVED collection is untouched until Save", work.read_bytes() == saved_bytes)
+    import httpx
+
+    held = httpx.post(f"http://127.0.0.1:{port}/v1/loudness/get", json={"paths": [str(target)]},
+                      auth=("dj", "pw")).json()["entries"]
+    check("the stem file was measured HERE and its value stored on the server with it",
+          [e["path"] for e in held] == [str(target)], str(held))
     st_ = c.get("/api/state").json()
     check("the state reports the conversion awaiting Save (from the server's ledger)",
           st_["pending_stems"] and st_["pending_stems"]["tracks"] == 1, st_.get("pending_stems"))

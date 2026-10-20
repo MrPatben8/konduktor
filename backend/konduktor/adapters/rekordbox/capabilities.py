@@ -95,6 +95,9 @@ def capabilities_for(
             key_writable=True,
             # `djmdContent.ColorID`, rekordbox's eight (see `track_palette`).
             colors=list(track_palette.SWATCHES),
+            # djmdMixerParam (measured, see `gain`).
+            auto_gain=True,
+            normalizable=True,
             artwork=False,
             artwork_note=None,
         ),

@@ -157,17 +157,34 @@ class AutoGridRequest(BaseModel):
     track_id: str
 
 
+#: Whose ids a loudness request names: the loaded library's, the open device's
+#: (the sidebar's Devices), or the Files trees' (a file path; `server:` + the
+#: path on a remote's server). A folder id that is not a listed file is taken
+#: as the loaded library's — a folder view's held rows ARE collection tracks.
+LoudnessOrigin = Literal["collection", "device", "folder"]
+
+
 class AnalyzeRequest(BaseModel):
     """The Analyze dialog's choices. BPM and Grid are independent halves of a
     beatgrid (`core/grid_plan`); `replace_grid` only guards a FULL re-analysis
     (both ticked), since with one tick adjusting the grid is the point.
-    `replace_key` lets detection overwrite a key the track already has."""
+    `replace_key` lets detection overwrite a key the track already has.
+    Loudness is measured into Konduktor's own store (`loudness_store.py`), so
+    it needs no capability and works for any `origin`; BPM / Grid / Key only
+    for the loaded library. `gain` writes the DJ app's own auto gain from the
+    track's loudness (measured first where it has none, or a stale one) —
+    only where the track has none, unless `replace_gain`."""
     track_ids: list[str]
     bpm: bool = True
     grid: bool = True
     key: bool = False
+    loudness: bool = False
+    gain: bool = False
     replace_grid: bool = False
     replace_key: bool = False
+    replace_loudness: bool = False
+    replace_gain: bool = False
+    origin: LoudnessOrigin = "collection"
 
 
 class AnalyzePreview(BaseModel):
@@ -189,6 +206,43 @@ class AnalyzePreview(BaseModel):
     key_set: int = 0
     key_existing: int = 0      # skipped: has a key, Replace not ticked
     with_key: int = 0          # tracks that have a key (the Replace tick's count)
+    # Loudness (Konduktor's own store): a measured, not stale track is skipped
+    # unless Replace is ticked.
+    loudness_measure: int = 0
+    loudness_existing: int = 0  # skipped: measured, Replace not ticked
+    with_loudness: int = 0      # tracks measured and not stale (the Replace tick's count)
+    # Auto gain (the DJ app's own field): a track that has one is skipped
+    # unless Replace is ticked.
+    gain_set: int = 0
+    gain_existing: int = 0      # skipped: has an auto gain, Replace not ticked
+    with_gain: int = 0          # tracks that have one (the Replace tick's count)
+
+
+class LoudnessRequest(BaseModel):
+    origin: LoudnessOrigin = "collection"
+    track_ids: list[str]
+
+
+class LoudnessValue(BaseModel):
+    """One file's measurement (`core/loudness.py`). `stale`: the file changed
+    since it was measured (or the measurement has) — shown dimmed, still sorted
+    on, and offered for re-analysis."""
+    lufs: float
+    rms: float
+    true_peak: float
+    lra: float
+    plr: float
+    stale: bool = False
+
+
+class LoudnessValues(BaseModel):
+    """Measured tracks only, by the ids asked for."""
+    values: dict[str, LoudnessValue] = {}
+
+
+class MeasureLoudnessRequest(BaseModel):
+    origin: LoudnessOrigin = "collection"
+    track_id: str
 
 
 class AutoGridBatchRequest(BaseModel):
@@ -272,6 +326,11 @@ class EditState(BaseModel):
     stem_job: str | None = None
     # What this open's crash recovery did about an interrupted conversion.
     stem_recovery: dict | None = None
+    # Normalized tracks awaiting Save/Discard: {tracks, lossless} (lossless =
+    # files whose change Save makes permanent).
+    pending_gain: dict | None = None
+    # A running Normalize's job id, so a reloaded page finds it again.
+    normalize_job: str | None = None
     # A remote library's connection: {state, via, machine}. None when local.
     remote: dict | None = None
 
@@ -347,6 +406,10 @@ class ExportSetOut(BaseModel):
     destination: str
     playlist_ids: list[str] = []
     track_ids: list[str] = []   # loose tracks only
+    lock_grids: bool = True
+    normalise: bool = False
+    auto_gain: bool = True
+    level: dict | None = None
     created: float = 0.0
     modified: float = 0.0
 
@@ -357,10 +420,31 @@ class CreateExportSet(BaseModel):
     destination: str
 
 
+class ExportLevel(BaseModel):
+    """Normalise audio's measure / target / ceiling (see `exporter.Level`)."""
+    measure: Literal["lufs", "rms"] = "lufs"
+    target: float = Field(-9.0, ge=-30.0, le=0.0)
+    ceiling: float = Field(-1.0, ge=-12.0, le=0.0)
+
+
 class UpdateExportSet(BaseModel):
     name: str | None = None
     targets: list[str] | None = None
     destination: str | None = None
+    lock_grids: bool | None = None
+    normalise: bool | None = None
+    auto_gain: bool | None = None
+    level: ExportLevel | None = None
+
+
+class RunExport(BaseModel):
+    #: The run dialog's options — each remembered on the set. None keeps the
+    #: set's own answer. The preview takes the same body, so its counts are
+    #: for the options as ticked.
+    lock_grids: bool | None = None
+    normalise: bool | None = None
+    auto_gain: bool | None = None
+    level: ExportLevel | None = None
 
 
 class ExportSetMembers(BaseModel):
@@ -394,6 +478,8 @@ class ExportPreview(BaseModel):
 
     tracks: int = 0
     exportable: int = 0
+    #: Copies from the last export kept rather than copied again.
+    unchanged: int = 0
     missing: list[str] = []
     playlists: list[str] = []
     total_bytes: int = 0
@@ -408,6 +494,12 @@ class ExportPreview(BaseModel):
     #: Targets whose library is only found at a drive's root, when the
     #: destination is not one. A warning — the export can still run.
     not_drive_root: list[str] = []
+    #: Normalise audio: copies whose level changes, and every `level_plan`
+    #: outcome by count. `to_measure`: sources the run measures first (no
+    #: stored loudness), for Normalise or Auto gain.
+    normalised: int = 0
+    to_measure: int = 0
+    level_counts: dict[str, int] = {}
 
 
 class FsPlace(BaseModel):
@@ -639,3 +731,12 @@ class JobStatus(BaseModel):
     error: str | None = None
     started_at: float
     finished_at: float | None = None
+
+
+class NormalizeRequest(BaseModel):
+    """Normalize's choices (`gain/normalize.py`, `core/level_plan.py`): the
+    measure brought to `target`, a raise stopping at the true-peak `ceiling`."""
+    track_ids: list[str]
+    measure: Literal["lufs", "rms"] = "lufs"
+    target: float = -9.0
+    ceiling: float = -1.0

@@ -66,6 +66,12 @@ class TraktorExporter:
     menu_order = 20
     library_filename = "collection.nml"
     drive_root = False
+    #: `LOCK` — honoured from `TrackCues.grid_locked` by `add_tracks`.
+    locks_grids = True
+    #: `<LOUDNESS>` from `ExportTrack.loudness` (kit G1: an entry with no
+    #: AUDIO_ID keeps the PERCEIVED_DB the deck reads through Traktor's first
+    #: analysis, which overwrites only ANALYZED_DB).
+    writes_auto_gain = True
 
     def capabilities(self):
         """What a Traktor library can hold — answered with no library to read.
@@ -99,6 +105,10 @@ class TraktorExporter:
         # Source id -> the id it got here. Both are Traktor primary keys derived
         # from a LOCATION, and the location changed, so they are never equal.
         moved = {t.source_id: new_id for t, new_id in zip(payload.tracks, new_ids)}
+        # The auto gain, through the same command an Analyze uses.
+        for t, new_id in zip(payload.tracks, new_ids):
+            if t.loudness is not None:
+                adapter.set_auto_gain(new_id, t.loudness)
 
         self._write_playlists(adapter, payload, moved)
         adapter.save()

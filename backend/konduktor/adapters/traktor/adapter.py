@@ -162,6 +162,18 @@ class TraktorAdapter:
         self._refresh(track_id)
         return self._index.get(track_id)
 
+    def audio_changed(self, track_id: str, change) -> Track | None:
+        with _translate():
+            self._store.audio_changed(track_id, change)
+        self._refresh(track_id)
+        return self._index.get(track_id)
+
+    def set_auto_gain(self, track_id: str, loudness) -> Track | None:
+        with _translate():
+            self._store.set_auto_gain(track_id, loudness)
+        self._refresh(track_id)
+        return self._index.get(track_id)
+
     def set_cover_art(self, track_id: str, data: bytes, mime: str) -> None:
         with _translate():
             self._store.set_track_art(track_id, data, mime)
@@ -242,6 +254,10 @@ class TraktorAdapter:
             # invent one outside Auto Grid), and it occupies pad A — which
             # silently displaced the imported track's own pad A cue.
             self.replace_grid(track_id, markers)
+        if cues.grid_locked:
+            # The source's lock, or an export's "Lock beatgrids". Unlocked, an
+            # added entry (no AUDIO_ID) is re-analysed on its first load.
+            self._store.set_lock(track_id, True)
 
         slots = self.capabilities().cues.hotcue_slots
         taken = {c.slot for c in self.track_cues(track_id).cues if c.slot is not None}

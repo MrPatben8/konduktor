@@ -1391,5 +1391,56 @@ if _KIT.exists() and b'COLOR="' in _KIT.read_bytes():
 else:
     print("  [SKIP] no coloured Traktor 4.5 collection on this machine")
 
+print("== S. auto gain (<LOUDNESS>) is localized, Traktor's shape, never a file tag ==")
+# Measured in Traktor 4.5 (kit G1): the deck reads PERCEIVED_DB; Traktor's own
+# value is -9.2 - LUFS; Konduktor writes PERCEIVED = ANALYZED as Traktor does.
+from konduktor.core.loudness import Loudness  # noqa: E402
+
+with tempfile.TemporaryDirectory() as d:
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    original = work.read_bytes()
+    store = TraktorStore(work)
+    keyed = next(e for e in store._nml.collection.entry if e.loudness is not None and e.info is not None)
+    loc = keyed.location
+    tid = f"{loc.volume}{loc.dir}{loc.file}"
+    measured = Loudness(lufs=-11.5, rms=-9.0, true_peak=-0.75, lra=5.0, plr=10.75)
+    store.set_auto_gain(tid, measured)
+    store.save()
+    out = work.read_bytes()
+    o_s, o_e = _entry_span_by_file(original, loc.file)
+    c_s, c_e = _entry_span_by_file(out, loc.file)
+    check("only that ENTRY changes",
+          original[:o_s] + original[o_e:] == out[:c_s] + out[c_e:])
+    check("in one line: its <LOUDNESS>, in Traktor's 6-decimal form",
+          diff_count(original[o_s:o_e], out[c_s:c_e]) == 2
+          and b'<LOUDNESS PEAK_DB="0.750000" PERCEIVED_DB="2.300000" ANALYZED_DB="2.300000">'
+          in out[c_s:c_e])
+    store = TraktorStore(work)
+    check("the projection reads PERCEIVED_DB", abs(store._entry_by_key[tid].loudness.perceived_db - 2.3) < 1e-9)
+    store.set_auto_gain(tid, measured)
+    check("writing the same gain again is not an edit", store.dirty is False)
+    check("auto gain is collection-only: no file tag", "auto_gain" in TraktorStore._COLLECTION_ONLY_FIELDS)
+
+    bare = next((e for e in store._nml.collection.entry if e.loudness is None and e.tempo is not None
+                 and e.musical_key is not None), None)
+    if bare is None:
+        print("  [SKIP] no entry without LOUDNESS in this collection")
+    else:
+        bloc = bare.location
+        bid = f"{bloc.volume}{bloc.dir}{bloc.file}"
+        before = work.read_bytes()
+        store.set_auto_gain(bid, measured)
+        store.save()
+        after = work.read_bytes()
+        b_s, b_e = _entry_span_by_file(after, bloc.file)
+        span = after[b_s:b_e]
+        line = (b'<LOUDNESS PEAK_DB="0.750000" PERCEIVED_DB="2.300000" ANALYZED_DB="2.300000">'
+                b'</LOUDNESS>\n')
+        check("an entry without one gains a single <LOUDNESS> line, nothing else",
+              after[:b_s] + span.replace(line, b"", 1) + after[b_e:] == before)
+        check("…between TEMPO and MUSICAL_KEY, where Traktor puts it",
+              span.find(b"<TEMPO") < span.find(b"<LOUDNESS") < span.find(b"<MUSICAL_KEY"))
+
 print("\nRESULT:", "FAILED" if failed else "ALL PASSED")
 sys.exit(1 if failed else 0)

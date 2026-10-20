@@ -58,6 +58,7 @@ export function SaveBar({ onError, trailing, onDiscarded }: Props) {
   const exportWarning = exportManagedWarning(caps.save)
   const dirty = state?.dirty ?? false
   const pending = state?.pending_stems
+  const gain = state?.pending_gain
   const readOnly = readOnlyNotice(caps)
 
   // A read-only library has no save to offer, and saying so plainly is the whole
@@ -97,6 +98,20 @@ export function SaveBar({ onError, trailing, onDiscarded }: Props) {
             Saving deletes {pending.parked} original file{pending.parked === 1 ? '' : 's'} (
             {pending.bytes >= 1e9 ? `${(pending.bytes / 1e9).toFixed(1)} GB` : `${Math.round(pending.bytes / 1e6)} MB`}
             ) replaced by stem files. Discard to keep them.
+          </span>
+        </div>
+      )}
+      {/* Normalize: the new levels are files on disk; Save deletes the parked
+          originals, which makes a lossless file's change permanent. */}
+      {gain && gain.tracks > 0 && (
+        <div className="mb-2 flex gap-1.5 rounded-xl bg-gold/10 px-2.5 py-1.5 text-[11px] leading-snug text-gold">
+          <Icon name="warning" size={13} className="mt-px shrink-0" />
+          <span>
+            Saving keeps the new level of {gain.tracks} file{gain.tracks === 1 ? '' : 's'}
+            {gain.lossless > 0
+              ? ` — permanently for ${gain.lossless} lossless file${gain.lossless === 1 ? '' : 's'}, whose originals are deleted`
+              : ' (MP3s keep an undo tag)'}
+            . Discard to put the originals back.
           </span>
         </div>
       )}

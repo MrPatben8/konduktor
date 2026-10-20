@@ -87,6 +87,9 @@ def capabilities_for(
             addable=not read_only,
             removable=not read_only,
             key_writable=not read_only,
+            # A stick has no auto gain, so normalising its audio is how it is
+            # levelled (its drawn waveforms are regenerated).
+            normalizable=not read_only,
             # `content.color_id`, rekordbox's eight; the pdb row follows at Save.
             colors=[] if read_only else list(track_palette.SWATCHES),
             places_audio=True,

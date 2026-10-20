@@ -64,7 +64,7 @@ def _name_of(related) -> str | None:
     return None
 
 
-def to_track(row, cue_kinds=(), *, stem: bool = False) -> Track:
+def to_track(row, cue_kinds=(), *, stem: bool = False, auto_gain_db: float | None = None) -> Track:
     """Project one ``DjmdContent`` row.
 
     `cue_kinds` is this track's ``(Kind, OutMsec, ColorTableIndex)`` from the store's single
@@ -129,6 +129,8 @@ def to_track(row, cue_kinds=(), *, stem: bool = False) -> Track:
         media_kind="stem" if stem else "audio",
         color=track_palette.color_for(getattr(row, "ColorID", None)),
         color_hex=track_palette.hex_for(getattr(row, "ColorID", None)),
+        # From the store's one `djmdMixerParam` query (see `gain`).
+        auto_gain_db=auto_gain_db,
     )
 
 

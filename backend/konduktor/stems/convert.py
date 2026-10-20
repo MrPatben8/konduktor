@@ -17,13 +17,15 @@ fails keeps its original and is reported; the rest carry on.
 from __future__ import annotations
 
 import contextlib
+import logging
 import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from .. import paths
+from .. import loudness_store, paths
+from ..core import loudness
 from ..core import stem_file as sf
 from ..core.adapter import AdapterError, StemSwap
 from ..core.pathmap import common_dir_prefix
@@ -31,6 +33,8 @@ from ..importer import SPACE_HEADROOM, free_bytes
 from . import engine_manager as em
 from .engine_process import EngineCancelled, EngineProcess, keep_awake
 from .pending import Pending, _replace_no_overwrite, _retrying, parked_name, partial_name, source_facts
+
+log = logging.getLogger(__name__)
 
 _LOSSLESS = (".wav", ".aif", ".aiff", ".flac")
 #: Five AAC streams at up to 320 kbps plus container overhead.
@@ -155,11 +159,17 @@ def plan(adapter, track_ids: list[str], opts: Options, pending: Pending | None) 
 
     in_library = {str(p) for t in adapter.tracks if (p := adapter.audio_path(t.id)) is not None}
     candidates: list[tuple[str, object, Path]] = []
+    # A track whose level change (Normalize) awaits Save: converting it would
+    # build a stem file from audio Discard is about to put back.
+    held = {i["track_id"] for i in pending.items if i.get("kind") == "gain"} if pending is not None else set()
     for tid in dict.fromkeys(track_ids):
         track = adapter.track(tid)
         src = adapter.audio_path(tid) if track is not None else None
         if track is None:
             result.skipped.append({"track_id": tid, "title": tid, "reason": "not in the library"})
+        elif tid in held:
+            result.skipped.append({"track_id": tid, "title": _title(track),
+                                   "reason": "its level change awaits Save"})
         elif src is None or not Path(src).is_file():
             result.skipped.append({"track_id": tid, "title": _title(track), "reason": "the file is missing"})
         elif sf.is_stem_file(src):
@@ -259,9 +269,12 @@ def run(handle, adapter, planned: Plan, opts: Options, pending: Pending, *,
                 if item.reuse is not None:
                     written = sf.Written(path=partial, **{k: item.reuse["written"][k] for k in ("bit_rate", "duration", "size")},
                                          tags={})
+                    kept = dict(item.reuse["written"])
+                    if "loudness" not in kept and (loud := stem_loudness(str(item.source), partial, loudness_store.local())):
+                        kept["loudness"] = loud
                     pitem = pending.add({"track_id": item.track_id, "mode": opts.collection, "source": str(item.source),
                                          "stem": str(item.target), "state": "converted", "facts": source_facts(item.source),
-                                         "written": item.reuse["written"]})
+                                         "written": kept})
                     pending.forget_leftover(item.reuse, delete=False)
                     finished.append((item, pitem, written))
                     continue
@@ -300,8 +313,10 @@ def run(handle, adapter, planned: Plan, opts: Options, pending: Pending, *,
                     if isinstance(ex, em.EngineError) and engine.proc.poll() is not None:
                         engine = None  # it died: the next track starts a fresh one
                     continue
-                pending.update(pitem, state="converted",
-                               written={"bit_rate": written.bit_rate, "duration": written.duration, "size": written.size})
+                kept = {"bit_rate": written.bit_rate, "duration": written.duration, "size": written.size}
+                if loud := stem_loudness(str(item.source), partial, loudness_store.local()):
+                    kept["loudness"] = loud
+                pending.update(pitem, state="converted", written=kept)
                 finished.append((item, pitem, written))
         except (_Cancel, EngineCancelled):
             # Cancel = delete what this run made; nothing else was touched.
@@ -376,9 +391,38 @@ def _end_step(adapter, finished, opts: Options, pending: Pending, result: dict) 
     for item, pitem in staged:
         new_id = res.renamed[item.track_id]
         pending.update(pitem, state="swapped", new_id=new_id)
+        _store_stem_loudness(item.target, pitem)
         result["converted"].append({"track_id": item.track_id, "new_id": new_id, "title": item.title})
         (result["renamed"] if opts.collection == "repoint" else result["added"])[item.track_id] = new_id
     result["clamped"] = res.clamped
+
+
+def stem_loudness(source_key: str, stem: Path, store) -> dict | None:
+    """The stem file's loudness, measured when its ORIGINAL had been measured
+    (`source_key`: the original's path as `store` keys it) — re-measured, never
+    carried over, since the AAC re-encode can move the true peak (decided
+    2026-10-19). None when the original was not measured, or on any failure:
+    a conversion never fails over a measurement."""
+    try:
+        if not store.get([source_key]):
+            return None
+        values = loudness.measure_file(stem)
+    except Exception:  # noqa: BLE001
+        log.warning("could not measure the loudness of %s", stem, exc_info=True)
+        return None
+    return values.as_dict() if values is not None else None
+
+
+def _store_stem_loudness(target: Path, pitem: dict) -> None:
+    """Store a swapped-in stem file's measurement under its published path
+    (publishing renames, so its size and mtime are the measured file's)."""
+    loud = (pitem.get("written") or {}).get("loudness")
+    if not loud:
+        return
+    try:
+        loudness_store.local().put(loudness_store.file_facts(target), loudness.Loudness.from_dict(loud))
+    except Exception:  # noqa: BLE001
+        log.warning("could not store the loudness of %s", target, exc_info=True)
 
 
 def _hide(path: Path) -> None:

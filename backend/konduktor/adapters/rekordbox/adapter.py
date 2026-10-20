@@ -45,10 +45,12 @@ class RekordboxAdapter:
     # ---- projection maintenance -----------------------------------------
     def _rebuild(self) -> None:
         kinds = self._store.cue_kinds()
+        gains = self._store.mixer_gains()
         self._index.rebuild(
             [
                 projection.to_track(row, kinds.get(str(row.ID), ()),
-                                    stem=self._store.is_stem(str(row.ID)))
+                                    stem=self._store.is_stem(str(row.ID)),
+                                    auto_gain_db=gains.get(str(row.ID)))
                 for row in self._store.iter_content()
             ]
         )
@@ -71,7 +73,8 @@ class RekordboxAdapter:
         kinds = self._store.cue_kinds()
         row = self._store.content(track_id)
         self._index.replace(projection.to_track(row, kinds.get(str(row.ID), ()),
-                                                stem=self._store.is_stem(str(row.ID))))
+                                                stem=self._store.is_stem(str(row.ID)),
+                                                auto_gain_db=self._store.mixer_gain(str(row.ID))))
 
     def close(self) -> None:
         """Release the database connection.
@@ -263,6 +266,18 @@ class RekordboxAdapter:
     def set_track_color(self, track_id: str, color: str | None) -> Track | None:
         self._require_writable("Setting the track colour")
         self._store.set_track_color(track_id, color)
+        self._refresh(track_id)
+        return self._index.get(track_id)
+
+    def audio_changed(self, track_id: str, change) -> Track | None:
+        self._require_writable("Changing a track's level")
+        self._store.audio_changed(track_id, change)
+        self._refresh(track_id)
+        return self._index.get(track_id)
+
+    def set_auto_gain(self, track_id: str, loudness) -> Track | None:
+        self._require_writable("Setting the auto gain")
+        self._store.set_auto_gain(track_id, loudness)
         self._refresh(track_id)
         return self._index.get(track_id)
 
@@ -545,17 +560,22 @@ class RekordboxAdapter:
             else:
                 analysed = add_analysis.prepare(audio, lead=self.analysis_lead(audio),
                                                 detect=not markers,
-                                                detect_key=item.track.key_wheel is None)
+                                                detect_key=item.track.key_wheel is None,
+                                                measure_loudness=True)
                 markers = markers or list(analysed.markers)
             measured = analysed.measured
             # A file with no key of its own gets one, as it gets a grid
             # (decided: arrive ready to prep). Rekordbox's own add analyses one.
             track = add_analysis.with_key(item.track, analysed.key)
             art = item.art or audio_tags.read_cover(audio)
-            prepared.append((item, track, audio, measured, markers, art[0] if art else None))
+            prepared.append((item, track, audio, measured, markers, art[0] if art else None,
+                             getattr(analysed, "loudness", None)))
 
+        # The app's loudness store, where one is attached (see `AppState`): a
+        # measurement made here is worth keeping for the Mastering columns.
+        on_loudness = getattr(self, "on_loudness", None)
         added: list[str] = []
-        for item, track, audio, measured, markers, art in prepared:
+        for item, track, audio, measured, markers, art, loud in prepared:
             track_id = self._store.add_track(
                 audio, track, measured=measured, with_grid=bool(markers), art=art)
             self._index.add(projection.to_track(self._store.content(track_id), (),
@@ -564,6 +584,12 @@ class RekordboxAdapter:
                 self._store.replace_grid(track_id, markers)
             if item.cues is not None:
                 self._place_imported_cues(track_id, item.cues)
+            if loud is not None:
+                # rekordbox's own add analyses an auto gain; without a row the
+                # track plays at 0.0 dB and loading never creates one (kit G2).
+                self._store.set_auto_gain(track_id, loud)
+                if on_loudness is not None:
+                    on_loudness(audio, loud)
             self._refresh(track_id)
             added.append(track_id)
         return added

@@ -124,6 +124,12 @@ class TrackCapabilities(BaseModel):
     # The track colours this library can store (`set_track_color`), in its own
     # menu order. Empty: the platform has no track colour.
     colors: list[ColorSwatch] = []
+    # The library keeps a per-track auto gain the DJ app applies on load
+    # (`set_auto_gain`). False on a stick: no stick format has one (measured).
+    auto_gain: bool = False
+    # Tracks' files can be normalised in place: the library follows a level
+    # change (`audio_changed`) and keeps the parked original until Save.
+    normalizable: bool = False
 
 
 class PlaylistCapabilities(BaseModel):

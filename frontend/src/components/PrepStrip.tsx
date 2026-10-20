@@ -18,7 +18,7 @@ import {
 import { buildBeatGrid, GRID_EPS } from '../lib/beatgrid'
 import { slotLabeller, useCaps } from '../lib/capabilities'
 import { CUE_TYPE_LABELS, cueTypeColor } from '../lib/cues'
-import { keyColor } from '../lib/format'
+import { formatLoudness, keyColor } from '../lib/format'
 import { readOnlyShort, readOnlyNotice } from '../lib/platformCopy'
 import { analyzeStems, analyzeWaveform, type WaveColumn } from '../lib/waveform'
 import type { RawWave } from '../lib/rawWave'
@@ -1220,11 +1220,20 @@ export function PrepStrip({
   // deck the fresh copy.
   const runAnalyzeGrid = async () => {
     if (!track || gridBusy) return
-    if (refuseGridEdit()) return
     setGridBusy(true)
     try {
-      applyCueEdit(await api.autoGrid(track.id))
-      onNotify?.('success', caps.tracks.key_writable ? 'Analyzed — set BPM, grid and key' : 'Analyzed — set BPM and grid')
+      if (canEditGrid) {
+        applyCueEdit(await api.autoGrid(track.id))
+        onNotify?.('success', caps.tracks.key_writable
+          ? 'Analyzed — set BPM, grid and key, measured loudness'
+          : 'Analyzed — set BPM and grid, measured loudness')
+      } else {
+        // Nothing here can take a grid (a read-only library, a device, a loose
+        // file) — but loudness goes to Konduktor's own store, so measure that.
+        const l = await api.measureLoudness(origin, track.id)
+        onNotify?.('success', `Measured loudness — ${formatLoudness(l.lufs, 'LUFS')}, ${formatLoudness(l.true_peak, 'dBTP', true)}`)
+      }
+      qc.invalidateQueries({ queryKey: ['loudness'] })
     } catch (e) {
       onError?.((e as Error).message)
     } finally {
@@ -1529,7 +1538,9 @@ export function PrepStrip({
         <button
           onClick={runAnalyzeGrid}
           disabled={!track || gridBusy}
-          title="Detect BPM and first beat, then set the grid + hotcue 1 (fix the octave with ÷2 / ×2)"
+          title={canEditGrid
+            ? 'Detect BPM and first beat, then set the grid + hotcue 1 (fix the octave with ÷2 / ×2); measure loudness'
+            : 'Measure loudness (this track’s grid cannot be edited here)'}
           className="btn-glass flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 text-[13px] font-medium disabled:opacity-40"
         >
           <Icon name="wave" size={16} />

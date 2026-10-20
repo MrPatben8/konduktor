@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from ...core.adapter import NotFound
 from ...history import HistoryEntry
-from .client import RemoteClient
+from .client import RemoteClient, SessionLost
 
 
 class RemoteServices:
@@ -73,7 +73,11 @@ class RemotePending:
             return {"tracks": 0, "parked": 0, "bytes": 0}
 
     def blocking(self) -> bool:
-        return bool(self.summary().get("tracks"))
+        summary = self.summary()
+        return bool(summary.get("tracks") or summary.get("gain_tracks"))
+
+    def holds(self, track_ids) -> set:
+        return set()  # the server's plan says which tracks it holds
 
     def swapped(self) -> list:
         return []
@@ -83,3 +87,44 @@ class RemotePending:
 
     def commit(self) -> dict:
         return {}
+
+
+class RemoteLoudnessStore:
+    """A remote library's loudness measurements, kept in the SERVER's store
+    (`loudness_store.py`) so every computer that opens it sees them. This
+    computer measures (the server never decodes) and sends the values; storing
+    needs the session, like every write to the server."""
+
+    available = True
+    _CHUNK = 2000
+
+    def __init__(self, client: RemoteClient, session=None):
+        self.client = client
+        self.session = session
+
+    def get(self, paths: list[str]):
+        from ...loudness_store import Entry
+
+        out = {}
+        for i in range(0, len(paths), self._CHUNK):
+            for d in self.client.loudness_get(paths[i:i + self._CHUNK]):
+                out[d["path"]] = Entry.from_wire(d)
+        return out
+
+    def put(self, facts, values) -> None:
+        from ...core import loudness
+
+        entry = {"path": facts.key, "size": facts.size, "mtime_ns": facts.mtime_ns,
+                 "version": loudness.VERSION, **values.as_dict()}
+        try:
+            self.client.loudness_put([entry])
+        except SessionLost as ex:
+            if self.session is not None:
+                self.session.lost(ex.holder)
+            raise
+
+    def refresh(self, paths: list[str]) -> None:
+        """The server's own save refreshes after its tag writes."""
+
+    def remap(self, mapping) -> int:
+        return 0  # a remote library's paths are the server's business

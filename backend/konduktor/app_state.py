@@ -24,6 +24,7 @@ human summary, and this module versions them.
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from pathlib import Path
@@ -34,6 +35,8 @@ from .core.adapter import LibraryAdapter
 from .core.pathmap import PathMapping
 from .relocation import RelocationCheck
 from .services import LibraryServices, LocalServices
+
+log = logging.getLogger(__name__)
 
 
 class AppState:
@@ -74,6 +77,21 @@ class AppState:
         # restore, which reopens): how a Konduktor SERVER re-applies the path
         # mapping its configuration names, which lives in no prefs file.
         self.open_hooks: list = []
+        # A remote library's loudness store (on its server); None = this
+        # computer's own. Read through `loudness`.
+        self._remote_loudness = None
+
+    @property
+    def loudness(self):
+        """Where the loaded library's loudness measurements live: the server's
+        store for a remote library, this computer's otherwise (see
+        `loudness_store.py`). Not tied to the adapter: a measurement belongs to
+        the FILE, so it outlives opening another library."""
+        if self._remote_loudness is not None:
+            return self._remote_loudness
+        from . import loudness_store
+
+        return loudness_store.local()
 
     @property
     def loaded(self) -> bool:
@@ -140,6 +158,9 @@ class AppState:
         if saved:
             adapter.set_path_mapping(PathMapping.make(saved["from"], saved["to"]))
         self.path, self.adapter = path, adapter
+        # A measurement the adapter makes while adding a track (rekordbox's add
+        # writes the auto gain from one) is kept for the Mastering columns.
+        adapter.on_loudness = self._keep_loudness
         caps = adapter.capabilities()
         # No sidecar beside a removable library: writing to a user's USB stick to
         # satisfy Konduktor's own bookkeeping is not a trade worth making. Those
@@ -156,12 +177,13 @@ class AppState:
         # A crash may have left converted tracks mid-lifecycle: settle them from
         # what the SAVED library says, BEFORE the missing-files check — a parked
         # original is exactly what that check would report as missing.
-        from .stems.pending import Pending
+        from .pending import Pending
 
         self.pending = Pending(self.library_id)
         self.recovery = None
         if self.pending.items:
-            self.recovery = self.pending.recover(lambda item: adapter.track(item["new_id"]) is not None)
+            self.recovery = self.pending.recover(lambda item: _committed(adapter, item))
+            self._restore_loudness()
         # Started after the saved mapping is applied, so a volume that mapping
         # already fixes is not asked about.
         self.relocation = RelocationCheck(adapter)
@@ -170,12 +192,33 @@ class AppState:
         for hook in self.open_hooks:
             hook(adapter)
 
+    def _restore_loudness(self) -> None:
+        """A Normalize undone: the original is back, so is its measurement
+        (its facts are the original's again, so the value reads fresh)."""
+        entries = [i["loudness_before"] for i in getattr(self.pending, "restored_gain", ())
+                   if i.get("loudness_before")]
+        put = getattr(self.loudness, "put_entries", None)
+        if entries and put is not None:
+            try:
+                put(entries)
+            except Exception:  # noqa: BLE001 — bookkeeping must never fail a discard
+                log.warning("could not restore loudness values", exc_info=True)
+
+    def _keep_loudness(self, path, values) -> None:
+        from . import loudness_store
+
+        try:
+            self.loudness.put(loudness_store.file_facts(path), values)
+        except OSError:
+            log.warning("could not store the loudness of %s", path, exc_info=True)
+
     def _release_previous(self) -> None:
         previous = self.adapter
         # Leaving a library discards its unsaved edits (the UI has confirmed), so
         # a stem conversion's parked originals go back under their own names.
         if self.pending is not None and self.pending.items:
             self.pending.restore()
+            self._restore_loudness()
         if previous is not None and hasattr(previous, "close"):
             try:
                 previous.close()
@@ -189,6 +232,7 @@ class AppState:
         self.adapter = None
         self.remote = None
         self.remote_config = None
+        self._remote_loudness = None
 
     def open_remote(self, opened) -> None:
         """Make an already-connected remote library THE library.
@@ -211,6 +255,7 @@ class AppState:
             # The server keeps its own ledger of converted tracks; nothing of a
             # remote library's lives in this computer's.
             self.pending = opened.pending
+            self._remote_loudness = opened.loudness
             self.recovery = None
             # A remote library's files are not on this computer's drives.
             self.relocation = None
@@ -227,8 +272,29 @@ class AppState:
             return self._save()
 
     def _save(self):
-        outcome = self.adapter.save()
+        # Normalize's items: a crash inside the save is the one moment the
+        # ledger cannot decide alone (see pending.py) — bracket it.
+        marked = self.pending is not None and bool(self.pending.swapped())
+        if marked:
+            self.pending.begin_save(None)
+        try:
+            outcome = self.adapter.save()
+        except BaseException:
+            if marked:
+                self.pending.abort_save()
+            raise
+        if marked:
+            self.pending.mark_saved()
         commit = self.services.commit_save(self.adapter, outcome)
+        # Konduktor itself just rewrote these files' tags: a loudness value
+        # measured before must not read as stale because of it. (On a remote
+        # library the server's own save does this; the client's store skips it.)
+        written = [r.file for r in outcome.tag_results if getattr(r, "ok", False) and getattr(r, "file", None)]
+        if written:
+            try:
+                self.loudness.refresh(written)
+            except Exception:  # noqa: BLE001 — bookkeeping must never fail a save
+                log.warning("could not refresh loudness facts after save", exc_info=True)
         # The swap is now on disk: what it replaced can go. After the library
         # write, so a failed save deletes nothing; here rather than in the save
         # route, because import and path remap save too.
@@ -251,6 +317,7 @@ class AppState:
         with self.mutation:
             if self.pending is not None and self.pending.items:
                 self.pending.restore()
+                self._restore_loudness()
             if self.services is not None and self.services.remote:
                 # The server holds the edits; it is what drops them.
                 self.services.discard()
@@ -280,3 +347,21 @@ if _env_nml and Path(_env_nml).exists():
         STATE.open(Path(_env_nml))
     except Exception:  # noqa: BLE001 — bad env path shouldn't crash startup
         pass
+
+
+def _committed(adapter, item: dict) -> bool:
+    """Recovery's question for an item a crash left mid-save: did the saved
+    library take it? A stem swap: the library names the stem file. A Normalize:
+    the library's auto gain is the NEW one and not the old (the end step always
+    rewrites it); a platform with no auto gain cannot tell, so it is not
+    (restore — the original audio is never destroyed on a guess)."""
+    if (item.get("kind") or "stem") == "stem":
+        return bool(item.get("new_id")) and adapter.track(item["new_id"]) is not None
+    after, before = item.get("gain_after"), item.get("gain_before")
+    if after is None:
+        return False
+    track = adapter.track(item["track_id"])
+    now = getattr(track, "auto_gain_db", None) if track is not None else None
+    if now is None or abs(now - after) > 0.01:
+        return False
+    return before is None or abs(now - before) > 0.01

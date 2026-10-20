@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,10 +16,10 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import __version__, exporter, exports, prefs
+from . import __version__, exporter, exports, loudness_store, prefs
 from .app_state import STATE
 from .core import auto_hotcues as ah
-from .core import grid_detect, key_detect, structure
+from .core import grid_detect, key_detect, loudness, structure
 from .core.grid_plan import GridStep, plan_grid
 from . import importer
 from .core import export as core_export
@@ -44,6 +45,10 @@ from .schemas import (
     RelocationVolume,
     AnalyzePreview,
     AnalyzeRequest,
+    LoudnessRequest,
+    LoudnessValue,
+    LoudnessValues,
+    MeasureLoudnessRequest,
     AutoGridBatchRequest,
     AutoGridRequest,
     AutoCueOutcome,
@@ -78,6 +83,7 @@ from .schemas import (
     FsListing,
     FsPlace,
     UpdateExportSet,
+    RunExport,
     AddGridMarker,
     GridMarkerEdit,
     ReplaceGrid,
@@ -115,6 +121,7 @@ from .schemas import (
     StemEngineInstall,
     StemSideLoad,
     StemConvert,
+    NormalizeRequest,
 )
 
 log = logging.getLogger(__name__)
@@ -403,7 +410,7 @@ def put_path_mapping(body: PathMappingInfo) -> PathMappingInfo:
     """Set (or, with blank prefixes, clear) the current collection's remapping.
     Persists to userprefs AND updates the live store so playback/analysis
     re-resolve immediately — no reopen needed. Never touches the .nml."""
-    _require_no_pending_stems("Changing the path mapping")
+    _require_no_pending("Changing the path mapping")
     a = require_adapter()
     mapping = PathMapping.make(body.from_, body.to)
     prefs.set_path_mapping(
@@ -439,7 +446,7 @@ def remap_paths(body: PathMappingInfo) -> RemapResult:
     playlist references that join to them) to the `to` prefix, then save (a
     version-history commit is written). Destructive and OS-specific — the UI
     warns accordingly."""
-    _require_no_pending_stems("Rewriting paths")
+    _require_no_pending("Rewriting paths")
     mapping = PathMapping.make(body.from_, body.to)
     if mapping.empty:
         raise HTTPException(400, "Both a `from` and `to` prefix are required")
@@ -455,6 +462,12 @@ def remap_paths(body: PathMappingInfo) -> RemapResult:
         return RemapResult(rewritten=0, commit=None)
     if moved and STATE.library_id:
         exports.retarget(STATE.library_id, moved)
+    # The files now live under `to`: carry their loudness values across (they
+    # are keyed by the path they were measured at). Not an edit, so not saved.
+    try:
+        STATE.loudness.remap(mapping)
+    except Exception:  # noqa: BLE001 — bookkeeping must never fail a remap
+        log.warning("could not move loudness values for %s", mapping, exc_info=True)
     # Through AppState, not the adapter: this is the one route besides /api/save
     # that writes, and skipping it would leave a gap in the version history.
     _outcome, commit = STATE.save()
@@ -500,7 +513,7 @@ def answer_relocation(body: RelocationApply) -> RelocationApplied:
     """Answer the check: apply the chosen mappings for THIS SESSION only (no
     mappings = "Not now"). Nothing is written to the library or to prefs, and a
     reopen asks again."""
-    _require_no_pending_stems("Relocating files")
+    _require_no_pending("Relocating files")
     require_adapter()
     check = STATE.relocation
     if check is None:
@@ -655,6 +668,10 @@ def update_export(set_id: str, body: UpdateExportSet) -> ExportSetOut:
         name=body.name,
         targets=body.targets,
         destination=body.destination,
+        lock_grids=body.lock_grids,
+        normalise=body.normalise,
+        auto_gain=body.auto_gain,
+        level=body.level.model_dump() if body.level is not None else None,
     )
     return ExportSetOut(**updated.as_dict())
 
@@ -755,31 +772,67 @@ def export_playlist_tracks(set_id: str, playlist_id: str) -> list[Track]:
     return tracks
 
 
+def _export_options(found, body: RunExport | None) -> dict:
+    """The run's options: the body's where given, else the set's own; a level
+    the set does not keep comes from the app settings (Normalize's defaults)."""
+    normalise = body.normalise if body is not None and body.normalise is not None else found.normalise
+    auto_gain = body.auto_gain if body is not None and body.auto_gain is not None else found.auto_gain
+    if body is not None and body.level is not None:
+        raw = body.level.model_dump()
+    elif found.level is not None:
+        raw = found.level
+    else:
+        p = prefs.load_prefs()
+        raw = {"measure": p.get("levelMeasure", "lufs"), "target": p.get("levelTarget", -9.0),
+               "ceiling": p.get("levelCeiling", -1.0)}
+    try:
+        level = exporter.Level(measure=raw["measure"] if raw["measure"] in ("lufs", "rms") else "lufs",
+                               target=float(raw["target"]), ceiling=float(raw["ceiling"]))
+    except (KeyError, TypeError, ValueError):
+        level = exporter.Level()
+    # Only where some target keeps an auto gain — a stick has none to write.
+    writes_gain = any(getattr(core_export.for_platform(t), "writes_auto_gain", False) for t in found.targets)
+    return {"store": STATE.loudness, "level": level if normalise else None,
+            "auto_gain": bool(auto_gain and writes_gain)}
+
+
 @app.post("/api/exports/{set_id}/preview", response_model=ExportPreview)
-def preview_export(set_id: str) -> ExportPreview:
-    """What this export would do, right now. Never cached — the set is live."""
+def preview_export(set_id: str, body: RunExport | None = None) -> ExportPreview:
+    """What this export would do, right now, with the run dialog's options as
+    ticked. Never cached — the set is live."""
     found = _require_set(set_id)
-    built = exporter.plan(require_adapter(), found)
+    built = exporter.plan(require_adapter(), found, **_export_options(found, body))
     return ExportPreview(**built.as_dict(exporter.space_for(built)))
 
 
 @app.post("/api/exports/{set_id}/run", response_model=JobStatus)
-def run_export(set_id: str) -> JobStatus:
+def run_export(set_id: str, body: RunExport | None = None) -> JobStatus:
     """Start the export on a background thread; poll `/api/jobs/{id}`.
 
     Planned again HERE rather than trusting whatever the preview showed: a
     playlist can be edited, a file deleted or a drive unplugged between looking
     and clicking, and the plan carries the destination-safety check.
+
+    The dialog's options arrive with the click and are remembered on the set,
+    so the next export of the same stick starts from the same answer.
     """
     found = _require_set(set_id)
+    if body is not None:
+        changes = {k: v for k, v in (("lock_grids", body.lock_grids), ("normalise", body.normalise),
+                                     ("auto_gain", body.auto_gain)) if v is not None}
+        if body.level is not None:
+            changes["level"] = body.level.model_dump()
+        if changes:
+            found = exports.update(_require_library_id(), set_id, **changes)
     adapter = require_adapter()
-    built = exporter.plan(adapter, found)
+    options = _export_options(found, None)
+    built = exporter.plan(adapter, found, **options)
     if built.blocked:
         raise HTTPException(409, built.blocked)
     # A Konduktor setting, read when the export starts.
     root_folder = bool(prefs.load_prefs().get("exportRootFolder", False))
     job = JOBS.submit("export", lambda handle: exporter.run(
-        adapter, found, built, handle, root_folder=root_folder))
+        adapter, found, built, handle, root_folder=root_folder, lock_grids=found.lock_grids, **options))
     return JobStatus(**job.as_dict())
 
 
@@ -829,6 +882,8 @@ def export_targets() -> list[PlatformOption]:
             removable=bool(getattr(d, "removable", False)),
             drive_root=bool(getattr(exporter, "drive_root", False)),
             computer_only=bool(getattr(exporter, "computer_only", False)),
+            locks_grids=bool(getattr(exporter, "locks_grids", False)),
+            writes_auto_gain=bool(getattr(exporter, "writes_auto_gain", False)),
         ))
     # Targets with no reader of their own (the stick's legacy Device Library):
     # listed too, or registering one would not make it selectable.
@@ -847,6 +902,8 @@ def export_targets() -> list[PlatformOption]:
             removable=bool(getattr(exporter, "drive_root", False)),
             drive_root=bool(getattr(exporter, "drive_root", False)),
             computer_only=bool(getattr(exporter, "computer_only", False)),
+            locks_grids=bool(getattr(exporter, "locks_grids", False)),
+            writes_auto_gain=bool(getattr(exporter, "writes_auto_gain", False)),
         ))
     # Each exporter states its own place; a platform with no exporter (not yet a
     # target, shown disabled) goes last. Stable, so equal places keep their order.
@@ -938,9 +995,13 @@ def capabilities() -> Capabilities:
 @app.get("/api/state", response_model=EditState)
 def state() -> EditState:
     stem_job = JOBS.active(STEM_JOB)
+    normalize_job = JOBS.active(NORMALIZE_JOB)
     pending = STATE.pending.summary() if STATE.pending is not None else None
     return EditState(dirty=require_adapter().dirty, library=_library_info(),
                      pending_stems=pending if pending and pending["tracks"] else None,
+                     pending_gain=({"tracks": pending["gain_tracks"], "lossless": pending["gain_lossless"]}
+                                   if pending and pending.get("gain_tracks") else None),
+                     normalize_job=normalize_job[0].id if normalize_job else None,
                      stem_job=stem_job[0].id if stem_job else None,
                      stem_recovery=STATE.recovery,
                      remote=STATE.remote.describe() if STATE.remote is not None else None)
@@ -1009,14 +1070,19 @@ def install_stem_engine(body: StemEngineInstall) -> JobStatus:
     return JobStatus(**job.as_dict())
 
 
-def _require_no_pending_stems(what: str) -> None:
-    """Refuse an operation that would SAVE or DROP a stem conversion's swap as a
+def _require_no_pending(what: str) -> None:
+    """Refuse an operation that would SAVE or DROP a pending file change as a
     side effect — import and remap save pending edits, reload and restore drop
-    them — while converted tracks await Save/Discard or a conversion runs."""
+    them — while converted or normalized tracks await Save/Discard, or a
+    conversion or Normalize runs. (Remap and relocation would also move the
+    paths the ledger is keyed by.)"""
     if JOBS.active(STEM_JOB):
         raise HTTPException(409, f"{what} is not possible while tracks are being converted to stems")
+    if JOBS.active(NORMALIZE_JOB):
+        raise HTTPException(409, f"{what} is not possible while tracks are being normalized")
     if STATE.pending is not None and STATE.pending.blocking():
-        raise HTTPException(409, f"{what} is not possible until the converted tracks are saved or discarded")
+        raise HTTPException(409, f"{what} is not possible until the converted or normalized tracks "
+                                 "are saved or discarded")
 
 
 def _stem_options(body):
@@ -1152,7 +1218,7 @@ def discard_changes() -> EditState:
 
 @app.post("/api/reload")
 def reload_collection() -> dict:
-    _require_no_pending_stems("Reloading")
+    _require_no_pending("Reloading")
     if not STATE.loaded:
         raise HTTPException(409, "No collection loaded")
     if STATE.remote is not None:
@@ -1534,6 +1600,20 @@ def auto_grid(body: AutoGridRequest) -> TrackCues:
                 a.set_key(body.track_id, found.wheel, found.mode)
         except Exception:  # noqa: BLE001 — the grid is written; a key is a bonus
             log.warning("key detection failed for %s", body.track_id, exc_info=True)
+    try:  # so is loudness, into Konduktor's own store — always re-measured here
+        looked = _loud_lookup("collection", [body.track_id]).get(body.track_id)
+        if looked is not None:
+            values = _measure_loudness(looked[0], looked[1], path)
+            # ...and the DJ app's auto gain, where the track has none yet.
+            track = a.track(body.track_id)
+            caps = a.capabilities()
+            if (values is not None and caps.tracks.auto_gain and caps.writable
+                    and track is not None and track.auto_gain_db is None):
+                a.set_auto_gain(body.track_id, values)
+    except _AnalysisError as ex:
+        log.warning("no loudness for %s: %s", body.track_id, ex)
+    except Exception:  # noqa: BLE001
+        log.warning("loudness measurement failed for %s", body.track_id, exc_info=True)
     return cues
 
 
@@ -1546,7 +1626,8 @@ class _AnalysisError(Exception):
 # beats that no longer exist.
 GRID_JOB = "grid-analysis"
 CUE_JOB = "auto-hotcues"
-BATCH_JOBS = (GRID_JOB, CUE_JOB, STEM_JOB)
+NORMALIZE_JOB = "normalize"
+BATCH_JOBS = (GRID_JOB, CUE_JOB, STEM_JOB, NORMALIZE_JOB)
 
 
 def _stop_batches() -> None:
@@ -1626,14 +1707,20 @@ def _analyse_grid(a, track_id: str, step: GridStep = GridStep("full"), *,
 # ---- Analyze (the context menu's "Analyze…": BPM / Grid / Key) -------------
 
 
-def _require_analysable(a, body: AnalyzeRequest) -> None:
-    caps = a.capabilities()
-    if not (body.bpm or body.grid or body.key):
-        raise HTTPException(400, "Nothing to analyse: tick BPM, Grid or Key")
+def _require_analysable(body: AnalyzeRequest) -> None:
+    if not (body.bpm or body.grid or body.key or body.loudness or body.gain):
+        raise HTTPException(400, "Nothing to analyse: tick BPM, Grid, Key, Gain or Loudness")
+    if not (body.bpm or body.grid or body.key or body.gain):
+        return  # loudness: Konduktor's own store, so any track, any library
+    if body.origin != "collection":
+        raise HTTPException(400, "BPM, grid, key and gain are analysed only for the library's own tracks")
+    caps = require_adapter().capabilities()
     if (body.bpm or body.grid) and not caps.grid.editable:
         raise HTTPException(422, "This library's beatgrids cannot be edited")
     if body.key and not caps.tracks.key_writable:
         raise HTTPException(422, "This library's keys cannot be written")
+    if body.gain and not (caps.tracks.auto_gain and caps.writable):
+        raise HTTPException(422, "This library has no auto gain to write")
 
 
 def _grid_step(a, track, body: AnalyzeRequest, *, exact: bool) -> GridStep:
@@ -1654,32 +1741,62 @@ def _wants_key(track, body: AnalyzeRequest) -> bool:
     return body.key and (track.key_wheel is None or body.replace_key)
 
 
+def _wants_gain(track, body: AnalyzeRequest) -> bool:
+    return body.gain and (track.auto_gain_db is None or body.replace_gain)
+
+
 @app.post("/api/tracks/analyze/preview", response_model=AnalyzePreview)
 def analyze_preview(body: AnalyzeRequest) -> AnalyzePreview:
-    """Counts for the Analyze dialog, from the same `plan_grid` the run uses."""
-    a = require_adapter()
+    """Counts for the Analyze dialog, from the same `plan_grid` the run uses
+    (and, for loudness, the same store lookups)."""
+    a = require_adapter() if body.origin == "collection" else None
+    looked = _loud_lookup(body.origin, body.track_ids) if body.loudness or a is None else {}
     out = AnalyzePreview(total=0)
+    # Gain needs a measurement; one the run would make anyway is not "busy"
+    # twice, so only the gain's own decision is counted here.
     for tid in dict.fromkeys(body.track_ids):
-        track = a.track(tid)
-        if track is None:
+        if a is not None:
+            track = a.track(tid)
+            if track is None:
+                continue
+        elif tid not in looked:
             continue
         out.total += 1
-        if track.grid_marker_count and not track.grid_locked:
-            out.with_grid += 1
-        step = _grid_step(a, track, body, exact=False)
-        if step.action in ("full", "bpm", "phase") or _wants_key(track, body):
-            out.tracks_to_analyze += 1
-        if step.action in ("full", "bpm", "phase"):
-            setattr(out, f"grid_{step.action}", getattr(out, f"grid_{step.action}") + 1)
-        elif step.action == "skip":
-            setattr(out, f"grid_{step.reason}", getattr(out, f"grid_{step.reason}") + 1)
-        if track.key_wheel is not None:
-            out.with_key += 1
-        if body.key:
-            if _wants_key(track, body):
-                out.key_set += 1
+        busy = False
+        if a is not None:
+            if track.grid_marker_count and not track.grid_locked:
+                out.with_grid += 1
+            step = _grid_step(a, track, body, exact=False)
+            busy = step.action in ("full", "bpm", "phase") or _wants_key(track, body)
+            if step.action in ("full", "bpm", "phase"):
+                setattr(out, f"grid_{step.action}", getattr(out, f"grid_{step.action}") + 1)
+            elif step.action == "skip":
+                setattr(out, f"grid_{step.reason}", getattr(out, f"grid_{step.reason}") + 1)
+            if track.key_wheel is not None:
+                out.with_key += 1
+            if body.key:
+                if _wants_key(track, body):
+                    out.key_set += 1
+                else:
+                    out.key_existing += 1
+            if track.auto_gain_db is not None:
+                out.with_gain += 1
+            if body.gain:
+                if _wants_gain(track, body):
+                    out.gain_set += 1
+                    busy = True
+                else:
+                    out.gain_existing += 1
+        if body.loudness:
+            _target, facts, entry = looked.get(tid, (None, None, None))
+            fresh = entry is not None and not entry.stale(facts)
+            out.with_loudness += fresh
+            if fresh and not body.replace_loudness:
+                out.loudness_existing += 1
             else:
-                out.key_existing += 1
+                out.loudness_measure += 1
+                busy = True
+        out.tracks_to_analyze += busy
     return out
 
 
@@ -1694,50 +1811,109 @@ def _decode_for_analysis(path: Path):
 def _analyse_one(a, track_id: str, body: AnalyzeRequest, result: dict) -> None:
     """Analyse one track as `body` asks, folding the outcome into `result`.
 
-    The file is decoded ONCE and shared by grid and key. A failing half is
-    reported and does not stop the other: a track whose grid cannot be fitted
+    `a` is the loaded library for BPM / Grid / Key (None for a device's or a
+    folder's tracks, which can only have their loudness measured). The file is
+    decoded ONCE and shared by grid and key; loudness decodes on its own, at
+    the file's own rate and channels (`core/loudness.py`). A failing part is
+    reported and does not stop the others: a track whose grid cannot be fitted
     (a one-shot) can still have a key, and the reverse."""
-    track = a.track(track_id)
+    try:
+        wanted = body.loudness or body.gain or a is None
+        looked = _loud_lookup(body.origin, [track_id]).get(track_id) if wanted else None
+    except HTTPException:  # the source went away mid-run
+        looked = None
+    if a is not None:
+        track, src, sid = a.track(track_id), a, track_id
+    elif looked is not None:
+        src, sid = looked[0].src, looked[0].sid
+        track = src.track(sid)
+    else:
+        track = None
     title = (track.title or track_id) if track else track_id
     if track is None:
         result["failed"].append({"title": title, "reason": "Track not found"})
         return
-    step = _grid_step(a, track, body, exact=True)
+    step = _grid_step(a, track, body, exact=True) if a is not None else GridStep("none")
     if step.action == "skip":
         result["grid"][step.reason] += 1
-    want_key = _wants_key(track, body)
+    want_key = a is not None and _wants_key(track, body)
     if body.key and not want_key:
         result["key"]["existing"] += 1
-    if step.action not in ("full", "bpm", "phase") and not want_key:
+    want_loud = False
+    if body.loudness and looked is not None:
+        _target, facts, entry = looked
+        want_loud = body.replace_loudness or entry is None or entry.stale(facts)
+        if not want_loud:
+            result["loudness"]["existing"] += 1
+    want_gain = a is not None and _wants_gain(track, body)
+    if body.gain and not want_gain:
+        result["gain"]["existing"] += 1
+    gain_values = None
+    if want_gain and looked is not None and not want_loud:
+        _target, facts, entry = looked
+        if entry is not None and not entry.stale(facts):
+            gain_values = entry.values  # measured and fresh: no decode for the gain
+    want_grid = step.action in ("full", "bpm", "phase")
+    if not (want_grid or want_key or want_loud or want_gain):
         return
-    path = a.audio_path(track_id)
-    if path is None or not path.exists():
-        result["failed"].append({"title": title, "reason": "Audio file not found (is the drive mounted?)"})
-        return
-    try:
-        y, sr = _decode_for_analysis(path)
-    except Exception as ex:  # noqa: BLE001 — an undecodable file is one failure
-        result["failed"].append({"title": title, "reason": f"Could not decode: {ex}"})
-        return
+    # A gain from a fresh measurement needs no audio (on a remote library,
+    # asking for the path would download the file).
+    path = None
+    if want_grid or want_key or want_loud or gain_values is None:
+        path = src.audio_path(sid)
+        if path is None or not path.exists():
+            result["failed"].append({"title": title, "reason": "Audio file not found (is the drive mounted?)"})
+            return
     wrote = False
-    if step.action in ("full", "bpm", "phase"):
+    if want_grid or want_key:
         try:
-            _analyse_grid(a, track_id, step, y=y, sr=sr)
-            result["grid"][step.action] += 1
-            wrote = True
-        except (_AnalysisError, AdapterError) as ex:
-            result["failed"].append({"title": title, "reason": f"Grid: {ex}"})
-    if want_key:
-        try:
-            found = key_detect.detect_key_samples(y, sr)
-            if found is None:
-                result["key"]["none"] += 1
-            else:
-                a.set_key(track_id, found.wheel, found.mode)
-                result["key"]["set"] += 1
+            y, sr = _decode_for_analysis(path)
+        except Exception as ex:  # noqa: BLE001 — an undecodable file is one failure
+            result["failed"].append({"title": title, "reason": f"Could not decode: {ex}"})
+            return
+        if want_grid:
+            try:
+                _analyse_grid(a, track_id, step, y=y, sr=sr)
+                result["grid"][step.action] += 1
                 wrote = True
-        except (AdapterError, ValueError) as ex:
-            result["failed"].append({"title": title, "reason": f"Key: {ex}"})
+            except (_AnalysisError, AdapterError) as ex:
+                result["failed"].append({"title": title, "reason": f"Grid: {ex}"})
+        if want_key:
+            try:
+                found = key_detect.detect_key_samples(y, sr)
+                if found is None:
+                    result["key"]["none"] += 1
+                else:
+                    a.set_key(track_id, found.wheel, found.mode)
+                    result["key"]["set"] += 1
+                    wrote = True
+            except (AdapterError, ValueError) as ex:
+                result["failed"].append({"title": title, "reason": f"Key: {ex}"})
+    measured_now = False
+    if want_loud or (want_gain and gain_values is None):
+        try:
+            gain_values = _measure_loudness(looked[0], looked[1], path) if looked is not None else None
+            measured_now = True
+            if want_loud:
+                if gain_values is None:
+                    result["loudness"]["none"] += 1
+                else:
+                    result["loudness"]["measured"] += 1
+                    wrote = True
+        except (_AnalysisError, AdapterError) as ex:
+            result["failed"].append({"title": title, "reason": f"Loudness: {ex}"})
+            want_gain = False
+    if want_gain:
+        if gain_values is None:
+            if measured_now or looked is not None:
+                result["gain"]["none"] += 1
+        else:
+            try:
+                a.set_auto_gain(track_id, gain_values)
+                result["gain"]["set"] += 1
+                wrote = True
+            except AdapterError as ex:
+                result["failed"].append({"title": title, "reason": f"Gain: {ex}"})
     if wrote:
         result["analysed"].append(track_id)
 
@@ -1750,13 +1926,15 @@ def _analyze_job(a, body: AnalyzeRequest):
             "analysed": [], "failed": [],
             "grid": {"full": 0, "bpm": 0, "phase": 0, "locked": 0, "existing": 0, "flexible": 0},
             "key": {"set": 0, "existing": 0, "none": 0},
+            "loudness": {"measured": 0, "existing": 0, "none": 0},
+            "gain": {"set": 0, "existing": 0, "none": 0},
         }
         handle.progress(done=0, total=len(ids))
         for i, track_id in enumerate(ids):
             if handle.cancelled:
                 break  # keep what is done; return it rather than raise
-            track = a.track(track_id)
-            handle.progress(message=(track.title or track_id) if track else track_id)
+            track = a.track(track_id) if a is not None else None
+            handle.progress(message=(track.title or track_id) if track else Path(track_id).name)
             _analyse_one(a, track_id, body, result)
             handle.progress(done=i + 1)
         # The names the context menu's toast read before the dialog existed.
@@ -1772,11 +1950,14 @@ def analyze_batch(body: AnalyzeRequest) -> JobStatus:
 
     Each track is written as it finishes, into the in-memory model like any
     other edit — so a cancel keeps what is done (it is all unsaved until Save),
-    and the result is returned even from a cancelled run. A track that fails is
-    reported and skipped, never fatal: one unmounted drive must not stop 400
-    other tracks."""
-    a = require_adapter()
-    _require_analysable(a, body)
+    and the result is returned even from a cancelled run. Loudness is stored
+    as each track is measured and is not an edit at all (`loudness_store.py`).
+    A track that fails is reported and skipped, never fatal: one unmounted
+    drive must not stop 400 other tracks."""
+    _require_analysable(body)
+    if body.origin == "device":
+        require_source()
+    a = require_adapter() if body.origin == "collection" else None
     _require_no_batch()
     job = _submit_batch(GRID_JOB, _analyze_job(a, body))
     return JobStatus(**job.as_dict())
@@ -1788,6 +1969,183 @@ def auto_grid_batch(body: AutoGridBatchRequest) -> JobStatus:
     `/api/tracks/analyze` so the two cannot drift."""
     return analyze_batch(AnalyzeRequest(track_ids=body.track_ids, bpm=True, grid=True,
                                         key=False, replace_grid=body.replace_existing))
+
+
+# ---- Normalize (the track menu's Mastering ▸ Normalize…) --------------------
+#
+# Changes the audio files' level in place (`gain/normalize.py`): parked
+# originals until Save, like a stem conversion. The library's own tracks only.
+
+
+def _remote_normalize(adapter) -> bool:
+    """A library held by a server: it plans and swaps, this computer rewrites
+    (`gain/remote_normalize.py`)."""
+    return hasattr(adapter, "normalize_plan")
+
+
+def _normalize_target(body: NormalizeRequest):
+    a = require_adapter()
+    caps = a.capabilities()
+    if not (caps.writable and caps.tracks.normalizable):
+        raise HTTPException(422, "This library's audio files cannot be normalized")
+    if not -30.0 <= body.target <= 0.0 or not -12.0 <= body.ceiling <= 0.0:
+        raise HTTPException(400, "Target or ceiling out of range")
+    from .gain import normalize
+
+    return a, normalize.Options(measure=body.measure, target=body.target, ceiling=body.ceiling)
+
+
+@app.post("/api/tracks/normalize/preview")
+def normalize_preview(body: NormalizeRequest) -> dict:
+    """What Normalize would do per track, from the same `plan_gain` the run uses."""
+    from .gain import normalize
+
+    a, opts = _normalize_target(body)
+    if _remote_normalize(a):
+        from .gain import remote_normalize
+
+        try:
+            return remote_normalize.plan(a, body.track_ids, opts)
+        except normalize.NormalizeError as ex:
+            raise HTTPException(400, str(ex))
+    return normalize.plan(a, body.track_ids, opts, STATE.loudness, STATE.pending).as_dict()
+
+
+@app.post("/api/tracks/normalize", response_model=JobStatus)
+def normalize_tracks(body: NormalizeRequest) -> JobStatus:
+    """Normalize as a JOB; the new files land at its end as unsaved changes."""
+    from .gain import normalize
+
+    a, opts = _normalize_target(body)
+    _require_no_batch()
+    if JOBS.active("import"):
+        raise HTTPException(409, "Wait for the import to finish")
+
+    def run(handle):
+        if _remote_normalize(a):
+            from .gain import remote_normalize
+
+            return remote_normalize.run(handle, a, body.track_ids, opts,
+                                        still_current=lambda: STATE.adapter is a)
+        return normalize.run(handle, a, body.track_ids, opts, store=STATE.loudness, pending=STATE.pending,
+                             mutation=STATE.mutation, still_current=lambda: STATE.adapter is a)
+
+    try:
+        job = JOBS.submit(NORMALIZE_JOB, run, exclusive_with=BATCH_JOBS + ("import",))
+    except JobBusy:
+        raise HTTPException(409, "Another batch or import is running")
+    return JobStatus(**job.as_dict())
+
+
+# ---- Loudness (the Mastering columns) --------------------------------------
+#
+# Measured by `core/loudness.py` into Konduktor's own store (`loudness_store.py`),
+# keyed by the FILE: the loaded library's (on a remote library, the server's),
+# this computer's for a device's or a Files folder's tracks. Never an edit.
+
+
+@dataclass
+class _LoudTarget:
+    src: object      # .track / .audio_facts / .audio_path for `sid`
+    sid: str
+    store: object    # loudness_store.LoudnessStore
+
+
+def _loud_target(origin: str, track_id: str) -> _LoudTarget | None:
+    """Where a track's file and its loudness value live, by whose id it is."""
+    if origin == "device":
+        source = require_source()
+        return _LoudTarget(source, track_id, loudness_store.local()) if source.track(track_id) else None
+    if origin == "folder":
+        raw = _on_server(track_id)
+        if raw is not None:
+            if STATE.remote is None or STATE.adapter is None:
+                return None
+            files = STATE.adapter.listed_files([raw])
+            return _LoudTarget(files, raw, STATE.loudness) if files else None
+        source = FOLDERS.source_for_file(track_id)
+        if source is not None:
+            return _LoudTarget(source, track_id, loudness_store.local())
+        if not STATE.loaded:
+            return None
+        # Not a listed file: a folder view's held row, which IS a library track.
+    a = require_adapter()
+    return _LoudTarget(a, track_id, STATE.loudness) if a.track(track_id) else None
+
+
+def _loud_lookup(origin: str, track_ids) -> dict:
+    """`{id: (target, facts | None, entry | None)}` for the known ids. Each
+    source is asked for its facts once and each store once — a whole library's
+    worth for the table's columns. Facts never download (`audio_facts`); a
+    file that is missing has none, and so no value."""
+    targets = {tid: t for tid in dict.fromkeys(track_ids) if (t := _loud_target(origin, tid)) is not None}
+    facts: dict[str, object] = {}
+    by_source: dict[int, list[str]] = {}
+    for tid, t in targets.items():
+        by_source.setdefault(id(t.src), []).append(tid)
+    for tids in by_source.values():
+        src = targets[tids[0]].src
+        found = src.audio_facts([targets[tid].sid for tid in tids])
+        for tid in tids:
+            facts[tid] = found.get(targets[tid].sid)
+    entries: dict[str, object] = {}
+    by_store: dict[int, list[str]] = {}
+    for tid, t in targets.items():
+        if facts[tid] is not None:
+            by_store.setdefault(id(t.store), []).append(tid)
+    for tids in by_store.values():
+        store = targets[tids[0]].store
+        got = store.get([facts[tid].key for tid in tids])
+        for tid in tids:
+            entries[tid] = got.get(facts[tid].key)
+    return {tid: (t, facts[tid], entries.get(tid)) for tid, t in targets.items()}
+
+
+def _measure_loudness(target: _LoudTarget, facts, path: Path | None = None):
+    """Measure one file and store it (None: silent, or under 3 s). Raises
+    `_AnalysisError` with a user-facing reason. The facts stored are the ones
+    read BEFORE decoding, so a file changing meanwhile reads as stale."""
+    if not getattr(target.store, "available", True):
+        raise _AnalysisError("This Konduktor server is too old to keep loudness — update it")
+    if facts is None:
+        raise _AnalysisError("Audio file not found (is the drive mounted?)")
+    if path is None:
+        path = target.src.audio_path(target.sid)
+    if path is None or not Path(path).exists():
+        raise _AnalysisError("Audio file not found (is the drive mounted?)")
+    try:
+        values = loudness.measure_file(path)
+    except Exception as ex:  # noqa: BLE001 — an undecodable file is one failure
+        raise _AnalysisError(f"Could not decode: {ex}")
+    if values is not None:
+        target.store.put(facts, values)
+    return values
+
+
+@app.post("/api/loudness", response_model=LoudnessValues)
+def loudness_values(body: LoudnessRequest) -> LoudnessValues:
+    """The Mastering columns' values for a list's tracks — measured ones only."""
+    values = {}
+    for tid, (_target, facts, entry) in _loud_lookup(body.origin, body.track_ids).items():
+        if entry is not None:
+            values[tid] = LoudnessValue(**entry.values.as_dict(), stale=entry.stale(facts))
+    return LoudnessValues(values=values)
+
+
+@app.post("/api/tracks/loudness", response_model=LoudnessValue)
+def measure_loudness(body: MeasureLoudnessRequest) -> LoudnessValue:
+    """The deck's Analyze where it cannot write a grid (a read-only library, a
+    device, a loose file): measure loudness alone, always afresh."""
+    looked = _loud_lookup(body.origin, [body.track_id]).get(body.track_id)
+    if looked is None:
+        raise HTTPException(404, "Track not found")
+    try:
+        values = _measure_loudness(looked[0], looked[1])
+    except _AnalysisError as ex:
+        raise HTTPException(400, str(ex))
+    if values is None:
+        raise HTTPException(400, "Nothing to measure: the track is silent or under 3 seconds")
+    return LoudnessValue(**values.as_dict())
 
 
 @app.post("/api/tracks/cue/auto-batch", response_model=JobStatus)
@@ -2054,7 +2412,7 @@ def restore_version(commit_id: str) -> CollectionStatus:
     """Restore the collection to a past version. Writes that version back as a
     NEW forward save (a fresh commit on top of history — never a rewind), then
     reloads. The user should close Traktor first (it overwrites on exit)."""
-    _require_no_pending_stems("Restoring a version")
+    _require_no_pending("Restoring a version")
     require_adapter()
     if not STATE.restore_version(commit_id):
         raise HTTPException(404, f"Version not found: {commit_id}")
@@ -2545,7 +2903,7 @@ def folder_add_preview(body: FolderAddRequest) -> dict:
 @app.post("/api/folder/add", response_model=JobStatus)
 def folder_add(body: FolderAddRequest) -> JobStatus:
     """Add browsed files to the collection. A job, like import: copying can be long."""
-    _require_no_pending_stems("Adding files")
+    _require_no_pending("Adding files")
     in_place = _is_server_add(body)
     if in_place:
         source, dest, plan = _server_add_plan(body)
@@ -2635,7 +2993,7 @@ def import_preview(body: ImportRequest) -> dict:
 @app.post("/api/import", response_model=JobStatus)
 def start_import(body: ImportRequest) -> JobStatus:
     """Start an import. Returns immediately; poll the job for progress."""
-    _require_no_pending_stems("Importing")
+    _require_no_pending("Importing")
     source, dest, destination, plan = _import_plan(body)
     if not plan.importable:
         raise HTTPException(400, "Nothing to import (no tracks, or none of their files exist)")

@@ -583,6 +583,41 @@ class OneLibraryStore(ReplaceGridCommands):
         db.flush()
         db.session.expire(row)
 
+    # ---- writes: a level change (Normalize) -------------------------------------
+    def audio_changed(self, track_id: str, change) -> None:
+        """The file changed level in place: `fileSize` follows (and the pdb's
+        row with it, at Save), and the drawn waveforms are regenerated into
+        the track's ANLZ files as edited copies — `.2EX` too — which Save
+        fingerprints and writes like any cue or grid edit."""
+        from ..rekordbox import anlz_writer
+
+        db = self._require_db()
+        row = self.content(track_id)
+        before = row.fileSize
+        row.fileSize = int(change.size)
+        measured = change.measured
+        if measured is not None:
+            dat, ext = self._editing(track_id)
+            for data in anlz_writer.preview_tags(measured.columns.rms, measured.columns.brightness):
+                dat.put(data[:4].decode("latin-1"), data, after=("PPTH", "PVBR", "PQTZ"))
+            ext_tags, two_tags = anlz_writer.waveform_tags(measured.frames.bands)
+            for data in ext_tags:
+                ext.put(data[:4].decode("latin-1"), data, after=("PPTH",))
+            dat_path, _ext_path = self._anlz_paths(track_id)
+            two = dat_path.with_suffix(".2EX")
+            if two in self._pending_anlz or two.is_file():
+                pending = self._pending_anlz.get(two)
+                if pending is None:
+                    try:
+                        pending = (anlz_file.parse_file(two), _fingerprint_file(two))
+                    except (OSError, anlz_file.AnlzError) as ex:
+                        raise InvalidCommand(f"Cannot read the analysis file {two.name}: {ex}") from ex
+                    self._pending_anlz[two] = pending
+                for data in two_tags:
+                    pending[0].put(data[:4].decode("latin-1"), data, after=("PPTH",))
+        self._journal.record("track", "audio", track_id, "level", before, change.gain_db)
+        db.flush()
+
     # ---- writes: playlists --------------------------------------------------
     def _playlist(self, node_id: str):
         from pyrekordbox.onelibrary import models

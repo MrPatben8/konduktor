@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..core import stem_file as sf
+from ..adapters.remote.services import RemoteLoudnessStore
 from ..core.adapter import AdapterError
 from ..importer import SPACE_HEADROOM
 from . import convert
@@ -111,6 +112,8 @@ def run(handle, adapter, planned: RemotePlan, opts: convert.Options, *, still_cu
     work.mkdir(parents=True, exist_ok=True)
     staged: list[dict] = []
     uploaded: list[str] = []  # targets THIS run uploaded (a cancel deletes them)
+    # The server's store: a stem file is measured when its original was.
+    loudness_store = RemoteLoudnessStore(adapter.client, adapter.session)
     if any(i.get("reuse") is None for i in items) and not mgr.ready():
         raise convert.ConvertError("The stem engine is not installed")
 
@@ -169,6 +172,8 @@ def run(handle, adapter, planned: RemotePlan, opts: convert.Options, *, still_cu
                     if isinstance(ex, em.EngineError) and engine.proc.poll() is not None:
                         engine = None
                     continue
+                handle.progress(status="measuring loudness")
+                loud = convert.stem_loudness(item["source"], partial, loudness_store)
                 sent = 0
 
                 def uploading(k: int) -> None:
@@ -180,7 +185,7 @@ def run(handle, adapter, planned: RemotePlan, opts: convert.Options, *, still_cu
 
                 try:
                     adapter.stage_stem(item["track_id"], item["target"], partial, bit_rate=written.bit_rate,
-                                       duration=written.duration, progress=uploading)
+                                       duration=written.duration, loudness=loud, progress=uploading)
                 finally:
                     partial.unlink(missing_ok=True)
                 uploaded.append(item["target"])

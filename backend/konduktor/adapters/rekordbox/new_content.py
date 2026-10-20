@@ -10,7 +10,10 @@ What a track Rekordbox itself adds looks like was MEASURED (two files dragged
 into Rekordbox 7.2's collection, 2026-10-01, every row and file diffed): a
 `djmdContent` row, three ANLZ files plus a `.3EX`, the embedded cover as three
 JPEGs, one `contentFile` row per file (its `Hash` the file's MD5), and its own
-analysis results — key, mixer gain, phrases — which nothing here can produce.
+analysis results — key, mixer gain, phrases. Phrases nothing here produces; the
+key comes from `key_detect` and the mixer gain from a loudness measurement
+(`djmdMixerParam`, written by the adapter's add through `RekordboxStore.
+set_auto_gain` — see `gain`).
 """
 from __future__ import annotations
 
@@ -33,6 +36,12 @@ from . import artwork
 #: phrase/vocal analysis Konduktor does not write. So the value that claims
 #: only what is written: 0x2C060E.
 CONTENT_LINK = 2885134
+
+#: `djmdContent.Analysed` as a rekordbox-analysed track carries it, and the bit
+#: rekordbox 7 sets beside it when the grid is LOCKED (the padlock in Grid Edit):
+#: measured 2026-10-19 by locking two tracks — 105 -> 233, nothing else changed.
+ANALYSED = 105
+ANALYSED_LOCKED = 0x80
 
 
 def anlz_rel(track_uuid: str) -> str:

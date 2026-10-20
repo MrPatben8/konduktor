@@ -24,3 +24,14 @@ export function keyColor(wheel: number | null): string | undefined {
   // Light and saturated: it is drawn as text on a tint of itself, on glass.
   return `hsl(${((wheel % 12) / 12) * 360} 90% 76%)`
 }
+
+/** A Mastering column's value: one decimal and its unit, the sign shown where
+ *  it carries meaning (true peak above 0 dBTP clips): `-8.2 LUFS`, `+0.3 dBTP`,
+ *  `5.1 LU`. Rounds to the decimal (never to "-0.0"). */
+export function formatLoudness(value: number | undefined, unit: string, signed = false): string {
+  if (value == null) return '—'
+  let fixed = value.toFixed(1)
+  if (fixed === '-0.0') fixed = '0.0'
+  if (signed && value > 0 && fixed !== '0.0') fixed = `+${fixed}`
+  return `${fixed} ${unit}`
+}

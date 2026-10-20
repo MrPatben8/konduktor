@@ -149,6 +149,28 @@ Two independent apps that talk over HTTP:
       always skipped. `main._analyse_grid` writes each through the hand-edit
       command for the same thing — `set_grid_marker_bpm(0)` / `move_grid_marker(0)`
       — so companions, marker names and time bases behave as for a hand edit.
+    - `loudness.py` — **loudness measurement**, the Mastering columns
+      (decided 2026-10-19, [the discussion](.claude/discussions/discuss-loudness-analysis-2026-10-19.md)):
+      integrated LUFS (BS.1770-4 / R128 gating), LRA (Tech 3342), true peak
+      (4x oversampled below 96 kHz), PLR (= true peak − LUFS) and **RMS = the
+      DR meter's convention**: power in non-overlapping 3 s blocks, channels
+      averaged, the mean of the LOUDEST 20%, AES17 sine-referenced (a full-scale
+      sine reads 0 dB, a square +3) — unweighted, so beside LUFS it shows bass
+      weight, and a long intro does not pull it down. It decodes on its OWN, at
+      the file's rate and channels: the analysis decode (mono 22.05 kHz) cannot
+      serve BS.1770 (it sums channel POWERS) nor true peak. Streams in chunks
+      from per-100 ms sums, so memory stays at seconds of audio; ~1 s per
+      track. Matches FFmpeg's `ebur128` (in PyAV's wheel — `test_loudness.py`
+      uses it as the reference meter) to 0.01 LU; on an inter-sample peak it is
+      closer to exact than FFmpeg's interpolator. Mixed In Key, the requester's
+      reference, shows no RMS or LUFS at all (researched), so nothing was
+      matched. `VERSION` bumps make stored values stale (2: stem files).
+      **A stem FILE is measured as its four stems SUMMED** (one demux pass,
+      `_measure_stem_sum`), not its mix stream — what a stem deck plays and
+      what Traktor's gain measures: commercial mix streams are mastered ~2.8 dB
+      (up to 5.3) hotter than their stems sum to. `bench_traktor_gain.py`
+      (any folder Traktor gain-analysed) fits Traktor's auto-gain against it:
+      `ANALYZED_DB = -9.2 - LUFS`, sd 0.8 dB over 120 tracks (2026-10-19).
     - `key_detect.py` + `key_model.npz` — **musical key detection**: a small
       CNN (Korzeniowski & Widmer 2017 — five 5x5 convs, a per-frame dense layer
       over the WHOLE pitch axis, since a key is not pitch-invariant, logits
@@ -183,8 +205,13 @@ Two independent apps that talk over HTTP:
       8-20 kHz bands for moments (twoloop: never). The separation is a CALLBACK —
       the backend never imports torch; the engine (below) supplies it, the
       tests a fake. Measured traps: FFmpeg's resampler upmixes mono at -3 dB,
-      so mono is duplicated by hand; resampling does not move time; both
-      encoders (`aac_at` on macOS, `aac` elsewhere) are timing-exact but decode
+      so mono is duplicated by hand; resampling does not move time; the
+      encoder is FFmpeg's `aac` on EVERY OS, never Apple's `aac_at`
+      (`default_encoder`): Traktor on macOS honours the MP4 edit list but on
+      WINDOWS skips a fixed 1024 samples of priming, so `aac_at`'s 2112 put a
+      stem file ~25 ms early on a PC (2026-10-19: exactly the 9 of 148 stems on
+      a stick that Konduktor had encoded with `aac_at` were off, Reset fixed
+      each; `aac` and every commercial stem prime 1024). Both decode
       up to ~2 frames LONGER, so length checks allow 0..2048 samples and the
       duration reported is the source's; AAC pre-echo fools threshold onsets,
       so alignment is checked by cross-correlation. **Two JSON literals**: the
@@ -533,7 +560,9 @@ Two independent apps that talk over HTTP:
     preflighted per volume (both copies coexist until Save) and for the work
     folder. Replace implies repoint; destination mode mirrors the tree (full
     path, volume first, when the tracks share no folder) and may repoint or add
-    (+ existing / new playlist). **`pending.py` — the ledger** of conversions
+    (+ existing / new playlist). **`pending.py` — the ledger** (now
+    `konduktor/pending.py`, `stems/pending.py` a re-export: it holds
+    Normalize's "gain" items too, see "Normalize") of conversions
     awaiting Save (per library id, atomic): `AppState._save` COMMITS (deletes
     parked originals, retargets export sets — inside `_save`, so import and
     remap saves count too), `discard()` and opening another library RESTORE,
@@ -733,6 +762,156 @@ Two independent apps that talk over HTTP:
     `RelocateDialog` always asks — found volumes ticked, ambiguous ones a
     radio with nothing preselected, missing ones "Not connected" with a
     "Map by hand…" link to `PathMappingDialog`; no backdrop-click dismiss.
+  - `loudness_store.py` — **where loudness lives: Konduktor's own store, keyed
+    by the audio file's PATH** (SQLite in app-data; stdlib, so the server has it
+    too) — never the library, never file tags (a measurement can be redone
+    from the audio, and nothing but Konduktor would read a tag). Size + mtime
+    are recorded but are NOT the key: a changed file keeps its value, shown
+    STALE (dimmed, still sorted on, offered for re-analysis), because a changed
+    mtime almost always means another app rewrote the tags. `AppState._save`
+    `refresh`es the facts of every file Konduktor itself just tagged, so its
+    own writes never stale a value; `/api/library/remap-paths` `remap`s the
+    keys. Written AT ONCE, outside the edit/Save cycle — never dirty, survives
+    Discard. `STATE.loudness` is this computer's store, or for a remote library
+    `RemoteLoudnessStore` (the SERVER's: `/v1/loudness/get`, `PUT /v1/loudness`
+    — session required, not `touch`ed). `main._loud_target(origin, id)` picks
+    source + store per id: collection = the library's; device / Files folder =
+    this computer's; a folder id that is not a listed file falls back to the
+    collection (a folder view's held rows). `/api/loudness` serves a list's
+    values through `audio_facts` (never downloads); Analyze's Loudness tick and
+    `/api/tracks/loudness` (the deck where no grid can be written) measure, for
+    ANY origin — BPM / Grid / Key stay collection-only (400 otherwise). Convert
+    to Stems RE-measures a stem file whose original was measured (AAC can move
+    the true peak; never carried over): `convert.stem_loudness` after the
+    build, stored at publish by the shared `_end_step` — remotely, the value
+    rides `/v1/stems/stage`.
+  - **Auto gain** — the DJ app's OWN per-track gain, written from Konduktor's
+    loudness (decided + MEASURED 2026-10-19, [the discussion](.claude/discussions/discuss-gain-normalization-2026-10-19.md),
+    kits G1/G2: `backend/dev_gain_kit.py`, `dev_gain_kit_g2.py`). Generic
+    command `set_auto_gain(track_id, loudness)` (gated on
+    `tracks.auto_gain`; `Track.auto_gain_db` = the app's current value, None =
+    none): the ADAPTER turns a measurement into its own value, so no platform
+    constant reaches `core/`. Always from LUFS (the measure both apps level on).
+    **Traktor** (`adapters/traktor/gain.py`): the deck reads `LOUDNESS@
+    PERCEIVED_DB`; Traktor's own = -9.2 - LUFS (sd 0.8 over 120 tracks,
+    `backend/bench_traktor_gain.py` — a stem file measured as its stem SUM);
+    written PERCEIVED = ANALYZED, PEAK = -true peak; collection-only (no file
+    tag). A written value is KEPT; on an AUDIO_ID-empty entry Traktor's first
+    analysis overwrites only ANALYZED; its Analyze > Gain overwrites all three.
+    **rekordbox** (`adapters/rekordbox/gain.py`): one `djmdMixerParam` row,
+    Gain = float32 halves, linear, = 10^((-10 - LUFS)/20) (exact on its WAVs,
+    +0.24 dB on MP3 songs); Peak = the CLIPPED sample peak (<= 0 dB); rows
+    created through the ORM (`ID` and `UUID` both UUID strings, `rb_local_usn`
+    stamped); the projection reads all rows in ONE query (`mixer_gains`). A
+    track with no row plays at 0.0 dB and loading never creates one, so
+    **rekordbox's add measures loudness and writes the row** (`add_analysis.
+    prepare(measure_loudness=True)`, `PreparedAnalysis.loudness` — on a remote
+    it rides the packed analysis), and the measurement reaches this computer's
+    store through the adapter's optional `on_loudness` hook, set by `AppState`.
+    **No stick format carries a gain** (diffed across two exports), so
+    OneLibrary has no `auto_gain`. Analyze's **Gain** tick (`gain` /
+    `replace_gain`): fills tracks without one unless Replace, measuring first
+    where the loudness is missing or stale (a fresh measurement is reused —
+    no decode, no download); the deck's Analyze fills a missing one.
+  - **Normalize** — the track menu's **Mastering ▸ Normalize…** changes the
+    audio FILES' level in place (decided 2026-10-19, same discussion).
+    `core/level_plan.py` (`plan_gain`, pure, shared by preview and run — and
+    the export next): the user's measure (LUFS / loud-section RMS) to a
+    target; up and down, a raise stopping at the TRUE-PEAK ceiling (outcome
+    `capped`, `short_by`); a peak already over the ceiling at/below target is
+    left alone (`hot_peak_left`); MP3 in whole steps of 2^(1/4) (1.505 dB),
+    rounding a raise DOWN under the ceiling — and AAC (`.m4a`/`.mp4`, stem
+    files) in the SAME steps; Ogg/Opus/WMA `unsupported`. **AAC-LC by
+    `core/aac_gain.py`** (aacgain's edit, decided 2026-10-19 after a spike):
+    every channel's 8-bit `global_gain` +n scales the decode by exactly
+    2^(n/4) (scalefactors and PNS energies are coded from it, intensity is a
+    ratio). Finding a channel pair's second `global_gain` means WALKING the
+    first channel — section data, scalefactors, pulse, TNS and the Huffman
+    spectrum (codeword lengths, plus the unsigned books' sign bits and book
+    11's escapes) — with the standard's codebooks in `core/aac_tables.py`
+    (GENERATED from FFmpeg n7.1 `aactab.c`, every book checked a complete
+    prefix code; do not hand-edit), in numba (~1 s per five-stream stem
+    file). The MP4 side follows `stsz`/`stsc`/`stco|co64` to every frame of
+    EVERY audio track, so a stem file's five streams move alike. Proof per
+    frame: a raw_data_block must end in its last byte, else the file is
+    refused; refused too: HE-AAC/SBR/PS (the ASC, implicit SBR, an SBR FIL),
+    LTP/Main/SSR, 960-sample frames, CCE/PCE, scalefactors out of range. No
+    undo tag (one would grow `moov`); the edit is exactly reversed by the
+    opposite steps. Spike: exact (<= 1e-6 of peak) on every stream of FFmpeg
+    and Apple M4As, generated and 44 commercial stem files, and PNS /
+    intensity / M/S / TNS / mono / 22-48 kHz edge cases. `level_edit.verify`
+    decodes EVERY audio stream. Because only the file can say "HE-AAC", the
+    export copies such a file UNLEVELLED (gain 0, its auto gain from the
+    source) rather than failing. `core/level_edit.py` writes a NEW file: MP3 by the lossless
+    frame-gain edit (mp3gain's `global_gain`, CRC-16 recomputed on protected
+    frames, the Xing/Info/VBRI frame untouched, mp3gain's APEv2
+    `MP3GAIN_UNDO`/`MINMAX` tag, accumulating); WAV/AIFF scaled IN their
+    data/SSND chunk (same size, every other chunk byte-identical); FLAC
+    re-encoded at its depth with every Vorbis comment, picture and
+    application block copied back; 16-bit TPDF-dithered unless exact
+    (seeded: the same edit writes the same bytes). `verify` decodes both in
+    step: result == source x 10^(g/20). `gain/normalize.py`: measure where
+    the loudness is missing/stale, rewrite into `<name>.konduktor-partial`,
+    verify, then ONE end step under `STATE.mutation` — park the original
+    (`.<name>.konduktor-parked`), rename the partial onto the original's OWN
+    name (the path never changes), `audio_changed` (protocol member, gated
+    on `tracks.normalizable`: Traktor FILESIZE; rekordbox `FileSize` + the
+    drawn waveform tags regenerated into the existing ANLZ files at save,
+    `_flush_waveforms`; OneLibrary `fileSize` + the same tags into its edited
+    ANLZ copies, `.2EX` included), the DJ app's auto gain RECOMPUTED from the
+    new level, Konduktor's loudness SHIFTED (`level_plan.shifted`). Ledger
+    states writing -> written -> parked -> published -> swapped -> saving ->
+    saved; `AppState._save` brackets `adapter.save()` with
+    `begin_save`/`mark_saved`, so only a crash INSIDE the save asks the
+    library (`app_state._committed`: auto gain == the new value and != the
+    old; no auto gain = restore). Discard/restore removes the normalised file
+    only if it is recognisably ours and puts `loudness_before` back.
+    `_require_no_pending` (was `_require_no_pending_stems`) covers both kinds
+    and `NORMALIZE_JOB`; a track with a pending item is neither normalised nor
+    converted again. **Remote libraries** (`gain/remote_normalize.py`, the
+    stems-style transfer, decided): the server plans (`/v1/gain/plan`: its
+    `normalize.plan` on its own store and ledger, plus per row the source's
+    size, the platform's `analysis_lead` and `staged`); this computer
+    downloads, measures where the server has none (stored back there),
+    rewrites + VERIFIES, measures the levelled file's drawn waveform where
+    there is a lead, and uploads (`PUT /v1/gain/stage` beside the source as
+    `<name>.konduktor-partial`, sha-256 checked and its gain checked against
+    the server's OWN `plan_gain` — 409 if they differ; `PUT /v1/gain/waveform`
+    the packed analysis); the server keeps each as a "written" ledger item
+    (`pending.staged_gain`; staged items do not `hold` a track), and
+    `/v1/gain/publish` runs the ordinary `normalize._end_step` under its
+    mutation lock. Cancel deletes this run's uploads (`/v1/gain/abandon`); a
+    takeover cannot, and the next plan marks them `staged` and publishes them
+    without rewriting. `RemotePending.blocking` counts `gain_tracks`; protocol
+    1.7. The preview adds `transfer`. Routes
+    `/api/tracks/normalize/preview` and `/api/tracks/normalize`;
+    `/api/state.pending_gain` {tracks, lossless} + `normalize_job`. UI:
+    `NormalizeDialog` (measure / target / ceiling from the app settings
+    `levelMeasure`/`levelTarget`/`levelCeiling`, overridable per run; the
+    per-track plan; the lossless-is-permanent warning), SaveBar's notice.
+  - **Export: Normalise audio + Auto gain** (the run dialog's two ticks,
+    remembered on the set: `ExportSet.normalise` (default off),
+    `auto_gain` (default on — rekordbox plays a track without a gain row at
+    0.0 dB), `level` ({measure, target, ceiling}; None = Normalize's app
+    settings, `main._export_options`)). The preview takes the same body as the
+    run, so its counts are for the ticks as they stand. `exporter.plan` takes
+    `store` / `level` / `auto_gain`: each source's FRESH stored loudness
+    (`PlannedTrack.loudness`), its copy's gain from the shared `plan_gain`
+    (`set_level`); a source with none is `to_measure` and the run measures it
+    first, into the store (`_measure_missing`, before the destination is
+    touched), then settles its level and reuse (`assign_reuse`). The copy step
+    writes a levelled copy through `level_edit.apply` + `verify` instead of
+    `copy_file` — the source is never touched. **The manifest records each
+    copy's `gain_db`** (missing = 0) and `_reusable` requires it equal, so a
+    re-export at the same level copies nothing and another level re-copies
+    only the copies whose gain changes. **`_fingerprint` includes a non-zero
+    gain**: the waveform cache is keyed by the SOURCE, and a levelled copy
+    draws differently. `ExportTrack.loudness` = the COPY's level (`shifted`),
+    set only with Auto gain; writers with `writes_auto_gain`
+    (`PlatformOption.writes_auto_gain`) write it — Traktor replays
+    `set_auto_gain` after `add_tracks` (kit G1: an AUDIO_ID-less entry keeps
+    PERCEIVED_DB through Traktor's first analysis), the Rekordbox Library
+    through its replay store's `set_auto_gain`. No stick target has one.
   - `prefs.py` — persisted user prefs (`userprefs.json` in the per-OS app-data
     dir). Last-opened collection (global AND per-platform), library column
     layout, prep-deck zoom, import destination. Best-effort, but **every
@@ -1004,11 +1183,18 @@ Two independent apps that talk over HTTP:
     shown where Save is pressed). `Toast` takes an optional `action`;
     `StatusJob.unit: 'bytes'` shows a download in MB. Every background job's status-bar entry reads label + count · a bar SPLIT horizontally when the job reports per-item progress (top = the current item's `fraction`, 0-100 %; bottom = the whole job, (done + fraction) / total, so 99 % into the first of two tracks reads ~50 %) — a single bar otherwise; two colours in one bar was tried and read as confusing · its `status` ("separating 41 %") at its natural width · the item's name LAST (the only part that truncates; full name on hover). The section is a FIXED width (560 px; the view name on the left gives way instead) and everything BEFORE the bar is fixed (count sized for its largest value, "cancelling…" as a status, not a label), so neither a long name nor a phase change moves the bar. The status deliberately has no fixed slot: it is after the bar, and a slot left a gap before the name. `Job.fraction`/`status` come from `JobHandle.progress(fraction=, status=)` and reset whenever `done` advances; a stem conversion maps decode / separate / encode onto a track's 0-1 by measured shares.
     `AnalyzeDialog` (the context menu's **Analyze…**, decided 2026-10-04:
-    BPM / Grid / Key ticks, remembered as `analyzeWhat`, each disabled with a
-    reason where the library cannot store it — offered when EITHER grids or
-    keys are writable; the Replace questions are inside the dialog, never a
+    BPM / Grid / Key / Loudness ticks, remembered as `analyzeWhat` (a tick that
+    was disabled keeps its saved value), BPM / Grid / Key each disabled with a
+    reason where they cannot be stored (`gridWhy` / `keyWhy`: a device, loose
+    files, a read-only library). Loudness is never disabled, so the item is
+    offered for ANY selection, with the selection's `origin` (2026-10-19);
+    where loudness is all that can be done it is pre-ticked. The Replace
+    questions (loudness: "Measure again") are inside the dialog, never a
     second popup, and never remembered: the grid's only when BPM AND Grid are
-    ticked, since with one tick adjusting the grid is the point. Every count
+    ticked, since with one tick adjusting the grid is the point. A **Gain**
+    tick (`gainWhy`) writes the DJ app's auto gain (see "Auto gain"); the
+    context menu's **Mastering ▸** opens the same dialog for ONE option
+    (`preset`: Auto gain… / Measure loudness), which saves no ticks. Every count
     and the "Analyze N" button come from `/api/tracks/analyze/preview`, i.e.
     the backend's own `plan_grid`. The finished job's toast says what was
     written and skipped, by reason. The deck's one-click Analyze writes the
@@ -1186,6 +1372,17 @@ Two independent apps that talk over HTTP:
 - `lib/trackColumns.tsx` — single source of truth for the library table's
     columns (defs, default widths/visibility/order, the Columns-menu list, the
     inline `InlineEdit` cell, and the `TableMeta.onEditField` augmentation).
+    The five **Mastering** columns (LUFS, RMS, True Peak, LRA, PLR; hidden by
+    default) sit in the header chooser's first submenu (`COLUMN_MENU`'s
+    `group`); cells carry their unit (`formatLoudness`), stale = dimmed with a
+    tooltip. Their accessor returns `undefined` when unmeasured with
+    `sortUndefined: 'last'` — TanStack sorts `null` as 0, which would rank
+    every unmeasured track loudest. `Track.loudness` is NOT the backend's: App
+    joins `/api/loudness` into the rows (`['loudness', origin, hash of ids]`),
+    only while a Mastering column is visible; analyses invalidate `['loudness']`.
+    A sixth, **Auto Gain** (`Track.auto_gain_db`, the DJ app's own value, `—`
+    when none), sits in the same submenu but is NOT in `MASTERING_COLUMNS`: it
+    comes with the track, so showing it fetches nothing.
   - Data flow: the whole library is fetched once (`/api/tracks?limit=20000`);
     filtering and sorting happen **client-side** for instant interaction. Edits
     apply in-memory (server holds them) and the sidebar **Save to Traktor**
@@ -1270,6 +1467,10 @@ serialization path.** It enforces:
   entry's `<INFO>`, with `COLOR` last as Traktor writes it; aqua is stored as
   Blue; clearing restores the original bytes; and a Traktor 4.5 collection
   holding coloured tracks (when on the machine) renders byte-identically.
+  And **auto gain** (S): `set_auto_gain` changes one line, that entry's
+  `<LOUDNESS>`, in Traktor's 6-decimal form (PERCEIVED = ANALYZED = -9.2 -
+  LUFS); an entry without one gains a single line between TEMPO and
+  MUSICAL_KEY; the same value again is not dirty; never a file tag.
   The guard that catches serialization regressions like the lxml reformatting bug.
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched;
@@ -1376,7 +1577,11 @@ serialization path.** It enforces:
   mirror in ROW order, rename touching only `Comment` (+ the USN pyrekordbox
   stamps on every cue write — rekordbox's own leave it NULL, and it has
   accepted ours), the 11th refused with nothing changed, delete removing the
-  row outright.
+  row outright. And **auto gain** (M): a track without one gains exactly one
+  `djmdMixerParam` INSERT (UUID-string `ID`/`UUID`, USN stamped, Gain =
+  10^((-10 - LUFS)/20) as float32 halves, Peak clipped at 1.0) + the counter;
+  the same value is not dirty, a new one UPDATES that row only, it projects
+  after a reopen; and every track ADDED (J) arrives with its row.
 - `test_onelibrary_adapter.py` — the third adapter against the same contract.
   Unlike the Rekordbox tests it needs **nothing installed and nothing plugged
   in**: it runs against `fixtures/onelibrary/`, a real rekordbox 7 export trimmed
@@ -1456,6 +1661,70 @@ serialization path.** It enforces:
   model), loudness / sample-rate invariance, None for silence, and the numpy
   convolution against a direct implementation. Accuracy on real music is
   `bench_key_detect.py`'s job (GiantSteps + any folder of key-tagged files).
+- `test_loudness.py` — loudness measurement on GENERATED signals against
+  FFmpeg's `ebur128` through PyAV (integrated ±0.1 LU, LRA ±0.3, true peak
+  ±0.2 dB, 44.1/48 kHz, mono), the standard's anchors (a -23 dBFS 1 kHz stereo
+  sine = -23.0 LUFS; an inter-sample peak = -6.02 dBTP), RMS's definition (a
+  full-scale sine 0.0, a square +3.01, a long quiet intro moves nothing),
+  silence / under 3 s = None, chunked feeding equals one pass, real files
+  at their own rate and channels, and a stem file read as its stem SUM.
+- `test_loudness_store.py` — the store (stale on facts or version, remap with
+  the new path winning, concurrent writers) and the routes on generated FLACs:
+  a Files folder measured with BPM refused, preview counts = the run's, skip
+  unless Replace, a touched file stale with its value kept, the deck route,
+  the same file's value seen from the collection, a Save's own tag write not
+  staling it, Discard keeping it, a remap carrying it, a device's undecodable
+  stubs reported per track. `test_stems_batch.py` / `test_remote_stems.py`
+  pin the stem re-measure, `test_remote_adapter.py` the server-side store
+  (423 without the session, 503 once taken over).
+- `test_level_plan.py` — `plan_gain`'s every outcome: exact lossless gains,
+  the ceiling (capped, short_by), hot peaks left alone (but lowered when hot),
+  MP3 steps (nearest when lowering, never past the ceiling when raising,
+  under one step = nothing), RMS as the measure, the shifted loudness.
+- `test_level_edit.py` — on GENERATED files: MP3 (CBR + Xing + ID3 art,
+  no Xing, ABR, mono, MPEG-2 22 kHz) at -2/+1 steps decodes exactly x 2^(n/4),
+  same frames + only the APE undo tag, source untouched, undo accumulating;
+  non-step gains, out-of-range and existing targets refused leaving nothing;
+  CRC-16's check value; WAV 16/24/float and AIFF 16/24 at -3.7/+2.5 dB keep
+  their size and every other chunk byte-identical, 24-bit rounded not
+  dithered, 16-bit dithered reproducibly; FLAC 16/24 keeps depth, rate, tags
+  and picture.
+- `test_aac_gain.py` — the AAC-LC edit on GENERATED files (FFmpeg stereo /
+  mono / 48 / 22.05 kHz, 48 kb/s with PNS + intensity + M/S, TNS; Apple
+  `aac_at` where present): every frame walked, the decode exact at -2/+3
+  steps, same size, only global_gain bytes differ; a generated stem file's
+  five streams alike, the opposite steps restoring it byte for byte;
+  `level_edit` applying and verifying it, and catching one stream at another
+  level; refusals leaving nothing (HE-AAC, ALAC, out-of-range steps, an
+  existing target, a non-step gain); and the user's kit 4 / kit 5 / Kit Bulk
+  files when present.
+- `test_normalize.py` — through the routes on temp collections pointed at
+  generated MP3/FLAC/WAV/M4A: unmeasured tracks counted to measure first; MP3
+  gains whole steps; a raise held by the ceiling; the preview's lossless
+  count; the run = the preview, the SAVED collection untouched, each file at
+  its own path = the original at the gain with the original parked unchanged,
+  dirty + `pending_gain`, loudness shifted and fresh, auto gain = -9.2 - new
+  LUFS; reload 409, no second Normalize or stem conversion of a pending
+  track; Save deletes the parked files, writes the new LOUDNESS, changes
+  nothing outside those ENTRYs; Discard restores bytes and loudness; crash
+  recovery for an unsaved change (restored + reported), a save that landed
+  ("saving" + new gain: finished) and one that did not (restored). And the
+  drawn waveforms: OneLibrary (fixture) and rekordbox (temp copy) get the
+  waveform tags rewritten at Save with every other ANLZ tag byte-identical,
+  and the file size follows.
+- `test_export_level.py` — an export to Traktor + Rekordbox Library +
+  OneLibrary at once from generated MP3/FLAC/WAV (one WAV a quiet track with
+  a hot peak), through the routes: Auto gain offered only where a target
+  keeps one; every source measured once into the store; sources
+  byte-identical; each levelled copy == its source at the manifest's gain,
+  the hot-peak one a byte-identical copy; Traktor's gain = -9.2 and the
+  Rekordbox Library's = -10 minus the COPY's LUFS; the set remembers its
+  options; a same-level re-export keeps every file (same inodes); a new
+  target re-writes only the copy whose gain changed; Normalise off restores
+  the source bytes with the gain from the source's LUFS; Auto gain off writes
+  none; a levelled copy has its own waveform-cache key; and a file that
+  cannot be levelled (as HE-AAC) is copied unchanged at gain 0 without
+  failing the export.
 - `test_auto_hotcues.py` — Auto Hotcues in three layers: `structure.analyse`
   on SYNTHETIC audio with known sections (the intro with a kick is not a drop;
   no breakdown after the last drop), `plan`'s outcomes and beat-counted offsets
@@ -1486,9 +1755,13 @@ serialization path.** It enforces:
   the run's (BPM alone: single grids adjusted, flexible skipped, bare in
   full); a skipped track is never decoded and grid+key share ONE decode; a
   grid that cannot be fitted still gets its key; the deck's Analyze writes
-  the key too and never fails on it. The decode is `main._decode_for_analysis`
+  the key too and never fails on it. And **Gain**: the preview's counts match
+  the run's; a track without an auto gain gets -9.2 - LUFS, measured first,
+  one with one is left alone unless `replace_gain`, and a fresh measurement is
+  reused rather than decoded again. The decode is `main._decode_for_analysis`
   (the seam the fakes replace); `test_key_detect.py` runs the route once with
-  the REAL decode and detectors on a generated F-minor 124 BPM WAV.
+  the REAL decode and detectors on a generated F-minor 124 BPM WAV. (Its
+  app-data is a temp folder: the routes write the loudness store.)
 - `test_bulk_remove.py` — the context menu's **Remove ▸** routes
   (`/api/tracks/grid/clear`, `/api/tracks/cue/clear`, `/api/tracks/remove`):
   locked grids are kept, clearing hotcues empties the whole bank (loops and the
@@ -1536,8 +1809,13 @@ serialization path.** It enforces:
   above all that **`<LOCATION>` is volume-relative** — an export writing host
   paths would work perfectly on the machine that made it and resolve to nothing
   at the gig. Also that a flexible multi-marker grid and hot-cue PADS survive,
-  grids are not locked, loose tracks get their "Other" playlist, and re-exporting
-  into the same folder replaces rather than appends.
+  each grid keeps its source's lock, loose tracks get their "Other" playlist, and
+  re-exporting into the same folder replaces rather than appends. **Lock
+  beatgrids** (the run's option): a new set locks by default and remembers being
+  told not to; on, every exported track WITH a grid is locked (never one without
+  — Traktor would never give it a grid), written as Traktor 4.5 writes it
+  (`LOCK="1"` then `LOCK_MODIFICATION_TIME`, ISO, UTC); `test_export_pioneer.py`
+  pins the Rekordbox Library's `Analysed` 233 vs 105.
   It then runs a real export end to end (the source library is built with the
   exporter itself, so its LOCATIONs point at audio that exists) and pins the
   safety rules with teeth: a folder Konduktor did NOT write is refused, and
@@ -1596,7 +1874,20 @@ serialization path.** It enforces:
   content folder as a drive: listed first, confined, held files ticked off,
   auditioned with one download, an add IN PLACE (no upload, the held one not
   added twice, both into the playlist, analysed here when the server reports
-  a lead).
+  a lead). And auto gain: computed here from the SERVER's stored measurement
+  (no new download), written on the server, saved into its collection.
+- `test_remote_normalize.py` — Normalize on a remote (a real server in a
+  thread, generated audio on it): the server's plan (all to measure first,
+  the transfer, no lead for Traktor); a run measured, rewritten and verified
+  HERE, swapped in ON THE SERVER (the file at its own path = the original at
+  the gain, the original parked, the saved collection untouched, the
+  server's loudness the new level, the mirror's auto gain following it,
+  `pending_gain`, reload 409); Save deletes the parked originals there and
+  writes the new gain; Discard restores the bytes; an upload at a gain the
+  server's plan would not give is refused leaving nothing; Cancel deletes
+  only this run's upload; a takeover keeps the verified upload and the next
+  run publishes it WITHOUT rewriting; a platform with a lead gets the
+  levelled file's waveform measured here and handed to the end step.
 - `test_remote_stems.py` — Convert to Stems on a remote with the FAKE engine:
   the plan's transfer and two-machine space, Replace parks and swaps ON THE
   SERVER (saved file untouched until Save, which deletes the parked
@@ -1905,8 +2196,10 @@ that number and nothing else — everything derives from it:
     files and artwork (`NewTrack.art`, else the file's embedded cover) are
     held until save and written BEFORE the grids and commit, then
     `contentFile` rows hash what was written (`_m`/`_s` unlisted, as
-    Rekordbox does); a failed save removes them. Key, mixer gain and phrases
-    are Rekordbox's own analysis and are not written. The row and file
+    Rekordbox does); a failed save removes them. The key is detected and the
+    mixer gain measured (`djmdMixerParam`, see "Auto gain" — without a row a
+    track plays at 0.0 dB); mixer phrases are Rekordbox's own analysis and are
+    not written. The row and file
     builders live in `adapters/rekordbox/new_content.py`, shared with the
     Rekordbox Library exporter.
   - **`jobs.py` + `importer.py`** — the app's first long-running operation.
@@ -1948,8 +2241,23 @@ that number and nothing else — everything derives from it:
   target** for v1, source is whatever library is loaded, **mirror the source
   folder structure** (so filename collisions cannot happen), playlists are **live
   links removable only as a whole**, re-export **clears the destination first**,
-  cancel **rolls back**, key notation **mirrors the source**, grids are **not
-  locked**, no whole-library export.
+  cancel **rolls back**, key notation **mirrors the source**, no whole-library
+  export. Grids were first left **unlocked**, and that went wrong: an exported
+  Traktor entry has no `AUDIO_ID` (Traktor's analysis fingerprint, which cannot
+  be computed), so Traktor re-analyses it on its first load — re-measuring the
+  BPM (a 174 track came back as 87) and drifting the grid. So the run dialog has
+  **Lock beatgrids** (decided 2026-10-19; `ExportSet.lock_grids`, default on,
+  sent with the run and remembered on the set; shown where a target's
+  `PlatformOption.locks_grids`). It rides on the generic `TrackCues.grid_locked`
+  (`exporter._locked`), the flag a source's own lock already arrives in, so off
+  still carries each track's own lock; Traktor writes `LOCK` +
+  `LOCK_MODIFICATION_TIME` (UTC), the Rekordbox Library sets bit 0x80 of
+  `djmdContent.Analysed` (105 -> 233, measured by locking tracks in rekordbox
+  7). The stick formats carry NO lock: rekordbox 7's own device export of two
+  locked tracks left OneLibrary `analysedBits` and the pdb's `u5` at 41, as on
+  every unlocked track (measured on Hardy, 2026-10-19), so neither stick
+  exporter sets `locks_grids`. The Rekordbox ADAPTER does not yet
+  read or write that bit (`grid.lockable` stays false).
   Verified against the real collection: Traktor stores `VOLUME="Hardy"` plus a
   **volume-relative** `DIR`, never a host path — so a USB export is portable by
   construction, and the `.nml` cannot be written until the destination is known.

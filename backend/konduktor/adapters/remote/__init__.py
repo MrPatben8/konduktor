@@ -18,7 +18,7 @@ from ... import exports
 from . import config
 from .adapter import RemoteAdapter
 from .client import AuthFailed, InUse, RemoteClient, SessionLost, Unreachable, VersionMismatch
-from .services import RemotePending, RemoteServices, RemoteSetStore
+from .services import RemoteLoudnessStore, RemotePending, RemoteServices, RemoteSetStore
 from .session import RemoteSession
 
 __all__ = [
@@ -38,6 +38,8 @@ class Opened:
     pending: object | None
     #: Edits another computer left unsaved: {machine, summary}, or None.
     pending_edits: dict | None
+    #: The server's loudness store (`RemoteLoudnessStore`).
+    loudness: object | None = None
 
 
 def open_remote(remote: config.Remote, *, takeover: bool = False, batch_probe=None,
@@ -71,6 +73,7 @@ def open_remote(remote: config.Remote, *, takeover: bool = False, batch_probe=No
         remote=remote, path=Path(hello.get("path") or remote.name), adapter=adapter,
         services=RemoteServices(client), session=session, library_id=library_id,
         pending=RemotePending(client), pending_edits=acquired.get("pending_edits"),
+        loudness=RemoteLoudnessStore(client, session),
     )
 
 

@@ -241,6 +241,25 @@ with TestClient(main.app) as c:
     check("the original entries are still plain tracks", all(a.track(t).media_kind != "stem" for t in ids))
     c.post("/api/discard")
 
+    print("== loudness: a stem file is measured when its original was ==")
+    from konduktor import loudness_store
+
+    work, ids, music = library("loud", ["m.mp3", "n.mp3"])
+    open_lib(c, work)
+    r = c.post("/api/tracks/loudness", json={"track_id": ids[0]})
+    check("the first original is measured", r.status_code == 200, r.text[:200])
+    j = convert(c, ids)
+    res = j["result"]
+    check("both convert", len(res["renamed"]) == 2, str(res)[:300])
+    stems = [str(music / "m.stem.m4a"), str(music / "n.stem.m4a")]
+    got = loudness_store.local().get(stems)
+    check("the measured original's stem file has a value of its own", stems[0] in got, str(list(got)))
+    check("the unmeasured original's stem file is left unmeasured", stems[1] not in got)
+    new = res["renamed"][ids[0]]
+    vals = c.post("/api/loudness", json={"track_ids": [new]}).json()["values"]
+    check("…shown on the converted track, fresh", new in vals and not vals[new]["stale"], str(vals))
+    c.post("/api/discard")
+
     print("== after a crash: restore from the saved file, keep the work, reuse it ==")
     work, ids, music = library("crash", ["a.mp3", "b.mp3"])
     open_lib(c, work)

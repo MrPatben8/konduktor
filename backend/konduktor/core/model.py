@@ -76,6 +76,10 @@ class Track(BaseModel):
     # code by the adapter. None = no colour.
     color: TrackColor | None = None
     color_hex: str | None = None
+    # The DJ app's own auto gain for the track in dB (Traktor's deck gain,
+    # rekordbox's Auto Gain), as the adapter reads it. None = the track has
+    # none, which is what "fill where missing" looks for.
+    auto_gain_db: float | None = None
 
 
 class TrackPage(BaseModel):
@@ -234,6 +238,12 @@ class PlatformOption(BaseModel):
     #: As an export TARGET: its library is only ever read on a computer, never
     #: from a drive — so it does nothing beside a stick format.
     computer_only: bool = False
+    #: As an export TARGET: its library can store a grid lock, so the export's
+    #: "Lock beatgrids" option means something there.
+    locks_grids: bool = False
+    #: As an export TARGET: its library keeps the DJ app's auto gain, so the
+    #: export's "Auto gain" option means something there (no stick format does).
+    writes_auto_gain: bool = False
 
 
 class RemapSample(BaseModel):

@@ -221,6 +221,9 @@ class RemoteAdapter:
     def set_track_color(self, track_id, color):
         return self._call("set_track_color", track_id=track_id, color=color)
 
+    def set_auto_gain(self, track_id, loudness):
+        return self._call("set_auto_gain", track_id=track_id, loudness=loudness)
+
     def set_cue(self, track_id, *, slot, start_sec, cue_type, length_sec=0.0, role="hotcue", name=None):
         return self._call("set_cue", track_id=track_id, slot=slot, start_sec=start_sec,
                           cue_type=cue_type, length_sec=length_sec, role=role, name=name)
@@ -332,7 +335,8 @@ class RemoteAdapter:
                     checkpoint(f"Analysing {item.track.title or source.name} ({n}/{total})", step=n, of=total)
                 has_grid = bool(item.cues and item.cues.grid_markers)
                 analysis = add_analysis.prepare(source, lead=lead, detect=not has_grid,
-                                                detect_key=item.track.key_wheel is None)
+                                                detect_key=item.track.key_wheel is None,
+                                                measure_loudness=self.capabilities().tracks.auto_gain)
             art = rp.WireArt(data=base64.b64encode(item.art[0]).decode("ascii"), mime=item.art[1]) \
                 if item.art else None
             wire.append(rp.WireNewTrack(track=item.track, audio_path=key, cues=item.cues, art=art,
@@ -360,7 +364,7 @@ class RemoteAdapter:
         return self.client.stems_plan(body)
 
     def stage_stem(self, track_id: str, target: str, local: Path, *, bit_rate: int,
-                   duration: float, progress=None) -> dict:
+                   duration: float, loudness: dict | None = None, progress=None) -> dict:
         import hashlib
 
         digest = hashlib.sha256()
@@ -369,7 +373,8 @@ class RemoteAdapter:
                 digest.update(chunk)
         try:
             return self.client.stems_stage(track_id, target, local, sha256=digest.hexdigest(),
-                                           bit_rate=bit_rate, duration=duration, progress=progress)
+                                           bit_rate=bit_rate, duration=duration, loudness=loudness,
+                                           progress=progress)
         except SessionLost as ex:
             self.session.lost(ex.holder)
             raise
@@ -384,6 +389,47 @@ class RemoteAdapter:
             self.session.lost(ex.holder)
             raise
         self._load()  # ids changed (repoint) or entries were added
+        return result
+
+    # ---- Normalize (the library side lives on the server) ---------------------------
+    # `gain/remote_normalize.py` drives these: the server plans and swaps, this
+    # computer downloads, rewrites, verifies and uploads.
+    def normalize_plan(self, body: dict) -> dict:
+        return self.client.gain_plan(body)
+
+    def stage_gain(self, track_id: str, local: Path, *, gain_db: float, options: dict,
+                   waveform: str | None = None, progress=None) -> dict:
+        import hashlib
+
+        digest = hashlib.sha256()
+        with open(local, "rb") as f:
+            while chunk := f.read(1 << 20):
+                digest.update(chunk)
+        try:
+            out = self.client.gain_stage(track_id, local, gain_db=gain_db, sha256=digest.hexdigest(),
+                                         options=options, progress=progress)
+            if waveform is not None:
+                self.client.gain_waveform(track_id, waveform)
+            return out
+        except SessionLost as ex:
+            self.session.lost(ex.holder)
+            raise
+
+    def abandon_gain(self, track_ids: list[str]) -> None:
+        self.client.gain_abandon(track_ids)
+
+    def publish_gain(self, track_ids: list[str]) -> dict:
+        try:
+            result = self.client.gain_publish(track_ids)
+        except SessionLost as ex:
+            self.session.lost(ex.holder)
+            raise
+        # The files changed under the same names: their facts (and so the
+        # cache key and every loudness lookup) are new.
+        with self._lock:
+            for track_id in track_ids:
+                self._facts.pop(track_id, None)
+        self._load()
         return result
 
     # ---- metadata / art ------------------------------------------------------------------

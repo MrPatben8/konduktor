@@ -410,6 +410,25 @@ class OneLibraryAdapter:
         self._refresh(track_id)
         return self._index.get(track_id)
 
+    def analysis_lead(self, audio: Path) -> float:
+        """rekordbox's clock against the decoded audio (as for the Rekordbox
+        adapter): what a regenerated waveform is measured at."""
+        from ..rekordbox import timebase
+
+        return timebase.offset(Path(audio))
+
+    def audio_changed(self, track_id: str, change) -> Track | None:
+        self._require_writable("Changing a track's level")
+        self._store.audio_changed(track_id, change)
+        self._refresh(track_id)
+        return self._index.get(track_id)
+
+    def set_auto_gain(self, track_id: str, loudness) -> Track | None:
+        # Measured (kit G2): no stick format carries an auto gain — not the
+        # database, not export.pdb, not the analysis files. `tracks.auto_gain`
+        # is False, so nothing offers it.
+        raise Unsupported("A OneLibrary drive has no auto gain: level a stick by normalising its audio")
+
     def set_cover_art(self, track_id: str, data: bytes, mime: str) -> None:
         self._refuse("Editing cover art")
 

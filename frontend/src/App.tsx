@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnSizingState, SortingState, VisibilityState } from '@tanstack/react-table'
 import { CapabilitiesContext, slotLabeller } from './lib/capabilities'
 import { readOnlyNotice, removalNote, writeHint } from './lib/platformCopy'
@@ -8,11 +8,12 @@ import { invalidateTrackLists } from './lib/trackQueries'
 import { addTracksToPlaylist } from './lib/addTracks'
 import { isForeign, useDragPayload, useDropTarget, type TracksOrFiles } from './lib/drag'
 import { useNativeFileDrop } from './lib/fileDrop'
-import { api, type AnalyzeOptions, type AnalyzeResult, type CueBatchResult, type AutoCueSlot, type PlaylistNode, type StemBatchResult, type Track, type TrackOrigin } from './api'
+import { api, type AnalyzeOptions, type AnalyzeResult, type CueBatchResult, type NormalizeOptions, type NormalizeResult, type AutoCueSlot, type PlaylistNode, type StemBatchResult, type Track, type TrackOrigin } from './api'
 import { confirmDiscardUnsaved } from './lib/unsaved'
 import { askConfirm } from './lib/confirm'
 import {
   COLUMN_MENU,
+  MASTERING_COLUMNS,
   DEFAULT_COLUMN_ORDER,
   DEFAULT_COLUMN_VISIBILITY,
 } from './lib/trackColumns'
@@ -25,6 +26,7 @@ import { CollectionPicker } from './components/CollectionPicker'
 import { ContextMenu, type MenuItem } from './components/ContextMenu'
 import { EditTagsDialog } from './components/EditTagsDialog'
 import { AnalyzeDialog } from './components/AnalyzeDialog'
+import { NormalizeDialog } from './components/NormalizeDialog'
 import { AutoCueDialog } from './components/AutoCueDialog'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { PathMappingDialog } from './components/PathMappingDialog'
@@ -101,9 +103,14 @@ export default function App() {
   // job, polled into the status bar. ONE at a time across both kinds — the
   // backend refuses a second, since a grid run would move the beats a hotcue
   // run is placing cues on.
-  const [analyzing, setAnalyzing] = useState<string[] | null>(null) // the Analyze dialog's selection
+  // The Analyze dialog's selection, and whose ids they are (a device's or a
+  // folder's loose files can only have their loudness measured).
+  const [analyzing, setAnalyzing] = useState<
+    { ids: string[]; origin: TrackOrigin; preset?: 'loudness' | 'gain' } | null
+  >(null)
   const [cueBatch, setCueBatch] = useState<{ ids: string[]; withoutGrid: number } | null>(null)
-  const [batchJob, setBatchJob] = useState<{ id: string; kind: 'grid' | 'cues' | 'stems' } | null>(null)
+  const [batchJob, setBatchJob] = useState<{ id: string; kind: 'grid' | 'cues' | 'stems' | 'normalize' } | null>(null)
+  const [normalizing, setNormalizing] = useState<string[] | null>(null)
   // Convert to Stems: the dialog's selection, a finished run's Details, and a
   // running engine download (which outlives the dialog — decided).
   const [stemDialog, setStemDialog] = useState<string[] | null>(null)
@@ -143,6 +150,12 @@ export default function App() {
     setColumnOrder(DEFAULT_COLUMN_ORDER)
     setColumnSizing({})
   }, [])
+  /** One checkbox row of the header's column chooser. */
+  const columnToggle = (id: string, label: string) => ({
+    label,
+    checked: columnVisibility[id] !== false,
+    onToggle: () => setColumnVisibility((v) => ({ ...v, [id]: v[id] === false })),
+  })
 
   // Hydrate the saved layout once, tolerating partial / stale (new columns
   // added since) data by merging against the current defaults.
@@ -563,7 +576,7 @@ export default function App() {
         : source.name
 
   const isAll = source.kind === 'all'
-  const tracks: Track[] = viewingFolder
+  const listed: Track[] = viewingFolder
     ? (folderView.data?.tracks ?? [])
     : viewingDevice
     ? source.kind === 'device'
@@ -578,6 +591,30 @@ export default function App() {
       : isAll
         ? (allTracks.data?.items ?? [])
         : (playlistTracks.data ?? [])
+  // The Mastering columns' values: Konduktor's own store, keyed by the FILE
+  // (`/api/loudness`), joined into the rows — and only fetched while one of
+  // those columns is shown, since it stats every listed file. Keyed by a hash
+  // of the ids, so a list whose membership changes asks again; an analysis
+  // invalidates `['loudness']` itself.
+  const viewOrigin: TrackOrigin = viewingFolder ? 'folder' : viewingDevice ? 'device' : 'collection'
+  const masteringShown = MASTERING_COLUMNS.some((id) => columnVisibility[id] === true)
+  const listedIds = useMemo(() => listed.map((t) => t.id), [listed])
+  const listedKey = useMemo(() => {
+    let h = 5381
+    for (const id of listedIds) for (let i = 0; i < id.length; i++) h = ((h << 5) + h + id.charCodeAt(i)) | 0
+    return `${listedIds.length}:${h}`
+  }, [listedIds])
+  const loudness = useQuery({
+    queryKey: ['loudness', viewOrigin, listedKey],
+    queryFn: () => api.loudness(viewOrigin, listedIds),
+    enabled: masteringShown && listedIds.length > 0,
+    placeholderData: keepPreviousData,
+  })
+  const tracks: Track[] = useMemo(() => {
+    const values = masteringShown ? loudness.data?.values : undefined
+    if (!values) return listed
+    return listed.map((t) => (values[t.id] ? { ...t, loudness: values[t.id] } : t))
+  }, [listed, loudness.data, masteringShown])
   // The deck holds a SNAPSHOT of its track, taken when it was loaded. When the
   // view it came from refetches (Analyze wrote its key, Edit Tags its title),
   // follow the fresh copy so the deck's KEY readout and header are current.
@@ -722,19 +759,30 @@ export default function App() {
       return
     }
     if (job.state === 'failed') {
-      const what = kind === 'grid' ? 'Analysis' : 'Auto Hotcues'
+      const what = kind === 'grid' ? 'Analysis' : kind === 'normalize' ? 'Normalize' : 'Auto Hotcues'
       onError(`${what} failed: ${job.error ?? 'unknown error'}`)
       return
     }
     if (!job.result) return
     invalidateTrackLists(qc)
     qc.invalidateQueries({ queryKey: ['facets'] })
+    qc.invalidateQueries({ queryKey: ['loudness'] })
     const cancelled = job.state === 'cancelled'
     const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
     let touched: string[]
     let parts: string[]
     let failures: CueBatchResult['failed']
-    if (kind === 'grid') {
+    if (kind === 'normalize') {
+      const r = job.result as unknown as NormalizeResult
+      touched = r.normalised
+      failures = r.failed
+      qc.invalidateQueries({ queryKey: ['state'] })
+      parts = [
+        `${cancelled ? 'Cancelled — normalized' : 'Normalized'} ${plural(r.normalised.length, 'track')}` +
+          (r.normalised.length ? ' — Save to keep the new levels, Discard to undo' : ''),
+        r.skipped.length ? `${r.skipped.length} left as they were` : '',
+      ]
+    } else if (kind === 'grid') {
       const r = job.result as unknown as AnalyzeResult
       touched = r.analysed
       failures = r.failed
@@ -744,18 +792,24 @@ export default function App() {
         g.bpm ? `${plural(g.bpm, 'BPM')} (downbeat kept)` : '',
         g.phase ? `${plural(g.phase, 'grid')} at its BPM` : '',
         r.key.set ? plural(r.key.set, 'key') : '',
+        r.loudness?.measured ? `loudness of ${r.loudness.measured}` : '',
+        r.gain?.set ? `auto gain of ${r.gain.set}` : '',
       ].filter(Boolean)
       const skipped = [
         g.existing ? `${g.existing} with a grid` : '',
         g.locked ? `${g.locked} locked` : '',
         g.flexible ? `${g.flexible} multi-tempo` : '',
         r.key.existing ? `${r.key.existing} with a key` : '',
+        r.loudness?.existing ? `${r.loudness.existing} already measured` : '',
+        r.gain?.existing ? `${r.gain.existing} with an auto gain` : '',
       ].filter(Boolean)
       parts = [
         `${cancelled ? 'Cancelled — analyzed' : 'Analyzed'} ${plural(r.analysed.length, 'track')}` +
           (wrote.length ? `: ${wrote.join(', ')}` : ''),
         skipped.length ? `skipped ${skipped.join(', ')}` : '',
         r.key.none ? `no key found in ${r.key.none}` : '',
+        r.loudness?.none ? `nothing to measure in ${r.loudness.none} (silent or under 3 s)` : '',
+        r.gain?.none ? `no auto gain for ${r.gain.none} (silent or under 3 s)` : '',
       ]
     } else {
       const r = job.result as unknown as CueBatchResult
@@ -882,6 +936,11 @@ export default function App() {
     if (id && !batchJob) setBatchJob({ id, kind: 'stems' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editState.data?.stem_job])
+  useEffect(() => {
+    const id = editState.data?.normalize_job
+    if (id && !batchJob) setBatchJob({ id, kind: 'normalize' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editState.data?.normalize_job])
   // Tell the user once what crash recovery did about an interrupted conversion.
   const recovery = editState.data?.stem_recovery
   const recoveryShown = useRef<unknown>(null)
@@ -958,11 +1017,27 @@ export default function App() {
     setBatchCancelling(false)
     setBatchJob({ id: job.id, kind: 'grid' })
   }
-  // Offered where ANY of BPM / Grid / Key can be stored; the dialog disables
-  // the rest with a reason.
+  // Offered for ANY selection: loudness goes to Konduktor's own store, so it
+  // can always be measured (decided 2026-10-19). The dialog disables BPM /
+  // Grid / Key with a reason where they cannot be stored.
   const canAnalyzeGrid = !!capabilities.data?.grid.editable
   const canAnalyzeKey = !!capabilities.data?.tracks.key_writable
-  const canAnalyze = canEdit && !viewingDevice && (canAnalyzeGrid || canAnalyzeKey)
+  const canAutoGain = !!capabilities.data?.tracks.auto_gain
+  /** Why Normalize cannot change these tracks' files, if so. */
+  const normalizeRefusal = (ids: string[]): string | null =>
+    analyzeRefusal(analyzeOrigin(ids)) ??
+    (capabilities.data?.tracks.normalizable ? null : "This library's audio files cannot be normalized")
+  const analyzeOrigin = (ids: string[]): TrackOrigin =>
+    viewingDevice ? 'device' : viewingFolder && ids.some((id) => !folderFiles[id]) ? 'folder' : 'collection'
+  /** Why BPM / Grid / Key cannot be analysed for these tracks at all, if so. */
+  const analyzeRefusal = (origin: TrackOrigin): string | null =>
+    origin === 'device'
+      ? 'A device is read-only: only its loudness can be measured'
+      : origin === 'folder'
+        ? 'Add these files to your collection first'
+        : !canEdit
+          ? ((capabilities.data && readOnlyNotice(capabilities.data)) ?? 'This library is read-only')
+          : null
 
   const startCueBatch = (ids: string[]) => {
     const byId = new Map(tracks.map((t) => [t.id, t]))
@@ -1273,16 +1348,45 @@ export default function App() {
                   },
                 ]
               : []),
-            ...(canAnalyze
-              ? [
-                  {
-                    label: 'Analyze…',
-                    hint: batchJob ? 'busy' : menu.ids.length > 1 ? String(menu.ids.length) : undefined,
-                    disabled: !!batchJob,
-                    onClick: gated(() => setAnalyzing(menu.ids)),
-                  },
-                ]
-              : []),
+            // No "add it first" detour for loose files: their loudness can be
+            // measured where they are; the dialog explains the rest.
+            {
+              label: 'Analyze…',
+              hint: batchJob ? 'busy' : menu.ids.length > 1 ? String(menu.ids.length) : undefined,
+              disabled: !!batchJob,
+              onClick: () => setAnalyzing({ ids: menu.ids, origin: analyzeOrigin(menu.ids) }),
+            },
+            // Level work in one place: the same Analyze run, opened for one
+            // option (its remembered ticks untouched).
+            {
+              label: 'Mastering',
+              submenu: [
+                {
+                  label: 'Normalize…',
+                  hint: batchJob ? 'busy' : undefined,
+                  disabled: !!batchJob || !!normalizeRefusal(menu.ids),
+                  title: normalizeRefusal(menu.ids) ?? undefined,
+                  onClick: () => setNormalizing(menu.ids),
+                },
+                {
+                  label: 'Auto gain…',
+                  hint: batchJob ? 'busy' : undefined,
+                  disabled: !!batchJob || analyzeRefusal(analyzeOrigin(menu.ids)) !== null || !canAutoGain,
+                  title:
+                    analyzeRefusal(analyzeOrigin(menu.ids)) ??
+                    (canAutoGain ? undefined : 'This library has no auto gain'),
+                  onClick: () =>
+                    setAnalyzing({ ids: menu.ids, origin: analyzeOrigin(menu.ids), preset: 'gain' }),
+                },
+                {
+                  label: 'Measure loudness',
+                  hint: batchJob ? 'busy' : undefined,
+                  disabled: !!batchJob,
+                  onClick: () =>
+                    setAnalyzing({ ids: menu.ids, origin: analyzeOrigin(menu.ids), preset: 'loudness' }),
+                },
+              ],
+            },
             // The deck's ✨ Auto covers a single loaded track, with its
             // existing cues shown; this is the same template over the selection.
             ...(canAutoCue
@@ -1356,12 +1460,11 @@ export default function App() {
           items={[
             { heading: 'Columns' },
             // Default-visible unless explicitly hidden, as in the Columns menu.
-            ...COLUMN_MENU.map((c) => ({
-              label: c.label,
-              checked: columnVisibility[c.id] !== false,
-              onToggle: () =>
-                setColumnVisibility((v) => ({ ...v, [c.id]: v[c.id] === false })),
-            })),
+            ...COLUMN_MENU.filter((c) => !c.group).map((c) => columnToggle(c.id, c.label)),
+            {
+              label: 'Mastering',
+              submenu: COLUMN_MENU.filter((c) => c.group === 'mastering').map((c) => columnToggle(c.id, c.label)),
+            },
             { separator: true as const },
             { label: 'Reset to defaults', onClick: resetColumns },
           ]}
@@ -1377,6 +1480,19 @@ export default function App() {
             setBatchJob({ id: job.id, kind: 'stems' })
           }}
           onDownloading={(job) => setEngineJob(job.id)}
+          onError={onError}
+        />
+      )}
+      {normalizing && (
+        <NormalizeDialog
+          ids={normalizing}
+          onRun={async (opts: NormalizeOptions) => {
+            const job = await api.normalize(normalizing, opts)
+            setNormalizing(null)
+            setBatchCancelling(false)
+            setBatchJob({ id: job.id, kind: 'normalize' })
+          }}
+          onClose={() => setNormalizing(null)}
           onError={onError}
         />
       )}
@@ -1411,10 +1527,13 @@ export default function App() {
       )}
       {analyzing && (
         <AnalyzeDialog
-          ids={analyzing}
-          gridEditable={canAnalyzeGrid}
-          keyWritable={canAnalyzeKey}
-          onRun={(opts) => runAnalysis(analyzing, opts)}
+          ids={analyzing.ids}
+          origin={analyzing.origin}
+          gridWhy={analyzeRefusal(analyzing.origin) ?? (canAnalyzeGrid ? null : "This library's beatgrids cannot be edited")}
+          keyWhy={analyzeRefusal(analyzing.origin) ?? (canAnalyzeKey ? null : 'This library cannot store a key')}
+          gainWhy={analyzeRefusal(analyzing.origin) ?? (canAutoGain ? null : 'This library has no auto gain')}
+          preset={analyzing.preset}
+          onRun={(opts) => runAnalysis(analyzing.ids, opts)}
           onClose={() => setAnalyzing(null)}
           onError={onError}
         />
@@ -1856,7 +1975,14 @@ export default function App() {
         job={
           batchJob
             ? {
-                label: batchJob.kind === 'grid' ? 'Analyzing' : batchJob.kind === 'stems' ? 'Converting to stems' : 'Placing hotcues',
+                label:
+                  batchJob.kind === 'grid'
+                    ? 'Analyzing'
+                    : batchJob.kind === 'stems'
+                      ? 'Converting to stems'
+                      : batchJob.kind === 'normalize'
+                        ? 'Normalizing'
+                        : 'Placing hotcues',
                 done: batchJobStatus.data?.done ?? 0,
                 total: batchJobStatus.data?.total ?? 0,
                 detail: batchJobStatus.data?.message,
