@@ -5,6 +5,7 @@ import type { AddTarget, ForeignOrigin } from './AddFilesDialog'
 import { useCaps } from '../lib/capabilities'
 import { ExportDialog } from './ExportDialog'
 import { ExportRunDialog } from './ExportRunDialog'
+import { PushRunDialog } from './PushRunDialog'
 import type { Source } from './Sidebar'
 import { askConfirm } from '../lib/confirm'
 import { Icon } from '../lib/icons'
@@ -74,7 +75,16 @@ export function ExportsSection({ source, onSelect, onDone, onError, onAddForeign
         />
       )}
 
-      {running && (
+      {running?.kind === 'computer' && (
+        <PushRunDialog
+          set={running}
+          onClose={() => setRunning(null)}
+          onDone={onDone}
+          onError={onError}
+        />
+      )}
+
+      {running && running.kind !== 'computer' && (
         <ExportRunDialog
           set={running}
           onClose={() => setRunning(null)}
@@ -118,7 +128,9 @@ export function ExportsSection({ source, onSelect, onDone, onError, onAddForeign
               if (
                 await askConfirm({
                   title: `Delete the export “${set.name}”?`,
-                  body: 'Nothing already exported is removed — the files in its folder stay where they are.',
+                  body: set.kind === 'computer'
+                    ? 'Nothing already pushed is removed — its tracks and playlists stay in your DJ apps.'
+                    : 'Nothing already exported is removed — the files in its folder stay where they are.',
                   confirmLabel: 'Delete export',
                 })
               )
@@ -257,8 +269,17 @@ function ExportRow({
           onClick={() => onSelect({ kind: 'export', id: set.id, name: set.name })}
           className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left text-sm"
         >
-          <span className="flex w-4 shrink-0 justify-center text-gold"><Icon name="export" size={14} /></span>
-          <span className="flex-1 truncate" title={set.destination}>
+          {/* A push into this computer's DJ apps reads differently from a
+              folder export at a glance: the target is this machine. */}
+          <span className="flex w-4 shrink-0 justify-center text-gold">
+            <Icon name={set.kind === 'computer' ? 'desktop' : 'export'} size={14} />
+          </span>
+          <span
+            className="flex-1 truncate"
+            title={set.kind === 'computer'
+              ? `Pushed into this computer’s ${set.targets.join(' and ')} (${set.mode})`
+              : set.destination}
+          >
             {set.name}
           </span>
           <span className="shrink-0 text-[10px] tabular-nums text-faint">
@@ -266,7 +287,7 @@ function ExportRow({
           </span>
         </button>
         <button
-          title="Edit name, platforms and destination"
+          title={set.kind === 'computer' ? 'Edit name, apps and how it pushes' : 'Edit name, platforms and destination'}
           onClick={onEdit}
           className="shrink-0 px-1 text-xs text-faint opacity-0 hover:text-text group-hover:opacity-100"
         >
@@ -366,7 +387,7 @@ function ExportRow({
               style={{ marginLeft: 24 }}
               className="mb-1 mt-1 rounded-full btn-primary px-2 py-1 text-xs font-semibold"
             >
-              Export {data.tracks} track{data.tracks === 1 ? '' : 's'}…
+              {set.kind === 'computer' ? 'Push' : 'Export'} {data.tracks} track{data.tracks === 1 ? '' : 's'}…
             </button>
           )}
         </>

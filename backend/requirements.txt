@@ -12,6 +12,9 @@ python-multipart>=0.0.9  # multipart form parsing for cover-art upload
 # app-data dir. Both bundle cleanly into the frozen sidecar.
 dulwich>=0.22
 platformdirs>=4.0
+# Is Traktor / rekordbox running? (core/apps_running.py — a push refuses while
+# one is). Came only through pyrekordbox before; imported directly now.
+psutil>=5.9
 # Auto Hotcues: structural segmentation (McFee/Ellis Laplacian). Pure-Python,
 # ~150MB; numba/llvmlite ship Python 3.14 wheels (verified). No torch/native build.
 librosa>=0.11

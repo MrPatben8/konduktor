@@ -16,7 +16,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import __version__, exporter, exports, loudness_store, prefs
+from . import __version__, exporter, exports, local_push, loudness_store, prefs
 from .app_state import STATE
 from .core import auto_hotcues as ah
 from .core import grid_detect, key_detect, loudness, structure
@@ -74,6 +74,8 @@ from .schemas import (
     ExportSetMembers,
     ExportSetOut,
     ExportPreview,
+    LocalLibrariesOut,
+    PushPreview,
     Drive,
     DroppedFiles,
     DroppedPaths,
@@ -316,7 +318,7 @@ def delete_remote(remote_id: str) -> dict:
 def _running_batch() -> str | None:
     """The kind of batch running here, for the heartbeat: another computer
     asking to take over is told what it would cancel."""
-    for kind in BATCH_JOBS + ("import", "export"):
+    for kind in BATCH_JOBS + ("import", "export", local_push.JOB_KIND):
         if JOBS.active(kind):
             return kind
     return None
@@ -642,30 +644,33 @@ def list_exports() -> list[ExportSetOut]:
 
 @app.post("/api/exports", response_model=ExportSetOut)
 def create_export(body: CreateExportSet) -> ExportSetOut:
-    if not body.destination.strip():
+    if body.kind == "folder" and not body.destination.strip():
         raise HTTPException(400, "An export needs a destination folder")
     # Only platforms that can actually be WRITTEN may be targets. Gating here as
     # well as in the UI, because a set persists: one created against a target
     # that later stops being supported would otherwise fail at export time.
-    _check_targets(body.targets)
+    _check_targets(body.targets, kind=body.kind)
     created = exports.create(
         _require_library_id(),
         name=body.name,
         targets=body.targets,
-        destination=body.destination,
+        destination=body.destination if body.kind == "folder" else "",
+        kind=body.kind,
+        mode=body.mode,
     )
     return ExportSetOut(**created.as_dict())
 
 
 @app.patch("/api/exports/{set_id}", response_model=ExportSetOut)
 def update_export(set_id: str, body: UpdateExportSet) -> ExportSetOut:
-    _require_set(set_id)
+    found = _require_set(set_id)
     if body.targets is not None:
-        _check_targets(body.targets)
+        _check_targets(body.targets, kind=found.kind)
     updated = exports.update(
         _require_library_id(),
         set_id,
         name=body.name,
+        mode=body.mode,
         targets=body.targets,
         destination=body.destination,
         lock_grids=body.lock_grids,
@@ -724,7 +729,7 @@ def export_contents(set_id: str) -> ExportContents:
         dangling=resolved.dangling_track_ids,
         destination_conflict=exports.destination_conflict(
             _require_library_id(), found.destination, ignore=set_id
-        ),
+        ) if found.kind == "folder" else None,
     )
 
 
@@ -800,7 +805,7 @@ def _export_options(found, body: RunExport | None) -> dict:
 def preview_export(set_id: str, body: RunExport | None = None) -> ExportPreview:
     """What this export would do, right now, with the run dialog's options as
     ticked. Never cached — the set is live."""
-    found = _require_set(set_id)
+    found = _require_folder_set(set_id)
     built = exporter.plan(require_adapter(), found, **_export_options(found, body))
     return ExportPreview(**built.as_dict(exporter.space_for(built)))
 
@@ -816,7 +821,7 @@ def run_export(set_id: str, body: RunExport | None = None) -> JobStatus:
     The dialog's options arrive with the click and are remembered on the set,
     so the next export of the same stick starts from the same answer.
     """
-    found = _require_set(set_id)
+    found = _require_folder_set(set_id)
     if body is not None:
         changes = {k: v for k, v in (("lock_grids", body.lock_grids), ("normalise", body.normalise),
                                      ("auto_gain", body.auto_gain)) if v is not None}
@@ -836,6 +841,80 @@ def run_export(set_id: str, body: RunExport | None = None) -> JobStatus:
     return JobStatus(**job.as_dict())
 
 
+# ---- pushing into this computer's DJ apps (`local_push.py`) -----------------------
+
+
+def _local_level_out(level) -> dict | None:
+    return {"measure": level.measure, "target": level.target, "ceiling": level.ceiling} if level else None
+
+
+@app.get("/api/local-libraries", response_model=LocalLibrariesOut)
+def local_libraries() -> LocalLibrariesOut:
+    """The DJ apps' libraries on this computer a "computer" set pushes into,
+    each with why it cannot be used, plus the shared audio folder and its
+    level. Changed through `/api/prefs` (`localLibraries`, `localAudioRoot`,
+    `localNormalise`, `localLevel`)."""
+    import platformdirs
+
+    return LocalLibrariesOut(
+        libraries=[lib.as_dict() for lib in local_push.local_libraries(STATE.path)],
+        audio_root=str(local_push.audio_root()),
+        audio_root_default=str(Path(platformdirs.user_music_dir()) / "Konduktor"),
+        level=_local_level_out(local_push.level()),
+    )
+
+
+def _require_computer_set(set_id: str):
+    found = _require_set(set_id)
+    if found.kind != "computer":
+        raise HTTPException(400, "This set is exported into a folder, not pushed")
+    return found
+
+
+def _push_options(found) -> dict:
+    """The push's options: the set's lock and auto gain (as the run dialog
+    left them), the shared folder's level (the app setting, not the set's)."""
+    return {"store": STATE.loudness, "level": local_push.level(), "auto_gain": bool(found.auto_gain)}
+
+
+def _remember_run_options(found, body: RunExport | None):
+    if body is None:
+        return found
+    changes = {k: v for k, v in (("lock_grids", body.lock_grids), ("auto_gain", body.auto_gain))
+               if v is not None}
+    return exports.update(_require_library_id(), found.id, **changes) if changes else found
+
+
+@app.post("/api/exports/{set_id}/push/preview", response_model=PushPreview)
+def preview_push(set_id: str, body: RunExport | None = None) -> PushPreview:
+    """What pushing this set would do now, with the dialog's ticks."""
+    found = _require_computer_set(set_id)
+    if body is not None and body.auto_gain is not None:
+        found.auto_gain = body.auto_gain   # a look, not a change: not saved
+    built = local_push.plan(require_adapter(), found, open_path=STATE.path, **_push_options(found))
+    return PushPreview(**built.as_dict())
+
+
+@app.post("/api/exports/{set_id}/push", response_model=JobStatus)
+def run_push(set_id: str, body: RunExport | None = None) -> JobStatus:
+    """Start the push on a background thread; poll `/api/jobs/{id}`. Planned
+    again here (a playlist may have changed since the preview, or Traktor been
+    started); the dialog's ticks are remembered on the set."""
+    found = _remember_run_options(_require_computer_set(set_id), body)
+    adapter = require_adapter()
+    options = _push_options(found)
+    built = local_push.plan(adapter, found, open_path=STATE.path, **options)
+    if built.blocked:
+        raise HTTPException(409, built.blocked)
+    try:
+        job = JOBS.submit(local_push.JOB_KIND, lambda handle: local_push.run(
+            adapter, found, built, handle, lock_grids=found.lock_grids, **options),
+            exclusive_with=(local_push.JOB_KIND,))
+    except JobBusy:
+        raise HTTPException(409, "A push is already running")
+    return JobStatus(**job.as_dict())
+
+
 def _export_targets() -> set[str]:
     """Platforms Konduktor can write a NEW library for.
 
@@ -847,14 +926,27 @@ def _export_targets() -> set[str]:
     return core_export.targets()
 
 
-def _check_targets(targets: list[str]) -> None:
+def _require_folder_set(set_id: str):
+    found = _require_set(set_id)
+    if found.kind != "folder":
+        raise HTTPException(400, "This set is pushed into this computer's DJ apps, not exported")
+    return found
+
+
+def _check_targets(targets: list[str], *, kind: str = "folder") -> None:
     """Refuse a set with no targets, or one naming a platform with no exporter.
 
     Checked when the set is saved: a target that later stops being supported
-    would otherwise fail at export time.
+    would otherwise fail at export time. A "computer" set pushes into the DJ
+    apps a computer runs, which are `local_push.PLATFORMS`.
     """
     if not targets:
         raise HTTPException(400, "An export needs at least one platform to export for")
+    if kind == "computer":
+        unsupported = [t for t in targets if t not in local_push.PLATFORMS]
+        if unsupported:
+            raise HTTPException(422, f"Konduktor cannot push into {', '.join(unsupported)}")
+        return
     unsupported = [t for t in targets if t not in _export_targets()]
     if unsupported:
         raise HTTPException(422, f"Konduktor cannot export to {', '.join(unsupported)} yet")

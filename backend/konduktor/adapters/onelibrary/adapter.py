@@ -608,3 +608,8 @@ class OneLibraryAdapter:
 
     def set_grid_lock(self, track_id: str, locked: bool) -> TrackCues:
         raise Unsupported("OneLibrary has no beatgrid lock")
+
+    def replace_cues(self, track_id: str, cues: TrackCues) -> TrackCues:
+        # Only a DJ app's library on this computer is pushed into; a stick is
+        # filled by an export.
+        raise Unsupported("A OneLibrary drive is filled by an export, not a push")

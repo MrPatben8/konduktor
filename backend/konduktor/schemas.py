@@ -402,6 +402,10 @@ class CollectionOptions(BaseModel):
 class ExportSetOut(BaseModel):
     id: str
     name: str
+    #: "folder": exported into `destination`; "computer": pushed into the DJ
+    #: apps' own libraries on this computer (`local_push.py`), `mode` saying how.
+    kind: Literal["folder", "computer"] = "folder"
+    mode: Literal["merge", "overwrite"] = "merge"
     targets: list[str]   # platform ids of the export TARGETS, never empty
     destination: str
     playlist_ids: list[str] = []
@@ -416,8 +420,10 @@ class ExportSetOut(BaseModel):
 
 class CreateExportSet(BaseModel):
     name: str
+    kind: Literal["folder", "computer"] = "folder"
+    mode: Literal["merge", "overwrite"] = "merge"
     targets: list[str] = ["traktor"]
-    destination: str
+    destination: str = ""   # a "computer" set has none
 
 
 class ExportLevel(BaseModel):
@@ -429,6 +435,7 @@ class ExportLevel(BaseModel):
 
 class UpdateExportSet(BaseModel):
     name: str | None = None
+    mode: Literal["merge", "overwrite"] | None = None
     targets: list[str] | None = None
     destination: str | None = None
     lock_grids: bool | None = None
@@ -500,6 +507,67 @@ class ExportPreview(BaseModel):
     normalised: int = 0
     to_measure: int = 0
     level_counts: dict[str, int] = {}
+
+
+# ---- pushing into this computer's DJ apps (`local_push.py`) -------------------
+
+
+class LocalLibraryOut(BaseModel):
+    """One DJ app's library on this computer, as a push target."""
+
+    platform: str
+    name: str
+    path: str | None = None
+    #: Found by the platform's own detection (False: the user's setting).
+    detected: bool = True
+    #: A FACT: `not_found`, `open_in_konduktor`, `cloud_synced`, `unreadable`.
+    blocked: str | None = None
+    running: bool = False
+
+
+class LocalLibrariesOut(BaseModel):
+    libraries: list[LocalLibraryOut] = []
+    #: The shared folder pushed audio lives in, and where it is by default.
+    audio_root: str
+    audio_root_default: str
+    #: The shared folder's Normalise level (None: off).
+    level: ExportLevel | None = None
+
+
+class PushTargetOut(BaseModel):
+    platform: str
+    name: str
+    path: str | None = None
+    blocked: str | None = None
+    running: bool = False
+    add: int = 0
+    already: int = 0
+    remove: int = 0
+    #: Overwrite: the other sets pushed into this library, which it removes.
+    wipes_sets: list[str] = []
+
+
+class PushPreview(BaseModel):
+    """What a push would do now. Computed fresh; never stored."""
+
+    mode: Literal["merge", "overwrite"] = "merge"
+    tracks: int = 0
+    pushable: int = 0
+    #: Copies in the shared folder kept rather than copied again.
+    unchanged: int = 0
+    missing: list[str] = []
+    playlists: list[str] = []
+    total_bytes: int = 0
+    audio_root: str
+    free_bytes: int | None = None
+    enough_space: bool | None = None
+    normalised: int = 0
+    to_measure: int = 0
+    level_counts: dict[str, int] = {}
+    targets: list[PushTargetOut] = []
+    #: A FACT: `no_target`, `nothing_to_push`, `target_unavailable`,
+    #: `app_running`, or null when it can run.
+    blocked: str | None = None
 
 
 class FsPlace(BaseModel):

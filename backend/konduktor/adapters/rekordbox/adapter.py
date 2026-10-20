@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ...core.adapter import InvalidCommand, Unsupported, local_audio_facts
+from ...core.adapter import InvalidCommand, NotFound, Unsupported, local_audio_facts
 from ...core.capabilities import Capabilities
 from ...core.model import GridMarker, PlaylistNode, Track, TrackCues
 from ...core.pathmap import PathMapping, common_dir_prefix
@@ -458,6 +458,30 @@ class RekordboxAdapter:
     def delete_grid(self, track_id: str) -> TrackCues:
         self._require_writable("Deleting the beatgrid")
         self._store.delete_grid(track_id)
+        return self._refresh_cues(track_id)
+
+    def replace_cues(self, track_id: str, cues: TrackCues) -> TrackCues:
+        """Clear the track's cues and grid, then place `cues` as `add_tracks`
+        does (`_place_imported_cues`). Rekordbox has no grid lock, so
+        `grid_locked` is not carried; a cue on the reserved `Kind=4` (shown,
+        not editable) is left where it is."""
+        self._require_writable("Replacing cues")
+        current = self.track_cues(track_id)
+        if current is None:
+            raise NotFound(f"Track not found: {track_id}")
+        for cue in current.cues:
+            if not cue.editable:
+                continue
+            if cue.role == "hotcue" and cue.slot is not None:
+                self._store.delete_cue(track_id, cue.slot)
+            elif cue.id:
+                self._store.delete_memory_cue(track_id, cue.id)
+        markers = list(cues.grid_markers or [])
+        if markers:
+            self._store.replace_grid(track_id, self._markers_from(markers))
+        elif current.grid_markers:
+            self._store.delete_grid(track_id)
+        self._place_imported_cues(track_id, cues)
         return self._refresh_cues(track_id)
 
     # ---- save -------------------------------------------------------------

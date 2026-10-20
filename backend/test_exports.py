@@ -150,6 +150,20 @@ check("paths are compared normalised, not as strings",
       exports.destination_conflict(LIB, str(work / "out") + "/./", ignore=s3.id) == "Ibiza")
 exports.delete(LIB, s3.id)
 
+print("== a set pushed into this computer's DJ apps ==")
+check("a set saved before kinds existed loads as a folder export, merge",
+      (exports.get(LIB, s1.id).kind, exports.get(LIB, s1.id).mode) == ("folder", "merge"))
+s4 = exports.create(LIB, name="Laptop", targets=["traktor"], destination="", kind="computer",
+                    mode="overwrite")
+check("kind and mode persist", (exports.get(LIB, s4.id).kind, exports.get(LIB, s4.id).mode)
+      == ("computer", "overwrite"))
+exports.update(LIB, s4.id, mode="merge", kind="nonsense")
+check("mode changes; an unknown kind is ignored",
+      (exports.get(LIB, s4.id).kind, exports.get(LIB, s4.id).mode) == ("computer", "merge"))
+check("a computer set has no destination to clash over",
+      exports.destination_conflict(LIB, "", ignore=s1.id) is None)
+exports.delete(LIB, s4.id)
+
 print("== following track ids that change under a path remap ==")
 exports.retarget(LIB, {all_tracks[0]: "Macintosh HD/:Moved/:one.mp3"})
 check("a renamed id is followed",
