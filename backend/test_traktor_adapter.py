@@ -263,6 +263,34 @@ with tempfile.TemporaryDirectory() as d:
     check("set_analysed_grid pairs the marker with a companion",
           cues.grid_markers[0].companion is not None)
 
+# ---- replace_cues: a pushed track brought up to date ------------------------
+print("== replace_cues makes the prep exactly the given one ==")
+with tempfile.TemporaryDirectory() as d:
+    from konduktor.core.model import CuePoint, GridMarker, TrackCues  # noqa: E402
+
+    work = Path(d) / "collection.nml"
+    shutil.copy2(REAL, work)
+    adapter = TraktorAdapter(work)
+    # A real entry carrying a grid WITH its white companion, hot cues and a lock.
+    tid = next(t.id for t in adapter.tracks
+               if t.grid_marker_count == 1 and t.hotcue_count >= 2
+               and adapter.track_cues(t.id).grid_markers[0].companion is not None)
+    want = TrackCues(
+        grid_markers=[GridMarker(start=0.25, bpm=124.0)], grid_locked=False,
+        cues=[CuePoint(start=4.0, length=0.0, slot=2, name="Drop"),
+              CuePoint(start=8.0, length=2.0, slot=3, type="loop"),
+              CuePoint(start=12.0, length=0.0, role="memory", name="Mem")])
+    got = adapter.replace_cues(tid, want)
+    check("the grid is exactly the new one, no companion invented",
+          [(m.start, m.bpm, m.companion) for m in got.grid_markers] == [(0.25, 124.0, None)],
+          str(got.grid_markers))
+    check("only the given cues remain, on their pads, the memory cue as one",
+          sorted((c.slot, c.role, c.name) for c in got.cues if c.slot is not None) == [(2, "hotcue", "Drop"), (3, "hotcue", None)]
+          and [c.name for c in got.cues if c.role == "memory"] == ["Mem"], str(got.cues))
+    again = adapter.replace_cues(tid, want)
+    check("replacing with the same prep is stable",
+          [(c.slot, c.start, c.role) for c in again.cues] == [(c.slot, c.start, c.role) for c in got.cues])
+
 # ---- remap rebuilds the index (track ids change) --------------------------
 print("== a path remap rebuilds the projection, because track ids change ==")
 with tempfile.TemporaryDirectory() as d:

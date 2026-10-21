@@ -35,7 +35,7 @@ import logging
 from pathlib import Path
 
 from ...core.adapter import NewTrack
-from ...core.export import ExportPayload, WrittenLibrary
+from ...core.export import OTHER_PLAYLIST, ExportPayload, WrittenLibrary, write_playlist_tree
 from .adapter import TraktorAdapter
 from .capabilities import capabilities_for
 
@@ -55,11 +55,6 @@ SKELETON = (
     '<INDEXING><SORTING_INFO PATH="$COLLECTION"></SORTING_INFO>\n'
     "</INDEXING>\n</NML>\n"
 )
-
-#: Loose tracks — added individually rather than through a playlist — would
-#: otherwise be reachable only by search in the exported library.
-OTHER_PLAYLIST = "Other"
-
 
 class TraktorExporter:
     platform = "traktor"
@@ -119,35 +114,5 @@ class TraktorExporter:
         """Recreate the tree — at the top level, or with `payload.root_folder`
         under one folder named after the export (None = the top level)."""
         root = adapter.create_folder(payload.name) if payload.root_folder else None
-        folders: dict[tuple[str, ...], str | None] = {(): root}
-
-        for playlist in payload.playlists:
-            parent = self._folder_for(adapter, folders, tuple(playlist.folders), root)
-            node_id = adapter.create_playlist(playlist.name, parent)
-            entries = [moved[t] for t in playlist.track_ids if t in moved]
-            if entries:
-                adapter.set_playlist_entries(node_id, entries)
-
-        loose = self._loose(payload, moved)
-        if loose:
-            node_id = adapter.create_playlist(OTHER_PLAYLIST, root)
-            adapter.set_playlist_entries(node_id, loose)
-
-    @staticmethod
-    def _folder_for(adapter, folders: dict, path: tuple[str, ...], root: str | None) -> str | None:
-        """Create (once) the folder chain a playlist sits under, and return it."""
-        for depth in range(1, len(path) + 1):
-            branch = path[:depth]
-            if branch not in folders:
-                folders[branch] = adapter.create_folder(branch[-1], folders[branch[:-1]])
-        return folders.get(path, root)
-
-    @staticmethod
-    def _loose(payload: ExportPayload, moved: dict) -> list[str]:
-        """Tracks no exported playlist accounts for, in payload order."""
-        in_playlists = {t for p in payload.playlists for t in p.track_ids}
-        return [
-            moved[t.source_id]
-            for t in payload.tracks
-            if t.source_id not in in_playlists and t.source_id in moved
-        ]
+        write_playlist_tree(adapter, payload.playlists, [t.source_id for t in payload.tracks],
+                            moved, root)

@@ -617,30 +617,7 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle, *,
                     done += n
                     handle.progress(done=done)
 
-                # The file to READ: on this machine that is the source itself;
-                # on a library held by a server, a downloaded copy of it.
-                local = adapter.audio_path(planned.track_id) or planned.source_path
-                levelled = False
-                if planned.gain_db:
-                    from .core import level_edit
-
-                    handle.progress(message=f"Normalising {planned.title} ({planned.gain_db:+.1f} dB)")
-                    try:
-                        level_edit.apply(local, partial, planned.gain_db)
-                        handle.raise_if_cancelled()
-                        # A copy carried to a gig must be the source at the
-                        # gain, nothing else: decode both and compare.
-                        level_edit.verify(local, partial, planned.gain_db)
-                        levelled = True
-                        advance(planned.size)
-                    except level_edit.LevelEditError as ex:
-                        # Only the file says some things (HE-AAC in an .m4a):
-                        # such a copy goes as it is, never fails the export.
-                        log.warning("copying %s unlevelled: %s", planned.title, ex)
-                        partial.unlink(missing_ok=True)
-                        planned.gain_db, planned.level_outcome = 0.0, "unsupported"
-                if not levelled:
-                    copy_file(local, partial, handle, advance)
+                write_copy(adapter, planned, partial, handle, advance)
                 os.replace(partial, target)
             payload_tracks.append(
                 ExportTrack(
@@ -748,6 +725,33 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle, *,
         raise
 
 
+def write_copy(adapter, planned: PlannedTrack, partial: Path, handle: JobHandle, advance) -> None:
+    """Write one copy of `planned`'s source to `partial`: at its planned gain
+    (decode-verified), else byte for byte. A file that cannot be levelled
+    (HE-AAC in an .m4a — only the file says so) is copied as it is and its
+    plan says so (`gain_db` 0, outcome "unsupported"); never a failure."""
+    # The file to READ: on this machine that is the source itself; on a
+    # library held by a server, a downloaded copy of it.
+    local = adapter.audio_path(planned.track_id) or planned.source_path
+    if planned.gain_db:
+        from .core import level_edit
+
+        handle.progress(message=f"Normalising {planned.title} ({planned.gain_db:+.1f} dB)")
+        try:
+            level_edit.apply(local, partial, planned.gain_db)
+            handle.raise_if_cancelled()
+            # A copy carried to a gig must be the source at the gain, nothing
+            # else: decode both and compare.
+            level_edit.verify(local, partial, planned.gain_db)
+            advance(planned.size)
+            return
+        except level_edit.LevelEditError as ex:
+            log.warning("copying %s unlevelled: %s", planned.title, ex)
+            partial.unlink(missing_ok=True)
+            planned.gain_db, planned.level_outcome = 0.0, "unsupported"
+    copy_file(local, partial, handle, advance)
+
+
 def _move_kept(destination: Path, reused: list[PlannedTrack], kept: dict[Path, dict]) -> None:
     """Rename each kept copy to where this export puts it — instant on one drive.
 
@@ -794,11 +798,13 @@ def _fingerprint(planned: PlannedTrack) -> str:
     return fingerprint(source, planned.size, planned.mtime_ns)
 
 
-def _measure_missing(adapter, built: ExportPlan, handle: JobHandle, *, store, level: Level | None) -> None:
+def _measure_missing(adapter, built: ExportPlan, handle: JobHandle, *, store, level: Level | None,
+                     previous: dict[str, tuple[Path, dict]] | None = None) -> None:
     """Measure the sources the run needs a loudness for and has none, store
     each, then settle their copies' levels and which previous copies can be
-    kept. Before anything at the destination changes, so a cancel here
-    leaves the previous export as it was."""
+    kept (`previous`: the copies on record, by source path — by default the
+    destination's manifest). Before anything at the destination changes, so a
+    cancel here leaves the previous export as it was."""
     todo = [t for t in built.exportable if t.needs_loudness and t.loudness is None]
     if not todo or store is None:
         return
@@ -821,7 +827,7 @@ def _measure_missing(adapter, built: ExportPlan, handle: JobHandle, *, store, le
                 store.put(fact, values)
         if level is not None:
             set_level(planned, level)
-    assign_reuse(built, _previous_copies(Path(built.destination)))
+    assign_reuse(built, previous if previous is not None else _previous_copies(Path(built.destination)))
 
 
 def _cover(adapter, track_id: str):

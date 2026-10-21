@@ -280,6 +280,11 @@ class RemoteAdapter:
     def set_grid_lock(self, track_id, locked):
         return self._call("set_grid_lock", track_id=track_id, locked=locked)
 
+    def replace_cues(self, track_id, cues):
+        # Never travels (`remote_protocol.EXCLUDED`): a push targets a library
+        # on THIS computer.
+        raise Unsupported("A library held by a server is not a push target")
+
     # ---- adding tracks ------------------------------------------------------------------
     def upload_audio(self, source: Path, folder: str, name: str, *, progress=None) -> Path:
         """Send `source` into `folder` on the server; the path it landed at (a

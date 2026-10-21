@@ -912,6 +912,44 @@ Two independent apps that talk over HTTP:
     `set_auto_gain` after `add_tracks` (kit G1: an AUDIO_ID-less entry keeps
     PERCEIVED_DB through Traktor's first analysis), the Rekordbox Library
     through its replay store's `set_auto_gain`. No stick target has one.
+  - `local_push.py` — **push an export set into THIS computer's Traktor /
+    rekordbox** (decided 2026-10-20, [the discussion](.claude/discussions/discuss-export-to-local-library-2026-10-20.md)):
+    a set's `kind` is `folder` (an export, as before) or `computer`, whose
+    `mode` is `merge` (default) or `overwrite`; targets ⊆ `PLATFORMS`, no
+    destination. Which library each app uses, the SHARED audio folder and its
+    level are this computer's PREFS (`localLibraries` {platform: path|null =
+    detected}, `localAudioRoot` (default platformdirs Music + `Konduktor`),
+    `localNormalise`, `localLevel`), never the set's (a remote's sets live on
+    its server). Audio lands at `<root>/<source path minus its anchor>` — not
+    `common_dir_prefix`, which moves when a set changes — so a track is ONE
+    file and ONE entry whatever sets hold it; hence one level for the folder.
+    **Merge** opens the library standalone (`registry.open_library`), adds
+    new tracks (`add_tracks`; a file the library already holds maps to its
+    id), brings changed ones up to date — the SOURCE wins — through
+    `set_track_metadata` / `set_key` / `set_track_color` / `set_auto_gain` /
+    `audio_changed` and the protocol's **`replace_cues`** (clear, then the
+    add path's own placement), removes what left the set unless another set
+    holds it or rekordbox refuses (History, Sampler, …: kept + reported,
+    retried), and rebuilds the set's playlists in ONE folder named after it
+    (suffixed `(Konduktor)` beside a user folder of that name; skipped when
+    its hash is unchanged). **Overwrite** runs the platform's export writer
+    into app-data and swaps the files in (rekordbox: `master.db`, the XML,
+    `share/` merged, stale `-wal`/`-shm` deleted); the other sets pushed
+    there are forgotten and their files deleted. The ledger
+    (`app_data/local_push/ledger.json`): per library (`library_id`) and set,
+    source id → local id, copy `rel`, prep hash; per audio root, the export
+    manifest's copy records (`exporter._record`). A copy no set holds is
+    deleted after the push. Refused while the app runs (`core/apps_running.py`,
+    psutil: `rekordbox` exactly, `traktor*` — macOS `Traktor Pro 4`; re-checked
+    before each save), for the library open in Konduktor, and cloud-synced
+    rekordbox. Backup first: Traktor a version-history baseline + a commit per
+    push, rekordbox `master.db` + XML copied to `app_data/local_push/backups`
+    (10 kept). New copies are placed before the library is written; a copy
+    REPLACING a file a library plays waits as `*.konduktor-partial` until a
+    save. Routes `GET /api/local-libraries`, `POST /api/exports/{id}/push/preview`
+    and `/push` (job `local-push`); `/preview` and `/run` 400 a computer set.
+    UI: `ExportDialog`'s Where (folder / This computer, at creation only),
+    `PushRunDialog`, Settings → Local libraries (`LocalLibrariesSettings`).
   - `prefs.py` — persisted user prefs (`userprefs.json` in the per-OS app-data
     dir). Last-opened collection (global AND per-platform), library column
     layout, prep-deck zoom, import destination. Best-effort, but **every
@@ -1230,8 +1268,9 @@ Two independent apps that talk over HTTP:
     newest non-draft, non-prerelease `v…` tag — NOT `/releases/latest`, since the
     stem engine publishes `engine-v*` releases in the same repo — and,
     if its tag's **semver part** is newer than `__APP_VERSION__` — build-number
-    `-b<N>` bumps don't count — shows an update dialog with the release's
-    "What's Changed" bullets; "Skip this version" persists
+    `-b<N>` bumps don't count — shows an update dialog with the "What's
+    Changed" bullets of EVERY release newer than the running version (paged,
+    one section per release, newest first); "Skip this version" persists
     `skippedUpdateVersion` to userprefs via `/api/prefs`; check failures are
     silent. **In the desktop app, Update installs it** (decided 2026-10-16,
     [the discussion](.claude/discussions/discuss-self-update-2026-10-16.md)):
@@ -1725,6 +1764,19 @@ serialization path.** It enforces:
   none; a levelled copy has its own waveform-cache key; and a file that
   cannot be levelled (as HE-AAC) is copied unchanged at gain 0 without
   failing the export.
+- `test_local_push.py` — pushing into this computer's DJ apps, through the
+  routes: a temp copy of the real collection as the SOURCE (generated MP3s) and
+  ANOTHER as the laptop's collection. A merge removes no line of the user's
+  but the entry / subnode counts; the set's folder holds its tree; cues + a
+  locked grid cross; history commits; an unchanged re-push copies and saves
+  nothing; an edited cue / title reaches the entry (only those two updated);
+  a re-levelled copy is swapped in with FILESIZE following; a user folder with
+  the set's name is left alone; a shared track is one entry and survives one
+  set's removal; a running app 409s; the open library is never a target; a
+  copy failure leaves the collection and folder untouched; overwrite leaves
+  only that set and deletes the other's files. On a temp copy of the local
+  rekordbox library (skipped when absent): merge, backup, a refused removal
+  kept and reported then retried, overwrite with a stale WAL.
 - `test_auto_hotcues.py` — Auto Hotcues in three layers: `structure.analyse`
   on SYNTHETIC audio with known sections (the intro with a kick is not a drop;
   no breakdown after the last drop), `plan`'s outcomes and beat-counted offsets

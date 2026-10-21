@@ -828,6 +828,13 @@ export interface SourceStatus {
 export interface ExportSet {
   id: string
   name: string
+  /** 'folder': exported into `destination`. 'computer': PUSHED into the DJ
+   *  apps' own libraries on this computer (`targets` names the apps, there is
+   *  no destination), `mode` saying how. */
+  kind: 'folder' | 'computer'
+  /** A push: 'merge' adds and updates only what this set put there;
+   *  'overwrite' replaces the whole library with this set. */
+  mode: 'merge' | 'overwrite'
   /** Platform ids of the export TARGETS, e.g. ["traktor", "onelibrary"]. Never
    *  empty. They share one destination and ONE copy of the audio. */
   targets: string[]
@@ -894,6 +901,64 @@ export interface ExportPreview {
   level_counts: Record<string, number>
   /** Sources the run measures first (no stored loudness). */
   to_measure: number
+}
+
+/** One DJ app's library on this computer, as a push target. */
+export interface LocalLibrary {
+  platform: string
+  name: string
+  path: string | null
+  /** Found by the platform's own detection (false: the user's setting). */
+  detected: boolean
+  /** A FACT; the UI words it. */
+  blocked: 'not_found' | 'open_in_konduktor' | 'cloud_synced' | 'unreadable' | null
+  running: boolean
+}
+
+export interface LocalLibraries {
+  libraries: LocalLibrary[]
+  /** The shared folder pushed audio lives in, and its default. */
+  audio_root: string
+  audio_root_default: string
+  /** The shared folder's Normalise level; null = off. */
+  level: NormalizeOptions | null
+}
+
+export interface PushTarget {
+  platform: string
+  name: string
+  path: string | null
+  blocked: LocalLibrary['blocked']
+  running: boolean
+  /** Tracks this set has not pushed here before. */
+  add: number
+  /** Tracks it has: kept, or brought up to date where changed. */
+  already: number
+  /** Tracks that left the set since the last push. */
+  remove: number
+  /** Overwrite: the other sets pushed here, which it removes. */
+  wipes_sets: string[]
+}
+
+/** What a push would do now. Computed fresh every time. */
+export interface PushPreview {
+  mode: 'merge' | 'overwrite'
+  tracks: number
+  pushable: number
+  /** Copies in the shared folder kept rather than copied again. */
+  unchanged: number
+  missing: string[]
+  playlists: string[]
+  total_bytes: number
+  audio_root: string
+  free_bytes: number | null
+  enough_space: boolean | null
+  normalised: number
+  level_counts: Record<string, number>
+  to_measure: number
+  targets: PushTarget[]
+  /** A FACT, not a sentence. Null when the push can run. */
+  blocked: 'no_target' | 'nothing_to_push' | 'target_unavailable' | 'app_running' | null
 }
 
 /** The run dialog's options; each is remembered on the set. Omitted = the
@@ -1098,11 +1163,16 @@ export const api = {
   // All scoped to the LOADED library on the server, by its stable id, so
   // nothing here has to carry which collection it means.
   exports: () => getJSON<ExportSet[]>('/api/exports'),
-  createExport: (body: { name: string; targets: string[]; destination: string }) =>
-    send<ExportSet>('POST', '/api/exports', body),
+  createExport: (body: {
+    name: string
+    targets: string[]
+    destination: string
+    kind?: ExportSet['kind']
+    mode?: ExportSet['mode']
+  }) => send<ExportSet>('POST', '/api/exports', body),
   updateExport: (
     id: string,
-    body: Partial<Pick<ExportSet, 'name' | 'targets' | 'destination' | 'lock_grids'>>,
+    body: Partial<Pick<ExportSet, 'name' | 'targets' | 'destination' | 'lock_grids' | 'mode'>>,
   ) =>
     send<ExportSet>('PATCH', `/api/exports/${encodeURIComponent(id)}`, body),
   deleteExport: (id: string) =>
@@ -1138,6 +1208,14 @@ export const api = {
   // The run dialog's options travel with the click; the set remembers them.
   runExport: (id: string, body: ExportRunOptions = {}) =>
     send<JobStatus>('POST', `/api/exports/${encodeURIComponent(id)}/run`, body),
+  // A "computer" set: pushed into this computer's Traktor / rekordbox. Only
+  // lock_grids and auto_gain apply — Normalise is the shared folder's, set in
+  // Settings → Local libraries (`localNormalise` / `localLevel` prefs).
+  localLibraries: () => getJSON<LocalLibraries>('/api/local-libraries'),
+  pushPreview: (id: string, body: ExportRunOptions = {}) =>
+    send<PushPreview>('POST', `/api/exports/${encodeURIComponent(id)}/push/preview`, body),
+  runPush: (id: string, body: ExportRunOptions = {}) =>
+    send<JobStatus>('POST', `/api/exports/${encodeURIComponent(id)}/push`, body),
 
   // ---- path remapping (per-collection OS-path prefix translation) ----
   getPathMapping: () => getJSON<PathMapping>('/api/library/path-mapping'),

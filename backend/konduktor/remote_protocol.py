@@ -109,6 +109,7 @@ EXCLUDED: dict[str, str] = {
     "set_cover_art": "PUT /v1/art — bytes",
     "apply_stem_swaps": "the server applies stem swaps itself (POST /v1/stems/publish)",
     "audio_changed": "the server applies a Normalize itself, at its own end step (POST /v1/gain/publish)",
+    "replace_cues": "a push targets a DJ app's library on THIS computer, never one a server holds",
     "set_path_mapping": "the server's path mapping is its own configuration",
     "set_session_mappings": "the missing-files check searches THIS computer's drives",
     "unresolved_path_groups": "the missing-files check searches THIS computer's drives",

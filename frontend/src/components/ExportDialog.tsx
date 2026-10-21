@@ -2,6 +2,7 @@ import { createPortal } from 'react-dom'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type ExportSet } from '../api'
+import { localLibraryProblem } from '../lib/platformCopy'
 import { FolderPicker } from './FolderPicker'
 
 /**
@@ -15,6 +16,13 @@ import { FolderPicker } from './FolderPicker'
  * detail deferred to export time. A Traktor `<LOCATION>` is a volume name plus
  * a volume-relative path — both derived from where the export is written — so
  * the library file genuinely cannot be built until the destination is known.
+ *
+ * Or the set goes to THIS COMPUTER: pushed straight into the Traktor collection
+ * and/or rekordbox library its DJ apps use (`local_push.py`), merging beside
+ * the user's own tracks or replacing the library. No destination is asked —
+ * which library each app uses, and the shared audio folder, are this
+ * computer's settings. The kind is chosen once, at creation: a push leaves
+ * records of what it put where, which a change of kind would orphan.
  */
 
 interface Props {
@@ -29,6 +37,15 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
   const [name, setName] = useState(editing?.name ?? '')
   const [chosen, setChosen] = useState<string[]>(editing?.targets ?? ['traktor'])
   const [destination, setDestination] = useState(editing?.destination ?? '')
+  const [kind, setKind] = useState<ExportSet['kind']>(editing?.kind ?? 'folder')
+  const [mode, setMode] = useState<ExportSet['mode']>(editing?.mode ?? 'merge')
+  const computer = kind === 'computer'
+  // A push's targets: this computer's DJ apps, each with why it cannot be used.
+  const locals = useQuery({
+    queryKey: ['local-libraries'],
+    queryFn: api.localLibraries,
+    enabled: computer,
+  })
   const [browsing, setBrowsing] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -68,15 +85,29 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
       on ? [...prev.filter((t) => t !== platform), platform] : prev.filter((t) => t !== platform),
     )
 
-  const valid = name.trim() !== '' && destination.trim() !== '' && chosen.length > 0
+  const pushable = new Set(
+    (locals.data?.libraries ?? []).filter((l) => !l.blocked).map((l) => l.platform),
+  )
+  const valid = computer
+    ? name.trim() !== '' && chosen.length > 0 && chosen.every((t) => pushable.has(t))
+    : name.trim() !== '' && destination.trim() !== '' && chosen.length > 0
+
+  const chooseKind = (next: ExportSet['kind']) => {
+    setKind(next)
+    // The two kinds offer different platforms: start from the obvious one.
+    setChosen(['traktor'])
+  }
 
   const save = async () => {
     setBusy(true)
     try {
-      const body = { name: name.trim(), targets: chosen, destination: destination.trim() }
       const saved = editing
-        ? await api.updateExport(editing.id, body)
-        : await api.createExport(body)
+        ? await api.updateExport(editing.id, computer
+            ? { name: name.trim(), targets: chosen, mode }
+            : { name: name.trim(), targets: chosen, destination: destination.trim() })
+        : await api.createExport(computer
+            ? { name: name.trim(), targets: chosen, destination: '', kind, mode }
+            : { name: name.trim(), targets: chosen, destination: destination.trim() })
       onSaved(saved, !editing)
     } catch (e) {
       onError((e as Error).message)
@@ -98,7 +129,7 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
         <div className="w-full max-w-lg glass-overlay">
           <div className="border-b border-line px-5 py-3">
             <h2 className="text-sm font-semibold text-text">
-              {editing ? `Edit “${editing.name}”` : 'New export'}
+              {editing ? `Edit “${editing.name}”` : computer ? 'New push to this computer' : 'New export'}
             </h2>
           </div>
 
@@ -117,6 +148,97 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
               />
             </div>
 
+            {!editing && (
+              <div>
+                <span className="mb-1 block text-xs text-muted">Where</span>
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    ['folder', 'A folder or drive', 'Writes a library and a copy of the audio there — a USB stick for the gig.'],
+                    ['computer', 'This computer', 'Pushes into the Traktor or rekordbox you DJ with here.'],
+                  ] as const).map(([value, title, detail]) => (
+                    <button
+                      key={value}
+                      onClick={() => chooseKind(value)}
+                      aria-pressed={kind === value}
+                      className={`rounded-lg px-3 py-2 text-left ${
+                        kind === value ? 'is-selected well' : 'btn-glass'
+                      }`}
+                    >
+                      <span className="block text-sm text-text">{title}</span>
+                      <span className="mt-0.5 block text-[11px] leading-snug text-faint">{detail}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {computer ? (
+              <>
+                <div>
+                  <span className="mb-1 block text-xs text-muted">Into</span>
+                  <div className="space-y-1">
+                    {(locals.data?.libraries ?? []).map((lib) => {
+                      const problem = localLibraryProblem(lib)
+                      return (
+                        <label
+                          key={lib.platform}
+                          className={`flex items-start gap-2 rounded-md px-2 py-1.5 ${
+                            problem ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-ink-850'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            disabled={!!problem}
+                            checked={chosen.includes(lib.platform)}
+                            onChange={(e) => toggle(lib.platform, e.target.checked)}
+                            className="mt-0.5 accent-accent"
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className={problem ? 'text-faint' : 'text-text'}>{lib.name}</span>
+                            <span
+                              title={lib.path ?? undefined}
+                              className="block truncate text-[11px] text-faint"
+                            >
+                              {problem ?? lib.path}
+                            </span>
+                          </span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                  <div className="mt-1 text-[11px] text-faint">
+                    The audio is copied to{' '}
+                    <span className="font-mono">{locals.data?.audio_root ?? '…'}</span>, shared by
+                    every push. Change either in Settings → Local libraries.
+                  </div>
+                </div>
+
+                <div>
+                  <span className="mb-1 block text-xs text-muted">How</span>
+                  <div className="space-y-1">
+                    {([
+                      ['merge', 'Merge', 'Adds and updates this set’s tracks, in a folder named after it. Your own tracks and playlists are never touched.'],
+                      ['overwrite', 'Overwrite', 'Replaces the WHOLE library with this set. Everything else in it — your own tracks, playlists and other pushes — is removed.'],
+                    ] as const).map(([value, title, detail]) => (
+                      <label key={value} className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 hover:bg-ink-850">
+                        <input
+                          type="radio"
+                          name="push-mode"
+                          checked={mode === value}
+                          onChange={() => setMode(value)}
+                          className="mt-0.5 accent-accent"
+                        />
+                        <span>
+                          <span className={value === 'overwrite' ? 'text-pink' : 'text-text'}>{title}</span>
+                          <span className="block text-[11px] leading-snug text-faint">{detail}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </>
+            ) : (
+            <>
             <div>
               <span className="mb-1 block text-xs text-muted">For</span>
               <div className="space-y-1">
@@ -187,6 +309,8 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
                 </div>
               )}
             </div>
+            </>
+            )}
           </div>
 
           <div className="flex justify-end gap-2 border-t border-line px-5 py-3">

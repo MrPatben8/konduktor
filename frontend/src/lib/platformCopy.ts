@@ -6,7 +6,7 @@
  * staying genuinely specific — the pre-save warning is a real, per-platform
  * hazard and must not be watered down into something vague.
  */
-import type { Capabilities, PlatformOption, SaveCapabilities } from '../api'
+import type { Capabilities, LocalLibrary, PlatformOption, SaveCapabilities } from '../api'
 
 export function saveLabel(save: SaveCapabilities): string {
   return `Save to ${save.app_name}`
@@ -154,4 +154,22 @@ export function remoteHolder(machine: string | null, since: string | null, batch
   }
   const running = batch ? ` — ${what[batch] ?? 'a batch'} is running there, and taking over cancels it` : ''
   return `${who}${when ? ` has had it open since ${when}` : ' has it open'}${running}.`
+}
+
+/** Why a DJ app's library on this computer cannot be pushed into, or null. */
+export function localLibraryProblem(lib: LocalLibrary): string | null {
+  switch (lib.blocked) {
+    case null:
+      return null
+    case 'not_found':
+      return lib.path
+        ? `No ${lib.name} library at ${lib.path}`
+        : `No ${lib.name} library found on this computer`
+    case 'open_in_konduktor':
+      return `This is the library open in Konduktor — open another one to push into it`
+    case 'cloud_synced':
+      return `Synced with ${lib.name} Cloud, so Konduktor will not write to it`
+    case 'unreadable':
+      return `Konduktor cannot read this ${lib.name} library`
+  }
 }

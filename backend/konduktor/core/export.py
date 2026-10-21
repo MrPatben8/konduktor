@@ -119,6 +119,40 @@ class ExportPayload:
         default=lambda message, step=None, of=None: None, repr=False)
 
 
+#: The playlist an export's LOOSE tracks (in no exported playlist) land in.
+OTHER_PLAYLIST = "Other"
+
+
+def write_playlist_tree(adapter, playlists: list[ExportPlaylist], track_ids: list[str],
+                        moved: dict[str, str], root: str | None) -> None:
+    """Recreate `playlists` under `root` (None = the top level) through the
+    generic playlist commands: each folder chain once, each playlist with the
+    entries `moved` maps its SOURCE ids to, and the tracks of `track_ids` no
+    playlist accounts for in an "Other" playlist. Shared by the Traktor writer
+    and the push into a DJ app's library, which builds the same tree inside
+    the set's own folder."""
+    folders: dict[tuple[str, ...], str | None] = {(): root}
+
+    def folder_for(path: tuple[str, ...]) -> str | None:
+        for depth in range(1, len(path) + 1):
+            branch = path[:depth]
+            if branch not in folders:
+                folders[branch] = adapter.create_folder(branch[-1], folders[branch[:-1]])
+        return folders.get(path, root)
+
+    for playlist in playlists:
+        node_id = adapter.create_playlist(playlist.name, folder_for(tuple(playlist.folders)))
+        entries = [moved[t] for t in playlist.track_ids if t in moved]
+        if entries:
+            adapter.set_playlist_entries(node_id, entries)
+
+    in_playlists = {t for p in playlists for t in p.track_ids}
+    loose = [moved[t] for t in track_ids if t not in in_playlists and t in moved]
+    if loose:
+        node_id = adapter.create_playlist(OTHER_PLAYLIST, root)
+        adapter.set_playlist_entries(node_id, loose)
+
+
 @dataclass
 class WrittenLibrary:
     """What an exporter put on disk.

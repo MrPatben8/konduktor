@@ -459,6 +459,39 @@ class TraktorAdapter:
             self._store.set_lock(track_id, locked)
         return self._refresh(track_id)
 
+    def replace_cues(self, track_id: str, cues: TrackCues) -> TrackCues:
+        """Clear the entry's prep, then replay `cues` exactly as `add_tracks`
+        does (`_apply_imported_cues`), so an updated entry and a new one cannot
+        differ. `delete_grid` takes the paired companion cues with it."""
+        current = self.track_cues(track_id)
+        if current is None:
+            raise NotFound(f"Track not found: {track_id}")
+        with _translate():
+            if current.grid_markers:
+                self._store.delete_grid(track_id)
+            # One at a time, re-reading between: a memory cue's id is derived
+            # from its content and its rank among cues at the same START, so a
+            # deletion can renumber the next one.
+            for _ in range(len(self.track_cues(track_id).cues)):
+                self._refresh(track_id)
+                left = self.track_cues(track_id).cues
+                cue = next((c for c in left if c.slot is not None or c.id), None)
+                if cue is None:
+                    break
+                if cue.slot is not None:
+                    self._store.delete_hotcue(track_id, cue.slot)
+                else:
+                    self._store.delete_memory_cue(track_id, cue.id)
+            if current.grid_locked and not cues.grid_locked:
+                self._store.set_lock(track_id, False)
+        self._refresh(track_id)
+        if current.grid_locked and cues.grid_locked:
+            # Already locked: `_apply_imported_cues` would lock it again and
+            # move LOCK_MODIFICATION_TIME for nothing.
+            cues = cues.model_copy(update={"grid_locked": False})
+        self._apply_imported_cues(track_id, cues)
+        return self._refresh(track_id)
+
     # ---- audio / paths ----------------------------------------------------
     def audio_path(self, track_id: str):
         return self._store.audio_path(track_id)

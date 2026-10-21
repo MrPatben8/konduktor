@@ -44,6 +44,10 @@ from . import paths
 
 log = logging.getLogger(__name__)
 
+#: A set's `kind` and a "computer" set's `mode` (see `ExportSet`).
+KINDS = ("folder", "computer")
+MODES = ("merge", "overwrite")
+
 
 @dataclass
 class ExportSet:
@@ -56,6 +60,16 @@ class ExportSet:
 
     id: str
     name: str
+    #: Where the set goes. "folder": a folder or drive the export writes a
+    #: library into (`destination`). "computer": PUSHED into the DJ apps'
+    #: own libraries on this computer (`local_push.py`) — `targets` names the
+    #: apps, `destination` is unused, and which file each app's library is
+    #: lives in this computer's prefs, not here (a remote library's sets are
+    #: kept on its server, but the paths belong to whichever laptop pushes).
+    kind: str = "folder"
+    #: A "computer" set's push: "merge" adds and updates only what this set
+    #: put there; "overwrite" replaces the whole library with this set.
+    mode: str = "merge"
     #: Platform ids of the export TARGETS, e.g. ["traktor", "onelibrary"]. Never
     #: empty; ordered as the user ticked them, which is the order they are written.
     targets: list[str] = field(default_factory=lambda: ["traktor"])
@@ -194,6 +208,8 @@ def _load(library_id: str) -> dict[str, ExportSet]:
                 out[set_id] = ExportSet(
                     id=set_id,
                     name=values.get("name") or "Untitled",
+                    kind=values.get("kind") if values.get("kind") in KINDS else "folder",
+                    mode=values.get("mode") if values.get("mode") in MODES else "merge",
                     targets=_targets(values),
                     destination=values.get("destination") or "",
                     playlist_ids=list(values.get("playlist_ids") or []),
@@ -251,6 +267,8 @@ def destination_conflict(library_id: str, destination: str, *, ignore: str | Non
     if not target:
         return None
     for existing in _load(library_id).values():
+        if existing.kind != "folder":
+            continue   # a push has no destination folder to clear
         if existing.id != ignore and _normalise(existing.destination) == target:
             return existing.name
     return None
@@ -266,12 +284,15 @@ def _normalise(destination: str) -> str:
 # ---- writing -----------------------------------------------------------------
 
 
-def create(library_id: str, *, name: str, targets: list[str], destination: str) -> ExportSet:
+def create(library_id: str, *, name: str, targets: list[str], destination: str,
+           kind: str = "folder", mode: str = "merge") -> ExportSet:
     sets = _load(library_id)
     now = time.time()
     created = ExportSet(
         id=uuid.uuid4().hex,
         name=name.strip() or "Untitled",
+        kind=kind if kind in KINDS else "folder",
+        mode=mode if mode in MODES else "merge",
         targets=list(dict.fromkeys(targets)),
         destination=destination,
         created=now,
@@ -292,6 +313,10 @@ def update(library_id: str, set_id: str, **fields) -> ExportSet | None:
     for key in ("name", "destination"):
         if key in fields and fields[key] is not None:
             setattr(found, key, fields[key])
+    if fields.get("kind") in KINDS:
+        found.kind = fields["kind"]
+    if fields.get("mode") in MODES:
+        found.mode = fields["mode"]
     if fields.get("targets"):
         found.targets = list(dict.fromkeys(fields["targets"]))
     for key in ("lock_grids", "normalise", "auto_gain"):

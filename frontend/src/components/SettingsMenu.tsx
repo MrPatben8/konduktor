@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../api'
 import { AppSettings } from './AppSettings'
 import { useCaps } from '../lib/capabilities'
+import { LocalLibrariesSettings } from './LocalLibrariesSettings'
 import { RemoteCacheSettings } from './RemoteCacheSettings'
 import { ShortcutsDialog } from './ShortcutsDialog'
 import { StemsSettings } from './StemsSettings'
@@ -22,6 +23,7 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
   const [showStems, setShowStems] = useState(false)
   const [showCache, setShowCache] = useState(false)
   const [showApp, setShowApp] = useState(false)
+  const [showLocal, setShowLocal] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   // Path remapping is a library on THIS computer's business; a remote's
   // mapping is its server's configuration.
@@ -125,6 +127,16 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
           )}
           <button
             onClick={() => {
+              setShowLocal(true)
+              setOpen(false)
+            }}
+            className={item}
+          >
+            <span className="text-sm text-text">Local libraries…</span>
+            <span className="text-[11px] text-faint">The Traktor and rekordbox a set is pushed into</span>
+          </button>
+          <button
+            onClick={() => {
               setShowStems(true)
               setOpen(false)
             }}
@@ -149,6 +161,7 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
       {showStems && <StemsSettings onClose={() => setShowStems(false)} />}
       {showCache && <RemoteCacheSettings onClose={() => setShowCache(false)} />}
       {showApp && <AppSettings onClose={() => setShowApp(false)} />}
+      {showLocal && <LocalLibrariesSettings onClose={() => setShowLocal(false)} />}
     </div>
   )
 }
