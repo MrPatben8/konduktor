@@ -16,6 +16,9 @@ import { localLibraryProblem } from '../lib/platformCopy'
  * so quitting the app is all it takes. Overwrite is confirmed once more, naming
  * the other pushes it removes. Normalise is not here: the pushed files are
  * shared by every set, so their level is a setting (Settings → Local libraries).
+ *
+ * A library the set names that is not on THIS computer is skipped, not a block:
+ * a set's targets are shared by every computer that opens the library.
  */
 
 const POLL_MS = 300
@@ -92,12 +95,13 @@ export function PushRunDialog({ set, onClose, onDone, onError }: Props) {
 
   const p = preview.data
   const blocked = p?.blocked ?? null
+  const active = p?.targets.filter((t) => !t.skipped) ?? []
 
   const start = async () => {
     if (overwrite && p) {
-      const wiped = p.targets.flatMap((t) => t.wipes_sets)
+      const wiped = active.flatMap((t) => t.wipes_sets)
       const ok = await askConfirm({
-        title: `Replace ${p.targets.map((t) => t.name).join(' and ')}’s library?`,
+        title: `Replace ${active.map((t) => t.name).join(' and ')}’s library?`,
         body:
           `Everything in it is replaced by “${set.name}” — your own tracks and playlists too` +
           (wiped.length ? `, and the pushes of ${wiped.map((n) => `“${n}”`).join(', ')}` : '') +
@@ -178,14 +182,14 @@ export function PushRunDialog({ set, onClose, onDone, onError }: Props) {
                       <div className="mt-1 text-faint">{p.missing.slice(0, 4).join(', ')}</div>
                     </div>
                   )}
-                  {overwrite && p.targets.some((t) => t.wipes_sets.length) && (
+                  {overwrite && active.some((t) => t.wipes_sets.length) && (
                     <div className="rounded well px-3 py-2 text-xs text-gold">
                       Also removes what{' '}
-                      {[...new Set(p.targets.flatMap((t) => t.wipes_sets))].map((n) => `“${n}”`).join(', ')}{' '}
+                      {[...new Set(active.flatMap((t) => t.wipes_sets))].map((n) => `“${n}”`).join(', ')}{' '}
                       pushed there, and deletes its files.
                     </div>
                   )}
-                  {p.targets.some((t) => t.platform === 'traktor') && (
+                  {active.some((t) => t.platform === 'traktor') && (
                     <label className="flex cursor-pointer items-start gap-2.5">
                       <input type="checkbox" className="mt-0.5" checked={lockGrids}
                         onChange={(e) => setLockGrids(e.target.checked)} />
@@ -224,13 +228,21 @@ export function PushRunDialog({ set, onClose, onDone, onError }: Props) {
 
               {blocked === 'app_running' && (
                 <div className="rounded border border-pink/40 bg-well px-3 py-2 text-xs text-pink">
-                  Quit {p!.targets.filter((t) => t.running).map((t) => t.name).join(' and ')} to push —
+                  Quit {active.filter((t) => t.running).map((t) => t.name).join(' and ')} to push —
                   it would overwrite the push when it next saves its library.
                 </div>
               )}
               {blocked === 'target_unavailable' && (
                 <div className="rounded border border-pink/40 bg-well px-3 py-2 text-xs text-pink">
                   Konduktor can’t push into every library this set is for. Check Settings → Local
+                  libraries, or edit the set.
+                </div>
+              )}
+              {blocked === 'no_library_here' && p && (
+                <div className="rounded border border-pink/40 bg-well px-3 py-2 text-xs text-pink">
+                  {p.targets.map((t) => t.name).join(' and ')}{' '}
+                  {p.targets.length === 1 ? 'isn’t' : 'aren’t'} on this computer, so there’s nothing to
+                  push into. Set {p.targets.length === 1 ? 'its' : 'their'} location in Settings → Local
                   libraries, or edit the set.
                 </div>
               )}
@@ -317,6 +329,16 @@ export function PushRunDialog({ set, onClose, onDone, onError }: Props) {
 }
 
 function TargetLine({ target, overwrite }: { target: PushTarget; overwrite: boolean }) {
+  if (target.skipped) {
+    return (
+      <div className="rounded-md well px-3 py-2">
+        <div className="flex items-baseline gap-2">
+          <span className="text-faint">{target.name}</span>
+          <span className="ml-auto text-xs text-faint">not on this computer — skipped</span>
+        </div>
+      </div>
+    )
+  }
   const problem = localLibraryProblem({ ...target, detected: true })
   const counts = overwrite
     ? 'replaced by this set'
@@ -353,6 +375,9 @@ function resultLine(r: TargetResult): string {
 }
 
 function doneMessage(name: string, result: Record<string, unknown> | null): string {
-  const targets = ((result as { targets?: TargetResult[] } | null)?.targets ?? []).map((t) => t.name)
-  return `Pushed “${name}” into ${targets.join(' and ') || 'this computer'}`
+  const r = result as { targets?: TargetResult[]; skipped_targets?: string[] } | null
+  const targets = (r?.targets ?? []).map((t) => t.name)
+  const skipped = r?.skipped_targets ?? []
+  return `Pushed “${name}” into ${targets.join(' and ') || 'this computer'}` +
+    (skipped.length ? ` (${skipped.join(' and ')} skipped — not on this computer)` : '')
 }

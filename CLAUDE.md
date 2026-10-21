@@ -942,7 +942,10 @@ Two independent apps that talk over HTTP:
     deleted after the push. Refused while the app runs (`core/apps_running.py`,
     psutil: `rekordbox` exactly, `traktor*` — macOS `Traktor Pro 4`; re-checked
     before each save), for the library open in Konduktor, and cloud-synced
-    rekordbox. Backup first: Traktor a version-history baseline + a commit per
+    rekordbox. A target library NOT on this computer (`not_found`) is
+    SKIPPED, not a block (`TargetPlan.skipped`): a remote's sets are shared
+    by every computer opening it, so the set dialog lets it be ticked or
+    unticked anywhere; only none found blocks (`no_library_here`). Backup first: Traktor a version-history baseline + a commit per
     push, rekordbox `master.db` + XML copied to `app_data/local_push/backups`
     (10 kept). New copies are placed before the library is written; a copy
     REPLACING a file a library plays waits as `*.konduktor-partial` until a

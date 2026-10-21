@@ -270,6 +270,28 @@ with TestClient(main.app) as c:
           not copy_of(files[1]).exists() and copy_of(files[2]).exists())
     check("one removal reported", j["result"]["targets"][0]["removed"] == 1, str(j["result"]))
 
+    print("== a library missing on this computer is skipped, not a block ==")
+    # The set's targets are shared by every computer opening the library;
+    # this one has no rekordbox (its pref points at nothing).
+    c.patch(f"/api/exports/{gig['id']}", json={"targets": ["traktor", "rekordbox"]})
+    pv = c.post(f"/api/exports/{gig['id']}/push/preview", json={}).json()
+    by = {t["platform"]: t for t in pv["targets"]}
+    check("the preview runs, rekordbox skipped", pv["blocked"] is None and by["rekordbox"]["skipped"]
+          and by["rekordbox"]["blocked"] == "not_found" and not by["traktor"]["skipped"], str(pv))
+    RUNNING.add("rekordbox")
+    pv = c.post(f"/api/exports/{gig['id']}/push/preview", json={}).json()
+    check("a skipped library's app running blocks nothing", pv["blocked"] is None, str(pv))
+    RUNNING.clear()
+    j = wait(c, c.post(f"/api/exports/{gig['id']}/push", json={}).json()["id"])
+    check("the push runs into Traktor alone and names the skipped one", j["state"] == "done"
+          and [t["name"] for t in j["result"]["targets"]] == ["Traktor"]
+          and j["result"]["skipped_targets"] == ["Rekordbox"], str(j.get("error") or j["result"]))
+    c.patch(f"/api/exports/{gig['id']}", json={"targets": ["rekordbox"]})
+    pv = c.post(f"/api/exports/{gig['id']}/push/preview", json={}).json()
+    check("none of its libraries here blocks it", pv["blocked"] == "no_library_here", str(pv))
+    check("…and the run is refused", c.post(f"/api/exports/{gig['id']}/push", json={}).status_code == 409)
+    c.patch(f"/api/exports/{gig['id']}", json={"targets": ["traktor"]})
+
     print("== refusals ==")
     RUNNING.add("traktor")
     pv = c.post(f"/api/exports/{gig['id']}/push/preview", json={}).json()

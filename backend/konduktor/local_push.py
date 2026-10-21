@@ -106,6 +106,8 @@ CLOUD_SYNCED = "cloud_synced"
 UNREADABLE = "unreadable"
 #: Why a push cannot run.
 BLOCKED_NO_TARGET = "no_target"
+#: Every library the set names is missing on THIS computer.
+BLOCKED_NONE_HERE = "no_library_here"
 BLOCKED_EMPTY = "nothing_to_push"
 BLOCKED_UNAVAILABLE = "target_unavailable"
 BLOCKED_RUNNING = "app_running"
@@ -337,8 +339,16 @@ class TargetPlan:
     #: Overwrite: the other sets pushed into this library, which it removes.
     wipes_sets: list[str] = field(default_factory=list)
 
+    @property
+    def skipped(self) -> bool:
+        """Not on this computer, so passed over rather than blocking: a set's
+        targets are shared by every computer that opens the library (a
+        remote's sets live on its server), and one with only Traktor must
+        still push a Traktor + rekordbox set."""
+        return self.blocked == NOT_FOUND
+
     def as_dict(self) -> dict:
-        return dict(self.__dict__)
+        return {**self.__dict__, "skipped": self.skipped}
 
 
 @dataclass
@@ -357,6 +367,11 @@ class PushPlan:
     @property
     def tracks(self) -> list[PlannedTrack]:
         return self.audio.tracks
+
+    @property
+    def active(self) -> list[TargetPlan]:
+        """The targets this push writes: every one found on this computer."""
+        return [t for t in self.targets if not t.skipped]
 
     def as_dict(self) -> dict:
         audio = self.audio
@@ -454,11 +469,13 @@ def plan(adapter, export_set, *, store=None, level: Level | None = None,
                    previous=previous)
     if not targets:
         out.blocked = BLOCKED_NO_TARGET
+    elif not out.active:
+        out.blocked = BLOCKED_NONE_HERE
     elif not built.exportable:
         out.blocked = BLOCKED_EMPTY
-    elif any(t.blocked for t in targets):
+    elif any(t.blocked for t in out.active):
         out.blocked = BLOCKED_UNAVAILABLE
-    elif any(t.running for t in targets):
+    elif any(t.running for t in out.active):
         out.blocked = BLOCKED_RUNNING
     return out
 
@@ -521,7 +538,7 @@ def run(adapter, export_set, built: PushPlan, handle: JobHandle, *, lock_grids: 
     See the module docstring for the order and what a cancel leaves."""
     if built.blocked:
         raise PushRefused(f"This push cannot run: {built.blocked}")
-    for target in built.targets:
+    for target in built.active:
         _refuse_if_running(target.platform)
 
     root = Path(built.audio.destination)
@@ -580,7 +597,7 @@ def run(adapter, export_set, built: PushPlan, handle: JobHandle, *, lock_grids: 
                                 playlists=built.playlists, checkpoint=_checkpoint(handle))
 
         results = []
-        for target in built.targets:
+        for target in built.active:
             handle.raise_if_cancelled()
             handle.progress(done=0, total=0, unit="tracks",
                             message=f"Pushing into {target.name}…")
@@ -610,6 +627,7 @@ def run(adapter, export_set, built: PushPlan, handle: JobHandle, *, lock_grids: 
             "deleted_files": removed,
             "audio_root": str(root),
             "targets": results,
+            "skipped_targets": [t.name for t in built.targets if t.skipped],
         }
     except BaseException:
         for partial, _final in waiting:

@@ -1,7 +1,7 @@
 import { createPortal } from 'react-dom'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api, type ExportSet } from '../api'
+import { api, type ExportSet, type LocalLibrary } from '../api'
 import { localLibraryProblem } from '../lib/platformCopy'
 import { FolderPicker } from './FolderPicker'
 
@@ -85,11 +85,14 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
       on ? [...prev.filter((t) => t !== platform), platform] : prev.filter((t) => t !== platform),
     )
 
-  const pushable = new Set(
-    (locals.data?.libraries ?? []).filter((l) => !l.blocked).map((l) => l.platform),
-  )
+  // A set's targets are shared by every computer that opens this library (a
+  // remote's sets live on its server), so a library missing HERE can still be
+  // ticked or unticked — the push skips it on this computer. Anything else
+  // wrong with a library here can always be unticked, never newly ticked.
+  const lockedOut = (lib: LocalLibrary) =>
+    !!lib.blocked && lib.blocked !== 'not_found' && !chosen.includes(lib.platform)
   const valid = computer
-    ? name.trim() !== '' && chosen.length > 0 && chosen.every((t) => pushable.has(t))
+    ? name.trim() !== '' && chosen.length > 0
     : name.trim() !== '' && destination.trim() !== '' && chosen.length > 0
 
   const chooseKind = (next: ExportSet['kind']) => {
@@ -178,17 +181,21 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
                   <span className="mb-1 block text-xs text-muted">Into</span>
                   <div className="space-y-1">
                     {(locals.data?.libraries ?? []).map((lib) => {
-                      const problem = localLibraryProblem(lib)
+                      const missing = lib.blocked === 'not_found'
+                      const problem = missing
+                        ? `${localLibraryProblem(lib)} — skipped when pushing from this computer`
+                        : localLibraryProblem(lib)
+                      const disabled = lockedOut(lib)
                       return (
                         <label
                           key={lib.platform}
                           className={`flex items-start gap-2 rounded-md px-2 py-1.5 ${
-                            problem ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-ink-850'
+                            disabled ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-ink-850'
                           }`}
                         >
                           <input
                             type="checkbox"
-                            disabled={!!problem}
+                            disabled={disabled}
                             checked={chosen.includes(lib.platform)}
                             onChange={(e) => toggle(lib.platform, e.target.checked)}
                             className="mt-0.5 accent-accent"

@@ -929,6 +929,8 @@ export interface PushTarget {
   name: string
   path: string | null
   blocked: LocalLibrary['blocked']
+  /** Not on this computer: the push passes it over instead of blocking. */
+  skipped: boolean
   running: boolean
   /** Tracks this set has not pushed here before. */
   add: number
@@ -958,7 +960,7 @@ export interface PushPreview {
   to_measure: number
   targets: PushTarget[]
   /** A FACT, not a sentence. Null when the push can run. */
-  blocked: 'no_target' | 'nothing_to_push' | 'target_unavailable' | 'app_running' | null
+  blocked: 'no_target' | 'no_library_here' | 'nothing_to_push' | 'target_unavailable' | 'app_running' | null
 }
 
 /** The run dialog's options; each is remembered on the set. Omitted = the
