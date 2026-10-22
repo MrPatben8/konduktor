@@ -929,6 +929,8 @@ export interface PushTarget {
   name: string
   path: string | null
   blocked: LocalLibrary['blocked']
+  /** Not on this computer: the push passes it over instead of blocking. */
+  skipped: boolean
   running: boolean
   /** Tracks this set has not pushed here before. */
   add: number
@@ -958,7 +960,7 @@ export interface PushPreview {
   to_measure: number
   targets: PushTarget[]
   /** A FACT, not a sentence. Null when the push can run. */
-  blocked: 'no_target' | 'nothing_to_push' | 'target_unavailable' | 'app_running' | null
+  blocked: 'no_target' | 'no_library_here' | 'nothing_to_push' | 'target_unavailable' | 'app_running' | null
 }
 
 /** The run dialog's options; each is remembered on the set. Omitted = the
@@ -1269,6 +1271,14 @@ export const api = {
       'POST',
       `/api/playlists/${encodeURIComponent(nodeId)}/add`,
       { track_ids: trackIds, duplicates, index },
+    ),
+  /** Remove every occurrence of these tracks. `dryRun` changes nothing and
+   *  counts: `tracks` = how many of them it holds, `removed` = entries. */
+  removeEntries: (nodeId: string, trackIds: string[], dryRun = false) =>
+    send<{ status: 'removed' | 'counted'; tracks: number; removed: number; count: number }>(
+      'POST',
+      `/api/playlists/${encodeURIComponent(nodeId)}/remove`,
+      { track_ids: trackIds, dry_run: dryRun },
     ),
   /** Move a tree node to `index` among `parentId`'s children (null = top
    *  level), counted without it. Answers its id AFTER the move. */

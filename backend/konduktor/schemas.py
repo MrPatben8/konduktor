@@ -32,6 +32,12 @@ class AddEntries(BaseModel):
     index: int | None = None
 
 
+class RemoveEntries(BaseModel):
+    track_ids: list[str]
+    # Count what would go and change nothing — the confirm dialog's numbers.
+    dry_run: bool = False
+
+
 class MovePlaylist(BaseModel):
     node_id: str
     parent_id: str | None = None  # None = the top level
@@ -539,6 +545,9 @@ class PushTargetOut(BaseModel):
     name: str
     path: str | None = None
     blocked: str | None = None
+    #: Not on this computer (`blocked` = not_found): passed over by the push
+    #: instead of blocking it.
+    skipped: bool = False
     running: bool = False
     add: int = 0
     already: int = 0
@@ -565,7 +574,8 @@ class PushPreview(BaseModel):
     to_measure: int = 0
     level_counts: dict[str, int] = {}
     targets: list[PushTargetOut] = []
-    #: A FACT: `no_target`, `nothing_to_push`, `target_unavailable`,
+    #: A FACT: `no_target`, `no_library_here` (none of the set's libraries
+    #: is on this computer), `nothing_to_push`, `target_unavailable`,
     #: `app_running`, or null when it can run.
     blocked: str | None = None
 

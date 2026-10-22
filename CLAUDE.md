@@ -53,6 +53,13 @@ Two independent apps that talk over HTTP:
       inserts among the CURRENT entries (a drop between a table's rows);
       folder add (`playlist_index`) and device import (`into_playlist_index`)
       take the same.
+      `POST /api/playlists/{id}/remove` (`dry_run` counts, changes nothing)
+      drops EVERY occurrence of the given tracks, other entries kept as they
+      are — the track menu's **Remove ▸ From playlist ▸** (decided 2026-10-22,
+      [the discussion](.claude/discussions/discuss-playlist-subtraction-2026-10-22.md)):
+      tracks picked anywhere leave a playlist that is not open, so "A minus B"
+      is open B, select all, remove from A. Lists every `can_reorder`
+      playlist but the open one; the confirm says how many it holds, even 0.
     - `capabilities.py` — `Capabilities`: what the loaded library can persist, so
       the UI can gate controls instead of branching on the platform.
     - `query.py` (`TrackIndex`) — all query/filter/sort/facet/stats logic, over
@@ -942,7 +949,10 @@ Two independent apps that talk over HTTP:
     deleted after the push. Refused while the app runs (`core/apps_running.py`,
     psutil: `rekordbox` exactly, `traktor*` — macOS `Traktor Pro 4`; re-checked
     before each save), for the library open in Konduktor, and cloud-synced
-    rekordbox. Backup first: Traktor a version-history baseline + a commit per
+    rekordbox. A target library NOT on this computer (`not_found`) is
+    SKIPPED, not a block (`TargetPlan.skipped`): a remote's sets are shared
+    by every computer opening it, so the set dialog lets it be ticked or
+    unticked anywhere; only none found blocks (`no_library_here`). Backup first: Traktor a version-history baseline + a commit per
     push, rekordbox `master.db` + XML copied to `app_data/local_push/backups`
     (10 kept). New copies are placed before the library is written; a copy
     REPLACING a file a library plays waits as `*.konduktor-partial` until a
@@ -1097,8 +1107,9 @@ Two independent apps that talk over HTTP:
     picker used to be a one-way door with `forcePicker` never set, so changing
     library meant restarting; switching confirms first when there are unsaved
     edits, since the adapter holds them in a native model that opening another
-    library replaces — plus the playlist tree. **Creating is right-click
-    only**: a folder's menu offers New Playlist / New Folder inside it, empty
+    library replaces — plus the playlist tree. **Creating is right-click,
+    or the Playlists header's +** (the top-level menu under the button; with
+    no folders, straight to a new playlist): a folder's menu offers New Playlist / New Folder inside it, empty
     space below the rows creates at the top level, and the new node is named
     in place (Esc or an empty name creates nothing). Rename/Delete are on the
     same menu and the row's hover buttons, which share one set of actions.
@@ -1322,13 +1333,14 @@ Two independent apps that talk over HTTP:
     `OverviewWaveform`, which frames the main view's visible range around the
     playhead (it takes `secPerView` for exactly that). **Controls**: play, CUE, `LoopControls`, then
     (where `cues.memory_cues`) the **Hot / Mem** switch (`ModeSwitch`, the same component as BEAT / MAN), then
-    `HotcueBar`, `MemoryCueStrip` (Mem) OR — in **Grid mode** — `GridEditStrip`, then `TempoControls`
-    (±0.01 / ±0.25, ÷2 ×2, tap, lock) and the Grid toggle. The row is a
+    `HotcueBar`, `MemoryCueStrip` (Mem) OR — in **Grid mode** — `GridEditStrip`, then the
+    **CUES / GRID** switch (also a `ModeSwitch`) and `TempoControls`
+    (±0.01 / ±0.25, ÷2 ×2, tap, lock). A two-option `ModeSwitch` flips on a
+    click anywhere on it. The row is a
     **container** and gives way in stages instead of overlapping: each pad
     queries its own width and drops its name below 4rem (the bank never goes
     below `PAD_MIN` per pad), then the tempo group folds into `TempoFold`'s
-    portalled popover, then Grid keeps only its icon. The two row breakpoints
-    are measured widths — move them if controls are added to the row. Every grid control acts
+    portalled popover. That breakpoint is a measured width — move them if controls are added to the row. Every grid control acts
     on the marker **governing the playhead**, since a beatgrid is a marker list
     and there is no separate marker selection; see "Beatgrid" below.
     - **One size for loops AND beat jump** (`beatSize`, 1/32–32, persisted as
@@ -1514,7 +1526,8 @@ serialization path.** It enforces:
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched;
   plus the drag-and-drop routes: `/add`'s three `duplicates` modes (`ask`
-  changes nothing and counts) and `/api/playlists/move` (path id answered,
+  changes nothing and counts), `/remove` (every copy, order kept, `dry_run`
+  counts and changes nothing, 404 unknown) and `/api/playlists/move` (path id answered,
   400 into itself, 404 unknown).
 - `test_timebase.py` — Traktor's MP3 time base: `mp3_gapless` on generated
   MP3s (header found after a 1 MB ID3 tag; header-less has none), the offset

@@ -14,6 +14,9 @@ export interface ConfirmRequest {
    *  (e.g. "Add them again" next to "Add 6 new"). Enter still means confirm. */
   altLabel?: string
   onAlt?: () => void
+  /** Nothing to confirm (e.g. none of the tracks are there): the dialog
+   *  still answers, with the confirm button — and Enter — off. */
+  confirmDisabled?: boolean
   onConfirm: () => Promise<void> | void
 }
 
@@ -23,11 +26,11 @@ interface Props extends ConfirmRequest {
 
 /** A yes/no confirmation for destructive actions. Enter confirms and Esc
  *  cancels, so a confirmed Delete key stays a two-keystroke action. */
-export function ConfirmDialog({ title, body, confirmLabel, tone = 'danger', altLabel, onAlt, onConfirm, onClose }: Props) {
+export function ConfirmDialog({ title, body, confirmLabel, tone = 'danger', altLabel, onAlt, confirmDisabled, onConfirm, onClose }: Props) {
   const [busy, setBusy] = useState(false)
 
   const confirm = async () => {
-    if (busy) return
+    if (busy || confirmDisabled) return
     setBusy(true)
     try {
       await onConfirm()
@@ -87,7 +90,7 @@ export function ConfirmDialog({ title, body, confirmLabel, tone = 'danger', altL
           )}
           <button
             onClick={() => void confirm()}
-            disabled={busy}
+            disabled={busy || confirmDisabled}
             className={`rounded-full px-4 py-1.5 text-sm font-semibold disabled:opacity-50 ${
               tone === 'primary'
                 ? 'btn-primary'
