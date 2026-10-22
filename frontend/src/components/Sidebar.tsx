@@ -774,10 +774,26 @@ export function Sidebar({
           </button>
         </div>
 
-        <div className="mt-3 shrink-0 px-4">
+        <div className="mt-3 flex shrink-0 items-center justify-between px-4">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-faint">
             Playlists
           </span>
+          {/* The same choices as right-clicking below the rows: straight to a
+              new playlist where there is nothing else to create, else the
+              menu, opened under the button. */}
+          {canCreate && (
+            <button
+              title={foldersSupported ? 'New playlist or folder' : 'New playlist'}
+              onClick={(e) => {
+                if (!foldersSupported) return startDraft('playlist', null)
+                const r = e.currentTarget.getBoundingClientRect()
+                setMenu({ x: r.left, y: r.bottom + 4, items: createItems(null) })
+              }}
+              className="rounded px-1 text-sm text-faint hover:text-text"
+            >
+              +
+            </button>
+          )}
         </div>
 
         {/* Right-click here (below the rows) creates at the top level; rows

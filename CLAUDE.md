@@ -1107,8 +1107,9 @@ Two independent apps that talk over HTTP:
     picker used to be a one-way door with `forcePicker` never set, so changing
     library meant restarting; switching confirms first when there are unsaved
     edits, since the adapter holds them in a native model that opening another
-    library replaces — plus the playlist tree. **Creating is right-click
-    only**: a folder's menu offers New Playlist / New Folder inside it, empty
+    library replaces — plus the playlist tree. **Creating is right-click,
+    or the Playlists header's +** (the top-level menu under the button; with
+    no folders, straight to a new playlist): a folder's menu offers New Playlist / New Folder inside it, empty
     space below the rows creates at the top level, and the new node is named
     in place (Esc or an empty name creates nothing). Rename/Delete are on the
     same menu and the row's hover buttons, which share one set of actions.
