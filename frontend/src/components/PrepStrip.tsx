@@ -1625,11 +1625,10 @@ export function PrepStrip({
           A container, so the row gives way in stages as the window narrows
           instead of the pads sliding under the tempo group: the pads drop
           their names first (each pad queries its own width, see HotcueBar),
-          then below 77rem the tempo group folds into one BPM button, and below
-          63rem the Grid toggle keeps only its icon. Those are the row's
-          measured widths just before the pad bank would hit its minimum (with
-          a lockable grid's extra Lock button, and the Hot / Mem toggle's
-          ~3rem with its gap), so move them with the controls. */}
+          then below 77rem the tempo group folds into one BPM button. That is
+          the row's measured width just before the pad bank would hit its
+          minimum (with a lockable grid's extra Lock button, and the Hot / Mem
+          toggle's ~3rem with its gap), so move it with the controls. */}
       <div className="@container flex h-11 shrink-0 items-center gap-3">
         <button
           onClick={toggle}
@@ -1752,31 +1751,26 @@ export function PrepStrip({
           />
         )}
         {DIVIDER}
-        <TempoControls {...tempoProps} className="@max-[77rem]:hidden" />
-        <TempoFold locked={tempoProps.locked} className="hidden @max-[77rem]:flex">
-          <TempoControls {...tempoProps} />
-        </TempoFold>
-        <button
-          onClick={() => {
-            setGridMode((g) => !g)
+        <ModeSwitch
+          label="Deck mode"
+          value={gridMode ? 'grid' : 'cues'}
+          options={[
+            { value: 'cues', text: 'CUES', title: 'Cues: the hotcue pads or memory cues' },
+            { value: 'grid', text: 'GRID', title: 'Edit the beatgrid: markers, phase, reset' },
+          ]}
+          disabled={!track}
+          onChange={(m) => {
+            setGridMode(m === 'grid')
             setPadMenu(null)
             setRenamingSlot(null)
             setMemoryMenu(null)
             setRenamingMemory(null)
           }}
-          aria-pressed={gridMode}
-          disabled={!track}
-          title={gridMode ? 'Back to the hotcue pads' : 'Edit the beatgrid: markers, phase, reset'}
-          aria-label="Grid"
-          className={`flex h-10 shrink-0 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold transition-colors disabled:opacity-40 @max-[63rem]:w-10 @max-[63rem]:justify-center @max-[63rem]:px-0 ${
-            gridMode
-              ? 'bg-gold/15 text-gold shadow-[inset_0_0_0_1px_rgb(255_200_97/0.5),0_0_16px_-4px_rgb(255_200_97/0.6)]'
-              : 'btn-glass text-text'
-          }`}
-        >
-          <Icon name="grid" size={14} />
-          <span className="@max-[63rem]:hidden">Grid</span>
-        </button>
+        />
+        <TempoControls {...tempoProps} className="@max-[77rem]:hidden" />
+        <TempoFold locked={tempoProps.locked} className="hidden @max-[77rem]:flex">
+          <TempoControls {...tempoProps} />
+        </TempoFold>
       </div>
 
       {memoryMenu && (

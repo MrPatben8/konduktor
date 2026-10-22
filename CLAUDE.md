@@ -1333,13 +1333,14 @@ Two independent apps that talk over HTTP:
     `OverviewWaveform`, which frames the main view's visible range around the
     playhead (it takes `secPerView` for exactly that). **Controls**: play, CUE, `LoopControls`, then
     (where `cues.memory_cues`) the **Hot / Mem** switch (`ModeSwitch`, the same component as BEAT / MAN), then
-    `HotcueBar`, `MemoryCueStrip` (Mem) OR — in **Grid mode** — `GridEditStrip`, then `TempoControls`
-    (±0.01 / ±0.25, ÷2 ×2, tap, lock) and the Grid toggle. The row is a
+    `HotcueBar`, `MemoryCueStrip` (Mem) OR — in **Grid mode** — `GridEditStrip`, then the
+    **CUES / GRID** switch (also a `ModeSwitch`) and `TempoControls`
+    (±0.01 / ±0.25, ÷2 ×2, tap, lock). A two-option `ModeSwitch` flips on a
+    click anywhere on it. The row is a
     **container** and gives way in stages instead of overlapping: each pad
     queries its own width and drops its name below 4rem (the bank never goes
     below `PAD_MIN` per pad), then the tempo group folds into `TempoFold`'s
-    portalled popover, then Grid keeps only its icon. The two row breakpoints
-    are measured widths — move them if controls are added to the row. Every grid control acts
+    portalled popover. That breakpoint is a measured width — move them if controls are added to the row. Every grid control acts
     on the marker **governing the playhead**, since a beatgrid is a marker list
     and there is no separate marker selection; see "Beatgrid" below.
     - **One size for loops AND beat jump** (`beatSize`, 1/32–32, persisted as

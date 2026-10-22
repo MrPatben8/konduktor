@@ -8,27 +8,31 @@ export function ModeSwitch<T extends string>({
   label,
   value,
   options,
+  disabled = false,
   onChange,
 }: {
   /** Names the group for assistive tech ("Loop mode", "Cue bank"). */
   label: string
   value: T
   options: { value: T; text: string; title: string }[]
+  disabled?: boolean
   onChange: (value: T) => void
 }) {
-  const other = options.length === 2 ? options.find((o) => o.value !== value) : undefined
+  const other =
+    options.length === 2 && !disabled ? options.find((o) => o.value !== value) : undefined
   return (
     <div
       role="group"
       aria-label={label}
       onClick={other ? () => onChange(other.value) : undefined}
-      className={`well ${other ? 'cursor-pointer ' : ''}flex h-10 shrink-0 flex-col justify-center gap-0.5 rounded-[10px] p-0.5`}
+      className={`well ${other ? 'cursor-pointer ' : ''}${disabled ? 'opacity-40 ' : ''}flex h-10 shrink-0 flex-col justify-center gap-0.5 rounded-[10px] p-0.5`}
     >
       {options.map((o) => (
         <button
           key={o.value}
           onClick={other ? undefined : () => onChange(o.value)}
           title={o.title}
+          disabled={disabled}
           aria-pressed={value === o.value}
           className={`h-[17px] rounded-[7px] px-[7px] text-[9px] font-bold tracking-[0.08em] transition-colors ${
             value === o.value ? 'btn-primary' : 'text-faint hover:text-text'
