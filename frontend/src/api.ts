@@ -1272,6 +1272,14 @@ export const api = {
       `/api/playlists/${encodeURIComponent(nodeId)}/add`,
       { track_ids: trackIds, duplicates, index },
     ),
+  /** Remove every occurrence of these tracks. `dryRun` changes nothing and
+   *  counts: `tracks` = how many of them it holds, `removed` = entries. */
+  removeEntries: (nodeId: string, trackIds: string[], dryRun = false) =>
+    send<{ status: 'removed' | 'counted'; tracks: number; removed: number; count: number }>(
+      'POST',
+      `/api/playlists/${encodeURIComponent(nodeId)}/remove`,
+      { track_ids: trackIds, dry_run: dryRun },
+    ),
   /** Move a tree node to `index` among `parentId`'s children (null = top
    *  level), counted without it. Answers its id AFTER the move. */
   movePlaylist: (nodeId: string, parentId: string | null, index: number) =>

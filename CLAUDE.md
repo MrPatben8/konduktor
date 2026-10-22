@@ -53,6 +53,13 @@ Two independent apps that talk over HTTP:
       inserts among the CURRENT entries (a drop between a table's rows);
       folder add (`playlist_index`) and device import (`into_playlist_index`)
       take the same.
+      `POST /api/playlists/{id}/remove` (`dry_run` counts, changes nothing)
+      drops EVERY occurrence of the given tracks, other entries kept as they
+      are — the track menu's **Remove ▸ From playlist ▸** (decided 2026-10-22,
+      [the discussion](.claude/discussions/discuss-playlist-subtraction-2026-10-22.md)):
+      tracks picked anywhere leave a playlist that is not open, so "A minus B"
+      is open B, select all, remove from A. Lists every `can_reorder`
+      playlist but the open one; the confirm says how many it holds, even 0.
     - `capabilities.py` — `Capabilities`: what the loaded library can persist, so
       the UI can gate controls instead of branching on the platform.
     - `query.py` (`TrackIndex`) — all query/filter/sort/facet/stats logic, over
@@ -1517,7 +1524,8 @@ serialization path.** It enforces:
 - `test_phase3.py` — full create/add/reorder/rename/delete/save cycle stays
   Traktor-valid, backup-first, COLLECTION byte-identical, original untouched;
   plus the drag-and-drop routes: `/add`'s three `duplicates` modes (`ask`
-  changes nothing and counts) and `/api/playlists/move` (path id answered,
+  changes nothing and counts), `/remove` (every copy, order kept, `dry_run`
+  counts and changes nothing, 404 unknown) and `/api/playlists/move` (path id answered,
   400 into itself, 404 unknown).
 - `test_timebase.py` — Traktor's MP3 time base: `mp3_gapless` on generated
   MP3s (header found after a 1 MB ID3 tag; header-less has none), the offset

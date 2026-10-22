@@ -104,6 +104,7 @@ from .schemas import (
     RenamePlaylist,
     SaveResult,
     AddEntries,
+    RemoveEntries,
     MovePlaylist,
     SetEntries,
     SourceCandidate,
@@ -1471,6 +1472,28 @@ def add_entries(playlist_uuid: str, body: AddEntries) -> dict:
     n = a.set_playlist_entries(playlist_uuid, current[:at] + added + current[at:]) if added else len(current)
     return {"status": "added", "id": playlist_uuid, "added": len(added),
             "duplicates": len(dupes), "count": n}
+
+
+@app.post("/api/playlists/{playlist_uuid}/remove")
+def remove_entries(playlist_uuid: str, body: RemoveEntries) -> dict:
+    """Remove tracks from a playlist — EVERY occurrence of each — without the
+    caller holding its entry list (the track menu's Remove ▸ From playlist).
+    Other entries keep their order, including ones whose track is missing
+    from the collection. `tracks` = how many of the given tracks it held,
+    `removed` = entries dropped (more, where a track was there twice)."""
+    a = require_adapter()
+    current = a.playlist_entries(playlist_uuid)
+    if current is None:
+        raise HTTPException(404, f"Playlist not found: {playlist_uuid}")
+    gone = set(body.track_ids)
+    kept = [t for t in current if t not in gone]
+    held = len(gone & set(current))
+    removed = len(current) - len(kept)
+    n = len(current)
+    if removed and not body.dry_run:
+        n = a.set_playlist_entries(playlist_uuid, kept)
+    return {"status": "counted" if body.dry_run else "removed", "id": playlist_uuid,
+            "tracks": held, "removed": removed, "count": n}
 
 
 @app.patch("/api/tracks")

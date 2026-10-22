@@ -204,6 +204,25 @@ check("an index past the end appends", after[-1] == more[1])
 check("capabilities say Traktor holds duplicates",
       client.get("/api/capabilities").json()["playlists"]["duplicates"] is True)
 
+before = [t["id"] for t in client.get(f"/api/playlists/{target}/tracks").json()]
+outsider = next(t["id"] for t in client.get("/api/tracks", params={"limit": 50}).json()["items"]
+                if t["id"] not in before)
+picked = [first[0], rest[0], outsider]  # first[0] is in there twice
+r = client.post(f"/api/playlists/{target}/remove",
+                json={"track_ids": picked, "dry_run": True}).json()
+check("a dry-run remove counts tracks held and entries (both copies) and changes nothing",
+      r["tracks"] == 2 and r["removed"] == 3
+      and [t["id"] for t in client.get(f"/api/playlists/{target}/tracks").json()] == before)
+r = client.post(f"/api/playlists/{target}/remove", json={"track_ids": picked}).json()
+after = [t["id"] for t in client.get(f"/api/playlists/{target}/tracks").json()]
+check("remove drops every copy and keeps the rest in order",
+      r["removed"] == 3 and r["count"] == len(before) - 3
+      and after == [t for t in before if t not in picked])
+r = client.post(f"/api/playlists/{target}/remove", json={"track_ids": [outsider]}).json()
+check("removing tracks it does not hold changes nothing", r["removed"] == 0 and r["count"] == len(after))
+check("remove from an unknown playlist is a 404",
+      client.post("/api/playlists/nope/remove", json={"track_ids": picked}).status_code == 404)
+
 box = client.post("/api/playlists/folders", json={"name": "Konduktor Drop Box"}).json()["id"]
 r = client.post("/api/playlists/move", json={"node_id": target, "parent_id": box, "index": 0})
 check("move answers the playlist's id", r.status_code == 200 and r.json()["id"] == target)

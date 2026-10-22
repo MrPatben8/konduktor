@@ -32,6 +32,12 @@ class AddEntries(BaseModel):
     index: int | None = None
 
 
+class RemoveEntries(BaseModel):
+    track_ids: list[str]
+    # Count what would go and change nothing — the confirm dialog's numbers.
+    dry_run: bool = False
+
+
 class MovePlaylist(BaseModel):
     node_id: str
     parent_id: str | None = None  # None = the top level

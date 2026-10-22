@@ -368,6 +368,13 @@ export default function App() {
       nodes.flatMap((n) => [...(n.can_add_tracks ? [n] : []), ...walk(n.children)])
     return walk(playlists.data ?? [])
   }, [playlists.data])
+  // Every playlist Remove ▸ From playlist can take tracks out of: the same
+  // gate as removing from the open one (its entry list is rewritten).
+  const removablePlaylists = useMemo(() => {
+    const walk = (nodes: PlaylistNode[]): PlaylistNode[] =>
+      nodes.flatMap((n) => [...(n.can_reorder ? [n] : []), ...walk(n.children)])
+    return canEdit ? walk(playlists.data ?? []) : []
+  }, [playlists.data, canEdit])
 
   // Export membership. Both are no-ops on the library itself, so neither dirties
   // it nor touches version history — an export set is Konduktor's own data.
@@ -1094,6 +1101,50 @@ export default function App() {
       },
     })
 
+  // Remove ▸ From playlist ▸ <name>: tracks picked anywhere leave a playlist
+  // that is not open — every copy of each. Counted first, so the dialog says
+  // how many of the selection it actually holds (and still answers at 0).
+  const confirmRemoveFromOther = async (p: PlaylistNode, ids: string[]) => {
+    let r
+    try {
+      r = await api.removeEntries(p.id, ids, true)
+    } catch (e) {
+      onError((e as Error).message)
+      return
+    }
+    const name = <span className="text-text">{p.name}</span>
+    const held = r.tracks
+    setConfirmReq({
+      title: 'Remove from playlist',
+      body: !held ? (
+        <p>
+          {ids.length === 1 ? <>{trackNoun(ids)} is not</> : <>None of these {ids.length} tracks are</>} in {name}.
+        </p>
+      ) : (
+        <>
+          <p>
+            Remove {held === ids.length ? trackNoun(ids) : `${held} of the ${ids.length} selected tracks`} from {name}?
+            The {held === 1 ? 'track stays' : 'tracks stay'} in the collection.
+          </p>
+          {held < ids.length && (
+            <p className="text-faint">The other {nTracks(ids.length - held)} {ids.length - held === 1 ? 'is' : 'are'} not in it.</p>
+          )}
+          {r.removed > held && <p className="text-faint">Some are in it more than once; every copy goes.</p>}
+        </>
+      ),
+      confirmLabel: held ? `Remove ${nTracks(held)}` : 'Remove',
+      confirmDisabled: !held,
+      onConfirm: () =>
+        guard(async () => {
+          const done = await api.removeEntries(p.id, ids)
+          qc.invalidateQueries({ queryKey: ['playlist', p.id] })
+          qc.invalidateQueries({ queryKey: ['playlists'] })
+          qc.invalidateQueries({ queryKey: ['state'] })
+          notify('success', `Removed ${nTracks(done.tracks)} from ${p.name}`)
+        }),
+    })
+  }
+
   const confirmRemoveFromExport = (exportId: string, ids: string[]) => {
     const name = exportSets.data?.find((x) => x.id === exportId)?.name ?? 'this export'
     setConfirmReq({
@@ -1231,6 +1282,22 @@ export default function App() {
     ...(playlistEditable
       ? [{ label: 'From this playlist…', onClick: () => confirmRemoveFromPlaylist(ids) }]
       : []),
+    // Any other editable playlist — "A minus B" is: open B, select all, here A.
+    ...(() => {
+      // A device's ids mean nothing to the collection's playlists.
+      if (viewingDevice) return []
+      const lists = removablePlaylists.filter((p) => !(source.kind === 'playlist' && p.id === source.id))
+      return lists.length
+        ? [{
+            label: 'From playlist',
+            submenu: lists.map((p) => ({
+              label: p.name,
+              hint: String(p.count),
+              onClick: () => void confirmRemoveFromOther(p, ids),
+            })),
+          }]
+        : []
+    })(),
     // Only on the export's ROOT view. Inside a referenced playlist there is
     // nothing to remove: the reference is live, and per-track removal would
     // need an exclusion list — hidden state deciding what a future export
