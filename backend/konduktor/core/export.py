@@ -192,6 +192,14 @@ class LibraryExporter(Protocol):
     #: destination, so this is a warning the UI raises, not a refusal: the other
     #: targets in the same export are still perfectly valid in any folder.
     drive_root: bool = False
+    #: Optional, and not a protocol member so a target needs nothing to opt
+    #: out: `prepare_copy(path) -> bool` readies one audio COPY for this
+    #: library, in place, before its size is recorded or a library refers to
+    #: it, returning True if it changed the file. Called once per copy and
+    #: target (the runner records which targets have prepared it, so a kept
+    #: copy is prepared when a target joins the set). Traktor's removes its
+    #: own block from the file (`adapters/traktor/file_block.py`). Never
+    #: called on a file a library references in place.
 
     def capabilities(self) -> Capabilities:
         """What this target can represent — STATIC, with no library to read."""

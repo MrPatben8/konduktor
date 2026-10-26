@@ -86,6 +86,8 @@ from .exporter import (
     _measure_missing,
     _record,
     assign_reuse,
+    prepare_copy,
+    prepare_kept,
     set_level,
     write_copy,
 )
@@ -551,10 +553,18 @@ def run(adapter, export_set, built: PushPlan, handle: JobHandle, *, lock_grids: 
         _measure_missing(adapter, built.audio, handle, store=store, level=level,
                          previous=built.previous)
         items = built.audio.exportable
+        # The targets' writers, for `prepare_copy` (Traktor's removes its own
+        # block from the file, which it would restore over the pushed grid).
+        writers = [w for w in (core_export.for_platform(t.platform) for t in built.active) if w]
         handle.progress(done=0, total=built.audio.total_bytes, unit="bytes", message="Copying…")
         for planned in items:
             handle.raise_if_cancelled()
             if planned.reuse is not None:
+                # Kept: prepared for any target that has not yet. In place —
+                # no target app is running (refused above), and a library
+                # already holding the file re-reads its tags on its own.
+                old = built.previous.get(str(planned.source_path))
+                prepare_kept(planned.reuse, planned, old[1] if old else {}, writers)
                 continue
             target = Path(planned.destination)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -568,6 +578,7 @@ def run(adapter, export_set, built: PushPlan, handle: JobHandle, *, lock_grids: 
 
             handle.progress(message=f"Copying {planned.title}")
             write_copy(adapter, planned, partial, handle, advance)
+            planned.prepared = prepare_copy(partial, writers)
             written.add(planned.track_id)
             if target.exists():
                 # A library may be playing this file: it is replaced only

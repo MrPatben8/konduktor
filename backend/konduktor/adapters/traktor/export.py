@@ -37,6 +37,7 @@ from pathlib import Path
 from ...core.adapter import NewTrack
 from ...core.export import OTHER_PLAYLIST, ExportPayload, WrittenLibrary, write_playlist_tree
 from .adapter import TraktorAdapter
+from . import file_block
 from .capabilities import capabilities_for
 
 log = logging.getLogger(__name__)
@@ -67,6 +68,12 @@ class TraktorExporter:
     #: AUDIO_ID keeps the PERCEIVED_DB the deck reads through Traktor's first
     #: analysis, which overwrites only ANALYZED_DB).
     writes_auto_gain = True
+
+    @staticmethod
+    def prepare_copy(path: Path) -> bool:
+        """Remove Traktor's own block from a copy (`file_block`): left in, it
+        is restored over this entry's grid when Traktor opens the collection."""
+        return file_block.strip(path)
 
     def capabilities(self):
         """What a Traktor library can hold — answered with no library to read.

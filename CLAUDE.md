@@ -306,6 +306,34 @@ Two independent apps that talk over HTTP:
       cached. The header itself is read by `core/mp3_gapless.py`, which skips
       the ID3v2 tag first — a check that did not once misread every real MP3
       as header-less.
+    - `file_block.py` — **Traktor's own block INSIDE the audio file**, and
+      removing it from copies (measured in Traktor 4.5, 2026-10-24: 2MUCH /
+      Alone (Vip)). Traktor writes a `DMRT` chunk tree (reversed 4CCs; chunk =
+      name + u32 size + u32 child count + payload) into every file it tags:
+      MP4 `ilst` atom `NITR` (mutagen: `_failed_atoms`, or a parsed key), ID3
+      `PRIV` owner `TRAKTOR4` (MP3/AIFF/WAV), Vorbis `traktor4` (FLAC). It
+      holds `HBPM` (float32 BPM), `CUEP` (cues), `AUID` (= the NML AUDIO_ID
+      after a 4-byte length), `TRN3` transients, tags. **An entry with no
+      MODIFIED_DATE — every entry Konduktor creates — makes Traktor re-read
+      the file and take `HBPM` over the NML's BPM, LOCK or not** (anchor
+      kept; it then stamps MODIFIED_DATE/TIME = the file's mtime, UTC
+      seconds). So a grid fixed after Traktor last wrote the block reverted on
+      every export/push. Measured alternatives: AUDIO_ID added — no effect;
+      MODIFIED_DATE later than the file — grid kept but Traktor skips the
+      file entirely, cover art lost. Block removed (no date, no AUDIO_ID) —
+      grid, lock, cues AND art right, a stale `tmpo` ignored, and Traktor
+      writes a fresh, correct block on deck load. Hence the TraktorExporter's
+      `prepare_copy` and the adapter's optional `prepare_copied_audio`
+      (importer copies only): ONLY a copy Konduktor wrote is touched, never a
+      file referenced in place or an upload. The runners
+      (`exporter.prepare_copy` / `prepare_kept`, also used by `local_push`)
+      record `prepared` per copy in the manifest / push ledger, so a KEPT copy
+      from an older export, or one a new Traktor target joins, is cleaned IN
+      PLACE rather than copied again. Not covered: a Traktor collection
+      edited directly — a tag write at Save makes the file newer than the
+      entry, which by the same rule should make Traktor re-read it
+      (untested). Flexible grids are a separate rule: Traktor rounds every
+      segment to a whole number of beats on load, whatever the file says.
   - `adapters/rekordbox/` — **track metadata, playlists and hot cues writable;
     the beatgrid still read-only** (milestones 2 and 3a). Also home to
     `anlz_writer.py`, which BUILDS analysis files from nothing — Pioneer's format,
@@ -1790,6 +1818,17 @@ serialization path.** It enforces:
   only that set and deletes the other's files. On a temp copy of the local
   rekordbox library (skipped when absent): merge, backup, a refused removal
   kept and reported then retried, overwrite with a stale WAL.
+- `test_traktor_file_block.py` — Traktor's block inside the file, on
+  GENERATED MP3 / M4A / FLAC carrying one that says 175 while the library's
+  grid says 176, with collections built from the empty Traktor skeleton:
+  each format's block removed with everything else kept (audio
+  sample-identical, a foreign PRIV frame, the cover, the ID3 version), a file
+  without one never rewritten; an export's copies lose it while the sources
+  keep it, the manifest records `prepared`, a re-export rewrites nothing, a
+  kept copy from an older export is cleaned in place (same inode), a target
+  without the hook (Rekordbox Export) leaves it and adding Traktor cleans the
+  kept copies; a local push's shared copies and an import's copies lose it,
+  a file added in place is never touched.
 - `test_auto_hotcues.py` — Auto Hotcues in three layers: `structure.analyse`
   on SYNTHETIC audio with known sections (the intro with a kick is not a drop;
   no breakdown after the last drop), `plan`'s outcomes and beat-counted offsets
