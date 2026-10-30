@@ -512,6 +512,15 @@ class TraktorAdapter:
         track uploaded there is stored as that computer would have stored it."""
         self._store.set_write_stored_paths(enabled)
 
+    def prepare_copied_audio(self, path: Path) -> bool:
+        """OPTIONAL: ready a file the importer just COPIED for this library —
+        Traktor's own block removed (`file_block`), which Traktor would
+        otherwise restore over the entry's grid. Never called for a file
+        added in place."""
+        from . import file_block
+
+        return file_block.strip(path)
+
     def unresolved_path_groups(self) -> list[PathGroup]:
         return self._store.unresolved_path_groups()
 

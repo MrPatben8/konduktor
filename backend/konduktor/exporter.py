@@ -126,6 +126,9 @@ class PlannedTrack:
     level_outcome: str | None = None
     #: The run needs this source's loudness (it normalises, or writes auto gain).
     needs_loudness: bool = False
+    #: The targets whose `prepare_copy` the copy has been through (sorted
+    #: platforms; recorded in the manifest, missing = none).
+    prepared: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -321,7 +324,41 @@ def _record(planned: PlannedTrack, copy: Path) -> dict:
         # The level the copy was written at: a copy kept by a later export must
         # be at the level THAT export wants (missing = 0, every older manifest).
         "gain_db": planned.gain_db,
+        # The targets that have prepared the copy (`prepare_copy`): a kept copy
+        # is prepared for any target not listed (missing = none, every older
+        # manifest — which is how existing exports lose Traktor's block).
+        "prepared": list(planned.prepared),
     }
+
+
+def prepare_copy(path: Path, exporters, done=()) -> tuple[str, ...]:
+    """Run each target's optional `prepare_copy` on one copy, in place,
+    skipping the targets in `done` (already prepared it). Returns every target
+    that now has — `done` included, so a target leaving the set does not make
+    a later one prepare the copy twice."""
+    ready = set(done)
+    for exporter in exporters:
+        hook = getattr(exporter, "prepare_copy", None)
+        if hook is None or exporter.platform in ready:
+            continue
+        hook(path)
+        ready.add(exporter.platform)
+    return tuple(sorted(ready))
+
+
+def prepare_kept(path: Path, planned: PlannedTrack, record: dict, exporters) -> dict:
+    """Prepare a KEPT copy for any target that has not yet (an export made
+    before a target's `prepare_copy` existed, or a target new to the set), and
+    the record that now describes it — the copy's size and mtime as they are
+    after, so a rollback's manifest still matches the file."""
+    done = record.get("prepared")
+    done = tuple(done) if isinstance(done, list) else ()
+    planned.prepared = prepare_copy(path, exporters, done)
+    if planned.prepared == tuple(sorted(done)):
+        return record
+    st = path.stat()
+    return {**record, "copy_size": st.st_size, "copy_mtime_ns": st.st_mtime_ns,
+            "prepared": list(planned.prepared)}
 
 
 def _previous_copies(destination: Path) -> dict[str, tuple[Path, dict]]:
@@ -599,6 +636,10 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle, *,
         if reused:
             handle.progress(message=f"Keeping {len(reused)} unchanged track{'' if len(reused) == 1 else 's'}…")
             _move_kept(destination, reused, kept)
+            for planned in reused:
+                handle.raise_if_cancelled()
+                path = Path(planned.destination)
+                kept[path] = prepare_kept(path, planned, kept[path], exporters)
 
         payload_tracks: list[ExportTrack] = []
         for planned in items:
@@ -618,6 +659,7 @@ def run(adapter, export_set, built: ExportPlan, handle: JobHandle, *,
                     handle.progress(done=done)
 
                 write_copy(adapter, planned, partial, handle, advance)
+                planned.prepared = prepare_copy(partial, exporters)
                 os.replace(partial, target)
             payload_tracks.append(
                 ExportTrack(

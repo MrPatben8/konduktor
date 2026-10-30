@@ -347,6 +347,10 @@ def run(
     # a folder on the server, instead of copied here. Nothing can be left in
     # place — the server cannot see this computer's files.
     uploads = not places and uploads_audio(dest)
+    # The library's optional readying of a file copied FOR it (Traktor: its
+    # own block removed from the copy). Only copies made here: never a file
+    # added in place, nor an upload (written on the server).
+    prepare = getattr(dest, "prepare_copied_audio", None)
     if uploads and reference and not getattr(source, "on_library_host", False):
         raise ValueError("A remote library cannot reference files on this computer")
     if not reference and not places and not uploads:
@@ -404,6 +408,8 @@ def run(
             handle.progress(message=f"Copying {planned.title}")
             created.append(target)  # registered BEFORE the write, so a cancel
             copy_file(planned.source_path, target, handle, bump)  # mid-file is cleaned
+            if prepare is not None:
+                prepare(target)
             copied.append((planned, target))
 
         handle.raise_if_cancelled()
