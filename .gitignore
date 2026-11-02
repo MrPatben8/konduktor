@@ -51,3 +51,6 @@ backend/dist/
 # ---- Stem engine (PyInstaller onedir build) ----
 engine/build/
 engine/dist/
+
+# ---- Rubber Band build (frontend/rubberband/build.sh downloads + compiles here) ----
+frontend/rubberband/upstream/

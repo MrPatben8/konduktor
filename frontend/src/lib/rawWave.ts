@@ -13,9 +13,9 @@
 // Two data paths, by how many samples one pixel covers:
 //   * many (wide zoom): min/max per RAW_BLOCK samples, summarised once at load
 //     (~4 MB for a 6-minute track) — a 64 s view reads ~90k block values;
-//   * few (deep zoom): the visible window read straight from the decoded
-//     AudioBuffer each frame. No full-length mono copy is kept; the playback
-//     engine holds the buffer anyway.
+//   * few (deep zoom): the visible window read straight from the mono
+//     downmix each frame. The deck keeps that half-size copy rather than the
+//     stereo PCM, which is transferred to its audio worklet.
 // Each pixel is a vertical stroke from the lowest to the highest sample in it,
 // stretched to touch its neighbour's — zoomed out it reads as a filled
 // envelope, zoomed in it narrows to one continuous line, with no switch-over.
@@ -41,28 +41,8 @@ export interface RawWave {
   readMono: (start: number, dest: Float32Array) => void
 }
 
-/** A reader of an AudioBuffer's mono downmix. copyFromChannel copies, so this
- *  never holds a view the playback engine could detach (the Firefox gotcha). */
-export function bufferReader(buffer: AudioBuffer): RawWave['readMono'] {
-  let tmp = new Float32Array(0)
-  const chs = buffer.numberOfChannels
-  return (start, dest) => {
-    dest.fill(0)
-    const from = Math.max(0, start)
-    const skip = from - start
-    const n = Math.min(dest.length - skip, buffer.length - from)
-    if (n <= 0) return
-    if (tmp.length < n) tmp = new Float32Array(n)
-    const view = tmp.subarray(0, n)
-    for (let c = 0; c < chs; c++) {
-      buffer.copyFromChannel(view, c, from)
-      for (let i = 0; i < n; i++) dest[skip + i] += view[i] / chs
-    }
-  }
-}
-
-/** Summarise a mono downmix. `readMono` defaults to reading `mono` itself
- *  (tests); the deck passes `bufferReader` so `mono` can be dropped. */
+/** Summarise a mono downmix. `readMono` defaults to reading `mono` itself,
+ *  which the deck keeps for the purpose. */
 export function rawWaveFromMono(
   mono: Float32Array,
   sampleRate: number,

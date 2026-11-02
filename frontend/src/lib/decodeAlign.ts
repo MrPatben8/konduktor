@@ -117,7 +117,8 @@ export async function alignDecoded(buffer: AudioBuffer, header: boolean | null):
     numberOfChannels: buffer.numberOfChannels,
     sampleRate: buffer.sampleRate,
   })
-  // copyFromChannel, never getChannelData: see the detach gotcha in scratchEngine.
+  // copyFromChannel, never getChannelData: an AudioBuffer a source node has
+  // played can detach its getChannelData views (Firefox).
   const tmp = new Float32Array(buffer.length)
   for (let c = 0; c < buffer.numberOfChannels; c++) {
     buffer.copyFromChannel(tmp, c)

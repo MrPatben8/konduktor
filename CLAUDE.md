@@ -1334,11 +1334,10 @@ Two independent apps that talk over HTTP:
   - **Stem playback** (decided 2026-09-30): a stem FILE always loads its four
     stems (`trackStemsFor` / `trackStemUrl` in `api.ts`) and the deck plays
     their SUM, as Traktor's stem deck does — the mix stream is never decoded,
-    which also saves a full-length buffer. `PlaybackEngine.load` takes several
-    buffers: one source + gain each, all started at ONE scheduled context
-    time (so they stay sample-locked through seeks and loops), mute/solo as
-    ramped gains, never a restart. `ScratchEngine.loadStems` keeps ONE summed
-    copy of the audible stems (not four), re-summed in slices on a mute change.
+    which also saves a full-length buffer. The deck's worklet (`lib/audio/`)
+    takes several stems and reads them all at ONE position, so they stay
+    sample-locked through seeks, loops and scratch (which hears what is
+    audible); mute/solo are ramped gains, never a restart.
     `analyzeStems` returns the overview's three-band columns (of the sum) plus
     one amplitude lane per stem, each normalised to its own 99.5th percentile
     but never below 5% of the loudest (a silent stem stays silent).
@@ -1347,8 +1346,10 @@ Two independent apps that talk over HTTP:
     Q W E R mute stems 1-4, Shift+ solos. **Solo is not a mode**: it SETS the
     mutes (every other stem muted), so each stem stays freely mutable after
     it; soloing the one stem still playing unmutes all. Mutes reset per track. Memory is
-    the cost: ~140 MB per stem for 6 minutes, i.e. the same four buffers as
-    the file holds streams, and no more.
+    the cost: ~127 MB of stereo PCM per stem for 6 minutes in the worklet,
+    plus a half-size mono copy each on the main thread for the raw waveform —
+    ~6 stereo-track units for a stem track (it was 5: four buffers plus a
+    summed scratch copy), 1.5 for a plain track (it was 2).
   - **Prep strip** (DJ deck across the top of the window): `PrepStrip` owns it,
     in three rows. **Header**: cover, title/artist · album · genre, a Read-only
     badge, the readout well (ELAPSED / REMAIN to tenths, KEY, and `BpmReadout` —
@@ -1384,7 +1385,7 @@ Two independent apps that talk over HTTP:
       outline (`drawLoop(…, idle)`), so the toggle shows what it would restore.
       **‹ › (and ←/→) MOVE an engaged loop by its own length**, Traktor-style,
       and only jump the playhead when no loop is engaged. The move sets the new
-      loop BEFORE seeking: `PlaybackEngine.seek` honours the loop in force, so
+      loop BEFORE seeking: the deck's seek honours the loop in force, so
       seeking first wraps the playhead back into the old loop.
     - **Memory cues** (decided 2026-10-16, [the discussion](.claude/discussions/discuss-memory-cues-2026-10-16.md)):
       Mem mode replaces the pads with `MemoryCueStrip` — chips in TIME order,
@@ -1406,8 +1407,8 @@ Two independent apps that talk over HTTP:
       type dropdown or delete button. Rename re-sets the slot with its own start/type/length plus the
       new name, since `set_cue` replaces a slot. A non-editable cue gets the
       same menu disabled, not no menu.
-    Prep libs live in `src/lib/`: `playbackEngine.ts` (Web Audio, seamless loops),
-    `scratchEngine.ts` (drag-to-scratch), `waveform.ts` (frequency-colored
+    Prep libs live in `src/lib/`: `audio/` (the deck's worklet engine:
+    playback, loops, scratch, varispeed, keylock), `waveform.ts` (frequency-colored
     analysis + paint), `beatgrid.ts` (the marker-list beat math — every
     beat/bar/snap/jump calculation goes through it), `cues.ts` (draw
     cues/loop/beatgrid/cue-point). See "Prep engine" below.
@@ -2711,19 +2712,37 @@ diff — no COLLECTION splicing needed.
 The prep strip plays every track through the **Web Audio API** (a plain
 `<audio>` element can't do reverse/arbitrary-rate scratch or seamless loops).
 
-- `playbackEngine.ts` — an `AudioBufferSourceNode` with a `startOffset`/
-  `startedAt` position model; `getPosition()` reads the AudioContext clock
-  (high-res → smooth playhead). Seamless loops via native `loopStart`/`loopEnd`;
-  `setLoop()` re-anchors position so enabling/disabling a loop doesn't desync.
-- `scratchEngine.ts` — a persistent (idle-silent) `ScriptProcessorNode` that,
-  while dragging the main waveform, plays PCM at a position gliding toward the
-  cursor, then coasts with inertia on release.
-- **CRITICAL gotcha**: playing an `AudioBuffer` "acquires the content" in
-  Firefox and **detaches** any `getChannelData()` views held elsewhere. The
-  scratch engine therefore **copies** the PCM in `load()` (never holds the
-  playback buffer's views). Playback and scratch also run on **separate
-  `AudioContext`s** — sharing one goes silent after a source has played.
-- `waveform.ts` — decodes once (buffer reused by both engines, no re-decode),
+- **`lib/audio/` — one AudioWorklet per deck** (2026-11-02, the first step of
+  performance mode; [the discussion](.claude/discussions/discuss-performance-mode-2026-11-02.md)).
+  `deckCore.ts` renders a deck block by block: transport, seamless loops, the
+  stems in lockstep (ONE position for all), mute/solo as ramped gains,
+  varispeed (cubic interpolation) and scratch (the old ScriptProcessor's
+  drag/inertia feel; a release coasts and the deck PLAYS ON BY ITSELF, so there
+  is no gap). `deckProcessor.worklet.ts` wraps it (`?worker&url`, bundled
+  self-contained); `deckEngine.ts` is the main thread's handle, with the old
+  PlaybackEngine's surface: commands are async, so it answers from a model
+  (last report + context clock, `position.ts`) that each command updates at
+  once, and a GENERATION drops reports older than the latest positional
+  command. `context.ts` is the app's ONE AudioContext (never closed; a deck
+  disconnects its own nodes) with a master bus. It replaced an
+  AudioBufferSourceNode for playback plus a ScriptProcessorNode on a SECOND
+  AudioContext for scratch (sharing one went silent in Firefox once a source
+  had played), which left nowhere for a mixer to sit.
+  **Keylock** = Rubber Band R2 in the worklet (`stretcher.ts`,
+  `rubberband.wasm` built by `frontend/rubberband/build.sh` — see its README
+  for why it is OUR build: licence). One stereo stretcher per stem; R3 does not
+  fit 8 on one render thread (measured). After any seek the deck plays
+  varispeed AT ONCE, primes the stretchers over `WARM_QUANTA` blocks aimed at
+  where the playhead will be, and crossfades when aligned — priming 4 stems in
+  one block would be a dropout per hotcue. Aligned within ±3 ms, no drift over
+  a minute (`deckCore.test.ts`, which drives the real `.wasm` in Node). At
+  rate 1 the stretcher is bypassed.
+  **The PCM is TRANSFERRED to the worklet** (`waveform.DecodedAudio`, copied
+  out of the AudioBuffer once); the main thread keeps only a mono downmix for
+  the raw waveform. (The Firefox detach gotcha — playing an AudioBuffer
+  detaches `getChannelData()` views — no longer bites: nothing plays an
+  AudioBuffer now.)
+- `waveform.ts` — decodes once (the PCM goes to the deck's worklet, no re-decode),
   splits into 3 bands via `OfflineAudioContext` biquads, and paints them as
   **three layers**, not one blended colour per column: bass (orange) first and
   tallest, then mids (violet) and highs (cyan) with a `screen` blend — no green,

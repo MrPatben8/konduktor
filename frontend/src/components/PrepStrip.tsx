@@ -24,8 +24,8 @@ import { analyzeStems, analyzeWaveform, type WaveColumn } from '../lib/waveform'
 import type { RawWave } from '../lib/rawWave'
 import { setAmbientFromArt } from '../lib/ambient'
 import { Icon } from '../lib/icons'
-import { ScratchEngine } from '../lib/scratchEngine'
-import { PlaybackEngine } from '../lib/playbackEngine'
+import { DeckEngine } from '../lib/audio/deckEngine'
+import { resumeAudio } from '../lib/audio/context'
 import { invalidateTrackLists } from '../lib/trackQueries'
 import { AutoCueDialog, eventLabel } from './AutoCueDialog'
 import { TrackInfoDialog } from './TrackInfoDialog'
@@ -104,9 +104,9 @@ function slotForDigit(code: string, slotCount: number): number | null {
 /**
  * The DJ-style "prep strip" across the top of the window: transport controls on
  * the left, waveforms on the right (a scrolling zoomable main view above a
- * whole-track overview), plus loop + hotcue controls. Playback runs through the
- * Web Audio PlaybackEngine (seamless loops); the same decoded buffer feeds the
- * scratch engine and both waveform views.
+ * whole-track overview), plus loop + hotcue controls. Playback, loops and
+ * scratch all run in the deck's audio worklet (DeckEngine); the audio is
+ * decoded once for it and both waveform views.
  */
 export function PrepStrip({
   track,
@@ -172,13 +172,13 @@ export function PrepStrip({
   const [loopInPoint, setLoopInPoint] = useState<number | null>(null)
   const originalGridRef = useRef<GridMarker[] | null>(null)
 
-  const audioCtxRef = useRef<AudioContext | null>(null) // playback
-  const scratchCtxRef = useRef<AudioContext | null>(null) // scratch (kept separate!)
-  const playbackRef = useRef<PlaybackEngine | null>(null)
-  const scratchRef = useRef<ScratchEngine | null>(null)
+  // The deck's audio (created once, asynchronously: the worklet module loads
+  // first). playbackRef is set once it exists; getEngine() awaits it.
+  const playbackRef = useRef<DeckEngine | null>(null)
+  const enginePromiseRef = useRef<Promise<DeckEngine> | null>(null)
   const wasPlayingRef = useRef(false)
   const scratchRafRef = useRef(0)
-  const engagedRef = useRef(false) // scratch engine is dragging or coasting
+  const engagedRef = useRef(false) // the deck is scratching (dragging or coasting)
   const pendingPlayRef = useRef(false) // a play was requested; start once ready
   const loadedIdRef = useRef<string | null>(null) // trackId whose buffer is loaded
   const [gridBusy, setGridBusy] = useState(false)
@@ -238,42 +238,34 @@ export function PrepStrip({
     writePrefs({ cueBankMode: bankMode })
   }, [bankMode, writePrefs])
 
-  const getCtx = (): AudioContext => {
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new (window.AudioContext ??
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)()
+  const getEngine = (): Promise<DeckEngine> => {
+    if (!enginePromiseRef.current) {
+      enginePromiseRef.current = DeckEngine.create().then((eng) => {
+        playbackRef.current = eng
+        eng.setOnEnded(() => setPlaying(false))
+        // The deck hands itself back after a scratch's coast settles.
+        eng.setOnScratchDone((resumed) => scratchDoneRef.current(resumed))
+        return eng
+      })
+      enginePromiseRef.current.catch(() => {
+        enginePromiseRef.current = null
+      })
     }
-    void audioCtxRef.current.resume()
-    return audioCtxRef.current
+    return enginePromiseRef.current
   }
 
-  // Tear everything down when the strip itself unmounts (e.g. the collection
-  // picker early-returns and replaces the whole UI). Without this, the playback
-  // source keeps running in an AudioContext that's never closed, so a fresh
-  // remount plays a SECOND track on top of the orphaned one. Closing both
-  // contexts is the surefire kill; runs once, on unmount.
+  // Tear the deck's audio down when the strip itself unmounts (e.g. the
+  // collection picker early-returns and replaces the whole UI) — otherwise a
+  // remount would play a SECOND track over the orphaned one. The AudioContext
+  // is the app's and stays; this deck's nodes leave it.
   useEffect(() => {
     return () => {
-      playbackRef.current?.pause()
-      scratchRef.current?.dispose()
-      void audioCtxRef.current?.close()
-      void scratchCtxRef.current?.close()
-      audioCtxRef.current = null
-      scratchCtxRef.current = null
+      const pending = enginePromiseRef.current
+      enginePromiseRef.current = null
+      playbackRef.current = null
+      void pending?.then((eng) => eng.dispose())
     }
   }, [])
-
-  // The scratch engine gets its OWN AudioContext: a ScriptProcessorNode is
-  // unreliable sharing a context with the playback source node (it goes silent
-  // once a source has played), so we keep them fully separate.
-  const getScratchCtx = (): AudioContext => {
-    if (!scratchCtxRef.current) {
-      scratchCtxRef.current = new (window.AudioContext ??
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)()
-    }
-    void scratchCtxRef.current.resume()
-    return scratchCtxRef.current
-  }
 
   // Reset transport + loop state when the loaded track changes.
   useEffect(() => {
@@ -307,8 +299,6 @@ export function PrepStrip({
   // Analyse once per track; the decoded buffer feeds both the playback and
   // scratch engines (no re-decode) and both waveform views share the columns.
   useEffect(() => {
-    scratchRef.current?.dispose()
-    scratchRef.current = null
     if (!trackId) {
       setCols(null)
       setRaw(null)
@@ -330,13 +320,13 @@ export function PrepStrip({
       .then(async (found) => {
         if (found.length) {
           const res = await analyzeStems(found.map((_, k) => trackStemUrl(origin, trackId, k)))
-          return { cols: res.cols, buffers: res.buffers, lanes: res.lanes, stems: found, raw: null, raws: res.raws }
+          return { cols: res.cols, audios: res.audios, lanes: res.lanes, stems: found, raw: null, raws: res.raws }
         }
         const res = await analyzeWaveform(trackAudioUrl(origin, trackId))
-        return { cols: res.cols, buffers: [res.buffer], lanes: null, stems: null, raw: res.raw, raws: null }
+        return { cols: res.cols, audios: [res.audio], lanes: null, stems: null, raw: res.raw, raws: null }
       })
-    load
-      .then((res) => {
+    Promise.all([load, getEngine()])
+      .then(([res, eng]) => {
         if (cancelled) return
         setCols(res.cols)
         setRaw(res.raw)
@@ -344,24 +334,15 @@ export function PrepStrip({
         setStems(res.stems)
         setStemLanes(res.lanes)
         setWaveStatus('ready')
-        const ctx = getCtx()
-        const sc = new ScratchEngine()
-        if (res.stems) sc.loadStems(res.buffers, res.buffers.map(() => 1))
-        else sc.load(res.buffers[0])
-        sc.attach(getScratchCtx()) // own context; warm up so the first scratch isn't silent
-        scratchRef.current = sc
-        if (!playbackRef.current) {
-          playbackRef.current = new PlaybackEngine()
-          playbackRef.current.setOnEnded(() => setPlaying(false))
-        }
-        playbackRef.current.load(ctx, res.stems ? res.buffers : res.buffers[0])
-        setDuration(res.buffers[0].duration)
+        // The PCM moves to the audio thread here (transferred, not copied).
+        eng.load(res.audios)
+        setDuration(res.audios[0].duration)
         setReady(true)
         loadedIdRef.current = trackId
         // A play was requested (library row button) → start now that it's ready.
         if (pendingPlayRef.current) {
           pendingPlayRef.current = false
-          playbackRef.current.play()
+          eng.play()
           setPlaying(true)
         }
       })
@@ -414,7 +395,7 @@ export function PrepStrip({
   const toggle = () => {
     const eng = playbackRef.current
     if (!eng || !eng.ready) return
-    getCtx() // ensure the context resumes on this user gesture
+    resumeAudio() // resume on this user gesture
     // Play pressed during a momentary cue preview → latch playback on so it
     // keeps going after the hotcue button is released.
     const pv = previewRef.current
@@ -473,7 +454,7 @@ export function PrepStrip({
     const eng = playbackRef.current
     if (!eng || !eng.ready) return
     setCueHeld(true)
-    getCtx()
+    resumeAudio()
     if (eng.playing) {
       leaveLoopFor(cuePoint)
       eng.pause()
@@ -518,7 +499,7 @@ export function PrepStrip({
     const eng = playbackRef.current
     if (loadedIdRef.current === trackId && eng?.ready) {
       pendingPlayRef.current = false
-      getCtx()
+      resumeAudio()
       eng.play()
       setPlaying(true)
       setCurrent(eng.getPosition())
@@ -606,62 +587,52 @@ export function PrepStrip({
   }
 
   // ---- scratch ----------------------------------------------------------
-  const finalizeScratch = () => {
+  // The deck scratches itself: a drag moves its position, a release coasts to
+  // playing speed (or a stop) and it plays on BY ITSELF, then says so — so
+  // there is no gap between the coast and the music. React only mirrors it.
+  const scratchDone = (resumed: boolean) => {
     cancelAnimationFrame(scratchRafRef.current)
     engagedRef.current = false
-    const sc = scratchRef.current
-    if (!sc) return
-    const finalSec = sc.end()
-    const pb = playbackRef.current
-    if (pb) pb.seek(finalSec)
-    setCurrent(finalSec)
-    if (wasPlayingRef.current && pb) {
-      pb.play()
-      setPlaying(true)
-    }
+    const eng = playbackRef.current
+    if (eng) setCurrent(eng.getPosition())
+    setPlaying(resumed)
   }
+  const scratchDoneRef = useRef(scratchDone)
+  scratchDoneRef.current = scratchDone
 
   const runScratchRaf = () => {
     cancelAnimationFrame(scratchRafRef.current)
-    const sc = scratchRef.current!
     const tick = () => {
-      setCurrent(sc.getPositionSec())
-      if (sc.finished) {
-        finalizeScratch()
-        return
-      }
+      const eng = playbackRef.current
+      if (!eng || !engagedRef.current) return
+      setCurrent(eng.getPosition())
       scratchRafRef.current = requestAnimationFrame(tick)
     }
     scratchRafRef.current = requestAnimationFrame(tick)
   }
 
   const onScratchStart = () => {
-    const sc = scratchRef.current
-    if (engagedRef.current && sc) {
-      sc.regrab() // re-grab while coasting
+    const eng = playbackRef.current
+    if (!eng || !eng.ready) return
+    if (engagedRef.current) {
+      eng.scratchRegrab() // re-grab while coasting
       return
     }
-    const pb = playbackRef.current
-    wasPlayingRef.current = !!pb && pb.playing
-    if (pb && pb.playing) {
-      pb.pause()
-      setPlaying(false)
-    }
-    if (sc && sc.loaded) {
-      sc.begin(getScratchCtx(), current)
-      engagedRef.current = true
-      runScratchRaf()
-    }
+    wasPlayingRef.current = eng.playing
+    if (eng.playing) setPlaying(false)
+    eng.scratchBegin(eng.getPosition())
+    engagedRef.current = true
+    runScratchRaf()
   }
 
   const onScratchMove = (t: number) => {
-    if (engagedRef.current) scratchRef.current!.setTargetSec(t)
+    if (engagedRef.current) playbackRef.current?.scratchTarget(t)
     else setCurrent(t)
   }
 
   const onScratchEnd = (t: number) => {
     if (engagedRef.current) {
-      scratchRef.current!.release(wasPlayingRef.current)
+      playbackRef.current?.scratchRelease(wasPlayingRef.current)
     } else {
       seek(t)
       if (wasPlayingRef.current) {
@@ -849,7 +820,7 @@ export function PrepStrip({
     setSelectedSlot(slot)
     const eng = playbackRef.current
     if (!eng || !eng.ready) return
-    getCtx()
+    resumeAudio()
     enterCue(cue)
     seek(cue.start)
     // Paused at press → momentary preview: play while held.
@@ -978,7 +949,7 @@ export function PrepStrip({
   const callMemoryCue = (cue: CuePoint) => {
     const eng = playbackRef.current
     if (!eng || !eng.ready) return
-    getCtx()
+    resumeAudio()
     enterCue(cue)
     seek(cue.start)
     setCuePoint(cue.start)
@@ -1256,7 +1227,6 @@ export function PrepStrip({
   useEffect(() => {
     if (!stems) return
     playbackRef.current?.setGains(stemLevels)
-    scratchRef.current?.setLevels(stemLevels)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stemLevelKey])
   // Solo = "mute every stem but this one". Soloing a stem that is already the
