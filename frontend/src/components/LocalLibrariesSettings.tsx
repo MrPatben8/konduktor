@@ -1,10 +1,10 @@
-import { createPortal } from 'react-dom'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type NormalizeOptions } from '../api'
 import { localLibraryProblem } from '../lib/platformCopy'
 import { FolderPicker } from './FolderPicker'
 import { LevelInput, useAppSetting } from './AppSettings'
+import { Modal } from './Modal'
 
 /**
  * Settings → Local libraries: where a "This computer" set is pushed.
@@ -31,12 +31,6 @@ export function LocalLibrariesSettings({ onClose }: { onClose: () => void }) {
   const defaultCeiling = useAppSetting('levelCeiling')
   const [picking, setPicking] = useState<string | null>(null)   // a platform, or 'audio'
   const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !picking && onClose()
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, picking])
 
   const p = prefs.data ?? {}
   const overrides = (p.localLibraries as Record<string, string | null> | undefined) ?? {}
@@ -74,17 +68,13 @@ export function LocalLibrariesSettings({ onClose }: { onClose: () => void }) {
       ? d?.audio_root ?? ''
       : (d?.libraries.find((l) => l.platform === picking)?.path ?? '').replace(/[\\/][^\\/]*$/, '')
 
-  return createPortal(
+  return (
     <>
       {picking && (
         <FolderPicker value={pickerValue} onChange={choose} onClose={() => setPicking(null)} />
       )}
-      <div
-        aria-modal="true"
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6 backdrop-blur-[3px]"
-        onClick={onClose}
-      >
-        <div className="flex max-h-full w-full max-w-lg flex-col overflow-hidden glass-overlay" onClick={(e) => e.stopPropagation()}>
+      <Modal onDismiss={onClose}>
+        <div className="flex max-h-full w-full max-w-lg flex-col overflow-hidden glass-overlay">
           <div className="flex items-center justify-between border-b border-line px-5 py-3">
             <h2 className="text-sm font-semibold text-text">Local libraries</h2>
             <button onClick={onClose} className="rounded px-1.5 text-faint hover:text-text" aria-label="Close">
@@ -198,8 +188,7 @@ export function LocalLibrariesSettings({ onClose }: { onClose: () => void }) {
             {error && <div className="text-xs text-pink">{error}</div>}
           </div>
         </div>
-      </div>
-    </>,
-    document.body,
+      </Modal>
+    </>
   )
 }

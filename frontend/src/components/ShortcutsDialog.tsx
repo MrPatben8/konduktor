@@ -1,4 +1,3 @@
-import { createPortal } from 'react-dom'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { useCaps } from '../lib/capabilities'
 import { Icon } from '../lib/icons'
@@ -24,6 +23,7 @@ import {
   type Layer,
   type MouseGesture,
 } from '../lib/shortcuts'
+import { Modal } from './Modal'
 
 interface Props {
   onClose: () => void
@@ -162,15 +162,10 @@ export function ShortcutsDialog({ onClose }: Props) {
     onPick: pickLayer,
   }
 
-  return createPortal(
-    <div
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
-      onClick={onClose}
-    >
+  return (
+    <Modal onDismiss={onClose}>
       <div
         className="flex max-h-full w-full max-w-[960px] flex-col overflow-hidden glass-overlay"
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="flex flex-wrap items-center gap-3 border-b border-line py-3.5 pl-5 pr-4">
           <div className="text-[15px] font-semibold tracking-tight">Keyboard Shortcuts</div>
@@ -309,8 +304,7 @@ export function ShortcutsDialog({ onClose }: Props) {
           </div>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }
 

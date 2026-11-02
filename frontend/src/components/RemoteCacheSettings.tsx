@@ -1,8 +1,8 @@
-import { createPortal } from 'react-dom'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
 import { size } from './ConvertStemsDialog'
+import { Modal } from './Modal'
 
 /**
  * Settings → Remote audio: this computer's copies of a remote library's audio.
@@ -20,12 +20,6 @@ export function RemoteCacheSettings({ onClose }: { onClose: () => void }) {
   const usage = useQuery({ queryKey: ['remote-cache'], queryFn: api.remoteCache })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
 
   const u = usage.data
   const capGb = u ? Math.round(u.cap / 1024 ** 3) : null
@@ -54,13 +48,9 @@ export function RemoteCacheSettings({ onClose }: { onClose: () => void }) {
     }
   }
 
-  return createPortal(
-    <div
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6 backdrop-blur-[3px]"
-      onClick={onClose}
-    >
-      <div className="flex w-full max-w-md flex-col overflow-hidden glass-overlay" onClick={(e) => e.stopPropagation()}>
+  return (
+    <Modal onDismiss={onClose}>
+      <div className="flex w-full max-w-md flex-col overflow-hidden glass-overlay">
         <div className="flex items-center justify-between border-b border-line px-5 py-3">
           <h2 className="text-sm font-semibold text-text">Remote audio</h2>
           <button onClick={onClose} className="rounded px-1.5 text-faint hover:text-text" aria-label="Close">
@@ -107,7 +97,6 @@ export function RemoteCacheSettings({ onClose }: { onClose: () => void }) {
           </button>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }

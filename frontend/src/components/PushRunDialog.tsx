@@ -1,9 +1,9 @@
-import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type ExportRunOptions, type ExportSet, type JobStatus, type PushPreview, type PushTarget } from '../api'
 import { askConfirm } from '../lib/confirm'
 import { localLibraryProblem } from '../lib/platformCopy'
+import { Modal } from './Modal'
 
 /**
  * Push a "computer" set into this computer's Traktor / rekordbox: confirm what
@@ -136,8 +136,8 @@ export function PushRunDialog({ set, onClose, onDone, onError }: Props) {
     job?.state === 'done' ? 100 : job && job.total > 0 ? Math.min(100, (job.done / job.total) * 100) : null
   const results = ((job?.result as { targets?: TargetResult[] } | null)?.targets ?? [])
 
-  return createPortal(
-    <div aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-4">
+  return (
+    <Modal onDismiss={onClose} padding="p-4">
       <div className="w-full max-w-lg glass-overlay">
         <div className="border-b border-line px-5 py-3">
           <h2 className="text-sm font-semibold text-text">
@@ -323,8 +323,7 @@ export function PushRunDialog({ set, onClose, onDone, onError }: Props) {
           )}
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }
 

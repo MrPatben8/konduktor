@@ -1,6 +1,6 @@
-import { createPortal } from 'react-dom'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { api, type PathMapping, type RelocationVolume } from '../api'
+import { Modal } from './Modal'
 
 interface Props {
   volumes: RelocationVolume[]
@@ -51,21 +51,12 @@ export function RelocateDialog({ volumes, onAnswered, onOpenManual, onError }: P
     }
   }
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !busy && answer([])
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  })
-
   const set = (root: string, to: string | null) => setChoice((c) => ({ ...c, [root]: to }))
 
-  return createPortal(
-    // No close on a backdrop click: dismissing lasts until the library is
-    // reopened, which is too much for a stray click to decide.
-    <div
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
-    >
+  return (
+    // Esc is "Not now", but a backdrop click is not: dismissing lasts until
+    // the library is reopened, which is too much for a stray click to decide.
+    <Modal onDismiss={busy ? null : () => void answer([])} backdropDismiss={false}>
       <div className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden glass-overlay">
         <div className="border-b border-line px-5 py-4">
           <div className="text-[15px] font-semibold tracking-tight">Tracks not found</div>
@@ -116,8 +107,7 @@ export function RelocateDialog({ volumes, onAnswered, onOpenManual, onError }: P
           </div>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }
 

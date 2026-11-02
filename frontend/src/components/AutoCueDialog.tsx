@@ -1,4 +1,3 @@
-import { createPortal } from 'react-dom'
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -10,6 +9,7 @@ import {
   type Track,
 } from '../api'
 import { formatDuration } from '../lib/format'
+import { Modal } from './Modal'
 
 /**
  * Auto Hotcues: bind each hotcue slot to a structural event plus an offset in
@@ -109,14 +109,6 @@ export function AutoCueDialog(props: Props) {
     if (rows === null && (prefs.data || prefs.isError)) setRows(loadTemplate(prefs.data, slotCount))
   }, [prefs.data, prefs.isError, rows, slotCount])
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !busy) onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [busy, onClose])
-
   const setRow = (i: number, patch: Partial<Row>) =>
     setRows((rs) => rs && rs.map((r, j) => (j === i ? { ...r, ...patch } : r)))
   const nudge = (i: number, by: number) =>
@@ -152,11 +144,10 @@ export function AutoCueDialog(props: Props) {
     }
   }
 
-  return createPortal(
-    <div aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6" onClick={() => !busy && onClose()}>
+  return (
+    <Modal onDismiss={busy ? null : onClose}>
       <div
         className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden glass-overlay"
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-line px-5 py-4">
           <div className="text-[15px] font-semibold tracking-tight">Auto Hotcues</div>
@@ -294,7 +285,6 @@ export function AutoCueDialog(props: Props) {
           </button>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }

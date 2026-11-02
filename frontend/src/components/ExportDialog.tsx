@@ -1,9 +1,9 @@
-import { createPortal } from 'react-dom'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type ExportSet, type LocalLibrary } from '../api'
 import { localLibraryProblem } from '../lib/platformCopy'
 import { FolderPicker } from './FolderPicker'
+import { Modal } from './Modal'
 
 /**
  * Create or edit an export: its name, its target platforms and where it lands.
@@ -119,7 +119,7 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
     }
   }
 
-  return createPortal(
+  return (
     <>
       {browsing && (
         <FolderPicker
@@ -128,7 +128,7 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
           onClose={() => setBrowsing(false)}
         />
       )}
-      <div aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-4">
+      <Modal onDismiss={onClose} padding="p-4">
         <div className="w-full max-w-lg glass-overlay">
           <div className="border-b border-line px-5 py-3">
             <h2 className="text-sm font-semibold text-text">
@@ -336,8 +336,7 @@ export function ExportDialog({ editing, onClose, onSaved, onError }: Props) {
             </button>
           </div>
         </div>
-      </div>
-    </>,
-    document.body,
+      </Modal>
+    </>
   )
 }

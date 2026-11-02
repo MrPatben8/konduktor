@@ -1,7 +1,7 @@
-import { createPortal } from 'react-dom'
 import { useEffect, useState, type ReactNode } from 'react'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type AnalyzeOptions, type AnalyzePreview, type TrackOrigin } from '../api'
+import { Modal } from './Modal'
 
 interface Props {
   /** The selected tracks. */
@@ -100,12 +100,6 @@ export function AnalyzeDialog({ ids, origin, gridWhy, keyWhy, gainWhy, preset, o
   const nothingTicked = !!what && !(what.bpm || what.grid || what.key || what.loudness || what.gain)
   const count = nothingTicked ? 0 : (p?.tracks_to_analyze ?? 0)
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !busy && onClose()
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [busy, onClose])
-
   const run = async () => {
     if (!opts || busy || count === 0) return
     setBusy(true)
@@ -186,13 +180,9 @@ export function AnalyzeDialog({ ids, origin, gridWhy, keyWhy, gainWhy, preset, o
     if (p.grid_locked) gridLines.push(<div key="lk" className="text-faint">{plural(p.grid_locked, 'locked grid')} — skipped</div>)
   }
 
-  return createPortal(
-    <div
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
-      onClick={() => !busy && onClose()}
-    >
-      <div className="w-full max-w-sm overflow-hidden glass-overlay" onClick={(e) => e.stopPropagation()}>
+  return (
+    <Modal onDismiss={busy ? null : onClose}>
+      <div className="w-full max-w-sm overflow-hidden glass-overlay">
         <div className="border-b border-line px-5 py-4">
           <div className="text-[15px] font-semibold tracking-tight">Analyze</div>
           <div className="text-xs text-muted">{plural(ids.length, 'track')} selected</div>
@@ -265,7 +255,6 @@ export function AnalyzeDialog({ ids, origin, gridWhy, keyWhy, gainWhy, preset, o
           </button>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }

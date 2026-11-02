@@ -1,9 +1,9 @@
-import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type ExportPreview, type ExportRunOptions, type ExportSet, type JobStatus, type NormalizeOptions } from '../api'
 import { FolderPicker } from './FolderPicker'
 import { LevelInput, useAppSetting } from './AppSettings'
+import { Modal } from './Modal'
 
 /**
  * Run an export: confirm what is about to happen, then watch it happen.
@@ -175,7 +175,7 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
         : null
   const blocked = p?.blocked ?? null
 
-  return createPortal(
+  return (
     <>
       {browsing && (
         <FolderPicker
@@ -184,7 +184,7 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
           onClose={() => setBrowsing(false)}
         />
       )}
-      <div aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-4">
+      <Modal onDismiss={onClose} padding="p-4">
         <div className="w-full max-w-lg glass-overlay">
           <div className="border-b border-line px-5 py-3">
             <h2 className="text-sm font-semibold text-text">Export “{set.name}”</h2>
@@ -472,9 +472,8 @@ export function ExportRunDialog({ set, onClose, onDone, onError }: Props) {
             )}
           </div>
         </div>
-      </div>
-    </>,
-    document.body,
+      </Modal>
+    </>
   )
 }
 

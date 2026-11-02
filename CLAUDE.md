@@ -2132,6 +2132,18 @@ frontend at `http://localhost:5173`.
   `ConfirmDialog` by the `ConfirmHost` mounted once in `main.tsx`. `tone` is
   `danger` (default, pink) or `primary`. Components that already hold dialog
   state may still render `ConfirmDialog` directly.
+- **Every dialog is a `<Modal>`** (`components/Modal.tsx`; decided 2026-11-02):
+  the portal, backdrop, `aria-modal`, Esc and outside click in ONE place —
+  never a hand-rolled backdrop or a per-dialog Esc listener. `onDismiss` is
+  what the dialog's Cancel / Close (or Hide, while a job runs) does, `null`
+  while that is unavailable (busy): Esc and the backdrop then do nothing. An
+  outside click closes only when the press AND the release are both on the
+  backdrop — a plain `onClick` fires on the common ancestor, so a text
+  selection dragged out of the dialog closed it. Esc reaches only the TOP
+  modal (by opening order) and never while a menu is open. `layer="nested"`
+  = `z-[60]` (a dialog opened from a dialog, QuitGuard). The one exception is
+  `RelocateDialog`'s `backdropDismiss={false}` (Esc only: "Not now" lasts
+  until the library is reopened).
 
 ## Theme — "dark liquid glass"
 
@@ -2156,7 +2168,7 @@ easy to break:
   opened far from the cursor. `.glass`'s blur and tint therefore live on its
   `::after` (z-index -1 under `isolation: isolate`), not on the panel.
 - **Every overlay renders through `createPortal(…, document.body)`** — all
-  dialogs, `ContextMenu` and `Toast`. Each `.glass` panel is a stacking context
+  dialogs (via `Modal`), `ContextMenu` and `Toast`. Each `.glass` panel is a stacking context
   (`isolation`), so an overlay rendered INSIDE one can never rise above a
   neighbouring panel, whatever its z-index: New Export (from the sidebar) sat
   behind the library, and the deck's Auto Hotcues dialog behind both. One

@@ -1,7 +1,7 @@
-import { createPortal } from 'react-dom'
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
+import { Modal } from './Modal'
 
 /**
  * Startup update check against GitHub Releases.
@@ -285,14 +285,10 @@ export function UpdateCheck() {
   const sections = newer.map((r) => ({ tag: r.tag_name, changes: whatsChanged(r.body) }))
   const grouped = sections.length > 1
 
-  return createPortal(
-    <div
-      aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
-      onClick={close}
-    >
+  return (
+    <Modal onDismiss={busy ? null : close}>
       <div
         className="flex max-h-[80vh] w-full max-w-md flex-col overflow-hidden glass-overlay"
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-line px-5 py-4">
           <div className="text-[15px] font-semibold tracking-tight">{title}</div>
@@ -418,7 +414,6 @@ export function UpdateCheck() {
           )}
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }

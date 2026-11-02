@@ -1,5 +1,5 @@
-import { createPortal } from 'react-dom'
 import { useEffect, useState, type ReactNode } from 'react'
+import { Modal } from './Modal'
 
 export interface ConfirmRequest {
   title: string
@@ -42,7 +42,6 @@ export function ConfirmDialog({ title, body, confirmLabel, tone = 'danger', altL
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !busy) onClose()
       // A focused button handles its own Enter — otherwise tabbing to Cancel
       // and pressing Enter would run the destructive action.
       if (e.key === 'Enter' && !(e.target instanceof HTMLButtonElement)) {
@@ -54,16 +53,9 @@ export function ConfirmDialog({ title, body, confirmLabel, tone = 'danger', altL
     return () => window.removeEventListener('keydown', onKey)
   })
 
-  return createPortal(
-    <div
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
-      onClick={() => !busy && onClose()}
-    >
-      <div
-        className="w-full max-w-sm overflow-hidden glass-overlay"
-        onClick={(e) => e.stopPropagation()}
-      >
+  return (
+    <Modal onDismiss={busy ? null : onClose}>
+      <div className="w-full max-w-sm overflow-hidden glass-overlay">
         <div className="border-b border-line px-5 py-4 text-[15px] font-semibold tracking-tight">
           {title}
         </div>
@@ -101,7 +93,6 @@ export function ConfirmDialog({ title, body, confirmLabel, tone = 'danger', altL
           </button>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }

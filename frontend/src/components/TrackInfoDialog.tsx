@@ -1,10 +1,10 @@
-import { createPortal } from 'react-dom'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { Track } from '../api'
 import { formatBpm, formatDuration, keyColor } from '../lib/format'
 import { useCaps } from '../lib/capabilities'
 import { Icon } from '../lib/icons'
 import { RatingStars } from './RatingStars'
+import { Modal } from './Modal'
 
 interface Props {
   track: Track
@@ -26,12 +26,6 @@ export function TrackInfoDialog({ track, artUrl, onClose, onEditTags }: Props) {
   const caps = useCaps()
   const [artFailed, setArtFailed] = useState(false)
   const showArt = artUrl != null && !artFailed
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
 
   const grid =
     track.grid_marker_count === 0
@@ -60,17 +54,10 @@ export function TrackInfoDialog({ track, artUrl, onClose, onEditTags }: Props) {
     ] as [string, ReactNode][]
   ).filter(([, v]) => v != null && v !== '')
 
-  return createPortal(
-    <div
-      aria-modal="true"
-      role="dialog"
-      aria-label={track.title ?? 'Track info'}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-[3px]"
-      onClick={onClose}
-    >
+  return (
+    <Modal onDismiss={onClose} padding="p-4" role="dialog" aria-label={track.title ?? 'Track info'}>
       <div
         className="track-info-pop glass-overlay flex max-h-[90vh] w-full max-w-[860px] flex-col overflow-hidden sm:flex-row"
-        onClick={(e) => e.stopPropagation()}
       >
         {/* The sleeve, bled into the card behind everything: a soft wash of the
             art's own colours. `filter` on this leaf is safe — nothing can open
@@ -166,8 +153,7 @@ export function TrackInfoDialog({ track, artUrl, onClose, onEditTags }: Props) {
           )}
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }
 

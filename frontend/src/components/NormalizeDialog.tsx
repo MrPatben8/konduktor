@@ -1,9 +1,9 @@
-import { createPortal } from 'react-dom'
 import { useEffect, useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { api, type NormalizeOptions, type NormalizePreview, type NormalizeRow } from '../api'
 import { LevelInput, useAppSetting } from './AppSettings'
 import { Icon } from '../lib/icons'
+import { Modal } from './Modal'
 
 interface Props {
   ids: string[]
@@ -58,12 +58,6 @@ export function NormalizeDialog({ ids, onRun, onClose, onError }: Props) {
   const p: NormalizePreview | undefined = preview.data
   const count = p?.tracks_to_process ?? 0
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !busy && onClose()
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [busy, onClose])
-
   const summary = useMemo(() => {
     if (!p) return []
     const rows = p.rows
@@ -105,13 +99,9 @@ export function NormalizeDialog({ ids, onRun, onClose, onError }: Props) {
 
   const measureUnit = opts?.measure === 'rms' ? 'dB' : 'LUFS'
 
-  return createPortal(
-    <div
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
-      onClick={() => !busy && onClose()}
-    >
-      <div className="flex max-h-[80vh] w-full max-w-lg flex-col overflow-hidden glass-overlay" onClick={(e) => e.stopPropagation()}>
+  return (
+    <Modal onDismiss={busy ? null : onClose}>
+      <div className="flex max-h-[80vh] w-full max-w-lg flex-col overflow-hidden glass-overlay">
         <div className="border-b border-line px-5 py-4">
           <div className="text-[15px] font-semibold tracking-tight">Normalize</div>
           <div className="text-xs text-muted">
@@ -198,7 +188,6 @@ export function NormalizeDialog({ ids, onRun, onClose, onError }: Props) {
           </button>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }

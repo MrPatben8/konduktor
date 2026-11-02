@@ -1,4 +1,3 @@
-import { createPortal } from 'react-dom'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -12,6 +11,7 @@ import {
 import { FolderPicker } from './FolderPicker'
 import { useServerFolder } from './AddFilesDialog'
 import { useCaps } from '../lib/capabilities'
+import { Modal } from './Modal'
 
 /**
  * Convert to Stems — one dialog (decided, see the stem-conversion discussion
@@ -224,7 +224,7 @@ export function ConvertStemsDialog({ trackIds, onClose, onStarted, onDownloading
   )
 
   const count = trackIds.length
-  return createPortal(
+  return (
     <>
       {browsing && opts && (
         <FolderPicker
@@ -239,11 +239,7 @@ export function ConvertStemsDialog({ trackIds, onClose, onStarted, onDownloading
           onClose={() => setBrowsing(false)}
         />
       )}
-      <div
-        aria-modal="true"
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[3px]"
-        onKeyDown={(e) => e.key === 'Escape' && !starting && onClose()}
-      >
+      <Modal onDismiss={starting ? null : onClose} padding="p-4">
         <div className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden glass-overlay">
           <div className="border-b border-line px-5 py-3">
             <h2 className="text-sm font-semibold text-text">
@@ -477,8 +473,7 @@ export function ConvertStemsDialog({ trackIds, onClose, onStarted, onDownloading
             </button>
           </div>
         </div>
-      </div>
-    </>,
-    document.body,
+      </Modal>
+    </>
   )
 }

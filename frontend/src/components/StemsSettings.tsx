@@ -1,10 +1,10 @@
-import { createPortal } from 'react-dom'
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type StemTarget } from '../api'
 import { askConfirm } from '../lib/confirm'
 import { FolderPicker } from './FolderPicker'
 import { size } from './ConvertStemsDialog'
+import { Modal } from './Modal'
 
 /**
  * Settings → Stems (decided contents): the engine (status, download, install
@@ -40,12 +40,6 @@ export function StemsSettings({ onClose }: Props) {
     }
   }, [install.data, qc])
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !picking && onClose()
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, picking])
-
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true)
     setError(null)
@@ -72,7 +66,7 @@ export function StemsSettings({ onClose }: Props) {
   const targetLabel = (t: StemTarget) =>
     t === 'macos-arm64' ? 'Apple silicon (GPU)' : t === 'windows-x64-cuda' ? 'NVIDIA GPU' : 'processor only'
 
-  return createPortal(
+  return (
     <>
       {picking && (
         <FolderPicker
@@ -81,14 +75,9 @@ export function StemsSettings({ onClose }: Props) {
           onClose={() => setPicking(null)}
         />
       )}
-      <div
-        aria-modal="true"
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6 backdrop-blur-[3px]"
-        onClick={onClose}
-      >
+      <Modal onDismiss={onClose}>
         <div
           className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden glass-overlay"
-          onClick={(e) => e.stopPropagation()}
         >
           <div className="flex items-center justify-between border-b border-line px-5 py-3">
             <h2 className="text-sm font-semibold text-text">Stems</h2>
@@ -241,8 +230,7 @@ export function StemsSettings({ onClose }: Props) {
             {error && <div className="text-xs text-pink">{error}</div>}
           </div>
         </div>
-      </div>
-    </>,
-    document.body,
+      </Modal>
+    </>
   )
 }

@@ -1,10 +1,10 @@
-import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type RemapPreview } from '../api'
 import type { ToastMsg } from './Toast'
 import { Icon } from '../lib/icons'
 import { invalidateTrackLists } from '../lib/trackQueries'
+import { Modal } from './Modal'
 
 interface Props {
   onClose: () => void
@@ -107,14 +107,10 @@ export function PathMappingDialog({ onClose, onNotify, onError }: Props) {
   const collides = (preview?.collisions ?? 0) > 0
   const canCommit = !!from.trim() && !!to.trim() && !collides
 
-  return createPortal(
-    <div
-      aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
-      onClick={onClose}
-    >
+  return (
+    <Modal onDismiss={onClose}>
       <div
         className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden glass-overlay"
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-line px-5 py-4">
           <div className="text-[15px] font-semibold tracking-tight">Path Remapping</div>
@@ -264,8 +260,7 @@ export function PathMappingDialog({ onClose, onNotify, onError }: Props) {
           </button>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }
 

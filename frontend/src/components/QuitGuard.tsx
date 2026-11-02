@@ -1,8 +1,8 @@
-import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api'
 import { flushPrefs } from '../lib/prefs'
+import { Modal } from './Modal'
 
 /**
  * Ask before quitting with unsaved changes: Save · Discard · Cancel.
@@ -99,21 +99,9 @@ export function QuitGuard() {
     }
   }
 
-  useEffect(() => {
-    if (!asking) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !busy) void cancel()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  })
-
   if (!asking) return null
-  return createPortal(
-    <div
-      aria-modal="true"
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
-    >
+  return (
+    <Modal onDismiss={busy ? null : () => void cancel()} layer="nested">
       <div className="w-full max-w-sm overflow-hidden glass-overlay">
         <div className="border-b border-line px-5 py-4 text-[15px] font-semibold tracking-tight">
           Save changes before quitting?
@@ -147,7 +135,6 @@ export function QuitGuard() {
           </button>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }

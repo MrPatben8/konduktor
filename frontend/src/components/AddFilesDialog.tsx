@@ -1,10 +1,10 @@
-import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, isServerPath, type FolderAddPreview, type FolderAddRequest, type JobStatus, type TrackOrigin } from '../api'
 import { useCaps } from '../lib/capabilities'
 import { placedAudioSummary } from '../lib/platformCopy'
 import { FolderPicker } from './FolderPicker'
+import { Modal } from './Modal'
 
 /**
  * Add browsed files to the collection — and, optionally, to a playlist or export.
@@ -253,7 +253,7 @@ export function AddFilesDialog({ trackIds, target: requested, note, onClose, onD
     </label>
   )
 
-  return createPortal(
+  return (
     <>
       {browsing && (
         <FolderPicker
@@ -267,10 +267,7 @@ export function AddFilesDialog({ trackIds, target: requested, note, onClose, onD
           onClose={() => setBrowsing(false)}
         />
       )}
-      <div
-        aria-modal="true"
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[3px]"
-      >
+      <Modal onDismiss={onClose} padding="p-4">
         <div className="w-full max-w-lg glass-overlay">
           <div className="border-b border-line px-5 py-3">
             <h2 className="text-sm font-semibold text-text">{title}</h2>
@@ -461,9 +458,8 @@ export function AddFilesDialog({ trackIds, target: requested, note, onClose, onD
             )}
           </div>
         </div>
-      </div>
-    </>,
-    document.body,
+      </Modal>
+    </>
   )
 }
 

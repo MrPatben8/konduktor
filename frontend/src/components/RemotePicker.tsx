@@ -1,5 +1,4 @@
 import { useState, type ReactNode } from 'react'
-import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   api,
@@ -14,6 +13,7 @@ import {
 import { askConfirm } from '../lib/confirm'
 import { Icon } from '../lib/icons'
 import { remoteHolder } from '../lib/platformCopy'
+import { Modal } from './Modal'
 import { OptionCard } from './OptionCard'
 
 /**
@@ -329,12 +329,8 @@ function PendingEditsDialog({
       setBusy(false)
     }
   }
-  return createPortal(
-    <div
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6 backdrop-blur-[3px]"
-      onKeyDown={(e) => e.key === 'Escape' && !busy && void choose('later')}
-    >
+  return (
+    <Modal onDismiss={busy ? null : () => void choose('later')}>
       <div className="w-full max-w-sm overflow-hidden glass-overlay">
         <div className="border-b border-line px-5 py-4 text-[15px] font-semibold tracking-tight">
           Unsaved edits from {edits.machine || 'another computer'}
@@ -369,7 +365,6 @@ function PendingEditsDialog({
           </button>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }

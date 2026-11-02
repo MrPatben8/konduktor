@@ -1,6 +1,6 @@
-import { createPortal } from 'react-dom'
 import { useState } from 'react'
 import { FileBrowser, useFsListing, type Listing } from './FileBrowser'
+import { Modal } from './Modal'
 
 /**
  * Pick a FOLDER, by browsing.
@@ -33,8 +33,8 @@ export function FolderPicker({ value, onChange, onClose, listing = 'host' }: Pro
     onClose()
   }
 
-  return createPortal(
-    <div aria-modal="true" className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-4">
+  return (
+    <Modal onDismiss={onClose} layer="nested" padding="p-4">
       <div className="flex h-[70vh] w-full max-w-2xl flex-col overflow-hidden glass-overlay">
         <div className="border-b border-line px-5 py-3">
           <h2 className="text-sm font-semibold text-text">Choose a folder</h2>
@@ -84,7 +84,6 @@ export function FolderPicker({ value, onChange, onClose, listing = 'host' }: Pro
           </button>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }

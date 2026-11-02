@@ -1,4 +1,3 @@
-import { createPortal } from 'react-dom'
 import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Track } from '../api'
@@ -7,6 +6,7 @@ import { useCaps } from '../lib/capabilities'
 import { RatingStars } from './RatingStars'
 import { writeHint } from '../lib/platformCopy'
 import { invalidateTrackLists } from '../lib/trackQueries'
+import { Modal } from './Modal'
 
 interface Props {
   track: Track
@@ -96,14 +96,10 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
     apply.mutate()
   }
 
-  return createPortal(
-    <div
-      aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
-      onClick={onClose}
-    >
+  return (
+    <Modal onDismiss={onClose}>
       <div
         className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden glass-overlay"
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-line px-5 py-4">
           <div className="text-[15px] font-semibold tracking-tight">Edit Tags</div>
@@ -240,7 +236,6 @@ export function EditTagsDialog({ track, onClose, onApplied, onError }: Props) {
           </button>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }

@@ -1,4 +1,3 @@
-import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type ImportPreview, type JobStatus } from '../api'
@@ -7,6 +6,7 @@ import { placedAudioSummary } from '../lib/platformCopy'
 import type { AddTarget } from './AddFilesDialog'
 import { FolderPicker } from './FolderPicker'
 import { useServerImportFolder, usePlaylistToggle } from './AddFilesDialog'
+import { Modal } from './Modal'
 
 /**
  * Import a browsed device into the loaded collection.
@@ -173,7 +173,7 @@ export function ImportDialog({ playlistId, trackIds, target: requested, deviceLa
   const finished = job != null && job.state !== 'running'
   const pct = job && job.total > 0 ? Math.min(100, (job.done / job.total) * 100) : null
 
-  return createPortal(
+  return (
     <>
     {browsing && (
       <FolderPicker
@@ -187,7 +187,7 @@ export function ImportDialog({ playlistId, trackIds, target: requested, deviceLa
         onClose={() => setBrowsing(false)}
       />
     )}
-    <div aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-4">
+    <Modal onDismiss={onClose} padding="p-4">
       <div className="w-full max-w-lg glass-overlay">
         <div className="border-b border-line px-5 py-3">
           <h2 className="text-sm font-semibold text-text">
@@ -373,8 +373,7 @@ export function ImportDialog({ playlistId, trackIds, target: requested, deviceLa
           )}
         </div>
       </div>
-    </div>
-    </>,
-    document.body,
+    </Modal>
+    </>
   )
 }

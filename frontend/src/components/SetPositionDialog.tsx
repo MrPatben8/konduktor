@@ -1,8 +1,8 @@
-import { createPortal } from 'react-dom'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { SortingState } from '@tanstack/react-table'
 import { maxPosition, moveToPosition } from '../lib/playlistOrder'
 import { COLUMN_MENU } from '../lib/trackColumns'
+import { Modal } from './Modal'
 
 interface Props {
   /** The playlist's full entry order — never the sorted or filtered view, so
@@ -50,14 +50,6 @@ export function SetPositionDialog({ order, ids, sorting, onMove, onClose }: Prop
     onClose()
   }
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
-
   const option = (value: 'playlist' | 'sorted', label: string, detail: ReactNode) => (
     <label
       className={`flex cursor-pointer gap-3 rounded-lg px-3 py-2 ${
@@ -80,15 +72,10 @@ export function SetPositionDialog({ order, ids, sorting, onMove, onClose }: Prop
 
   const span = (p: number) => (count > 1 ? `#${p}–${p + count - 1}` : `#${p}`)
 
-  return createPortal(
-    <div
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
-      onClick={onClose}
-    >
+  return (
+    <Modal onDismiss={onClose}>
       <form
         className="w-full max-w-sm overflow-hidden glass-overlay"
-        onClick={(e) => e.stopPropagation()}
         onSubmit={(e) => {
           e.preventDefault()
           submit()
@@ -152,7 +139,6 @@ export function SetPositionDialog({ order, ids, sorting, onMove, onClose }: Prop
           </button>
         </div>
       </form>
-    </div>,
-    document.body,
+    </Modal>
   )
 }

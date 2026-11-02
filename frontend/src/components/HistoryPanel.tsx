@@ -1,10 +1,10 @@
-import { createPortal } from 'react-dom'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type HistoryEntry } from '../api'
 import { useCaps } from '../lib/capabilities'
 import { restoreWarning } from '../lib/platformCopy'
 import type { ToastMsg } from './Toast'
+import { Modal } from './Modal'
 
 interface Props {
   onClose: () => void
@@ -79,14 +79,10 @@ export function HistoryPanel({ onClose, onNotify, onError }: Props) {
 
   const entries = history.data ?? []
 
-  return createPortal(
-    <div
-      aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[3px] p-6"
-      onClick={onClose}
-    >
+  return (
+    <Modal onDismiss={onClose}>
       <div
         className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden glass-overlay"
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-line px-5 py-4">
           <div className="text-[15px] font-semibold tracking-tight">Version History</div>
@@ -208,7 +204,6 @@ export function HistoryPanel({ onClose, onNotify, onError }: Props) {
           )}
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }

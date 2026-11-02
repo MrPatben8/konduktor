@@ -1,6 +1,5 @@
-import { createPortal } from 'react-dom'
-import { useEffect } from 'react'
 import type { StemBatchResult } from '../api'
+import { Modal } from './Modal'
 
 /**
  * The Details behind a finished conversion's toast: every track that was
@@ -8,24 +7,14 @@ import type { StemBatchResult } from '../api'
  * into a toast).
  */
 export function StemReportDialog({ result, onClose }: { result: StemBatchResult; onClose: () => void }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
-
   const rows = [
     ...result.failed.map((s) => ({ ...s, failed: true })),
     ...result.skipped.map((s) => ({ ...s, failed: false })),
   ]
   const n = result.converted.length
-  return createPortal(
-    <div
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[3px]"
-      onClick={onClose}
-    >
-      <div className="flex max-h-[80vh] w-full max-w-lg flex-col overflow-hidden glass-overlay" onClick={(e) => e.stopPropagation()}>
+  return (
+    <Modal onDismiss={onClose} padding="p-4">
+      <div className="flex max-h-[80vh] w-full max-w-lg flex-col overflow-hidden glass-overlay">
         <div className="border-b border-line px-5 py-3 text-sm font-semibold text-text">
           {n} converted to stems · {result.skipped.length} skipped · {result.failed.length} failed
         </div>
@@ -49,7 +38,6 @@ export function StemReportDialog({ result, onClose }: { result: StemBatchResult;
           </button>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   )
 }
