@@ -11,6 +11,7 @@
 //   ← / →            beat jump, or move an engaged loop
 //   Shift+← / →      step between grid markers
 //   Cmd/Ctrl+↑ / ↓   loop / jump size (Shift+↑/↓ is the track table's)
+//   P                performance mode on / off (not a deck's key)
 //
 // Keys are read from `e.code` (layout- and Shift-independent). A new or changed
 // key needs `lib/shortcuts.ts` (the keyboard map) updating by hand.
@@ -40,6 +41,8 @@ export interface DeckKeyTargets {
   focused: DeckShortcuts | null
   /** The other deck, in performance mode (else null: Alt does nothing). */
   other: DeckShortcuts | null
+  /** P: performance mode on / off. */
+  togglePerformance?: () => void
 }
 
 export type DeckKeyAction =
@@ -140,7 +143,12 @@ export function useDeckKeys(targets: RefObject<DeckKeyTargets>): void {
       // Ignore while typing in a field.
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
-      const { focused, other } = targets.current
+      const { focused, other, togglePerformance } = targets.current
+      if (e.code === 'KeyP' && !e.repeat && !e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey && togglePerformance) {
+        e.preventDefault()
+        togglePerformance()
+        return
+      }
       const r = keyAction(e, (toOther) => (toOther ? other : focused)?.slotCount ?? 0, other != null)
       const sc = r && (r.toOther ? other : focused)
       if (!r || !sc) return

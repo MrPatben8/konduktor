@@ -378,6 +378,17 @@ export function useDeck({
     setCurrent(eng.getPosition())
   }
 
+  /** Stop playing, if it is (performance mode pauses deck B on the way out). */
+  const pause = () => {
+    const eng = playbackRef.current
+    if (!eng?.playing) return
+    previewRef.current = null
+    setPreviewing(false)
+    eng.pause()
+    setPlaying(false)
+    setCurrent(eng.getPosition())
+  }
+
   // Start a momentary "cue preview" from `start` for holder `id`: play now, and
   // remember to stop + return on release (see endPreview) unless it's latched.
   const beginPreview = (id: string, start: number) => {
@@ -1361,6 +1372,7 @@ export function useDeck({
     slotCount,
     slotLabel,
     toggle,
+    pause,
     onCuePress,
     onCueRelease,
     seekManual,

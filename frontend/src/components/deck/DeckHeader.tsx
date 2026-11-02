@@ -23,8 +23,20 @@ function fmtTime(secs: number, places: number): string {
 }
 
 /** The deck's header: the track, its readouts, the analysis actions — and
- *  `actions`, anything the layout adds after them. */
-export function DeckHeader({ deck, actions }: { deck: Deck; actions?: ReactNode }) {
+ *  `actions`, anything the layout adds after them. `compact` (half-width, in
+ *  performance mode) tightens the readouts and drops the action buttons'
+ *  words; `badge` leads the row (the deck's letter). */
+export function DeckHeader({
+  deck,
+  actions,
+  compact = false,
+  badge,
+}: {
+  deck: Deck
+  actions?: ReactNode
+  compact?: boolean
+  badge?: ReactNode
+}) {
   const {
     caps,
     track,
@@ -47,8 +59,13 @@ export function DeckHeader({ deck, actions }: { deck: Deck; actions?: ReactNode 
     canAutoCue,
   } = deck
   const timeDecimals = useAppSetting('timeReadoutDecimals')
+  const cell = `flex flex-col justify-center gap-px ${compact ? 'px-2.5' : 'px-4'}`
+  const action = `btn-glass flex h-9 shrink-0 items-center justify-center gap-2 rounded-full text-[13px] font-medium disabled:opacity-40 ${
+    compact ? 'w-9' : 'px-3.5'
+  }`
   return (
-    <div className="flex h-12 shrink-0 items-center gap-3">
+    <div className={`flex h-12 min-w-0 shrink-0 items-center ${compact ? 'gap-2' : 'gap-3'}`}>
+      {badge}
       <CoverThumb
         trackId={track && origin === 'collection' ? track.id : null}
         onOpen={track ? () => setInfoOpen(true) : undefined}
@@ -57,7 +74,10 @@ export function DeckHeader({ deck, actions }: { deck: Deck; actions?: ReactNode 
         {track ? (
           <>
             <div className="flex min-w-0 items-center gap-2">
-              <span className="truncate text-[17px] font-semibold tracking-tight text-text" title={track.title ?? ''}>
+              <span
+                className={`truncate font-semibold tracking-tight text-text ${compact ? 'text-[15px]' : 'text-[17px]'}`}
+                title={track.title ?? ''}
+              >
                 {track.title ?? 'Untitled'}
               </span>
               {/* The deck stays usable for listening on a read-only library,
@@ -72,7 +92,7 @@ export function DeckHeader({ deck, actions }: { deck: Deck; actions?: ReactNode 
                 </span>
               )}
             </div>
-            <div className="truncate text-[13px] text-muted" title={subtitle}>
+            <div className={`truncate text-muted ${compact ? 'text-[12px]' : 'text-[13px]'}`} title={subtitle}>
               {subtitle}
             </div>
           </>
@@ -82,20 +102,20 @@ export function DeckHeader({ deck, actions }: { deck: Deck; actions?: ReactNode 
       </div>
 
       <div className="well flex h-11 shrink-0 items-stretch rounded-xl">
-        <div className="flex flex-col justify-center gap-px px-4">
+        <div className={cell}>
           <span className="text-[10px] tracking-[0.08em] text-faint">ELAPSED</span>
-          <span className="font-mono text-[17px] font-medium">{fmtTime(current, timeDecimals)}</span>
+          <span className={`font-mono font-medium ${compact ? 'text-[15px]' : 'text-[17px]'}`}>{fmtTime(current, timeDecimals)}</span>
         </div>
         <span aria-hidden className="my-2 w-px bg-line" />
-        <div className="flex flex-col justify-center gap-px px-4">
+        <div className={cell}>
           <span className="text-[10px] tracking-[0.08em] text-faint">REMAIN</span>
-          <span className="font-mono text-[17px] font-medium">−{fmtTime(Math.max(0, duration - current), timeDecimals)}</span>
+          <span className={`font-mono font-medium ${compact ? 'text-[15px]' : 'text-[17px]'}`}>−{fmtTime(Math.max(0, duration - current), timeDecimals)}</span>
         </div>
         <span aria-hidden className="my-2 w-px bg-line" />
-        <div className="flex flex-col justify-center gap-px px-4">
+        <div className={cell}>
           <span className="text-[10px] tracking-[0.08em] text-faint">KEY</span>
           <span
-            className="font-mono text-[17px] font-semibold"
+            className={`font-mono font-semibold ${compact ? 'text-[15px]' : 'text-[17px]'}`}
             style={{ color: keyColor(track?.key_wheel ?? null) }}
           >
             {track?.key || '—'}
@@ -127,10 +147,11 @@ export function DeckHeader({ deck, actions }: { deck: Deck; actions?: ReactNode 
         title={canEditGrid
           ? 'Detect BPM and first beat, then set the grid + hotcue 1 (fix the octave with ÷2 / ×2); measure loudness'
           : 'Measure loudness (this track’s grid cannot be edited here)'}
-        className="btn-glass flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 text-[13px] font-medium disabled:opacity-40"
+        aria-label="Analyze"
+        className={action}
       >
         <Icon name="wave" size={16} />
-        {gridBusy ? 'Analyzing…' : 'Analyze'}
+        {!compact && (gridBusy ? 'Analyzing…' : 'Analyze')}
       </button>
       <button
         onClick={openAutoHotcues}
@@ -140,10 +161,11 @@ export function DeckHeader({ deck, actions }: { deck: Deck; actions?: ReactNode 
             ? "Place hotcues on the track's drops, breakdowns and other sections"
             : 'Set a beatgrid first'
         }
-        className="btn-glass flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 text-[13px] font-medium disabled:opacity-40"
+        aria-label="Auto hotcues"
+        className={action}
       >
         <Icon name="sparkle" size={16} />
-        Auto hotcues
+        {!compact && 'Auto hotcues'}
       </button>
       {actions}
     </div>

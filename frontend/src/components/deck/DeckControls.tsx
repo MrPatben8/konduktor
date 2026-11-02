@@ -17,8 +17,13 @@ const DIVIDER = <span aria-hidden className="h-7 w-px shrink-0 bg-line" />
  * into one BPM button. That is the row's measured width just before the pad
  * bank would hit its minimum (with a lockable grid's extra Lock button, and the
  * Hot / Mem toggle's ~3rem with its gap), so move it with the controls.
+ *
+ * `stacked` (half-width, in performance mode) gives the pads — or the grid or
+ * memory strip — a row of their own under the rest, which then folds the tempo
+ * group below 52rem (measured in the app: row one needs ~50rem before the
+ * tempo group overflows).
  */
-export function DeckControls({ deck }: { deck: Deck }) {
+export function DeckControls({ deck, stacked = false }: { deck: Deck; stacked?: boolean }) {
   const {
     caps,
     track,
@@ -84,8 +89,8 @@ export function DeckControls({ deck }: { deck: Deck }) {
     renameSlot,
     tempoProps,
   } = deck
-  return (
-    <div className="@container flex h-11 shrink-0 items-center gap-3">
+  const transport = (
+    <>
       <button
         onClick={toggle}
         disabled={!ready}
@@ -122,107 +127,140 @@ export function DeckControls({ deck }: { deck: Deck }) {
       >
         CUE
       </button>
+    </>
+  )
+  const loopControls = (
+    <LoopControls
+      mode={loopMode}
+      onMode={setLoopMode}
+      hasGrid={grid != null}
+      ready={ready}
+      size={beatSize}
+      onSmaller={() => stepSize(-1)}
+      onBigger={() => stepSize(1)}
+      loopActive={loopActive}
+      sizeLit={loopActive && activeBeats === beatSize}
+      onToggleSize={toggleSizeLoop}
+      canToggle={loopRegion != null}
+      inArmed={loopInPoint != null}
+      manualSet={loopRegion != null && activeBeats == null}
+      onLoopIn={loopIn}
+      onLoopOut={loopOut}
+      onToggleLoop={toggleLoop}
+      onMove={moveOrJump}
+    />
+  )
+  const bankSwitch = caps.cues.memory_cues && !gridMode && (
+    <ModeSwitch
+      label="Cue bank"
+      value={bankMode}
+      options={[
+        { value: 'hot', text: 'HOT', title: 'Hot cues: the pads' },
+        { value: 'memory', text: 'MEM', title: 'Memory cues: call one to make it the CUE point' },
+      ]}
+      onChange={(m) => {
+        setBankMode(m)
+        setPadMenu(null)
+        setMemoryMenu(null)
+        setRenamingSlot(null)
+        setRenamingMemory(null)
+      }}
+    />
+  )
+  const strip = gridMode ? (
+    <GridEditStrip
+      markerIndex={activeMarkerIndex}
+      markerCount={markerCount}
+      markerStart={activeMarker?.start ?? null}
+      atMarker={atMarker}
+      beforeFirst={beforeFirstMarker}
+      canReset={originalGridRef.current != null}
+      onPrevMarker={prevMarker}
+      onNextMarker={nextMarker}
+      onNudgeMarker={nudgeGrid}
+      onNudgeMarkerBeats={nudgeGridBeats}
+      onAddMarker={addMarkerHere}
+      onDeleteMarker={deleteMarkerHere}
+      onDeleteGrid={deleteGrid}
+      onReset={resetGrid}
+    />
+  ) : showMemory ? (
+    <MemoryCueStrip
+      cues={cueData?.cues ?? []}
+      cuePoint={cuePoint}
+      onCall={callMemoryCue}
+      onMenu={(cue, x, y) => setMemoryMenu({ cue, x, y })}
+      onAdd={() => void addMemoryCue()}
+      addRefusal={memoryAddRefusal}
+      renamingId={renamingMemory}
+      onRenameCommit={renameMemoryCue}
+      onRenameCancel={() => setRenamingMemory(null)}
+    />
+  ) : (
+    <HotcueBar
+      cues={cueData?.cues ?? []}
+      slotCount={slotCount}
+      slotLabel={slotLabel}
+      selectedSlot={selectedSlot}
+      onSlotPress={onSlotPress}
+      onSlotRelease={onSlotRelease}
+      onSlotMenu={(slot, x, y) => {
+        setSelectedSlot(slot)
+        if (hotcueAt(slot)) setPadMenu({ slot, x, y })
+      }}
+      renamingSlot={renamingSlot}
+      onRenameCommit={renameSlot}
+      onRenameCancel={() => setRenamingSlot(null)}
+    />
+  )
+  const modeSwitch = (
+    <ModeSwitch
+      label="Deck mode"
+      value={gridMode ? 'grid' : 'cues'}
+      options={[
+        { value: 'cues', text: 'CUES', title: 'Cues: the hotcue pads or memory cues' },
+        { value: 'grid', text: 'GRID', title: 'Edit the beatgrid: markers, phase, reset' },
+      ]}
+      disabled={!track}
+      onChange={(m) => {
+        setGridMode(m === 'grid')
+        setPadMenu(null)
+        setRenamingSlot(null)
+        setMemoryMenu(null)
+        setRenamingMemory(null)
+      }}
+    />
+  )
+
+  if (stacked) {
+    return (
+      <div className="@container flex min-w-0 flex-1 flex-col gap-2">
+        <div className="flex h-11 shrink-0 items-center gap-3">
+          {transport}
+          {DIVIDER}
+          {loopControls}
+          <span className="flex-1" />
+          {bankSwitch}
+          {modeSwitch}
+          <TempoControls {...tempoProps} className="@max-[52rem]:hidden" />
+          <TempoFold locked={tempoProps.locked} className="hidden @max-[52rem]:flex">
+            <TempoControls {...tempoProps} />
+          </TempoFold>
+        </div>
+        <div className="flex h-11 shrink-0 items-center">{strip}</div>
+      </div>
+    )
+  }
+  return (
+    <div className="@container flex h-11 shrink-0 items-center gap-3">
+      {transport}
       {DIVIDER}
-      <LoopControls
-        mode={loopMode}
-        onMode={setLoopMode}
-        hasGrid={grid != null}
-        ready={ready}
-        size={beatSize}
-        onSmaller={() => stepSize(-1)}
-        onBigger={() => stepSize(1)}
-        loopActive={loopActive}
-        sizeLit={loopActive && activeBeats === beatSize}
-        onToggleSize={toggleSizeLoop}
-        canToggle={loopRegion != null}
-        inArmed={loopInPoint != null}
-        manualSet={loopRegion != null && activeBeats == null}
-        onLoopIn={loopIn}
-        onLoopOut={loopOut}
-        onToggleLoop={toggleLoop}
-        onMove={moveOrJump}
-      />
+      {loopControls}
       {DIVIDER}
-      {caps.cues.memory_cues && !gridMode && (
-        <ModeSwitch
-          label="Cue bank"
-          value={bankMode}
-          options={[
-            { value: 'hot', text: 'HOT', title: 'Hot cues: the pads' },
-            { value: 'memory', text: 'MEM', title: 'Memory cues: call one to make it the CUE point' },
-          ]}
-          onChange={(m) => {
-            setBankMode(m)
-            setPadMenu(null)
-            setMemoryMenu(null)
-            setRenamingSlot(null)
-            setRenamingMemory(null)
-          }}
-        />
-      )}
-      {gridMode ? (
-        <GridEditStrip
-          markerIndex={activeMarkerIndex}
-          markerCount={markerCount}
-          markerStart={activeMarker?.start ?? null}
-          atMarker={atMarker}
-          beforeFirst={beforeFirstMarker}
-          canReset={originalGridRef.current != null}
-          onPrevMarker={prevMarker}
-          onNextMarker={nextMarker}
-          onNudgeMarker={nudgeGrid}
-          onNudgeMarkerBeats={nudgeGridBeats}
-          onAddMarker={addMarkerHere}
-          onDeleteMarker={deleteMarkerHere}
-          onDeleteGrid={deleteGrid}
-          onReset={resetGrid}
-        />
-      ) : showMemory ? (
-        <MemoryCueStrip
-          cues={cueData?.cues ?? []}
-          cuePoint={cuePoint}
-          onCall={callMemoryCue}
-          onMenu={(cue, x, y) => setMemoryMenu({ cue, x, y })}
-          onAdd={() => void addMemoryCue()}
-          addRefusal={memoryAddRefusal}
-          renamingId={renamingMemory}
-          onRenameCommit={renameMemoryCue}
-          onRenameCancel={() => setRenamingMemory(null)}
-        />
-      ) : (
-        <HotcueBar
-          cues={cueData?.cues ?? []}
-          slotCount={slotCount}
-          slotLabel={slotLabel}
-          selectedSlot={selectedSlot}
-          onSlotPress={onSlotPress}
-          onSlotRelease={onSlotRelease}
-          onSlotMenu={(slot, x, y) => {
-            setSelectedSlot(slot)
-            if (hotcueAt(slot)) setPadMenu({ slot, x, y })
-          }}
-          renamingSlot={renamingSlot}
-          onRenameCommit={renameSlot}
-          onRenameCancel={() => setRenamingSlot(null)}
-        />
-      )}
+      {bankSwitch}
+      {strip}
       {DIVIDER}
-      <ModeSwitch
-        label="Deck mode"
-        value={gridMode ? 'grid' : 'cues'}
-        options={[
-          { value: 'cues', text: 'CUES', title: 'Cues: the hotcue pads or memory cues' },
-          { value: 'grid', text: 'GRID', title: 'Edit the beatgrid: markers, phase, reset' },
-        ]}
-        disabled={!track}
-        onChange={(m) => {
-          setGridMode(m === 'grid')
-          setPadMenu(null)
-          setRenamingSlot(null)
-          setMemoryMenu(null)
-          setRenamingMemory(null)
-        }}
-      />
+      {modeSwitch}
       <TempoControls {...tempoProps} className="@max-[77rem]:hidden" />
       <TempoFold locked={tempoProps.locked} className="hidden @max-[77rem]:flex">
         <TempoControls {...tempoProps} />

@@ -32,7 +32,7 @@ import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { PathMappingDialog } from './components/PathMappingDialog'
 import { RelocateDialog } from './components/RelocateDialog'
 import { HistoryPanel } from './components/HistoryPanel'
-import { PrepStrip } from './components/PrepStrip'
+import { EMPTY_SLOT, PrepStrip, type DeckDrop, type DeckId, type DeckSlot } from './components/PrepStrip'
 import { ImportDialog } from './components/ImportDialog'
 import { AddFilesDialog, type AddTarget, type ForeignOrigin } from './components/AddFilesDialog'
 import { ConvertStemsDialog } from './components/ConvertStemsDialog'
@@ -61,6 +61,14 @@ function applyFilters(tracks: Track[], f: Filters): Track[] {
   })
 }
 
+
+/** `f` over both decks; the same object back when neither slot changed, so a
+ *  no-op update does not re-render. */
+function mapDecks(d: Record<DeckId, DeckSlot>, f: (s: DeckSlot) => DeckSlot): Record<DeckId, DeckSlot> {
+  const A = f(d.A)
+  const B = f(d.B)
+  return A === d.A && B === d.B ? d : { A, B }
+}
 export default function App() {
   const qc = useQueryClient()
   const [source, setSource] = useState<Source>({ kind: 'all' })
@@ -77,12 +85,20 @@ export default function App() {
   const [editing, setEditing] = useState<Track | null>(null)
   const [showPaths, setShowPaths] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
-  const [prepTrack, setPrepTrack] = useState<Track | null>(null)
-  const [deckPlaying, setDeckPlaying] = useState(false)
-  // Which library the DECK's track came from — not the view's. Browsing to a
+  // The decks: A always, B in performance mode (decided 2026-11-02). Each slot
+  // is its track, which library that came from — not the view's: browsing to a
   // playlist while a device or folder track is loaded must not switch the deck
-  // to endpoints that do not know that track.
-  const [prepOrigin, setPrepOrigin] = useState<TrackOrigin>('collection')
+  // to endpoints that do not know that track — and two counters App bumps.
+  const [decks, setDecks] = useState<Record<DeckId, DeckSlot>>({ A: EMPTY_SLOT, B: EMPTY_SLOT })
+  const [deckPlaying, setDeckPlaying] = useState<Record<DeckId, boolean>>({ A: false, B: false })
+  const [performance, setPerformance] = useState(false)
+  const [focusedDeck, setFocusedDeck] = useState<DeckId>('A')
+  // Where a load goes — the focused deck in performance mode, else A — and the
+  // deck the library's rows light up for. A ref too, for the load callbacks.
+  const targetDeck: DeckId = performance ? focusedDeck : 'A'
+  const targetDeckRef = useRef<DeckId>('A')
+  targetDeckRef.current = targetDeck
+  const prepTrack = decks[targetDeck].track
   // The view's origin, read by the load callbacks below (defined before it).
   const viewOriginRef = useRef<TrackOrigin>('collection')
   // The browsed folder's rows that ARE collection tracks: collection id → the
@@ -94,7 +110,6 @@ export default function App() {
   // How many dropped items are being read (a dropped folder is searched all
   // the way down, which can take a while): shown until the dialog opens.
   const [readingDrop, setReadingDrop] = useState(0)
-  const [playRequest, setPlayRequest] = useState(0) // bump → deck loads & auto-plays
   const [importing, setImporting] = useState(false)
   // Device tracks dropped on a collection playlist / export: Import, with
   // just those tracks and that target.
@@ -119,23 +134,48 @@ export default function App() {
   const [stemReport, setStemReport] = useState<StemBatchResult | null>(null)
   const [engineJob, setEngineJob] = useState<string | null>(null)
   const [batchCancelling, setBatchCancelling] = useState(false)
-  const [cuesRefresh, setCuesRefresh] = useState(0) // bump → deck re-reads its cues
   // Every Remove ▸ action (and the playlist Delete key) confirms first.
   const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null)
 
-  const loadTrack = useCallback((t: Track, origin: TrackOrigin = viewOriginRef.current) => {
-    setPrepTrack(t)
-    // A folder row the collection holds IS the collection track, so the deck
-    // loads it as one: its cues and grid, and editable (decided 2026-10-10).
-    setPrepOrigin(origin === 'folder' && folderFilesRef.current[t.id] ? 'collection' : origin)
-  }, [])
+  const loadTrack = useCallback(
+    (t: Track, origin: TrackOrigin = viewOriginRef.current, deck: DeckId = targetDeckRef.current) => {
+      // A folder row the collection holds IS the collection track, so the deck
+      // loads it as one: its cues and grid, and editable (decided 2026-10-10).
+      const o = origin === 'folder' && folderFilesRef.current[t.id] ? 'collection' : origin
+      setDecks((d) => ({ ...d, [deck]: { ...d[deck], track: t, origin: o } }))
+    },
+    [],
+  )
   const playTrack = useCallback(
     (t: Track) => {
-      loadTrack(t)
-      setPlayRequest((n) => n + 1)
+      const deck = targetDeckRef.current
+      loadTrack(t, undefined, deck)
+      setDecks((d) => ({ ...d, [deck]: { ...d[deck], playRequest: d[deck].playRequest + 1 } }))
     },
     [loadTrack],
   )
+  // Every deck holding one of `ids`: re-read its cues (an outside edit wrote
+  // them), or unload it (the track left the collection).
+  const bumpDeckCues = useCallback((ids: string[]) => {
+    setDecks((d) => mapDecks(d, (s) => (s.track && ids.includes(s.track.id) ? { ...s, cuesRefresh: s.cuesRefresh + 1 } : s)))
+  }, [])
+  const unloadDecks = useCallback((ids: string[]) => {
+    setDecks((d) => mapDecks(d, (s) => (s.track && ids.includes(s.track.id) ? { ...s, track: null } : s)))
+  }, [])
+  const onDeckPlaying = useCallback((id: DeckId, playing: boolean) => {
+    setDeckPlaying((s) => (s[id] === playing ? s : { ...s, [id]: playing }))
+  }, [])
+  // Entering performance mode with deck B empty focuses B, so the next load
+  // goes there and deck A keeps playing what it has.
+  const decksRef = useRef(decks)
+  decksRef.current = decks
+  const performanceRef = useRef(performance)
+  performanceRef.current = performance
+  const togglePerformance = useCallback(() => {
+    const entering = !performanceRef.current
+    if (entering && !decksRef.current.B.track) setFocusedDeck('B')
+    setPerformance(entering)
+  }, [])
 
   // ---- configurable library columns (persisted to userprefs.json) ----
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(DEFAULT_COLUMN_VISIBILITY)
@@ -324,7 +364,7 @@ export default function App() {
   const deviceCaps = useQuery({
     queryKey: ['source-capabilities'],
     queryFn: api.sourceCapabilities,
-    enabled: viewingDevice || prepOrigin === 'device',
+    enabled: viewingDevice || decks.A.origin === 'device' || decks.B.origin === 'device',
     staleTime: Infinity,
   })
 
@@ -474,7 +514,7 @@ export default function App() {
   )
   // One dropped audio file on the deck: loaded to listen to, added to nothing.
   const loadDropped = useCallback(
-    async (path: string) => {
+    async (path: string, deck: DeckId = targetDeckRef.current) => {
       const r = await readDrop([path])
       if (!r) return
       const t = r.tracks[0]
@@ -482,7 +522,7 @@ export default function App() {
         onError('That is not an audio file this library can hold.')
         return
       }
-      loadTrack(t, r.files[t.id] ? 'collection' : 'folder')
+      loadTrack(t, r.files[t.id] ? 'collection' : 'folder', deck)
     },
     [readDrop, loadTrack, onError],
   )
@@ -503,14 +543,25 @@ export default function App() {
   const audioFormats = capabilities.data?.tracks.audio_formats
   const isAudioPath = (path: string) =>
     path.lastIndexOf('.') > 0 && !!audioFormats?.includes(path.slice(path.lastIndexOf('.')).toLowerCase())
-  const [deckDropRef, deckOver] = useDropTarget<true>({
+  // A track (the row grabbed) or one audio file, dropped on a deck: loaded
+  // paused. In performance mode each waveform lane is a target for its own
+  // deck; anywhere else on the strip loads the focused one.
+  const deckDrop: DeckDrop = {
     hint: (p) =>
       p.kind === 'tracks' || (p.kind === 'files' && p.paths.length === 1 && isAudioPath(p.paths[0])) ? true : null,
-    label: (p) => (p.kind === 'tracks' && p.ids.length > 1 ? `Load “${p.lead.title || 'Untitled'}” into the deck` : 'Load into the deck'),
-    onDrop: (p) => {
-      if (p.kind === 'tracks') loadTrack(p.lead, p.origin)
-      else if (p.kind === 'files') void loadDropped(p.paths[0])
+    label: (p, deck) => {
+      const into = performance ? `deck ${deck}` : 'the deck'
+      return p.kind === 'tracks' && p.ids.length > 1 ? `Load “${p.lead.title || 'Untitled'}” into ${into}` : `Load into ${into}`
     },
+    onDrop: (p, deck) => {
+      if (p.kind === 'tracks') loadTrack(p.lead, p.origin, deck)
+      else if (p.kind === 'files') void loadDropped(p.paths[0], deck)
+    },
+  }
+  const [deckDropRef, deckOver] = useDropTarget<true>({
+    hint: deckDrop.hint,
+    label: (p) => deckDrop.label(p, targetDeck),
+    onDrop: (p) => deckDrop.onDrop(p, targetDeck),
   })
   // Files dropped anywhere no other target takes them: the collection. A
   // library that cannot add tracks still takes the drop, to say why not —
@@ -569,8 +620,8 @@ export default function App() {
   // tracks and edit as such, and a loose row asks to be added first
   // (`folderMayEdit`) rather than rendering inert.
   const viewCaps = viewingFolder ? capabilities.data! : capsFor(viewOriginRef.current)
-  // The deck follows its TRACK's library, not the view's.
-  const deckCaps = capsFor(prepOrigin)
+  // A deck follows its TRACK's library, not the view's.
+  const deckCaps = { A: capsFor(decks.A.origin), B: capsFor(decks.B.origin) }
 
   const deviceLabel = openDevice.data?.label ?? 'device'
   // One name for whatever is on screen, so the header and the status bar cannot
@@ -628,14 +679,16 @@ export default function App() {
   // PrepStrip keys its audio on the id, so a new object for the same id
   // reloads nothing.
   useEffect(() => {
-    if (!prepTrack) return
-    const fresh = tracks.find((t) => t.id === prepTrack.id)
-    if (!fresh) return
-    const origin =
-      viewOriginRef.current === 'folder' && folderFilesRef.current[fresh.id] ? 'collection' : viewOriginRef.current
-    if (origin === prepOrigin && JSON.stringify(fresh) !== JSON.stringify(prepTrack)) setPrepTrack(fresh)
-    // Only a refetch of the list matters; prepTrack is read, not tracked.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setDecks((d) =>
+      mapDecks(d, (s) => {
+        if (!s.track) return s
+        const fresh = tracks.find((t) => t.id === s.track!.id)
+        if (!fresh) return s
+        const origin =
+          viewOriginRef.current === 'folder' && folderFilesRef.current[fresh.id] ? 'collection' : viewOriginRef.current
+        return origin === s.origin && JSON.stringify(fresh) !== JSON.stringify(s.track) ? { ...s, track: fresh } : s
+      }),
+    )
   }, [tracks])
 
   const loading = viewingFolder
@@ -831,7 +884,7 @@ export default function App() {
       const f = failures[0]
       parts.push(`${failures.length} failed (${f.title}: ${f.reason}${failures.length > 1 ? ', …' : ''})`)
     }
-    if (prepTrack && touched.includes(prepTrack.id)) setCuesRefresh((n) => n + 1)
+    bumpDeckCues(touched)
     notify(failures.length && touched.length === 0 ? 'error' : 'success', parts.filter(Boolean).join(' · '))
     // Only the job's finish matters here; prepTrack is read, not tracked.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -842,9 +895,8 @@ export default function App() {
     setSource({ kind: 'all' })
     setSelected(new Set())
     setBatchJob(null) // the backend cancels it; its result is for the old library
-    // The deck starts empty: its track belongs to the old library.
-    setPrepTrack(null)
-    setPlayRequest(0)
+    // The decks start empty: their tracks belong to the old library.
+    setDecks({ A: EMPTY_SLOT, B: EMPTY_SLOT })
     setFilters(emptyFilters)
     setSorting([])
     qc.invalidateQueries() // refetch everything for the newly-opened collection
@@ -884,10 +936,13 @@ export default function App() {
     // A repointed track's id IS its location, so it changed: follow it with the
     // deck and the selection instead of leaving them on an id that is gone.
     const renamed = r.renamed
-    if (prepTrack && renamed[prepTrack.id]) {
-      setPrepTrack({ ...prepTrack, id: renamed[prepTrack.id], media_kind: 'stem' })
-      setCuesRefresh((n) => n + 1)
-    }
+    setDecks((d) =>
+      mapDecks(d, (s) =>
+        s.track && renamed[s.track.id]
+          ? { ...s, track: { ...s.track, id: renamed[s.track.id], media_kind: 'stem' }, cuesRefresh: s.cuesRefresh + 1 }
+          : s,
+      ),
+    )
     setSelected((sel) => new Set([...sel].map((id) => renamed[id] ?? id)))
     const n = r.converted.length
     const parts = [
@@ -1074,7 +1129,7 @@ export default function App() {
     qc.invalidateQueries({ queryKey: ['playlists'] })
     qc.invalidateQueries({ queryKey: ['export-contents'] })
     qc.invalidateQueries({ queryKey: ['facets'] })
-    if (cuesChanged && prepTrack && ids.includes(prepTrack.id)) setCuesRefresh((n) => n + 1)
+    if (cuesChanged) bumpDeckCues(ids)
   }
   const guard = async (fn: () => Promise<void>) => {
     try {
@@ -1228,7 +1283,7 @@ export default function App() {
         guard(async () => {
           const r = await api.removeTracks(ids)
           setSelected(new Set())
-          if (prepTrack && ids.includes(prepTrack.id)) setPrepTrack(null)
+          unloadDecks(ids)
           afterBulk(ids, false)
           notify('success', `Removed ${nTracks(r.removed)} from the collection`)
         }),
@@ -1389,7 +1444,12 @@ export default function App() {
           items={[
             // Single-track actions are hidden, not disabled, for a multi-selection.
             ...(menu.ids.length === 1
-              ? [{ label: 'Load to Deck', onClick: () => loadTrack(menu.track) }]
+              ? performance
+                ? (['A', 'B'] as const).map((d) => ({
+                    label: `Load to Deck ${d}`,
+                    onClick: () => loadTrack(menu.track, undefined, d),
+                  }))
+                : [{ label: 'Load to Deck', onClick: () => loadTrack(menu.track) }]
               : []),
             // Offering "Edit Tags…" on a read-only library would open a dialog
             // whose every save is refused, so it is not offered at all.
@@ -1686,19 +1746,22 @@ export default function App() {
       {deckOver && (
         <div aria-hidden className="pointer-events-none absolute inset-0 z-10 rounded-[22px] ring-2 ring-accent" />
       )}
-      <CapabilitiesContext.Provider value={deckCaps}>
+      <CapabilitiesContext.Provider value={deckCaps[targetDeck]}>
         <PrepStrip
-          track={prepTrack}
-          playRequest={playRequest}
+          decks={decks}
+          caps={deckCaps}
+          performance={performance}
+          onTogglePerformance={togglePerformance}
+          focused={focusedDeck}
+          onFocus={setFocusedDeck}
+          drop={deckDrop}
           onError={onError}
           onNotify={notify}
-          origin={prepOrigin}
-          cuesRefresh={cuesRefresh}
-          onPlayingChange={setDeckPlaying}
+          onPlayingChange={onDeckPlaying}
           // As the context menu's: a library that would refuse the save is
           // not offered the dialog, and a deck track outside the collection
           // (a device's, a loose file's) is not the collection's to edit.
-          onEditTags={canEdit && prepOrigin === 'collection' ? setEditing : undefined}
+          onEditTags={canEdit ? setEditing : undefined}
         />
       </CapabilitiesContext.Provider>
       </div>
@@ -1715,7 +1778,7 @@ export default function App() {
           onDone={(msg) => notify('success', msg)}
           onAddForeign={addForeign}
           onOpenPathMapping={() => setShowPaths(true)}
-          onDiscarded={() => afterBulk(prepTrack ? [prepTrack.id] : [], true)}
+          onDiscarded={() => afterBulk([decks.A.track?.id, decks.B.track?.id].filter((x): x is string => !!x), true)}
         />
 
         <CapabilitiesContext.Provider value={viewCaps}>
@@ -1863,7 +1926,7 @@ export default function App() {
                 onPlay={playTrack}
                 onEditField={canEdit ? editField : undefined}
                 activeTrackId={prepTrack?.id ?? null}
-                activePlaying={deckPlaying}
+                activePlaying={deckPlaying[targetDeck]}
                 columnVisibility={columnVisibility}
                 columnOrder={columnOrder}
                 columnSizing={columnSizing}
@@ -1905,7 +1968,7 @@ export default function App() {
                 onEditField={canEdit ? folderEditField : undefined}
                 mayEdit={folderMayEdit}
                 activeTrackId={prepTrack?.id ?? null}
-                activePlaying={deckPlaying}
+                activePlaying={deckPlaying[targetDeck]}
                 columnVisibility={columnVisibility}
                 columnOrder={columnOrder}
                 columnSizing={columnSizing}
@@ -1940,7 +2003,7 @@ export default function App() {
                 onHeaderContextMenu={(x, y) => setHeaderMenu({ x, y })}
                 onPlay={playTrack}
                 activeTrackId={prepTrack?.id ?? null}
-                activePlaying={deckPlaying}
+                activePlaying={deckPlaying[targetDeck]}
                 columnVisibility={columnVisibility}
                 columnOrder={columnOrder}
                 columnSizing={columnSizing}
@@ -1965,7 +2028,7 @@ export default function App() {
                 onPlay={playTrack}
                 onEditField={canEdit ? editField : undefined}
                 activeTrackId={prepTrack?.id ?? null}
-                activePlaying={deckPlaying}
+                activePlaying={deckPlaying[targetDeck]}
                 columnVisibility={columnVisibility}
                 columnOrder={columnOrder}
                 columnSizing={columnSizing}
@@ -2018,7 +2081,7 @@ export default function App() {
               onPlay={playTrack}
               onEditField={canEdit ? editField : undefined}
               activeTrackId={prepTrack?.id ?? null}
-                activePlaying={deckPlaying}
+                activePlaying={deckPlaying[targetDeck]}
               columnVisibility={columnVisibility}
               columnOrder={columnOrder}
               columnSizing={columnSizing}

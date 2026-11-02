@@ -99,6 +99,14 @@ const PATHS = {
   fadeOut: <path d="M3 5l18 14H3z" strokeLinejoin="round" />,
   eject: <path d="M12 4l8 9H4zM4 18h16" strokeLinejoin="round" />,
   grid: <path d="M5 3v18M10 3v18M15 3v18M20 3v18" />,
+  // Two platters and a crossfader: performance mode.
+  decks: (
+    <>
+      <circle cx="6.5" cy="10" r="4" />
+      <circle cx="17.5" cy="10" r="4" />
+      <path d="M9 19h6M12 17.5v3" />
+    </>
+  ),
   mouse: (
     <>
       <rect x="6" y="3" width="12" height="18" rx="6" />

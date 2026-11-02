@@ -1363,7 +1363,22 @@ Two independent apps that talk over HTTP:
     `lib/deckKeys.ts`, ONE window listener routing each key to the focused
     deck (Alt/Option = the other deck, in performance mode; a key-up goes to
     the deck its key-down went to). A deck's `persist` (loop size, cue bank)
-    and `leadsAmbient` (cover colours) are for deck A. **Header**: cover, title/artist · album · genre, a Read-only
+    is deck A's; `leadsAmbient` (cover colours) the focused deck's.
+    **Performance mode** (P, or the decks button beside Auto hotcues; decided
+    2026-11-02, [the discussion](.claude/discussions/discuss-performance-mode-2026-11-02.md)):
+    deck B appears — the two headers side by side (`compact`, each led by its
+    letter, lit when focused), the two main waveforms STACKED at the one zoom
+    past one playhead line (each lane a drop target for its own deck, ringed
+    while focused), the overviews side by side, then each deck's controls
+    `stacked` (pads on a row of their own; the tempo group folds below 52rem),
+    a centre column between them for the mixer. App holds `decks: {A, B}`
+    (`DeckSlot`: track, origin, playRequest, cuesRefresh), `focusedDeck` and
+    `performance`; a load, Enter, a row's play button and a drop on the strip
+    go to the FOCUSED deck (A outside the mode), "Load to Deck A/B" to either,
+    and the table lights the focused deck's row. Entering with B empty focuses
+    B. B's `useDeck` stays MOUNTED while hidden — leaving pauses it, coming
+    back finds it as it was; a library switch empties both decks. Not
+    persisted. **Header**: cover, title/artist · album · genre, a Read-only
     badge, the readout well (ELAPSED / REMAIN to tenths, KEY, and `BpmReadout` —
     click to type an exact BPM; with no grid, a typed or tapped BPM CREATES one at the playhead, and
     Set grid on a track with no BPM opens the readout to ask rather than failing), SNAP, Analyze, Auto hotcues. **Waveforms**:

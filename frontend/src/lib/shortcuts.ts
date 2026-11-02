@@ -1,6 +1,6 @@
 // What every shortcut does, for the keyboard map in `ShortcutsDialog`.
 // Written out BY HAND, not derived from the handlers: keep it in step with
-// `PrepStrip` (deck), `TrackTable` (track list) and `SettingsMenu` (`?`).
+// `lib/deckKeys.ts` (deck), `TrackTable` (track list) and `SettingsMenu` (`?`).
 import { cueTypeColor, GRID_MARKER_ACTIVE_COLOR } from './cues'
 import { IS_MAC } from './modKey'
 
@@ -47,7 +47,7 @@ const STEMS: [string, string][] = [
 const STEM_CODES = ['KeyQ', 'KeyW', 'KeyE', 'KeyR']
 
 /** The digit keys of a bank of `slots` pads: 1–9, then 0 for the tenth, as
- *  `PrepStrip`'s `slotForDigit` reads them. */
+ *  `deckKeys`' `slotForDigit` reads them. */
 export function padCodes(slots: number): string[] {
   return Array.from({ length: Math.min(slots, 10) }, (_, i) => (i === 9 ? 'Digit0' : `Digit${i + 1}`))
 }
@@ -79,6 +79,13 @@ export function bindings(slots: number): Bindings {
   })
   Object.assign(b.base, {
     Space: [{ area: 'deck', label: 'Play / pause', text: 'Play / pause' }],
+    KeyP: [
+      {
+        area: 'deck',
+        label: 'Decks',
+        text: 'Performance mode: a second deck, to try transitions. Click a deck to aim the keys at it. Press again to leave.',
+      },
+    ],
     KeyC: [
       { area: 'deck', label: 'CUE', color: 'var(--color-gold)', text: 'CUE: jump back to the cue point, set it while paused, or hold to preview' },
     ],
