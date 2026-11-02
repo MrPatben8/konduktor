@@ -1483,6 +1483,10 @@ Two independent apps that talk over HTTP:
 ```bash
 ./dev.sh                       # start both servers (see README for one-time setup)
 .\dev.ps1                      # the same on Windows (BUILDING-WINDOWS.md)
+./build.sh                     # desktop app on macOS: sidecar + .app/.dmg
+                               #   (--skip-sidecar reuses the staged one; other
+                               #   args go to `tauri build`)
+.\build.ps1                    # the same on Windows
 
 # Backend
 cd backend && source .venv/bin/activate
@@ -2241,7 +2245,8 @@ that number and nothing else — everything derives from it:
   `tauri.conf.json` `plugins.updater.pubkey`. **Losing the private key means
   installed copies can never update themselves again** — it is backed up
   outside the repo. A local build without it passes
-  `--config src-tauri/tauri.unsigned.conf.json` (`build.ps1` does so itself).
+  `--config src-tauri/tauri.unsigned.conf.json` (`build.sh` / `build.ps1` do
+  so themselves).
 - **NOT a source**: `src-tauri/Cargo.toml` `version` is inert Rust crate metadata
   (Tauri uses the config's `../package.json`); don't treat it as the app version.
 
