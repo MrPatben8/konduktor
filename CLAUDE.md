@@ -1174,7 +1174,7 @@ Two independent apps that talk over HTTP:
     / Try again (`backend_restart`). The shell has no timeout of its own. Before
     ready it answers quit requests itself — nothing can be unsaved — and stops
     at ready so it never races `QuitGuard`), `SaveBar` (+ "Discard changes…" when
-    dirty, and the settings gear beside it, whose menu (or `?` anywhere) opens `ShortcutsDialog` — a KEYBOARD MAP (decided 2026-10-15): keys lit in the colour of what they do, a caption explaining the key pointed at or pressed (pressing explains, it never acts: a capture-phase listener keeps the deck's and table's keys from firing), holding or picking ⇧ / Cmd-Ctrl relights it with that layer, mouse gestures listed beneath. It shrinks to fit the dialog and drops the words on the keys when too small. Its content is `lib/shortcuts.ts`, written out BY HAND, so a new or changed shortcut in `PrepStrip` / `TrackTable` must be added there too — and `AppSettings` ("Konduktor Settings…": app-level prefs, each with its default in `APP_SETTING_DEFAULTS` and read through `useAppSetting`; today `expandPlaylistFolders` and `exportRootFolder`, both default off — the latter read by the backend at `run_export` and passed down as `ExportPayload.root_folder` — and `timeReadoutDecimals` (0–3, default 1: the deck's ELAPSED / REMAIN, truncated, never rounded). The Sidebar holds folder open state as per-id overrides of that setting, reset on a new library or a change of the setting, and carried to the new ids when a rename/move changes a folder's path id)), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
+    dirty, and the settings gear beside it, whose menu (or `?` anywhere) opens `ShortcutsDialog` — a KEYBOARD MAP (decided 2026-10-15): keys lit in the colour of what they do, a caption explaining the key pointed at or pressed (pressing explains, it never acts: a capture-phase listener keeps the deck's and table's keys from firing), holding or picking ⇧ / Cmd-Ctrl relights it with that layer, mouse gestures listed beneath. It shrinks to fit the dialog and drops the words on the keys when too small. Its content is `lib/shortcuts.ts`, written out BY HAND, so a new or changed shortcut in `lib/deckKeys.ts` / `TrackTable` must be added there too — and `AppSettings` ("Konduktor Settings…": app-level prefs, each with its default in `APP_SETTING_DEFAULTS` and read through `useAppSetting`; today `expandPlaylistFolders` and `exportRootFolder`, both default off — the latter read by the backend at `run_export` and passed down as `ExportPayload.root_folder` — and `timeReadoutDecimals` (0–3, default 1: the deck's ELAPSED / REMAIN, truncated, never rounded). The Sidebar holds folder open state as per-id overrides of that setting, reset on a new library or a change of the setting, and carried to the new ids when a rename/move changes a folder's path id)), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
     `TrackTable` (**the one track list** — All Tracks, playlists, exports and
     devices. TanStack Table + **virtualized** grid; per-row play button,
     configurable columns, header sorting, inline double-click editing, and
@@ -1350,8 +1350,20 @@ Two independent apps that talk over HTTP:
     plus a half-size mono copy each on the main thread for the raw waveform —
     ~6 stereo-track units for a stem track (it was 5: four buffers plus a
     summed scratch copy), 1.5 for a plain track (it was 2).
-  - **Prep strip** (DJ deck across the top of the window): `PrepStrip` owns it,
-    in three rows. **Header**: cover, title/artist · album · genre, a Read-only
+  - **Prep strip** (DJ deck across the top of the window), in three rows.
+    **The deck is `components/deck/`** (split out 2026-11-02 for performance
+    mode's second deck): `useDeck` holds everything a deck DOES — engine,
+    transport, CUE, hotcues, memory cues, loops, grid editing, stems,
+    analysis — and takes its capabilities as a PARAMETER (each deck may hold
+    a different library's track), returning a `Deck` that `DeckHeader`,
+    `DeckMainWave` / `DeckOverview`, `DeckControls` and `DeckOverlays` (its
+    menus and dialogs, under the deck's own `CapabilitiesContext`) render.
+    `PrepStrip` lays one deck out and owns what decks SHARE: the main view's
+    zoom + raw toggle (`DeckView`, persisted) and the keyboard —
+    `lib/deckKeys.ts`, ONE window listener routing each key to the focused
+    deck (Alt/Option = the other deck, in performance mode; a key-up goes to
+    the deck its key-down went to). A deck's `persist` (loop size, cue bank)
+    and `leadsAmbient` (cover colours) are for deck A. **Header**: cover, title/artist · album · genre, a Read-only
     badge, the readout well (ELAPSED / REMAIN to tenths, KEY, and `BpmReadout` —
     click to type an exact BPM; with no grid, a typed or tapped BPM CREATES one at the playhead, and
     Set grid on a track with no BPM opens the readout to ask rather than failing), SNAP, Analyze, Auto hotcues. **Waveforms**:
