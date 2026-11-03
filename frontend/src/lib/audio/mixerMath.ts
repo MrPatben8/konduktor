@@ -59,23 +59,57 @@ export function xfadeGains(x: number, sharpness: number): [number, number] {
 export const FX_CENTRE = 0.02
 
 /**
- * The filter at colour `c` (-1..1): left a low-pass falling from 20 kHz to
- * 150 Hz, right a high-pass rising from 20 Hz to 8 kHz, both on a log scale so
- * the sweep sounds even. Null at the centre (bypassed).
+ * How far the FILTER knob sweeps (settings, decided 2026-11-03): `full` runs
+ * the low-pass down to 20 Hz and the high-pass up to 20 kHz, so either end is
+ * near silence; `musical` stops at 150 Hz / 8 kHz, where the track is thinned
+ * but still there; `gentle` at 500 Hz / 2 kHz, where it stays clearly heard.
  */
-export function filterSweep(c: number): { type: 'lowpass' | 'highpass'; freq: number } | null {
+export type FilterRange = 'full' | 'musical' | 'gentle'
+export const FILTER_RANGES: Record<FilterRange, { low: number; high: number }> = {
+  full: { low: 20, high: 20000 },
+  musical: { low: 150, high: 8000 },
+  gentle: { low: 500, high: 2000 },
+}
+
+/**
+ * The filter at knob `c` (-1..1): left a low-pass falling from 20 kHz, right a
+ * high-pass rising from 20 Hz, to the range's ends, on a log scale so the
+ * sweep sounds even. Null at the centre (bypassed).
+ */
+export function filterSweep(
+  c: number,
+  range: FilterRange = 'full',
+): { type: 'lowpass' | 'highpass'; freq: number } | null {
   c = clamp(c, -1, 1)
   if (Math.abs(c) < FX_CENTRE) return null
   const a = Math.abs(c)
+  const end = FILTER_RANGES[range]
   return c < 0
-    ? { type: 'lowpass', freq: 20000 * (150 / 20000) ** a }
-    : { type: 'highpass', freq: 20 * (8000 / 20) ** a }
+    ? { type: 'lowpass', freq: 20000 * (end.low / 20000) ** a }
+    : { type: 'highpass', freq: 20 * (end.high / 20) ** a }
 }
 
-/** The echo lengths offered (beats). */
-export const ECHO_BEATS = [1 / 8, 1 / 4, 1 / 2, 3 / 4, 1]
+/**
+ * The Filter FX grow as the knob opens (decided 2026-11-03), in STEPS of two
+ * at each further quarter of its travel, so every length stays a musical one
+ * of the tempo: 0 near the centre, 3 in the last quarter.
+ */
+export const knobStep = (a: number): number => Math.min(3, Math.floor(clamp(a, 0, 1) * 4))
 
-/** Seconds of echo for `beats` at `bpm` (120 when the tempo is unknown). */
-export function echoSeconds(beats: number, bpm: number): number {
+/** The phaser's sweep (beats): `slowest` (the setting), then ½, ¼, ⅛ of it —
+ *  faster as the filter opens. */
+export const phaserBeatsAt = (slowest: number, a: number): number => slowest / 2 ** knobStep(a)
+
+/** The delay's length (beats): `shortest` (the setting), then ×2, ×4, ×8 —
+ *  longer as the filter opens. */
+export const delayBeatsAt = (shortest: number, a: number): number => shortest * 2 ** knobStep(a)
+
+/** The long reverb is this many times the set (short) one; the knob blends
+ *  from the short into the long as it opens. */
+export const REVERB_GROWTH = 3
+
+/** Seconds for `beats` at `bpm` (120 when the tempo is unknown) — the delay's
+ *  length, the phaser's sweep. */
+export function beatSeconds(beats: number, bpm: number): number {
   return (beats * 60) / (bpm > 0 ? bpm : 120)
 }

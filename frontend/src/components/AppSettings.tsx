@@ -34,12 +34,15 @@ export const APP_SETTING_DEFAULTS = {
    *  Default halfway: both channels full across the middle, fading over the
    *  outer half of the travel each (decided 2026-11-03). */
   crossfaderSharpness: 0.5,
-  /** The colour effects' one parameter each (the mixer has no knob for it). */
+  /** Filter FX: the filter's range and resonance, and each effect's one
+   *  parameter (the mixer has no knob for them). */
+  fxFilterRange: 'full' as 'full' | 'musical' | 'gentle',
+  fxEffectRange: 'musical' as 'full' | 'musical' | 'gentle',
   fxFilterResonance: 0.3,
-  fxEchoBeats: 0.5,
-  fxSpaceSize: 2.5,
-  fxNoiseResonance: 0.3,
-  fxCrushDrive: 2,
+  fxReverbSize: 2,
+  fxDelayBeats: 0.25,
+  fxCrusherDrive: 2,
+  fxPhaserBeats: 4,
 }
 
 type AppSettingKey = keyof typeof APP_SETTING_DEFAULTS

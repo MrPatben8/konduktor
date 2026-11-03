@@ -5,42 +5,75 @@
 // mixer starts flat.
 
 import { useSyncExternalStore } from 'react'
+import type { FilterRange } from './mixerMath'
 
 export type Channel = 'A' | 'B'
 export const CHANNELS: Channel[] = ['A', 'B']
 
-export const FX_TYPES = ['filter', 'echo', 'space', 'noise', 'crush'] as const
+/**
+ * FILTER FX (decided 2026-11-03, after Traktor's mixer): each channel's FILTER
+ * knob always filters — low-pass left, high-pass right — and the effect chosen
+ * here rides with it, its amount growing with the knob. `filter` is the filter
+ * alone.
+ */
+export const FX_TYPES = ['filter', 'reverb', 'delay', 'crusher', 'phaser'] as const
 export type FxType = (typeof FX_TYPES)[number]
 export const FX_LABELS: Record<FxType, string> = {
   filter: 'Filter',
-  echo: 'Echo',
-  space: 'Space',
-  noise: 'Noise',
-  crush: 'Crush',
+  reverb: 'Reverb',
+  delay: 'Delay',
+  crusher: 'Bit crusher',
+  phaser: 'Phaser',
 }
+/** For the channel's narrow picker. */
+export const FX_SHORT: Record<FxType, string> = {
+  filter: 'Filter',
+  reverb: 'Reverb',
+  delay: 'Delay',
+  crusher: 'Crush',
+  phaser: 'Phaser',
+}
+
 /**
- * Each effect's one setting — app settings, not knobs (decided 2026-11-03: the
- * per-channel parameter knob was removed), the same for both channels.
+ * The filter and each effect's one setting — app settings, not knobs (the
+ * per-channel parameter knob was removed, decided 2026-11-03), the same for
+ * both channels.
  */
 export interface FxSettings {
+  /** The filter's range for the Filter alone … */
+  filterRange: FilterRange
+  /** … and with an effect riding along. */
+  effectRange: FilterRange
   /** Filter resonance, 0..1. */
   filterResonance: number
-  /** Echo length in beats of the deck's tempo. */
-  echoBeats: number
-  /** Space: the reverb's decay (s). */
-  spaceSize: number
-  /** Noise sweep resonance, 0..1. */
-  noiseResonance: number
-  /** Crush drive, 1..4. */
-  crushDrive: number
+  /** The SHORT reverb's decay (s) — near the centre; the knob blends into
+   *  one REVERB_GROWTH times as long as it opens. */
+  reverbSize: number
+  /** The delay's SHORTEST length, in beats of the deck's tempo — near the
+   *  centre; it doubles as the knob opens (`delayBeatsAt`). */
+  delayBeats: number
+  /** Bit crusher drive, 1..4. */
+  crusherDrive: number
+  /** The phaser's SLOWEST sweep, in beats of the deck's tempo — near the
+   *  centre; it halves as the knob opens (`phaserBeatsAt`). */
+  phaserBeats: number
 }
 
 export const DEFAULT_FX: FxSettings = {
+  filterRange: 'full',
+  effectRange: 'musical',
   filterResonance: 0.3,
-  echoBeats: 0.5,
-  spaceSize: 2.5,
-  noiseResonance: 0.3,
-  crushDrive: 2,
+  reverbSize: 2,
+  delayBeats: 0.25,
+  crusherDrive: 2,
+  phaserBeats: 4,
+}
+
+/** The filter's range under `type`: one setting for the Filter alone (Full by
+ *  default), another with an effect riding along (Musical by default — swept
+ *  to near silence, the filter would starve the effect it feeds). */
+export function rangeFor(type: FxType, fx: FxSettings): FilterRange {
+  return type === 'filter' ? fx.filterRange : fx.effectRange
 }
 
 export interface ChannelState {
@@ -51,7 +84,8 @@ export interface ChannelState {
   mid: number
   high: number
   fx: FxType
-  /** The colour knob, -1..1 (centre = effect off). */
+  /** The FILTER knob, -1..1 (centre = filter and effect off). Named `color`
+   *  from before the rename to Filter FX. */
   color: number
   /** The channel fader, 0..1. */
   fader: number

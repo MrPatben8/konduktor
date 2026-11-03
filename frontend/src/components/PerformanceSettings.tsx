@@ -8,6 +8,14 @@ import { Modal } from './Modal'
 import { Fader } from './mixer/Controls'
 import { CrossfaderCurveGraph } from './mixer/CrossfaderCurve'
 
+/** How far the filter sweeps (`mixerMath.FILTER_RANGES`). */
+const RANGES: [string, string][] = [
+  ['full', 'Full - 20 Hz / 20 kHz'],
+  ['musical', 'Musical - 150 Hz / 8 kHz'],
+  ['gentle', 'Gentle - 500 Hz / 2 kHz'],
+]
+type Range = 'full' | 'musical' | 'gentle'
+
 /** Resonance amounts offered (0..1 of the effect's maximum). */
 const LEVELS: [string, string][] = [
   ['0', 'None'],
@@ -20,7 +28,7 @@ const section = 'text-[11px] font-semibold uppercase tracking-wider text-faint'
 
 /**
  * Settings ▸ Performance mode… (its own panel, decided 2026-11-03): the decks,
- * the mixer and the colour effects' parameters. Values live in the app
+ * the mixer and the Filter FX. Values live in the app
  * settings (userprefs.json, `APP_SETTING_DEFAULTS`); PrepStrip copies the
  * mixer's into `mixerState`.
  */
@@ -31,11 +39,13 @@ export function PerformanceSettings({ onClose }: { onClose: () => void }) {
   const keylockDefault = useAppSetting('keylockDefault')
   const eqKill = useAppSetting('eqKill')
   const sharpnessSetting = useAppSetting('crossfaderSharpness')
+  const fxFilterRange = useAppSetting('fxFilterRange')
+  const fxEffectRange = useAppSetting('fxEffectRange')
   const fxFilterResonance = useAppSetting('fxFilterResonance')
-  const fxEchoBeats = useAppSetting('fxEchoBeats')
-  const fxSpaceSize = useAppSetting('fxSpaceSize')
-  const fxNoiseResonance = useAppSetting('fxNoiseResonance')
-  const fxCrushDrive = useAppSetting('fxCrushDrive')
+  const fxReverbSize = useAppSetting('fxReverbSize')
+  const fxDelayBeats = useAppSetting('fxDelayBeats')
+  const fxCrusherDrive = useAppSetting('fxCrusherDrive')
+  const fxPhaserBeats = useAppSetting('fxPhaserBeats')
   const [error, setError] = useState<string | null>(null)
 
   // The curve moves with the slider at once — mixer included, so it can be
@@ -137,8 +147,25 @@ export function PerformanceSettings({ onClose }: { onClose: () => void }) {
             </div>
           </section>
           <section className="space-y-2">
-            <h3 className={section}>Colour effects</h3>
-            <span className="block text-xs text-faint">Each effect's setting, on both channels.</span>
+            <h3 className={section}>Filter FX</h3>
+            <span className="block text-xs text-faint">
+              Each channel's FILTER knob filters — low-pass to the left, high-pass to the right — and
+              the effect picked above it rides along, growing as the knob turns: the reverb blends into
+              one three times as long, the delay gets longer and the phaser faster (each up to ×8)
+              from the settings below. These apply to both channels.
+            </span>
+            <Choice
+              title="Filter range (Filter alone)"
+              value={fxFilterRange}
+              options={RANGES}
+              onChange={(v) => void set({ fxFilterRange: v as Range })}
+            />
+            <Choice
+              title="Filter range (with an effect)"
+              value={fxEffectRange}
+              options={RANGES}
+              onChange={(v) => void set({ fxEffectRange: v as Range })}
+            />
             <Choice
               title="Filter resonance"
               value={String(fxFilterResonance)}
@@ -146,8 +173,19 @@ export function PerformanceSettings({ onClose }: { onClose: () => void }) {
               onChange={(v) => void set({ fxFilterResonance: Number(v) })}
             />
             <Choice
-              title="Echo length"
-              value={String(fxEchoBeats)}
+              title="Reverb size (shortest)"
+              value={String(fxReverbSize)}
+              options={[
+                ['1', 'Small (1 → 3 s)'],
+                ['2', 'Medium (2 → 6 s)'],
+                ['3', 'Large (3 → 9 s)'],
+                ['4', 'Huge (4 → 12 s)'],
+              ]}
+              onChange={(v) => void set({ fxReverbSize: Number(v) })}
+            />
+            <Choice
+              title="Delay length (shortest)"
+              value={String(fxDelayBeats)}
               options={[
                 ['0.125', '1/8 beat'],
                 ['0.25', '1/4 beat'],
@@ -155,34 +193,29 @@ export function PerformanceSettings({ onClose }: { onClose: () => void }) {
                 ['0.75', '3/4 beat'],
                 ['1', '1 beat'],
               ]}
-              onChange={(v) => void set({ fxEchoBeats: Number(v) })}
+              onChange={(v) => void set({ fxDelayBeats: Number(v) })}
             />
             <Choice
-              title="Space size"
-              value={String(fxSpaceSize)}
-              options={[
-                ['1', 'Small (1 s)'],
-                ['2.5', 'Medium (2.5 s)'],
-                ['4', 'Large (4 s)'],
-                ['6', 'Huge (6 s)'],
-              ]}
-              onChange={(v) => void set({ fxSpaceSize: Number(v) })}
-            />
-            <Choice
-              title="Noise resonance"
-              value={String(fxNoiseResonance)}
-              options={LEVELS}
-              onChange={(v) => void set({ fxNoiseResonance: Number(v) })}
-            />
-            <Choice
-              title="Crush drive"
-              value={String(fxCrushDrive)}
+              title="Bit crusher drive"
+              value={String(fxCrusherDrive)}
               options={[
                 ['1', 'Clean (×1)'],
                 ['2', 'Warm (×2)'],
                 ['4', 'Hot (×4)'],
               ]}
-              onChange={(v) => void set({ fxCrushDrive: Number(v) })}
+              onChange={(v) => void set({ fxCrusherDrive: Number(v) })}
+            />
+            <Choice
+              title="Phaser sweep (slowest)"
+              value={String(fxPhaserBeats)}
+              options={[
+                ['1', 'Every beat'],
+                ['2', 'Every 2 beats'],
+                ['4', 'Every 4 beats'],
+                ['8', 'Every 8 beats'],
+                ['16', 'Every 16 beats'],
+              ]}
+              onChange={(v) => void set({ fxPhaserBeats: Number(v) })}
             />
           </section>
           {error && <div className="text-xs text-pink">{error}</div>}

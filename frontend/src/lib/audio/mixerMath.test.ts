@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { echoSeconds, eqGain, faderGain, filterSweep, gainToDb, xfadeGains } from './mixerMath'
+import { beatSeconds, delayBeatsAt, eqGain, phaserBeatsAt, faderGain, filterSweep, gainToDb, xfadeGains } from './mixerMath'
 
 describe('eqGain', () => {
   it('is flat at the centre, +6 dB at full right', () => {
@@ -70,18 +70,47 @@ describe('filterSweep', () => {
     expect(filterSweep(0)).toBeNull()
     expect(filterSweep(0.01)).toBeNull()
   })
-  it('low-passes left and high-passes right, on a log scale', () => {
-    expect(filterSweep(-1)).toEqual({ type: 'lowpass', freq: expect.closeTo(150, 6) })
-    expect(filterSweep(1)).toEqual({ type: 'highpass', freq: expect.closeTo(8000, 6) })
-    const half = filterSweep(-0.5)!
-    expect(half.freq).toBeCloseTo(Math.sqrt(20000 * 150), 3)
+  it('full range (the default): low-pass to 20 Hz, high-pass to 20 kHz, on a log scale', () => {
+    expect(filterSweep(-1)).toEqual({ type: 'lowpass', freq: expect.closeTo(20, 6) })
+    expect(filterSweep(1)).toEqual({ type: 'highpass', freq: expect.closeTo(20000, 6) })
+    expect(filterSweep(-0.5)!.freq).toBeCloseTo(Math.sqrt(20000 * 20), 3)
+    expect(filterSweep(0.03)!.freq).toBeCloseTo(20 * 1000 ** 0.03, 6) // starts at the bottom
+  })
+  it('gentle range: stops at 500 Hz / 2 kHz', () => {
+    expect(filterSweep(-1, 'gentle')).toEqual({ type: 'lowpass', freq: expect.closeTo(500, 6) })
+    expect(filterSweep(1, 'gentle')).toEqual({ type: 'highpass', freq: expect.closeTo(2000, 6) })
+  })
+  it('musical range: stops at 150 Hz / 8 kHz', () => {
+    expect(filterSweep(-1, 'musical')).toEqual({ type: 'lowpass', freq: expect.closeTo(150, 6) })
+    expect(filterSweep(1, 'musical')).toEqual({ type: 'highpass', freq: expect.closeTo(8000, 6) })
+    expect(filterSweep(-0.5, 'musical')!.freq).toBeCloseTo(Math.sqrt(20000 * 150), 3)
   })
 })
 
-describe('echo', () => {
-  it('is its length in beats at the deck’s tempo', () => {
-    expect(echoSeconds(1, 120)).toBeCloseTo(0.5, 9)
-    expect(echoSeconds(0.5, 128)).toBeCloseTo(60 / 128 / 2, 9)
-    expect(echoSeconds(1, 0)).toBeCloseTo(0.5, 9) // unknown tempo: 120
+describe('phaserBeatsAt', () => {
+  it('starts at the slowest sweep and halves at each quarter of the knob', () => {
+    expect(phaserBeatsAt(4, 0.05)).toBe(4)
+    expect(phaserBeatsAt(4, 0.3)).toBe(2)
+    expect(phaserBeatsAt(4, 0.6)).toBe(1)
+    expect(phaserBeatsAt(4, 0.8)).toBe(0.5)
+    expect(phaserBeatsAt(4, 1)).toBe(0.5)
+    expect(phaserBeatsAt(8, 1)).toBe(1)
+  })
+})
+
+describe('delayBeatsAt', () => {
+  it('starts at the shortest echo and doubles at each quarter of the knob', () => {
+    expect(delayBeatsAt(0.25, 0.1)).toBe(0.25)
+    expect(delayBeatsAt(0.25, 0.4)).toBe(0.5)
+    expect(delayBeatsAt(0.25, 0.7)).toBe(1)
+    expect(delayBeatsAt(0.25, 1)).toBe(2)
+  })
+})
+
+describe('beatSeconds', () => {
+  it('is a length in beats at the deck’s tempo', () => {
+    expect(beatSeconds(1, 120)).toBeCloseTo(0.5, 9)
+    expect(beatSeconds(0.5, 128)).toBeCloseTo(60 / 128 / 2, 9)
+    expect(beatSeconds(4, 0)).toBeCloseTo(2, 9) // unknown tempo: 120
   })
 })

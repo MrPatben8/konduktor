@@ -1174,7 +1174,7 @@ Two independent apps that talk over HTTP:
     / Try again (`backend_restart`). The shell has no timeout of its own. Before
     ready it answers quit requests itself — nothing can be unsaved — and stops
     at ready so it never races `QuitGuard`), `SaveBar` (+ "Discard changes…" when
-    dirty, and the settings gear beside it, whose menu (or `?` anywhere) opens `ShortcutsDialog` — a KEYBOARD MAP (decided 2026-10-15): keys lit in the colour of what they do, a caption explaining the key pointed at or pressed (pressing explains, it never acts: a capture-phase listener keeps the deck's and table's keys from firing), holding or picking ⇧ / Cmd-Ctrl relights it with that layer, mouse gestures listed beneath. It shrinks to fit the dialog and drops the words on the keys when too small. Its content is `lib/shortcuts.ts`, written out BY HAND, so a new or changed shortcut in `lib/deckKeys.ts` / `TrackTable` must be added there too — and `AppSettings` ("Konduktor Settings…": app-level prefs, each with its default in `APP_SETTING_DEFAULTS` and read through `useAppSetting`; today `expandPlaylistFolders` and `exportRootFolder`, both default off — the latter read by the backend at `run_export` and passed down as `ExportPayload.root_folder` — and `timeReadoutDecimals` (0–3, default 1: the deck's ELAPSED / REMAIN, truncated, never rounded)) — and its own panel, `PerformanceSettings` ("Performance mode…", decided 2026-11-03), whose values sit in the same `APP_SETTING_DEFAULTS`: `perfStems` (default on: a stem track loaded INTO performance mode plays its stems, else its mix; read at load, never reloads a deck), `keylockDefault` (on), `eqKill` (off = -26 dB), `crossfaderSharpness` (0..1, 0 = smooth, default 0.5: a slider beside `CrossfaderCurveGraph`, which draws both channels' curves and where the crossfader is; dragging it moves the mixer at once and saves through the debounced prefs writer), and the colour effects' one parameter each, `fxFilterResonance` / `fxEchoBeats` / `fxSpaceSize` / `fxNoiseResonance` / `fxCrushDrive` (the mixer's per-channel PRM knob was removed). PrepStrip copies them into `mixerState`. The Sidebar holds folder open state as per-id overrides of that setting, reset on a new library or a change of the setting, and carried to the new ids when a rename/move changes a folder's path id)), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
+    dirty, and the settings gear beside it, whose menu (or `?` anywhere) opens `ShortcutsDialog` — a KEYBOARD MAP (decided 2026-10-15): keys lit in the colour of what they do, a caption explaining the key pointed at or pressed (pressing explains, it never acts: a capture-phase listener keeps the deck's and table's keys from firing), holding or picking ⇧ / Cmd-Ctrl relights it with that layer, mouse gestures listed beneath. It shrinks to fit the dialog and drops the words on the keys when too small. Its content is `lib/shortcuts.ts`, written out BY HAND, so a new or changed shortcut in `lib/deckKeys.ts` / `TrackTable` must be added there too — and `AppSettings` ("Konduktor Settings…": app-level prefs, each with its default in `APP_SETTING_DEFAULTS` and read through `useAppSetting`; today `expandPlaylistFolders` and `exportRootFolder`, both default off — the latter read by the backend at `run_export` and passed down as `ExportPayload.root_folder` — and `timeReadoutDecimals` (0–3, default 1: the deck's ELAPSED / REMAIN, truncated, never rounded)) — and its own panel, `PerformanceSettings` ("Performance mode…", decided 2026-11-03), whose values sit in the same `APP_SETTING_DEFAULTS`: `perfStems` (default on: a stem track loaded INTO performance mode plays its stems, else its mix; read at load, never reloads a deck), `keylockDefault` (on), `eqKill` (off = -26 dB), `crossfaderSharpness` (0..1, 0 = smooth, default 0.5: a slider beside `CrossfaderCurveGraph`, which draws both channels' curves and where the crossfader is; dragging it moves the mixer at once and saves through the debounced prefs writer), and the Filter FX: `fxFilterRange` (the Filter alone) and `fxEffectRange` (under an effect), each full / musical / gentle, `fxFilterResonance`, `fxReverbSize`, `fxDelayBeats`, `fxCrusherDrive`, `fxPhaserBeats` (the mixer's per-channel PRM knob was removed). PrepStrip copies them into `mixerState`. The Sidebar holds folder open state as per-id overrides of that setting, reset on a new library or a change of the setting, and carried to the new ids when a rename/move changes a folder's path id)), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
     `TrackTable` (**the one track list** — All Tracks, playlists, exports and
     devices. TanStack Table + **virtualized** grid; per-row play button,
     configurable columns, header sorting, inline double-click editing, and
@@ -2692,7 +2692,7 @@ that number and nothing else — everything derives from it:
   Architecture. Not yet: verified on a real TrueNAS (the image is published by
   CI's `server-image` job), a web UI served by the server (decided: not now).
 - ✅ **Performance mode** (2026-11-03) — a second deck and a mixer to try
-  transitions: stacked waveforms, 3-band isolator, per-channel colour FX,
+  transitions: stacked waveforms, 3-band isolator, per-channel Filter FX,
   crossfader, limiter, pitch with Rubber Band keylock, SYNC with a tempo
   master, a phase meter you can drag to bend. See `lib/audio/`,
   `components/deck/`, `components/mixer/` and "Prep strip" / "Prep engine";
@@ -2802,10 +2802,27 @@ The prep strip plays every track through the **Web Audio API** (a plain
   (LR4 crossovers at 250 Hz / 2.5 kHz, the low band through a 2.5 kHz
   all-pass, so the bands sum flat — measured 0.0000 dB; Web Audio's
   lowpass/highpass Q is in DB, Butterworth = -3.01, its allpass Q linear) →
-  the colour FX (Filter / Echo / Space / Noise / Crush, chosen PER CHANNEL,
-  one bipolar COLOR knob; each effect's one parameter is an APP SETTING, not
-  a knob — `mixerState.fx`, decided 2026-11-03; all built once and switched
-  by gains) →
+  FILTER FX (`FilterFx`, decided 2026-11-03 after Traktor's mixer: the
+  FILTER knob always filters — 4-pole, low-pass left / high-pass right, over
+  a RANGE: FULL (to 20 Hz / 20 kHz: a 100 Hz bass -56 dB at full left,
+  measured; one 12 dB stage left it at -28), MUSICAL (150 Hz / 8 kHz) or
+  GENTLE (500 Hz / 2 kHz) — one setting for the Filter alone (default full),
+  another under an effect (default musical: swept to silence the filter
+  would starve the effect; `mixerState.rangeFor`) — and the channel's chosen
+  effect rides with it,
+  fed the FILTERED signal, growing with the knob: Reverb, Delay (sends whose
+  tails ring out — echo- and wash-outs), Bit crusher (replaces the filtered
+  signal), Phaser (four all-pass stages swept by a beat-synced LFO), or
+  Filter alone. THE MORE FILTER, THE BIGGER THE EFFECT (decided
+  2026-11-03): the delay's length and the phaser's speed step by two at
+  each quarter of the knob (`mixerMath.knobStep` — the settings are the
+  SHORTEST delay and SLOWEST sweep, up to ×8, every step a musical length),
+  and the reverb blends from a short convolver (the setting) into one
+  `REVERB_GROWTH` (3) times as long — two convolvers, since swapping one's
+  impulse cuts its tail (measured: 6 s after a burst -75 dB at 20% of the
+  knob, -54 at 60%). Resonance fades over the last stretch of the sweep (no
+  boom at 20 Hz). Each effect's one parameter is an APP SETTING, not a knob —
+  `mixerState.fx`; all built once and switched by gains) →
   fader → crossfader (`xfadeGains(x, sharpness)`: each channel fades on a
   quarter-cosine over the last `xfadeWidth` of the travel — the whole of it
   at 0, constant power, -3 dB in the middle; 4% at 1, a cut; no dip in the
@@ -2819,7 +2836,7 @@ The prep strip plays every track through the **Web Audio API** (a plain
   persisted; a MIDI mapping would write the same setters); the curves in
   `mixerMath.ts` (tested). `components/mixer/`: `MixerPanel` (26rem; per
   channel a 2×2 block — GAIN HI / MID LOW, 40 px knobs — and toward the fader
-  the FX picker over a 48 px COLOR knob, mirrored on B; meters written from
+  the effect picker over a 48 px FILTER knob, mirrored on B; meters written from
   one rAF loop, never through React state) and `Controls` (`Knob`,
   `Fader`: drag, Shift = fine, wheel, double-click resets; not focusable, so
   the deck keys never land on them). The graph itself was measured offline in

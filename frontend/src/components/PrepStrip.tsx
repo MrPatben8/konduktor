@@ -124,14 +124,20 @@ export function PrepStrip({
   const keylockDefault = useAppSetting('keylockDefault')
   const eqKill = useAppSetting('eqKill')
   const sharpness = useAppSetting('crossfaderSharpness')
+  const filterRange = useAppSetting('fxFilterRange')
+  const effectRange = useAppSetting('fxEffectRange')
   const filterResonance = useAppSetting('fxFilterResonance')
-  const echoBeats = useAppSetting('fxEchoBeats')
-  const spaceSize = useAppSetting('fxSpaceSize')
-  const noiseResonance = useAppSetting('fxNoiseResonance')
-  const crushDrive = useAppSetting('fxCrushDrive')
+  const reverbSize = useAppSetting('fxReverbSize')
+  const delayBeats = useAppSetting('fxDelayBeats')
+  const crusherDrive = useAppSetting('fxCrusherDrive')
+  const phaserBeats = useAppSetting('fxPhaserBeats')
   useEffect(() => {
-    setMixer({ eqKill, sharpness, fx: { filterResonance, echoBeats, spaceSize, noiseResonance, crushDrive } })
-  }, [eqKill, sharpness, filterResonance, echoBeats, spaceSize, noiseResonance, crushDrive])
+    setMixer({
+      eqKill,
+      sharpness,
+      fx: { filterRange, effectRange, filterResonance, reverbSize, delayBeats, crusherDrive, phaserBeats },
+    })
+  }, [eqKill, sharpness, filterRange, effectRange, filterResonance, reverbSize, delayBeats, crusherDrive, phaserBeats])
   const lead: DeckId = performance ? focused : 'A'
   const playingA = useCallback((p: boolean) => onPlayingChange('A', p), [onPlayingChange])
   const playingB = useCallback((p: boolean) => onPlayingChange('B', p), [onPlayingChange])

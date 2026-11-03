@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { mixer } from '../../lib/audio/mixer'
-import { faderGain, filterSweep, eqGain, gainToDb, TRIM_RANGE_DB, EQ_CUT_DB } from '../../lib/audio/mixerMath'
+import { delayBeatsAt, faderGain, filterSweep, eqGain, gainToDb, phaserBeatsAt, REVERB_GROWTH, TRIM_RANGE_DB, EQ_CUT_DB } from '../../lib/audio/mixerMath'
 import {
   FX_LABELS,
+  FX_SHORT,
   FX_TYPES,
+  rangeFor,
   setChannel,
   setMixer,
   useMixer,
@@ -20,42 +22,45 @@ const METER_FLOOR = -48
 const METER_TOP = 3
 
 /** Knob sizes (px): as large as the column allows — the EQ block is two
- *  across, the colour knob beside it larger. */
+ *  across, the FILTER knob beside it larger. */
 const EQ_KNOB = 40
-const COLOR_KNOB = 48
+const FILTER_KNOB = 48
 
 const fmtDb = (db: number, places = 1) =>
   !isFinite(db) ? '−∞ dB' : `${db > 0 ? '+' : db < 0 ? '−' : ''}${Math.abs(db).toFixed(places)} dB`
 
+/** The FILTER knob's tooltip: where the filter is, and what rides with it. */
 function describeFx(fx: FxType, c: number, set: FxSettings): string {
-  const a = Math.round(Math.abs(c) * 100)
-  if (Math.abs(c) < 0.02) return `${FX_LABELS[fx]}: off (turn left or right)`
+  if (Math.abs(c) < 0.02) return `Filter${fx === 'filter' ? '' : ` + ${FX_LABELS[fx]}`}: off (turn left or right)`
+  const s = filterSweep(c, rangeFor(fx, set))!
+  const hz = s.freq >= 1000 ? `${(s.freq / 1000).toFixed(1)} kHz` : `${Math.round(s.freq)} Hz`
+  const filter = `${s.type === 'lowpass' ? 'low-pass' : 'high-pass'} at ${hz}`
+  const a = `${Math.round(Math.abs(c) * 100)}%`
   switch (fx) {
-    case 'filter': {
-      const s = filterSweep(c)!
-      const hz = s.freq >= 1000 ? `${(s.freq / 1000).toFixed(1)} kHz` : `${Math.round(s.freq)} Hz`
-      return `Filter: ${s.type === 'lowpass' ? 'low-pass' : 'high-pass'} at ${hz} · resonance ${Math.round(set.filterResonance * 100)}%`
-    }
-    case 'echo':
-      return `Echo ${a}% · ${beatsLabel(set.echoBeats)} · ${c < 0 ? 'darker' : 'thinner'} repeats`
-    case 'space':
-      return `Space ${a}% · ${set.spaceSize} s · ${c < 0 ? 'darker' : 'thinner'}`
-    case 'noise':
-      return `Noise ${a}% · ${c < 0 ? 'low-pass' : 'high-pass'} sweep`
-    case 'crush':
-      return `Crush ${a}% · drive ×${set.crushDrive}`
+    case 'filter':
+      return `Filter: ${filter} · resonance ${Math.round(set.filterResonance * 100)}%`
+    case 'reverb':
+      return `Reverb ${a} (${set.reverbSize}–${set.reverbSize * REVERB_GROWTH} s, longer as it opens) + ${filter}`
+    case 'delay':
+      return `Delay ${a} (${beatsLabel(delayBeatsAt(set.delayBeats, Math.abs(c)))}) + ${filter}`
+    case 'crusher':
+      return `Bit crusher ${a} (drive ×${set.crusherDrive}) + ${filter}`
+    case 'phaser':
+      return `Phaser ${a} (a sweep every ${beatsLabel(phaserBeatsAt(set.phaserBeats, Math.abs(c)))}) + ${filter}`
   }
 }
 
 function beatsLabel(b: number): string {
-  return b === 1 ? '1 beat' : b === 0.75 ? '3/4 beat' : b === 0.5 ? '1/2 beat' : b === 0.25 ? '1/4 beat' : '1/8 beat'
+  const fractions: Record<number, string> = { 0.125: '1/8', 0.25: '1/4', 0.5: '1/2', 0.75: '3/4' }
+  return `${fractions[b] ?? b} beat${b > 1 ? 's' : ''}`
 }
 
 /**
  * The mixer, between the decks in performance mode (decided 2026-11-02): per
- * channel TRIM (on top of the track's auto gain), HI / MID / LOW, a colour
- * effect with its own selector (its one parameter is an app setting, in
- * Settings ▸ Performance mode…), a fader and its meter; between
+ * channel GAIN (on top of the track's auto gain), HI / MID / LOW, the FILTER
+ * knob with the effect that rides with it (its picker above; each effect's one
+ * parameter is an app setting, in Settings ▸ Performance mode…), a fader and
+ * its meter; between
  * them the master meter and the limiter's light; the crossfader beneath. The
  * values live in `mixerState` and the audio in `mixer.ts`.
  */
@@ -186,8 +191,8 @@ function Strip({
     />
   )
   // GAIN (the state's `trim`: on top of the track's auto gain) and the EQ as a
-  // 2×2 block; beside it, toward the fader, the colour effect: its picker
-  // above a larger COLOR knob (decided 2026-11-03).
+  // 2×2 block; beside it, toward the fader, the Filter FX: the effect's picker
+  // above a larger FILTER knob (decided 2026-11-03).
   const knobs = (
     <div className={`flex items-center gap-2 self-center ${mirrored ? 'flex-row-reverse' : ''}`}>
       <div className="grid grid-cols-2 gap-x-1.5 gap-y-1.5">
@@ -209,16 +214,16 @@ function Strip({
         {eq('mid', 'Mid', 'Mid')}
         {eq('low', 'Low', 'Low')}
       </div>
-      <div className="flex flex-col items-center gap-2" style={{ width: COLOR_KNOB }}>
+      <div className="flex flex-col items-center gap-2" style={{ width: FILTER_KNOB }}>
         <button
           onClick={(e) => {
             const r = e.currentTarget.getBoundingClientRect()
             setFxMenu({ x: r.left, y: r.bottom + 4 })
           }}
-          title={`${FX_LABELS[s.fx]} — which effect the COLOR knob drives`}
+          title={s.fx === 'filter' ? 'Filter FX: the filter alone — pick an effect to ride with it' : `Filter FX: ${FX_LABELS[s.fx]} rides with the FILTER knob`}
           className="btn-glass flex h-6 w-full items-center justify-center gap-px rounded-md text-[9.5px] font-semibold uppercase tracking-[0.04em] text-text"
         >
-          {FX_LABELS[s.fx]}
+          {FX_SHORT[s.fx]}
           <Icon name="chevronDown" size={9} />
         </button>
         <Knob
@@ -227,10 +232,10 @@ function Strip({
           max={1}
           defaultValue={0}
           bipolar
-          size={COLOR_KNOB}
+          size={FILTER_KNOB}
           color="var(--color-gold)"
           onChange={(v) => set({ color: Math.abs(v) < 0.02 ? 0 : v })}
-          label="Color"
+          label="Filter"
           describe={(v) => describeFx(s.fx, v, fxSettings)}
         />
       </div>
