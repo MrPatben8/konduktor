@@ -1364,7 +1364,9 @@ Two independent apps that talk over HTTP:
     deck (Alt/Option = the other deck, in performance mode; a key-up goes to
     the deck its key-down went to). A deck's `persist` (loop size, cue bank)
     is deck A's; `leadsAmbient` (cover colours) the focused deck's.
-    **Performance mode** (P, or the decks button beside Auto hotcues; decided
+    **Performance mode** (P, or the Performance button at the RIGHT of the
+    track list's toolbar — `deck/PerformanceButton`, the toolbar's `trailing`;
+    decided
     2026-11-02, [the discussion](.claude/discussions/discuss-performance-mode-2026-11-02.md)):
     deck B appears — the two headers side by side (`compact`, each led by its
     letter, lit when focused), the two main waveforms STACKED at the one zoom

@@ -33,6 +33,7 @@ import { PathMappingDialog } from './components/PathMappingDialog'
 import { RelocateDialog } from './components/RelocateDialog'
 import { HistoryPanel } from './components/HistoryPanel'
 import { EMPTY_SLOT, PrepStrip, type DeckDrop, type DeckId, type DeckSlot } from './components/PrepStrip'
+import { PerformanceButton } from './components/deck/PerformanceButton'
 import { ImportDialog } from './components/ImportDialog'
 import { AddFilesDialog, type AddTarget, type ForeignOrigin } from './components/AddFilesDialog'
 import { ConvertStemsDialog } from './components/ConvertStemsDialog'
@@ -1787,6 +1788,7 @@ export default function App() {
         <Toolbar
           filters={filters}
           onChange={setFilters}
+          trailing={<PerformanceButton on={performance} onToggle={togglePerformance} />}
         />
         {(!isAll || viewForeign) && (
           <div className="flex items-center gap-3 border-b border-line px-4 py-2">

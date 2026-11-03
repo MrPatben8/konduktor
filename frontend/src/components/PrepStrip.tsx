@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query'
 import { api, type Capabilities, type Track, type TrackOrigin } from '../api'
 import { useDeckKeys, type DeckKeyTargets } from '../lib/deckKeys'
 import { useDropTarget, type DragPayload } from '../lib/drag'
-import { Icon } from '../lib/icons'
 import { usePrefsWriter } from '../lib/prefs'
 import { mixer } from '../lib/audio/mixer'
 import { setMixer } from '../lib/audio/mixerState'
@@ -48,6 +47,7 @@ interface Props {
   caps: Record<DeckId, Capabilities>
   /** Performance mode: deck B, stacked waveforms (decided 2026-11-02). */
   performance: boolean
+  /** P (the button is the track list toolbar's). */
   onTogglePerformance: () => void
   /** The deck keys and loads go to (in performance mode). */
   focused: DeckId
@@ -97,7 +97,8 @@ function useDeckView(): DeckView {
  * state, audio, every action — are `useDeck` (components/deck/); this lays
  * them out and routes the keyboard to them.
  *
- * One deck normally. PERFORMANCE MODE (P, or the button beside Auto hotcues)
+ * One deck normally. PERFORMANCE MODE (P, or the Performance button at the
+ * right of the track list's toolbar)
  * adds deck B: the two headers side by side, the two main waveforms stacked at
  * one zoom past one playhead line, the overviews side by side, then each
  * deck's controls with the mixer between them. Keys go to the FOCUSED deck
@@ -281,24 +282,10 @@ export function PrepStrip({
   }
   useDeckKeys(keys)
 
-  const toggle = (
-    <button
-      onClick={onTogglePerformance}
-      aria-pressed={performance}
-      aria-label="Performance mode"
-      title={performance ? 'Leave performance mode (P)' : 'Performance mode — a second deck to try transitions (P)'}
-      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
-        performance ? 'is-selected text-text' : 'btn-glass text-muted'
-      }`}
-    >
-      <Icon name="decks" size={18} />
-    </button>
-  )
-
   if (!performance) {
     return (
       <div className="glass flex h-[19.75rem] shrink-0 flex-col gap-2 p-4">
-        <DeckHeader deck={a} actions={toggle} />
+        <DeckHeader deck={a} />
         <DeckMainWave deck={a} view={view} />
         <DeckOverview deck={a} view={view} />
         <DeckControls deck={a} />
@@ -328,7 +315,8 @@ export function PrepStrip({
     <div className="glass flex h-[32rem] shrink-0 flex-col gap-2 p-4">
       <div className="flex shrink-0 items-center gap-3">
         {pane('A', <DeckHeader deck={a} compact badge={badge('A')} />)}
-        {toggle}
+        {/* Where deck A's header ends and B's begins: a wider gap and a rule. */}
+        <span aria-hidden className="mx-3 h-9 w-px shrink-0 bg-line" />
         {pane('B', <DeckHeader deck={b} compact badge={badge('B')} />)}
       </div>
       {DECK_IDS.map((id) => (

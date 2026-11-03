@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api'
 import { useCaps } from '../lib/capabilities'
@@ -27,6 +27,8 @@ export const emptyFilters: Filters = {
 interface Props {
   filters: Filters
   onChange: (f: Filters) => void
+  /** At the far right, after Clear filters (the Performance button). */
+  trailing?: ReactNode
 }
 
 const selectCls =
@@ -35,6 +37,7 @@ const selectCls =
 export function Toolbar({
   filters,
   onChange,
+  trailing,
 }: Props) {
   const caps = useCaps()
   const { data: facets } = useQuery({ queryKey: ['facets'], queryFn: api.facets })
@@ -60,7 +63,7 @@ export function Toolbar({
           onChange={(e) => set({ search: e.target.value })}
           ref={searchRef}
           placeholder="Artist, title, album, comment…"
-          className="well w-72 rounded-full py-1.5 pl-9 pr-8 text-sm text-text outline-none placeholder:text-faint focus:ring-1 focus:ring-accent"
+          className="well w-64 rounded-full py-1.5 pl-9 pr-8 text-sm text-text outline-none placeholder:text-faint focus:ring-1 focus:ring-accent"
         />
         {filters.search && (
           <button
@@ -81,7 +84,10 @@ export function Toolbar({
       <select
         value={filters.genre}
         onChange={(e) => set({ genre: e.target.value })}
-        className={selectCls}
+        // A select is as wide as its longest option — one long genre name
+        // made it ~300 px and wrapped the toolbar. The chosen one shows in full
+        // in the open list.
+        className={`${selectCls} max-w-44`}
       >
         <option value="">All genres</option>
         {facets?.genres.map((g) => (
@@ -152,6 +158,7 @@ export function Toolbar({
             Clear filters
           </button>
         )}
+        {trailing}
       </div>
     </div>
   )
