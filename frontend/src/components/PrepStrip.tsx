@@ -6,6 +6,8 @@ import { useDropTarget, type DragPayload } from '../lib/drag'
 import { Icon } from '../lib/icons'
 import { usePrefsWriter } from '../lib/prefs'
 import { mixer } from '../lib/audio/mixer'
+import { setMixer } from '../lib/audio/mixerState'
+import { useAppSetting } from './AppSettings'
 import { alignedPosition, effectiveBpm, octaveFor, phaseOffset, syncRate, type DeckTempo as Tempo } from '../lib/sync'
 import { DeckControls } from './deck/DeckControls'
 import { DeckHeader } from './deck/DeckHeader'
@@ -116,17 +118,38 @@ export function PrepStrip({
   onEditTags,
 }: Props) {
   const view = useDeckView()
+  // Performance-mode settings (Settings ▸ Performance mode).
+  const perfStems = useAppSetting('perfStems')
+  const keylockDefault = useAppSetting('keylockDefault')
+  const eqKill = useAppSetting('eqKill')
+  const curve = useAppSetting('crossfaderCurve')
+  const filterResonance = useAppSetting('fxFilterResonance')
+  const echoBeats = useAppSetting('fxEchoBeats')
+  const spaceSize = useAppSetting('fxSpaceSize')
+  const noiseResonance = useAppSetting('fxNoiseResonance')
+  const crushDrive = useAppSetting('fxCrushDrive')
+  useEffect(() => {
+    setMixer({ eqKill, curve, fx: { filterResonance, echoBeats, spaceSize, noiseResonance, crushDrive } })
+  }, [eqKill, curve, filterResonance, echoBeats, spaceSize, noiseResonance, crushDrive])
   const lead: DeckId = performance ? focused : 'A'
   const playingA = useCallback((p: boolean) => onPlayingChange('A', p), [onPlayingChange])
   const playingB = useCallback((p: boolean) => onPlayingChange('B', p), [onPlayingChange])
-  const common = { secPerView: view.secPerView, onError, onNotify }
+  const common = {
+    secPerView: view.secPerView,
+    onError,
+    onNotify,
+    tempoActive: performance,
+    // A stem track loaded INTO performance mode follows the setting; the prep
+    // deck always loads stems.
+    stemsAllowed: !performance || perfStems,
+    keylockDefault,
+  }
   const editTags = (slot: DeckSlot) => (onEditTags && slot.origin === 'collection' ? onEditTags : undefined)
   const a = useDeck({
     ...common,
     ...decks.A,
     caps: caps.A,
     channel: 'A',
-    tempoActive: performance,
     onPlayingChange: playingA,
     onEditTags: editTags(decks.A),
     persist: true,
@@ -137,7 +160,6 @@ export function PrepStrip({
     ...decks.B,
     caps: caps.B,
     channel: 'B',
-    tempoActive: performance,
     onPlayingChange: playingB,
     onEditTags: editTags(decks.B),
     persist: false,

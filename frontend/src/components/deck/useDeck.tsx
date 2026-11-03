@@ -79,6 +79,11 @@ export interface DeckOptions {
   /** Performance mode: the pitch fader and keylock apply (else the deck plays
    *  at the file's own tempo). */
   tempoActive?: boolean
+  /** Load a stem track as its stems (else its mix). Read when a track loads,
+   *  so changing it never reloads the deck. */
+  stemsAllowed?: boolean
+  /** Keylock's starting state (the `keylockDefault` setting). */
+  keylockDefault?: boolean
   /** The mixer channel this deck plays into (default A). */
   channel?: Channel
   /** Persist this deck's loop size and cue bank (deck A; default true). */
@@ -99,6 +104,8 @@ export function useDeck({
   onPlayingChange,
   onEditTags,
   tempoActive = false,
+  stemsAllowed = true,
+  keylockDefault = true,
   channel = 'A',
   persist = true,
   leadsAmbient = true,
@@ -265,6 +272,9 @@ export function useDeck({
     void setAmbientFromArt(trackId && origin === 'collection' ? api.artUrl(trackId) : null)
   }, [trackId, origin, leadsAmbient])
 
+  const stemsAllowedRef = useRef(stemsAllowed)
+  stemsAllowedRef.current = stemsAllowed
+
   // Analyse once per track; the decoded buffer feeds both the playback and
   // scratch engines (no re-decode) and both waveform views share the columns.
   useEffect(() => {
@@ -284,7 +294,7 @@ export function useDeck({
     setWaveStatus('loading')
     // A stem FILE loads its four stems and plays their sum (decided: always,
     // for every stem track); anything else loads as one buffer, as before.
-    const load = trackStemsFor(origin, trackId)
+    const load = (stemsAllowedRef.current ? trackStemsFor(origin, trackId) : Promise.resolve([] as StemInfo[]))
       .catch(() => [] as StemInfo[])
       .then(async (found) => {
         if (found.length) {
@@ -1198,7 +1208,9 @@ export function useDeck({
   // coming back to performance mode finds the fader where it was.
   const [pitch, setPitchState] = useState(0)
   const [pitchRange, setPitchRange] = useState(PITCH_RANGES[0])
-  const [keylock, setKeylock] = useState(true)
+  const [keylock, setKeylock] = useState(keylockDefault)
+  // The setting changing (or arriving with the prefs) sets every deck.
+  useEffect(() => setKeylock(keylockDefault), [keylockDefault])
   // A pitch BEND: a momentary push or drag on top of the fader (the phase
   // meter's drag), 1 = none. Part of `rate`, so the readout and a follower see it.
   const [bend, setBend] = useState(1)

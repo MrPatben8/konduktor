@@ -1174,7 +1174,7 @@ Two independent apps that talk over HTTP:
     / Try again (`backend_restart`). The shell has no timeout of its own. Before
     ready it answers quit requests itself — nothing can be unsaved — and stops
     at ready so it never races `QuitGuard`), `SaveBar` (+ "Discard changes…" when
-    dirty, and the settings gear beside it, whose menu (or `?` anywhere) opens `ShortcutsDialog` — a KEYBOARD MAP (decided 2026-10-15): keys lit in the colour of what they do, a caption explaining the key pointed at or pressed (pressing explains, it never acts: a capture-phase listener keeps the deck's and table's keys from firing), holding or picking ⇧ / Cmd-Ctrl relights it with that layer, mouse gestures listed beneath. It shrinks to fit the dialog and drops the words on the keys when too small. Its content is `lib/shortcuts.ts`, written out BY HAND, so a new or changed shortcut in `lib/deckKeys.ts` / `TrackTable` must be added there too — and `AppSettings` ("Konduktor Settings…": app-level prefs, each with its default in `APP_SETTING_DEFAULTS` and read through `useAppSetting`; today `expandPlaylistFolders` and `exportRootFolder`, both default off — the latter read by the backend at `run_export` and passed down as `ExportPayload.root_folder` — and `timeReadoutDecimals` (0–3, default 1: the deck's ELAPSED / REMAIN, truncated, never rounded). The Sidebar holds folder open state as per-id overrides of that setting, reset on a new library or a change of the setting, and carried to the new ids when a rename/move changes a folder's path id)), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
+    dirty, and the settings gear beside it, whose menu (or `?` anywhere) opens `ShortcutsDialog` — a KEYBOARD MAP (decided 2026-10-15): keys lit in the colour of what they do, a caption explaining the key pointed at or pressed (pressing explains, it never acts: a capture-phase listener keeps the deck's and table's keys from firing), holding or picking ⇧ / Cmd-Ctrl relights it with that layer, mouse gestures listed beneath. It shrinks to fit the dialog and drops the words on the keys when too small. Its content is `lib/shortcuts.ts`, written out BY HAND, so a new or changed shortcut in `lib/deckKeys.ts` / `TrackTable` must be added there too — and `AppSettings` ("Konduktor Settings…": app-level prefs, each with its default in `APP_SETTING_DEFAULTS` and read through `useAppSetting`; today `expandPlaylistFolders` and `exportRootFolder`, both default off — the latter read by the backend at `run_export` and passed down as `ExportPayload.root_folder` — and `timeReadoutDecimals` (0–3, default 1: the deck's ELAPSED / REMAIN, truncated, never rounded); and the Performance mode section — `perfStems` (default on: a stem track loaded INTO performance mode plays its stems, else its mix; read at load, never reloads a deck), `keylockDefault` (on), `eqKill` (off = -26 dB), `crossfaderCurve` (smooth), and the colour effects' one parameter each, `fxFilterResonance` / `fxEchoBeats` / `fxSpaceSize` / `fxNoiseResonance` / `fxCrushDrive` (decided 2026-11-03: the mixer's per-channel PRM knob was removed; PrepStrip copies these into `mixerState`). The Sidebar holds folder open state as per-id overrides of that setting, reset on a new library or a change of the setting, and carried to the new ids when a rename/move changes a folder's path id)), `Toolbar` (search/filters; columns are chosen by right-clicking the table header),
     `TrackTable` (**the one track list** — All Tracks, playlists, exports and
     devices. TanStack Table + **virtualized** grid; per-row play button,
     configurable columns, header sorting, inline double-click editing, and
@@ -2689,6 +2689,14 @@ that number and nothing else — everything derives from it:
   laptop. One computer at a time, with takeover. See "Remote libraries" under
   Architecture. Not yet: verified on a real TrueNAS (the image is published by
   CI's `server-image` job), a web UI served by the server (decided: not now).
+- ✅ **Performance mode** (2026-11-03) — a second deck and a mixer to try
+  transitions: stacked waveforms, 3-band isolator, per-channel colour FX,
+  crossfader, limiter, pitch with Rubber Band keylock, SYNC with a tempo
+  master, a phase meter you can drag to bend. See `lib/audio/`,
+  `components/deck/`, `components/mixer/` and "Prep strip" / "Prep engine";
+  [the discussion](.claude/discussions/discuss-performance-mode-2026-11-02.md).
+  Not yet: MIDI controllers (decided: later; WKWebView has no Web MIDI, so
+  through Tauri), headphone cue (decided: not needed), recording the mix.
 - ⬜ Serato adapter
 - ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 
@@ -2792,7 +2800,9 @@ The prep strip plays every track through the **Web Audio API** (a plain
   all-pass, so the bands sum flat — measured 0.0000 dB; Web Audio's
   lowpass/highpass Q is in DB, Butterworth = -3.01, its allpass Q linear) →
   the colour FX (Filter / Echo / Space / Noise / Crush, chosen PER CHANNEL,
-  one bipolar knob + one parameter, all built once and switched by gains) →
+  one bipolar COLOR knob; each effect's one parameter is an APP SETTING, not
+  a knob — `mixerState.fx`, decided 2026-11-03; all built once and switched
+  by gains) →
   fader → crossfader (smooth = constant power, sharp) → bus → limiter
   (DynamicsCompressor at -1.5 dBFS 20:1 — Web Audio adds an automatic
   MAKE-UP gain, +0.57 dB at -1/20:1, which let two loud decks peak at +0.3

@@ -21,6 +21,21 @@ export const APP_SETTING_DEFAULTS = {
   levelMeasure: 'lufs' as 'lufs' | 'rms',
   levelTarget: -9,
   levelCeiling: -1,
+  // Performance mode (decided 2026-11-02 / -03).
+  /** Stem tracks load as stems into a performance deck (else their mix: one
+   *  time-stretcher instead of four). Read when a track loads. */
+  perfStems: true,
+  /** A deck's keylock starts on. */
+  keylockDefault: true,
+  /** EQ full left kills the band (else -26 dB, DJM-style). */
+  eqKill: false,
+  crossfaderCurve: 'smooth' as 'smooth' | 'sharp',
+  /** The colour effects' one parameter each (the mixer has no knob for it). */
+  fxFilterResonance: 0.3,
+  fxEchoBeats: 0.5,
+  fxSpaceSize: 2.5,
+  fxNoiseResonance: 0.3,
+  fxCrushDrive: 2,
 }
 
 type AppSettingKey = keyof typeof APP_SETTING_DEFAULTS
@@ -40,6 +55,15 @@ export function AppSettings({ onClose }: { onClose: () => void }) {
   const levelMeasure = useAppSetting('levelMeasure')
   const levelTarget = useAppSetting('levelTarget')
   const levelCeiling = useAppSetting('levelCeiling')
+  const perfStems = useAppSetting('perfStems')
+  const keylockDefault = useAppSetting('keylockDefault')
+  const eqKill = useAppSetting('eqKill')
+  const crossfaderCurve = useAppSetting('crossfaderCurve')
+  const fxFilterResonance = useAppSetting('fxFilterResonance')
+  const fxEchoBeats = useAppSetting('fxEchoBeats')
+  const fxSpaceSize = useAppSetting('fxSpaceSize')
+  const fxNoiseResonance = useAppSetting('fxNoiseResonance')
+  const fxCrushDrive = useAppSetting('fxCrushDrive')
   const [error, setError] = useState<string | null>(null)
 
   const set = async (patch: Partial<typeof APP_SETTING_DEFAULTS>) => {
@@ -60,7 +84,7 @@ export function AppSettings({ onClose }: { onClose: () => void }) {
             ×
           </button>
         </div>
-        <div className="space-y-4 px-5 py-4 text-sm">
+        <div className="max-h-[70vh] space-y-4 overflow-y-auto px-5 py-4 text-sm">
           <section className="space-y-2">
             <h3 className="text-[11px] font-semibold uppercase tracking-wider text-faint">Sidebar</h3>
             <label className="flex cursor-pointer items-start gap-2.5">
@@ -148,6 +172,87 @@ export function AppSettings({ onClose }: { onClose: () => void }) {
                 onCommit={(v) => void set({ levelCeiling: v })} />
             </label>
           </section>
+          <section className="space-y-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-faint">Performance mode</h3>
+            <Check
+              checked={perfStems}
+              onChange={(v) => void set({ perfStems: v })}
+              title="Load stem tracks as stems"
+              text="A stem track loaded into a deck in performance mode plays its four stems (mute and solo work). Off, it plays its mix: lighter on an older computer, since keylock then stretches one stream instead of four. Applies to the next track loaded."
+            />
+            <Check
+              checked={keylockDefault}
+              onChange={(v) => void set({ keylockDefault: v })}
+              title="Keylock on"
+              text="Each deck starts with keylock on: a tempo change keeps the pitch. Each deck's KEY button still switches it."
+            />
+            <Choice
+              title="EQ full left"
+              value={eqKill ? 'kill' : 'cut'}
+              options={[
+                ['cut', 'Cut to −26 dB'],
+                ['kill', 'Kill (silence)'],
+              ]}
+              onChange={(v) => void set({ eqKill: v === 'kill' })}
+            />
+            <Choice
+              title="Crossfader curve"
+              value={crossfaderCurve}
+              options={[
+                ['smooth', 'Smooth — for blends'],
+                ['sharp', 'Sharp — for cuts'],
+              ]}
+              onChange={(v) => void set({ crossfaderCurve: v as 'smooth' | 'sharp' })}
+            />
+            <span className="block pt-1 text-xs text-faint">
+              The colour effects: what each one's setting is, on both channels.
+            </span>
+            <Choice
+              title="Filter resonance"
+              value={String(fxFilterResonance)}
+              options={LEVELS}
+              onChange={(v) => void set({ fxFilterResonance: Number(v) })}
+            />
+            <Choice
+              title="Echo length"
+              value={String(fxEchoBeats)}
+              options={[
+                ['0.125', '1/8 beat'],
+                ['0.25', '1/4 beat'],
+                ['0.5', '1/2 beat'],
+                ['0.75', '3/4 beat'],
+                ['1', '1 beat'],
+              ]}
+              onChange={(v) => void set({ fxEchoBeats: Number(v) })}
+            />
+            <Choice
+              title="Space size"
+              value={String(fxSpaceSize)}
+              options={[
+                ['1', 'Small (1 s)'],
+                ['2.5', 'Medium (2.5 s)'],
+                ['4', 'Large (4 s)'],
+                ['6', 'Huge (6 s)'],
+              ]}
+              onChange={(v) => void set({ fxSpaceSize: Number(v) })}
+            />
+            <Choice
+              title="Noise resonance"
+              value={String(fxNoiseResonance)}
+              options={LEVELS}
+              onChange={(v) => void set({ fxNoiseResonance: Number(v) })}
+            />
+            <Choice
+              title="Crush drive"
+              value={String(fxCrushDrive)}
+              options={[
+                ['1', 'Clean (×1)'],
+                ['2', 'Warm (×2)'],
+                ['4', 'Hot (×4)'],
+              ]}
+              onChange={(v) => void set({ fxCrushDrive: Number(v) })}
+            />
+          </section>
           {error && <div className="text-xs text-pink">{error}</div>}
         </div>
         <div className="flex justify-end gap-2 border-t border-line px-5 py-3">
@@ -157,6 +262,51 @@ export function AppSettings({ onClose }: { onClose: () => void }) {
         </div>
       </div>
     </Modal>
+  )
+}
+
+/** Resonance amounts offered (0..1 of the effect's maximum). */
+const LEVELS: [string, string][] = [
+  ['0', 'None'],
+  ['0.3', 'Gentle'],
+  ['0.6', 'Medium'],
+  ['1', 'Strong'],
+]
+
+function Check({ checked, onChange, title, text }: {
+  checked: boolean; onChange: (v: boolean) => void; title: string; text: string
+}) {
+  return (
+    <label className="flex cursor-pointer items-start gap-2.5">
+      <input type="checkbox" className="mt-0.5" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span className="min-w-0">
+        <span className="block text-sm text-text">{title}</span>
+        <span className="block text-xs text-faint">{text}</span>
+      </span>
+    </label>
+  )
+}
+
+/** A setting picked from a list. A stored value not in the list (an older
+ *  build's) shows as the list's first entry until changed. */
+function Choice({ title, value, options, onChange }: {
+  title: string; value: string; options: [string, string][]; onChange: (v: string) => void
+}) {
+  return (
+    <label className="flex items-center justify-between gap-4">
+      <span className="text-sm text-text">{title}</span>
+      <select
+        className="shrink-0 rounded-lg well px-2 py-1 text-sm text-text outline-none"
+        value={options.some(([v]) => v === value) ? value : options[0][0]}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {options.map(([v, label]) => (
+          <option key={v} value={v}>
+            {label}
+          </option>
+        ))}
+      </select>
+    </label>
   )
 }
 

@@ -1,15 +1,14 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { mixer } from '../../lib/audio/mixer'
-import { faderGain, filterSweep, echoBeats, eqGain, gainToDb, TRIM_RANGE_DB, EQ_CUT_DB } from '../../lib/audio/mixerMath'
+import { faderGain, filterSweep, eqGain, gainToDb, TRIM_RANGE_DB, EQ_CUT_DB } from '../../lib/audio/mixerMath'
 import {
-  DEFAULT_CHANNEL,
   FX_LABELS,
-  FX_PARAM,
   FX_TYPES,
   setChannel,
   setMixer,
   useMixer,
   type Channel,
+  type FxSettings,
   type FxType,
 } from '../../lib/audio/mixerState'
 import { Icon } from '../../lib/icons'
@@ -23,23 +22,23 @@ const METER_TOP = 3
 const fmtDb = (db: number, places = 1) =>
   !isFinite(db) ? '−∞ dB' : `${db > 0 ? '+' : db < 0 ? '−' : ''}${Math.abs(db).toFixed(places)} dB`
 
-function describeFx(fx: FxType, c: number, param: number): string {
+function describeFx(fx: FxType, c: number, set: FxSettings): string {
   const a = Math.round(Math.abs(c) * 100)
   if (Math.abs(c) < 0.02) return `${FX_LABELS[fx]}: off (turn left or right)`
   switch (fx) {
     case 'filter': {
       const s = filterSweep(c)!
       const hz = s.freq >= 1000 ? `${(s.freq / 1000).toFixed(1)} kHz` : `${Math.round(s.freq)} Hz`
-      return `Filter: ${s.type === 'lowpass' ? 'low-pass' : 'high-pass'} at ${hz}`
+      return `Filter: ${s.type === 'lowpass' ? 'low-pass' : 'high-pass'} at ${hz} · resonance ${Math.round(set.filterResonance * 100)}%`
     }
     case 'echo':
-      return `Echo ${a}% · ${beatsLabel(echoBeats(param))} · ${c < 0 ? 'darker' : 'thinner'} repeats`
+      return `Echo ${a}% · ${beatsLabel(set.echoBeats)} · ${c < 0 ? 'darker' : 'thinner'} repeats`
     case 'space':
-      return `Space ${a}% · ${c < 0 ? 'darker' : 'thinner'}`
+      return `Space ${a}% · ${set.spaceSize} s · ${c < 0 ? 'darker' : 'thinner'}`
     case 'noise':
       return `Noise ${a}% · ${c < 0 ? 'low-pass' : 'high-pass'} sweep`
     case 'crush':
-      return `Crush ${a}%`
+      return `Crush ${a}% · drive ×${set.crushDrive}`
   }
 }
 
@@ -50,7 +49,8 @@ function beatsLabel(b: number): string {
 /**
  * The mixer, between the decks in performance mode (decided 2026-11-02): per
  * channel TRIM (on top of the track's auto gain), HI / MID / LOW, a colour
- * effect with its own selector and parameter, a fader and its meter; between
+ * effect with its own selector (its one parameter is an app setting, under
+ * Performance mode in Settings), a fader and its meter; between
  * them the master meter and the limiter's light; the crossfader beneath. The
  * values live in `mixerState` and the audio in `mixer.ts`.
  */
@@ -155,6 +155,7 @@ function Strip({
 }) {
   const s = useMixer((m) => m[ch])
   const eqKill = useMixer((m) => m.eqKill)
+  const fxSettings = useMixer((m) => m.fx)
   const [fxMenu, setFxMenu] = useState<{ x: number; y: number } | null>(null)
   const set = (patch: Parameters<typeof setChannel>[1]) => setChannel(ch, patch)
   const describeEq = (band: string) => (v: number) => {
@@ -199,7 +200,7 @@ function Strip({
           setFxMenu({ x: r.left, y: r.bottom + 4 })
         }}
         title="Which effect the COLOR knob drives"
-        className="btn-glass col-span-2 mt-0.5 flex h-6 items-center justify-center gap-0.5 self-start rounded-md text-[10px] font-semibold uppercase tracking-[0.06em] text-text"
+        className="btn-glass col-span-3 mt-0.5 flex h-6 items-center justify-center gap-0.5 self-start rounded-md text-[10px] font-semibold uppercase tracking-[0.06em] text-text"
       >
         {FX_LABELS[s.fx]}
         <Icon name="chevronDown" size={11} />
@@ -213,19 +214,7 @@ function Strip({
         color="var(--color-gold)"
         onChange={(v) => set({ color: Math.abs(v) < 0.02 ? 0 : v })}
         label="Color"
-        describe={(v) => describeFx(s.fx, v, s.param)}
-      />
-      <Knob
-        value={s.param}
-        min={0}
-        max={1}
-        defaultValue={DEFAULT_CHANNEL.param}
-        color="var(--color-gold)"
-        onChange={(v) => set({ param: v })}
-        label="Prm"
-        describe={(v) =>
-          `${FX_PARAM[s.fx]}: ${s.fx === 'echo' ? beatsLabel(echoBeats(v)) : `${Math.round(v * 100)}%`}`
-        }
+        describe={(v) => describeFx(s.fx, v, fxSettings)}
       />
     </div>
   )

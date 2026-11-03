@@ -19,13 +19,29 @@ export const FX_LABELS: Record<FxType, string> = {
   noise: 'Noise',
   crush: 'Crush',
 }
-/** What each effect's parameter knob does. */
-export const FX_PARAM: Record<FxType, string> = {
-  filter: 'Resonance',
-  echo: 'Echo length (beats)',
-  space: 'Reverb size',
-  noise: 'Noise resonance',
-  crush: 'Drive',
+/**
+ * Each effect's one setting — app settings, not knobs (decided 2026-11-03: the
+ * per-channel parameter knob was removed), the same for both channels.
+ */
+export interface FxSettings {
+  /** Filter resonance, 0..1. */
+  filterResonance: number
+  /** Echo length in beats of the deck's tempo. */
+  echoBeats: number
+  /** Space: the reverb's decay (s). */
+  spaceSize: number
+  /** Noise sweep resonance, 0..1. */
+  noiseResonance: number
+  /** Crush drive, 1..4. */
+  crushDrive: number
+}
+
+export const DEFAULT_FX: FxSettings = {
+  filterResonance: 0.3,
+  echoBeats: 0.5,
+  spaceSize: 2.5,
+  noiseResonance: 0.3,
+  crushDrive: 2,
 }
 
 export interface ChannelState {
@@ -38,8 +54,6 @@ export interface ChannelState {
   fx: FxType
   /** The colour knob, -1..1 (centre = effect off). */
   color: number
-  /** The effect's parameter, 0..1. */
-  param: number
   /** The channel fader, 0..1. */
   fader: number
 }
@@ -52,6 +66,7 @@ export interface MixerState {
   curve: CrossfaderCurve
   /** EQ cuts to silence at full left (else to -26 dB). */
   eqKill: boolean
+  fx: FxSettings
 }
 
 export const DEFAULT_CHANNEL: ChannelState = {
@@ -61,7 +76,6 @@ export const DEFAULT_CHANNEL: ChannelState = {
   high: 0,
   fx: 'filter',
   color: 0,
-  param: 0.5,
   fader: 1,
 }
 
@@ -71,6 +85,7 @@ let state: MixerState = {
   crossfader: 0,
   curve: 'smooth',
   eqKill: false,
+  fx: DEFAULT_FX,
 }
 const listeners = new Set<() => void>()
 
@@ -92,7 +107,7 @@ export function setChannel(ch: Channel, patch: Partial<ChannelState>): void {
   commit({ ...state, [ch]: { ...state[ch], ...patch } })
 }
 
-export function setMixer(patch: Partial<Pick<MixerState, 'crossfader' | 'curve' | 'eqKill'>>): void {
+export function setMixer(patch: Partial<Pick<MixerState, 'crossfader' | 'curve' | 'eqKill' | 'fx'>>): void {
   commit({ ...state, ...patch })
 }
 

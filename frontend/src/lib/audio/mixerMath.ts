@@ -66,14 +66,10 @@ export function filterSweep(c: number): { type: 'lowpass' | 'highpass'; freq: nu
     : { type: 'highpass', freq: 20 * (8000 / 20) ** a }
 }
 
-/** The echo's lengths in beats, picked by the parameter knob. */
+/** The echo lengths offered (beats). */
 export const ECHO_BEATS = [1 / 8, 1 / 4, 1 / 2, 3 / 4, 1]
 
-export function echoBeats(param: number): number {
-  return ECHO_BEATS[Math.round(clamp(param, 0, 1) * (ECHO_BEATS.length - 1))]
-}
-
-/** Seconds of echo for `param` at `bpm` (120 when the tempo is unknown). */
-export function echoSeconds(param: number, bpm: number): number {
-  return (echoBeats(param) * 60) / (bpm > 0 ? bpm : 120)
+/** Seconds of echo for `beats` at `bpm` (120 when the tempo is unknown). */
+export function echoSeconds(beats: number, bpm: number): number {
+  return (beats * 60) / (bpm > 0 ? bpm : 120)
 }

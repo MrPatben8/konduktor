@@ -34,7 +34,7 @@ import {
   TRIM_RANGE_DB,
   xfadeGains,
 } from './mixerMath'
-import { getMixerState, subscribeMixer, type Channel, type ChannelState, type FxType } from './mixerState'
+import { getMixerState, subscribeMixer, type Channel, type ChannelState, type FxSettings, type FxType } from './mixerState'
 
 /** Butterworth Q in Web Audio's lowpass/highpass units (dB). */
 const BUTTERWORTH_DB = 20 * Math.log10(Math.SQRT1_2)
@@ -101,7 +101,8 @@ function crushCurve(bits: number): Float32Array<ArrayBuffer> {
 
 /**
  * One channel's colour effect: ONE knob, -1..1, out of the path at the centre;
- * which effect it drives is the channel's own choice (decided 2026-11-02).
+ * which effect it drives is the channel's own choice (decided 2026-11-02), its
+ * one parameter an app setting (`FxSettings`, decided 2026-11-03).
  * Every effect is built once and switched by gains, so a change never clicks;
  * echo and reverb tails ring out after the knob returns.
  */
@@ -176,7 +177,7 @@ class ColorFx {
     this.input.connect(this.crushDrive).connect(this.shaper).connect(this.crushWet).connect(this.output)
   }
 
-  apply(type: FxType, color: number, param: number, bpm: number): void {
+  apply(type: FxType, color: number, fx: FxSettings, bpm: number): void {
     const ctx = this.ctx
     const a = Math.min(1, Math.abs(color))
     const on = a >= FX_CENTRE
@@ -190,7 +191,7 @@ class ColorFx {
     if (filtering) {
       if (this.filter.type !== sweep.type) this.filter.type = sweep.type
       ramp(this.filter.frequency, sweep.freq, ctx)
-      ramp(this.filter.Q, param * 15, ctx)
+      ramp(this.filter.Q, fx.filterResonance * 15, ctx)
     }
     ramp(this.filterWet.gain, filtering ? take : 0, ctx)
 
@@ -199,7 +200,7 @@ class ColorFx {
     ramp(this.echoSend.gain, echoing ? a * 0.8 : 0, ctx)
     ramp(this.feedback.gain, echoing ? 0.35 + 0.5 * a : 0.45, ctx, 0.05)
     if (type === 'echo') {
-      ramp(this.delay.delayTime, echoSeconds(param, bpm), ctx, 0.05)
+      ramp(this.delay.delayTime, echoSeconds(fx.echoBeats, bpm), ctx, 0.05)
       const tone = color < 0 ? 'lowpass' : 'highpass'
       if (this.echoTone.type !== tone) this.echoTone.type = tone
       ramp(this.echoTone.frequency, color < 0 ? 2500 : 600, ctx)
@@ -209,7 +210,7 @@ class ColorFx {
     const spacing = type === 'space' && on
     ramp(this.spaceSend.gain, spacing ? a : 0, ctx)
     if (type === 'space') {
-      const size = Math.round((0.8 + param * 4) * 10) / 10
+      const size = Math.round(Math.max(0.3, Math.min(8, fx.spaceSize)) * 10) / 10
       if (size !== this.spaceSize) {
         this.spaceSize = size
         this.convolver.buffer = impulse(ctx, size)
@@ -224,11 +225,11 @@ class ColorFx {
     if (noising) {
       if (this.noiseFilter.type !== sweep.type) this.noiseFilter.type = sweep.type
       ramp(this.noiseFilter.frequency, sweep.freq, ctx)
-      ramp(this.noiseFilter.Q, param * 15, ctx)
+      ramp(this.noiseFilter.Q, fx.noiseResonance * 15, ctx)
     }
     ramp(this.noiseGain.gain, noising ? a * 0.25 : 0, ctx)
 
-    // Crush: fewer bits as the knob opens (16 → 3), driven by the parameter.
+    // Crush: fewer bits as the knob opens (16 → 3), driven by the setting.
     const crushing = type === 'crush' && on
     if (crushing) {
       const bits = Math.round(16 - a * 13)
@@ -236,10 +237,9 @@ class ColorFx {
         this.crushBits = bits
         this.shaper.curve = crushCurve(bits)
       }
-      const drive = 1 + param * 3
-      ramp(this.crushDrive.gain, drive, ctx)
+      ramp(this.crushDrive.gain, fx.crushDrive, ctx)
     }
-    ramp(this.crushWet.gain, crushing ? take / (1 + param * 3) ** 0.5 : 0, ctx)
+    ramp(this.crushWet.gain, crushing ? take / Math.max(1, fx.crushDrive) ** 0.5 : 0, ctx)
 
     ramp(this.dry.gain, filtering || crushing ? 1 - take : 1, ctx)
   }
@@ -298,14 +298,14 @@ class Strip {
     this.input.connect(this.dryGate).connect(bus)
   }
 
-  apply(s: ChannelState, xfade: number, eqKill: boolean): void {
+  apply(s: ChannelState, xfade: number, eqKill: boolean, fx: FxSettings): void {
     const ctx = this.ctx
     const trimDb = this.autoGainDb + Math.max(-TRIM_RANGE_DB, Math.min(TRIM_RANGE_DB, s.trim))
     ramp(this.trim.gain, dbToGain(trimDb), ctx)
     ramp(this.bands[0].gain, eqGain(s.low, eqKill), ctx)
     ramp(this.bands[1].gain, eqGain(s.mid, eqKill), ctx)
     ramp(this.bands[2].gain, eqGain(s.high, eqKill), ctx)
-    this.fx.apply(s.fx, s.color, s.param, this.bpm)
+    this.fx.apply(s.fx, s.color, fx, this.bpm)
     ramp(this.fader.gain, faderGain(s.fader), ctx)
     ramp(this.xfade.gain, xfade, ctx)
   }
@@ -396,8 +396,8 @@ export class Mixer {
   private apply(): void {
     const s = getMixerState()
     const [ga, gb] = xfadeGains(s.crossfader, s.curve)
-    this.strips.A.apply(s.A, ga, s.eqKill)
-    this.strips.B.apply(s.B, gb, s.eqKill)
+    this.strips.A.apply(s.A, ga, s.eqKill, s.fx)
+    this.strips.B.apply(s.B, gb, s.eqKill, s.fx)
   }
 
   private peak(meter: AnalyserNode): number {

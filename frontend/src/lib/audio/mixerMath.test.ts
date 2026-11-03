@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { echoBeats, echoSeconds, eqGain, faderGain, filterSweep, gainToDb, xfadeGains } from './mixerMath'
+import { echoSeconds, eqGain, faderGain, filterSweep, gainToDb, xfadeGains } from './mixerMath'
 
 describe('eqGain', () => {
   it('is flat at the centre, +6 dB at full right', () => {
@@ -63,10 +63,7 @@ describe('filterSweep', () => {
 })
 
 describe('echo', () => {
-  it('picks its length in beats from the parameter and follows the tempo', () => {
-    expect(echoBeats(0)).toBe(1 / 8)
-    expect(echoBeats(0.5)).toBe(1 / 2)
-    expect(echoBeats(1)).toBe(1)
+  it('is its length in beats at the deck’s tempo', () => {
     expect(echoSeconds(1, 120)).toBeCloseTo(0.5, 9)
     expect(echoSeconds(0.5, 128)).toBeCloseTo(60 / 128 / 2, 9)
     expect(echoSeconds(1, 0)).toBeCloseTo(0.5, 9) // unknown tempo: 120

@@ -5,17 +5,18 @@ import { cueTypeColor, GRID_MARKER_ACTIVE_COLOR } from './cues'
 import { IS_MAC } from './modKey'
 
 /** A modifier layer of the keyboard. `mod` is Cmd on macOS, Ctrl elsewhere —
- *  the handlers accept either, but the map names your key. */
-export type Layer = 'base' | 'shift' | 'mod'
-export const LAYERS: Layer[] = ['base', 'shift', 'mod']
+ *  the handlers accept either, but the map names your key. `alt` (Option on
+ *  macOS) sends a deck key to the OTHER deck in performance mode. */
+export type Layer = 'base' | 'shift' | 'mod' | 'alt'
+export const LAYERS: Layer[] = ['base', 'shift', 'mod', 'alt']
 
 export const MODIFIER_KEY: Record<Exclude<Layer, 'base'>, string> = IS_MAC
-  ? { shift: '⇧', mod: '⌘' }
-  : { shift: 'Shift', mod: 'Ctrl' }
+  ? { shift: '⇧', mod: '⌘', alt: '⌥' }
+  : { shift: 'Shift', mod: 'Ctrl', alt: 'Alt' }
 
 export const LAYER_NAMES: Record<Layer, string> = IS_MAC
-  ? { base: 'No modifier', shift: '⇧ Shift', mod: '⌘ Command' }
-  : { base: 'No modifier', shift: 'Shift', mod: 'Ctrl' }
+  ? { base: 'No modifier', shift: '⇧ Shift', mod: '⌘ Command', alt: '⌥ Option' }
+  : { base: 'No modifier', shift: 'Shift', mod: 'Ctrl', alt: 'Alt' }
 
 /** Where a shortcut acts. The colour lights its key on the map. */
 export type Area = 'deck' | 'list' | 'any'
@@ -61,7 +62,7 @@ export function padRange(slots: number): string {
 }
 
 export function bindings(slots: number): Bindings {
-  const b: Bindings = { base: {}, shift: {}, mod: {} }
+  const b: Bindings = { base: {}, shift: {}, mod: {}, alt: {} }
   const pad = cueTypeColor('cue')
   padCodes(slots).forEach((code, i) => {
     const n = i + 1
@@ -125,6 +126,15 @@ export function bindings(slots: number): Bindings {
     ArrowUp: [{ area: 'deck', label: 'Size ×2', text: 'Double the loop and beat-jump size (up to 32 beats)' }],
     KeyA: [{ area: 'list', label: 'All', text: 'Select every track in the list' }],
   } satisfies Record<string, Binding[]>)
+  // Alt / Option: every deck key, on the OTHER deck (performance mode).
+  for (const [code, binds] of Object.entries(b.base)) {
+    const deck = binds.filter((x) => x.area === 'deck')
+    if (!deck.length || code === 'KeyP') continue
+    b.alt[code] = deck.map((x) => ({
+      ...x,
+      text: `Performance mode — on the other deck: ${x.text.charAt(0).toLowerCase()}${x.text.slice(1)}`,
+    }))
+  }
   return b
 }
 
@@ -152,6 +162,9 @@ export const MOUSE: { title: string; rows: MouseGesture[] }[] = [
       { gesture: 'Right-click', on: 'pad', text: 'Hotcue type, colour, rename, delete' },
       { gesture: 'Click', on: 'memory cue', text: 'Jump there and make it the CUE point (a memory loop engages)' },
       { gesture: 'Right-click', on: 'memory cue', text: 'Memory cue type, colour, rename, delete' },
+      { gesture: 'Click', on: 'deck (performance mode)', text: 'Aim the keys at that deck' },
+      { gesture: 'Drag', on: 'phase meter', text: 'Bend the deck’s speed while held (right faster, left slower)' },
+      { gesture: 'Drag', on: 'knob', text: 'Turn it (⇧ for finer); double-click resets it' },
     ],
   },
   {
@@ -208,18 +221,18 @@ export const KEY_ROWS: KeyDef[][] = (() => {
     ? [
         key('Fn', 'fn'),
         key('ControlLeft', 'control', 1.25, undefined, 'ctrl'),
-        key('AltLeft', 'option ⌥', 1.25, undefined, '⌥'),
+        key('AltLeft', 'option ⌥', 1.25, 'alt', '⌥'),
         key('MetaLeft', 'command ⌘', 1.5, 'mod', '⌘'),
         key('Space', 'space', 6.75),
         key('MetaRight', 'command ⌘', 1.5, 'mod', '⌘'),
-        key('AltRight', 'option ⌥', 1.25, undefined, '⌥'),
+        key('AltRight', 'option ⌥', 1.25, 'alt', '⌥'),
       ]
     : [
         key('ControlLeft', 'Ctrl', 1.25, 'mod'),
         key('MetaLeft', 'Win', 1.25),
-        key('AltLeft', 'Alt', 1.25),
+        key('AltLeft', 'Alt', 1.25, 'alt'),
         key('Space', 'space', 6.75),
-        key('AltRight', 'Alt', 1.25),
+        key('AltRight', 'Alt', 1.25, 'alt'),
         key('MetaRight', 'Win', 1.25),
         key('ControlRight', 'Ctrl', 1.5, 'mod'),
       ]
@@ -254,6 +267,7 @@ export const KEYS_BY_CODE: Record<string, KeyDef> = Object.fromEntries(
 /** The modifier layer a physical key holds, if it is one. */
 export function modifierLayer(code: string): Exclude<Layer, 'base'> | null {
   if (code === 'ShiftLeft' || code === 'ShiftRight') return 'shift'
+  if (code === 'AltLeft' || code === 'AltRight') return 'alt'
   const mod = IS_MAC ? ['MetaLeft', 'MetaRight'] : ['ControlLeft', 'ControlRight']
   return mod.includes(code) ? 'mod' : null
 }
