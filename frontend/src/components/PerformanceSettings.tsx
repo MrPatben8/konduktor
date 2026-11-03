@@ -37,6 +37,7 @@ export function PerformanceSettings({ onClose }: { onClose: () => void }) {
   const writePrefs = usePrefsWriter()
   const perfStems = useAppSetting('perfStems')
   const keylockDefault = useAppSetting('keylockDefault')
+  const autoFocusDeck = useAppSetting('autoFocusDeck')
   const eqKill = useAppSetting('eqKill')
   const sharpnessSetting = useAppSetting('crossfaderSharpness')
   const fxFilterRange = useAppSetting('fxFilterRange')
@@ -81,22 +82,24 @@ export function PerformanceSettings({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <div className="max-h-[70vh] space-y-4 overflow-y-auto px-5 py-4 text-sm">
-          <p className="text-xs text-faint">
-            The second deck and the mixer (P, or the decks button in the deck's header).
-          </p>
           <section className="space-y-2">
             <h3 className={section}>Decks</h3>
             <Check
               checked={perfStems}
               onChange={(v) => void set({ perfStems: v })}
               title="Load stem tracks as stems"
-              text="A stem track loaded into a deck in performance mode plays its four stems (mute and solo work). Off, it plays its mix: lighter on an older computer, since keylock then stretches one stream instead of four. Applies to the next track loaded."
+              text="Off plays the mix: lighter on older computers."
             />
             <Check
               checked={keylockDefault}
               onChange={(v) => void set({ keylockDefault: v })}
-              title="Keylock on"
-              text="Each deck starts with keylock on: a tempo change keeps the pitch. Each deck's KEY button still switches it."
+              title="Keylock on by default"
+            />
+            <Check
+              checked={autoFocusDeck}
+              onChange={(v) => void set({ autoFocusDeck: v })}
+              title="Click a deck to focus it"
+              text="Off: only its A/B badge does."
             />
           </section>
           <section className="space-y-2">
@@ -139,21 +142,11 @@ export function PerformanceSettings({ onClose }: { onClose: () => void }) {
                   </div>
                 </div>
               </div>
-              <span className="block text-xs text-faint">
-                Smooth blends: each channel fades across the whole travel, both at −3 dB in the middle.
-                Sharper keeps both at full level across a widening middle and fades only near the ends —
-                at full, a cut over the last few percent, for scratching.
-              </span>
             </div>
           </section>
           <section className="space-y-2">
             <h3 className={section}>Filter FX</h3>
-            <span className="block text-xs text-faint">
-              Each channel's FILTER knob filters — low-pass to the left, high-pass to the right — and
-              the effect picked above it rides along, growing as the knob turns: the reverb blends into
-              one three times as long, the delay gets longer and the flanger faster (each up to ×8)
-              from the settings below. These apply to both channels.
-            </span>
+            <span className="block text-xs text-faint">Effects grow as the filter opens.</span>
             <Choice
               title="Filter range (Filter alone)"
               value={fxFilterRange}

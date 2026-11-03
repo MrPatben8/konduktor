@@ -122,6 +122,7 @@ export function PrepStrip({
   // Performance-mode settings (Settings ▸ Performance mode…).
   const perfStems = useAppSetting('perfStems')
   const keylockDefault = useAppSetting('keylockDefault')
+  const autoFocus = useAppSetting('autoFocusDeck')
   const eqKill = useAppSetting('eqKill')
   const sharpness = useAppSetting('crossfaderSharpness')
   const filterRange = useAppSetting('fxFilterRange')
@@ -300,22 +301,27 @@ export function PrepStrip({
     )
   }
 
+  // Any press on a deck focuses it — unless the `autoFocusDeck` setting is
+  // off, when only its letter badge does (decided 2026-11-03).
+  const clickFocus = autoFocus ? onFocus : undefined
   const pane = (id: DeckId, children: ReactNode, className = 'min-w-0 flex-1') => (
-    <div className={className} onPointerDownCapture={() => onFocus(id)}>
+    <div className={className} onPointerDownCapture={clickFocus && (() => clickFocus(id))}>
       {children}
     </div>
   )
   const badge = (id: DeckId) => (
-    <span
+    <button
+      type="button"
+      onPointerDown={() => onFocus(id)}
       className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg font-mono text-[13px] font-semibold transition-colors ${
         id === focused
           ? 'bg-accent text-ink-950 shadow-[0_0_14px_-2px_var(--color-accent)]'
-          : 'bg-ink-800 text-muted'
+          : 'bg-ink-800 text-muted hover:text-text'
       }`}
-      title={id === focused ? `Deck ${id} — the keys act on it` : `Deck ${id} — click it to focus (Alt/Option + key acts on it)`}
+      title={id === focused ? `Deck ${id}: the keys act on it` : `Deck ${id}: click to focus`}
     >
       {id}
-    </span>
+    </button>
   )
   return (
     <div className="glass flex h-[32rem] shrink-0 flex-col gap-2 p-4">
@@ -326,7 +332,7 @@ export function PrepStrip({
         {pane('B', <DeckHeader deck={b} compact badge={badge('B')} />)}
       </div>
       {DECK_IDS.map((id) => (
-        <DeckLane key={id} id={id} deck={deckOf(id)} view={view} focused={id === focused} drop={drop} onFocus={onFocus} />
+        <DeckLane key={id} id={id} deck={deckOf(id)} view={view} focused={id === focused} drop={drop} onFocus={clickFocus} />
       ))}
       <div className="flex shrink-0 gap-3">
         {pane(
@@ -392,7 +398,8 @@ function DeckLane({
   view: DeckView
   focused: boolean
   drop: DeckDrop
-  onFocus: (id: DeckId) => void
+  /** Focus on any press (the `autoFocusDeck` setting); undefined = off. */
+  onFocus?: (id: DeckId) => void
 }) {
   const [ref, over] = useDropTarget<true>({
     hint: drop.hint,
@@ -402,7 +409,7 @@ function DeckLane({
   return (
     <div
       ref={ref}
-      onPointerDownCapture={() => onFocus(id)}
+      onPointerDownCapture={onFocus && (() => onFocus(id))}
       className={`relative flex min-h-0 flex-1 rounded-2xl transition-shadow ${
         over ? 'ring-2 ring-accent' : focused ? 'ring-1 ring-accent/45' : ''
       }`}

@@ -28,6 +28,8 @@ export const APP_SETTING_DEFAULTS = {
   perfStems: true,
   /** A deck's keylock starts on. */
   keylockDefault: true,
+  /** Any press on a deck focuses it (else only its A/B badge). */
+  autoFocusDeck: true,
   /** EQ full left kills the band (else -26 dB, DJM-style). */
   eqKill: false,
   /** The crossfader curve: 0 smooth (constant power) .. 1 sharp (a cut).
@@ -183,14 +185,14 @@ export function AppSettings({ onClose }: { onClose: () => void }) {
 }
 
 export function Check({ checked, onChange, title, text }: {
-  checked: boolean; onChange: (v: boolean) => void; title: string; text: string
+  checked: boolean; onChange: (v: boolean) => void; title: string; text?: string
 }) {
   return (
     <label className="flex cursor-pointer items-start gap-2.5">
       <input type="checkbox" className="mt-0.5" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       <span className="min-w-0">
         <span className="block text-sm text-text">{title}</span>
-        <span className="block text-xs text-faint">{text}</span>
+        {text && <span className="block text-xs text-faint">{text}</span>}
       </span>
     </label>
   )
