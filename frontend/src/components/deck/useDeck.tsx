@@ -36,8 +36,11 @@ import { analyzeStems, analyzeWaveform, type WaveColumn } from '../../lib/wavefo
 import type { RawWave } from '../../lib/rawWave'
 import { setAmbientFromArt } from '../../lib/ambient'
 import { DeckEngine } from '../../lib/audio/deckEngine'
+import { mixer } from '../../lib/audio/mixer'
+import type { Channel } from '../../lib/audio/mixerState'
 import { resumeAudio } from '../../lib/audio/context'
 import { STEM_KEYS, type DeckShortcuts } from '../../lib/deckKeys'
+import { PITCH_RANGES, rangeFor } from '../../lib/sync'
 import { invalidateTrackLists } from '../../lib/trackQueries'
 import { eventLabel } from '../AutoCueDialog'
 import type { MenuItem } from '../ContextMenu'
@@ -73,6 +76,11 @@ export interface DeckOptions {
   /** Opens Edit Tags for the loaded track — passed only where the library
    *  will accept the edit, so the cover popup offers it only then. */
   onEditTags?: (track: Track) => void
+  /** Performance mode: the pitch fader and keylock apply (else the deck plays
+   *  at the file's own tempo). */
+  tempoActive?: boolean
+  /** The mixer channel this deck plays into (default A). */
+  channel?: Channel
   /** Persist this deck's loop size and cue bank (deck A; default true). */
   persist?: boolean
   /** Recolour the app from this deck's cover art (default true). */
@@ -90,6 +98,8 @@ export function useDeck({
   cuesRefresh = 0,
   onPlayingChange,
   onEditTags,
+  tempoActive = false,
+  channel = 'A',
   persist = true,
   leadsAmbient = true,
 }: DeckOptions) {
@@ -198,7 +208,7 @@ export function useDeck({
 
   const getEngine = (): Promise<DeckEngine> => {
     if (!enginePromiseRef.current) {
-      enginePromiseRef.current = DeckEngine.create().then((eng) => {
+      enginePromiseRef.current = DeckEngine.create(mixer().input(channel)).then((eng) => {
         playbackRef.current = eng
         eng.setOnEnded(() => setPlaying(false))
         // The deck hands itself back after a scratch's coast settles.
@@ -1181,6 +1191,39 @@ export function useDeck({
     }
   }
 
+  // ---- tempo (performance mode) ---------------------------------------------
+  // The pitch fader (-1..1 of its range), the range, and keylock. Applied only
+  // while `tempoActive`: the prep deck always plays at the file's own tempo, so
+  // grid edits are made against the music as it is. Kept while hidden, so
+  // coming back to performance mode finds the fader where it was.
+  const [pitch, setPitchState] = useState(0)
+  const [pitchRange, setPitchRange] = useState(PITCH_RANGES[0])
+  const [keylock, setKeylock] = useState(true)
+  // A pitch BEND: a momentary push or drag on top of the fader (the phase
+  // meter's drag), 1 = none. Part of `rate`, so the readout and a follower see it.
+  const [bend, setBend] = useState(1)
+  const rate = tempoActive ? (1 + pitch * pitchRange) * bend : 1
+  useEffect(() => {
+    playbackRef.current?.setRate(rate)
+  }, [rate, ready])
+  useEffect(() => {
+    playbackRef.current?.setKeylock(keylock)
+  }, [keylock, ready])
+  const setPitch = (p: number) => setPitchState(Math.max(-1, Math.min(1, p)))
+  /** An exact rate (SYNC), widening the range when the fader cannot reach it.
+   *  Never called mid-bend: a bend releases the deck's SYNC. */
+  const setRate = (r: number) => {
+    const range = rangeFor(r, pitchRange)
+    setPitchRange(range)
+    setPitchState((r - 1) / range)
+  }
+  /** A new range keeps the tempo where the fader can still reach it. */
+  const changeRange = (range: number) => {
+    setPitchState(Math.max(-1, Math.min(1, (pitch * pitchRange) / range)))
+    setPitchRange(range)
+  }
+  const keylockAvailable = playbackRef.current?.keylockAvailable ?? true
+
   // ---- stems: mute / solo ------------------------------------------------------
   // What each stem plays at: a muted stem is 0. Both engines follow it (the
   // scratch engine re-sums).
@@ -1418,6 +1461,18 @@ export function useDeck({
     runAnalyzeGrid,
     toggleStem,
     shortcuts,
+    seek,
+    pitch,
+    setPitch,
+    pitchRange,
+    changeRange,
+    rate,
+    setRate,
+    bend,
+    setBend,
+    keylock,
+    setKeylock,
+    keylockAvailable,
   }
 }
 

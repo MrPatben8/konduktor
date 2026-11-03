@@ -10,7 +10,7 @@
 // ignored, so a stale position can never snap the playhead back.
 
 import type { DecodedAudio } from '../waveform'
-import { audioContext, loadDeckWorklet, masterInput, resumeAudio } from './context'
+import { audioContext, loadDeckWorklet, resumeAudio } from './context'
 import type { DeckCommand, DeckInbound, DeckOutbound } from './deckProcessor.worklet'
 import { extrapolate, type Loop, type Model } from './position'
 
@@ -27,13 +27,14 @@ export class DeckEngine {
   private onEnded: (() => void) | null = null
   private onScratchDone: ((playing: boolean) => void) | null = null
 
-  /** The worklet module loads asynchronously, once per app. */
-  static async create(): Promise<DeckEngine> {
+  /** The worklet module loads asynchronously, once per app. `destination` is
+   *  where the deck plays into: its mixer channel. */
+  static async create(destination: AudioNode): Promise<DeckEngine> {
     const wasm = await loadDeckWorklet()
-    return new DeckEngine(wasm)
+    return new DeckEngine(wasm, destination)
   }
 
-  private constructor(wasm: ArrayBuffer | null) {
+  private constructor(wasm: ArrayBuffer | null, destination: AudioNode) {
     this.ctx = audioContext()
     this.node = new AudioWorkletNode(this.ctx, 'konduktor-deck', {
       numberOfInputs: 0,
@@ -43,7 +44,7 @@ export class DeckEngine {
     })
     this.output = this.ctx.createGain()
     this.node.connect(this.output)
-    this.output.connect(masterInput())
+    this.output.connect(destination)
     this.node.port.onmessage = (e: MessageEvent<DeckOutbound>) => this.receive(e.data)
   }
 

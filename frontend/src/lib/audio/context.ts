@@ -1,12 +1,12 @@
 // The app's ONE AudioContext. Every deck plays into it, so the decks can be
-// mixed (and limited) before the speakers; two contexts cannot be connected.
-// Never closed: a deck that goes away disconnects its own nodes.
+// mixed (and limited) before the speakers — two contexts cannot be connected.
+// Never closed: a deck that goes away disconnects its own nodes. The route to
+// the speakers is the mixer's (mixer.ts).
 
 import deckWorkletUrl from './deckProcessor.worklet.ts?worker&url'
 import rubberbandUrl from './rubberband.wasm?url'
 
 let ctx: AudioContext | null = null
-let master: GainNode | null = null
 let worklet: Promise<ArrayBuffer | null> | null = null
 
 export function audioContext(): AudioContext {
@@ -14,8 +14,6 @@ export function audioContext(): AudioContext {
     const AC: typeof AudioContext =
       window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
     ctx = new AC({ latencyHint: 'interactive' })
-    master = ctx.createGain()
-    master.connect(ctx.destination)
   }
   return ctx
 }
@@ -23,12 +21,6 @@ export function audioContext(): AudioContext {
 /** Resume on a user gesture (autoplay policy). */
 export function resumeAudio(): void {
   void audioContext().resume()
-}
-
-/** Where decks connect: the master bus. */
-export function masterInput(): AudioNode {
-  audioContext()
-  return master!
 }
 
 /**

@@ -1370,8 +1370,24 @@ Two independent apps that talk over HTTP:
     letter, lit when focused), the two main waveforms STACKED at the one zoom
     past one playhead line (each lane a drop target for its own deck, ringed
     while focused), the overviews side by side, then each deck's controls
-    `stacked` (pads on a row of their own; the tempo group folds below 52rem),
-    a centre column between them for the mixer. App holds `decks: {A, B}`
+    `stacked` (pads and the mode switches on a second row; the tempo group
+    folds below 44rem) and a TEMPO row (`DeckTempo`: KEY, SYNC, MASTER, the
+    phase meter, the pitch fader with its ±8/16/50 range, the tempo as heard),
+    each beside its overview, the MIXER between them. The pitch fader is the
+    deck's SPEED (`useDeck`'s `rate`, applied only while `tempoActive` — the
+    prep deck always plays at the file's tempo); the header's BPM stays the
+    GRID's. SYNC (`lib/sync.ts`, tested): a follower takes the MASTER's tempo
+    at the nearer octave (½/1/2), widening its range if it must, and while both
+    play its beats are re-aligned by a seek whenever they drift past 3% of a
+    beat (checked every 150 ms, at once when the follower starts); a flexible
+    grid follows the segment under the playhead; moving the follower's pitch by
+    hand releases it; SYNC on the master hands the master over. DRAGGING THE
+    PHASE METER bends the deck's speed while held (right faster, left slower,
+    squared up to ±5% at 80 px, Shift ×¼ — `sync.bendFor`; `useDeck.bend`
+    multiplies `rate`, so the readout and a follower see it), springing back
+    on release; bending a synced follower releases its SYNC. Measured in
+    the app: 175 synced to 125 lands at 125.00 within 0.005 beat and follows
+    the master's pitch. Leaving performance mode releases SYNC. App holds `decks: {A, B}`
     (`DeckSlot`: track, origin, playRequest, cuesRefresh), `focusedDeck` and
     `performance`; a load, Enter, a row's play button and a drop on the strip
     go to the FOCUSED deck (A outside the mode), "Load to Deck A/B" to either,
@@ -2769,6 +2785,28 @@ The prep strip plays every track through the **Web Audio API** (a plain
   one block would be a dropout per hotcue. Aligned within ±3 ms, no drift over
   a minute (`deckCore.test.ts`, which drives the real `.wasm` in Node). At
   rate 1 the stretcher is bypassed.
+  **The mixer** (`lib/audio/mixer.ts`, performance mode phase 4): each deck's
+  engine plays into its CHANNEL (`DeckEngine.create(mixer().input(ch))`):
+  trim (the track's `auto_gain_db` + the knob, ±12 dB) → a 3-band ISOLATOR
+  (LR4 crossovers at 250 Hz / 2.5 kHz, the low band through a 2.5 kHz
+  all-pass, so the bands sum flat — measured 0.0000 dB; Web Audio's
+  lowpass/highpass Q is in DB, Butterworth = -3.01, its allpass Q linear) →
+  the colour FX (Filter / Echo / Space / Noise / Crush, chosen PER CHANNEL,
+  one bipolar knob + one parameter, all built once and switched by gains) →
+  fader → crossfader (smooth = constant power, sharp) → bus → limiter
+  (DynamicsCompressor at -1.5 dBFS 20:1 — Web Audio adds an automatic
+  MAKE-UP gain, +0.57 dB at -1/20:1, which let two loud decks peak at +0.3
+  dBFS until a gain after it took it back off) → speakers. Channel meters are
+  after the fader, before the crossfader. OUTSIDE performance mode the mixer
+  is BYPASSED (A straight through, B silent, no limiter): prep listening is
+  unchanged. Controls live in `mixerState.ts` (an external store, not
+  persisted; a MIDI mapping would write the same setters); the curves in
+  `mixerMath.ts` (tested). `components/mixer/`: `MixerPanel` (meters written
+  from one rAF loop, never through React state) and `Controls` (`Knob`,
+  `Fader`: drag, Shift = fine, wheel, double-click resets; not focusable, so
+  the deck keys never land on them). The graph itself was measured offline in
+  Chrome (tones in, levels out) — flat EQ, kills, crossfader, fader, trim,
+  filter and limiter all at their expected values.
   **The PCM is TRANSFERRED to the worklet** (`waveform.DecodedAudio`, copied
   out of the AudioBuffer once); the main thread keeps only a mono downmix for
   the raw waveform. (The Firefox detach gotcha — playing an AudioBuffer

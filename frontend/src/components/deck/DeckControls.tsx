@@ -18,10 +18,10 @@ const DIVIDER = <span aria-hidden className="h-7 w-px shrink-0 bg-line" />
  * bank would hit its minimum (with a lockable grid's extra Lock button, and the
  * Hot / Mem toggle's ~3rem with its gap), so move it with the controls.
  *
- * `stacked` (half-width, in performance mode) gives the pads — or the grid or
- * memory strip — a row of their own under the rest, which then folds the tempo
- * group below 52rem (measured in the app: row one needs ~50rem before the
- * tempo group overflows).
+ * `stacked` (beside the mixer, in performance mode) puts the pads — or the grid
+ * or memory strip — on a second row with the two mode switches, and folds the
+ * tempo group below 44rem (measured in the app: transport + loops + the tempo
+ * group need ~42rem).
  */
 export function DeckControls({ deck, stacked = false }: { deck: Deck; stacked?: boolean }) {
   const {
@@ -240,14 +240,16 @@ export function DeckControls({ deck, stacked = false }: { deck: Deck; stacked?: 
           {DIVIDER}
           {loopControls}
           <span className="flex-1" />
-          {bankSwitch}
-          {modeSwitch}
-          <TempoControls {...tempoProps} className="@max-[52rem]:hidden" />
-          <TempoFold locked={tempoProps.locked} className="hidden @max-[52rem]:flex">
+          <TempoControls {...tempoProps} className="@max-[44rem]:hidden" />
+          <TempoFold locked={tempoProps.locked} className="hidden @max-[44rem]:flex">
             <TempoControls {...tempoProps} />
           </TempoFold>
         </div>
-        <div className="flex h-11 shrink-0 items-center">{strip}</div>
+        <div className="flex h-11 shrink-0 items-center gap-2">
+          {modeSwitch}
+          {bankSwitch}
+          {strip}
+        </div>
       </div>
     )
   }
