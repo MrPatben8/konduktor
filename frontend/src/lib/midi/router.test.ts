@@ -184,6 +184,65 @@ describe('learning', () => {
     cc(40, 3)
     expect(A.calls).toEqual(['jogTurn 5 1'])
   })
+  it('an encoder turned for button actions binds each direction, in either layer', async () => {
+    vi.useFakeTimers()
+    try {
+      const turn = (vals: number[]) => {
+        for (const v of vals) router.receive(PORT, [0xb0, 20, v])
+        vi.advanceTimersByTime(500)
+      }
+      armLearn({ action: 'deck.A.sizeUp', layer: 'normal' })
+      turn([65, 65, 65])
+      armLearn({ action: 'deck.A.sizeDown', layer: 'normal' })
+      turn([63, 63])
+      armLearn({ action: 'deck.A.jumpFwd', layer: 'normal' })
+      note(63, 127) // the controller's Shift held: the Shift layer
+      turn([65, 66])
+      note(63, 0)
+      const b = getMidiState().mappings[PORT].bindings
+      expect(b['cc:1:20+']).toMatchObject({ encoding: 'rel64', normal: 'deck.A.sizeUp', shift: 'deck.A.jumpFwd' })
+      expect(b['cc:1:20-']).toMatchObject({ encoding: 'rel64', normal: 'deck.A.sizeDown' })
+      expect(b['cc:1:20']).toBeUndefined()
+
+      cc(20, 65) // one click up
+      cc(20, 61) // three clicks down at once
+      note(63, 127)
+      cc(20, 65)
+      cc(20, 63) // Shift + down: no Shift action -> the normal one
+      expect(A.calls).toEqual(['stepSize 1', 'stepSize -1', 'stepSize -1', 'stepSize -1', 'move 1', 'stepSize -1'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+  it("a CC button pressed (and released) while learning stays a button", () => {
+    vi.useFakeTimers()
+    try {
+      armLearn({ action: 'deck.A.loopToggle', layer: 'normal' })
+      cc(70, 127)
+      cc(70, 0)
+      vi.advanceTimersByTime(500)
+      armLearn({ action: 'deck.A.loopIn', layer: 'normal' })
+      cc(71, 127) // held past the window
+      vi.advanceTimersByTime(500)
+      const b = getMidiState().mappings[PORT].bindings
+      expect(b['cc:1:70']).toMatchObject({ encoding: 'button', normal: 'deck.A.loopToggle' })
+      expect(b['cc:1:71']).toMatchObject({ encoding: 'button', normal: 'deck.A.loopIn' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+  it("a two's-complement encoder turned down (127s) is a turn, not a button", () => {
+    vi.useFakeTimers()
+    try {
+      armLearn({ action: 'deck.A.jumpBack', layer: 'normal' })
+      cc(72, 127)
+      cc(72, 127)
+      vi.advanceTimersByTime(500)
+      expect(getMidiState().mappings[PORT].bindings['cc:1:72-']).toMatchObject({ encoding: 'relTwos', normal: 'deck.A.jumpBack' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
   it('the Shift control itself', () => {
     armLearn({ action: 'shift' })
     note(70, 127)

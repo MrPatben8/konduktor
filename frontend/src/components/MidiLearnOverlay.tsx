@@ -92,7 +92,8 @@ export function MidiLearnOverlay() {
           <span>MIDI learn — plug in a controller</span>
         ) : armedLabel ? (
           <span>
-            <span className="font-semibold">{armedLabel}</span>: move a control on your controller (hold its Shift for the Shift layer)
+            <span className="font-semibold">{armedLabel}</span>: move a control on your controller — an encoder a few clicks in
+            this action's direction (hold its Shift for the Shift layer)
           </span>
         ) : (
           <span>MIDI learn — click a control, then move it on your controller</span>

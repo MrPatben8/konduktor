@@ -1527,7 +1527,15 @@ Two independent apps that talk over HTTP:
     keyboard's Shift meaning), `mapping.ts` (per controller, keyed by SOURCE;
     each control a normal + a FREE Shift binding; learning REPLACES an
     action's control in that layer and fills an empty Shift layer with the
-    default). **`router.ts`**: Shift is a learned control (an unbound Shift
+    default). **Encoders on button actions** (beat jump, loop size — common
+    on controllers): learning a button action by TURNING an encoder binds
+    that DIRECTION, a virtual source `cc:1:20+` / `cc:1:20-` (↻ / ↺); each
+    tick fires the action once (up to 8 per message), both directions share
+    the encoder's encoding and decoder, and a plain binding on the same
+    encoder wins only where it has an action for the layer. A CC learned for
+    a button waits 400 ms: one message, or any 0, = a button; several
+    non-zero = a turn (so a two's-complement encoder's 127s are not a press).
+    **`router.ts`**: Shift is a learned control (an unbound Shift
     binding falls back to normal); deck B and the mixer act only in
     performance mode; positions JUMP (no soft takeover — "the controller
     always wins"); a held control releases where it was pressed; Learn sees

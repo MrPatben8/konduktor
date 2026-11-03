@@ -6,7 +6,7 @@
 
 import { actionDef, shiftDefault } from './actions'
 import { ENCODINGS, isFourteenBit, type Encoding } from './encoding'
-import { parseSource, type SourceKey } from './messages'
+import { parseSource, splitSource, turnSource, type SourceKey } from './messages'
 
 export type Layer = 'normal' | 'shift'
 
@@ -47,7 +47,7 @@ export function sanitizeMapping(raw: unknown): Mapping | null {
   if (r.version !== 1) return null
   const out = emptyMapping()
   if (typeof r.shift === 'string' && parseSource(r.shift)) out.shift = r.shift
-  out.jogSensitivity = num(r.jogSensitivity, 0.1, 10, DEFAULT_JOG_SENSITIVITY)
+  out.jogSensitivity = num(r.jogSensitivity, 0.05, 10, DEFAULT_JOG_SENSITIVITY)
   out.scrubSpeed = num(r.scrubSpeed, 1, 64, DEFAULT_SCRUB_SPEED)
   const bindings = r.bindings && typeof r.bindings === 'object' ? (r.bindings as Record<string, unknown>) : {}
   for (const [key, b] of Object.entries(bindings)) {
@@ -110,7 +110,13 @@ export function bind(m: Mapping, source: SourceKey, encoding: Encoding, layer: L
     if (d && sourcesFor(cleared, d, 'shift').length === 0) next.shift = d
   }
   if (!next.invert) delete next.invert
-  return { ...cleared, shift: cleared.shift === source ? null : cleared.shift, bindings: { ...cleared.bindings, [source]: next } }
+  const bindings = { ...cleared.bindings, [source]: next }
+  // An encoder's two directions are one control, decoded once: they share
+  // its encoding.
+  const { base, dir } = splitSource(source)
+  const other = dir && bindings[turnSource(base, dir === '+' ? '-' : '+')]
+  if (dir && other) bindings[turnSource(base, dir === '+' ? '-' : '+')] = { ...other, encoding }
+  return { ...cleared, shift: cleared.shift === source ? null : cleared.shift, bindings }
 }
 
 /** Make `source` the Shift control (it then does nothing else). */
@@ -123,7 +129,12 @@ export function bindShift(m: Mapping, source: SourceKey): Mapping {
 export function setBinding(m: Mapping, source: SourceKey, patch: Partial<Binding>): Mapping {
   const b = m.bindings[source]
   if (!b) return m
-  return { ...m, bindings: { ...m.bindings, [source]: { ...b, ...patch } } }
+  const bindings = { ...m.bindings, [source]: { ...b, ...patch } }
+  // A directional turn's encoding is its encoder's: both directions follow.
+  const { base, dir } = splitSource(source)
+  const otherKey = dir && turnSource(base, dir === '+' ? '-' : '+')
+  if (otherKey && bindings[otherKey] && patch.encoding) bindings[otherKey] = { ...bindings[otherKey], encoding: patch.encoding }
+  return { ...m, bindings }
 }
 
 /**

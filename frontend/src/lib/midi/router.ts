@@ -14,8 +14,8 @@
 
 import { actionDef, actionDeck, performanceOnly, type ActionKind, type DeckId } from './actions'
 import { Decoder, detectEncoding, type Decoded, type Encoding, type LearnKind } from './encoding'
-import { bind, bindShift, resolveBinding, type Layer } from './mapping'
-import { parseMessage, sourceKey, type MidiMessage, type SourceKey } from './messages'
+import { bind, bindShift, resolveBinding, type Binding, type Layer, type Mapping } from './mapping'
+import { parseMessage, sourceKey, splitSource, turnSource, type MidiMessage, type SourceKey } from './messages'
 import { armLearn, getMidiState, patchMidi, updateMapping, type LearnTarget } from './store'
 import type { Track } from '../../api'
 import type { DeckShortcuts } from '../deckKeys'
@@ -70,8 +70,11 @@ export const EMPTY_TARGETS: MidiTargets = {
 const LEARN_SAMPLES = 12
 /** …or this long after the first one. */
 const LEARN_WINDOW_MS = 800
-/** A CC button waits this long for a note-on (a touch-sensitive jog sends both). */
-const LEARN_CC_BUTTON_MS = 250
+/** A CC learned for a button waits this long: for a note-on (a touch jog sends
+ *  both), or for more messages showing it is an encoder being turned. */
+const LEARN_CC_BUTTON_MS = 400
+/** A fast encoder turn may report several ticks at once; never more repeats. */
+const MAX_TURN_REPEAT = 8
 
 const learnKind = (k: ActionKind | 'shift'): LearnKind =>
   k === 'continuous' ? 'continuous' : k === 'jog' ? 'jog' : 'button'
@@ -126,7 +129,17 @@ export class MidiRouter {
       return
     }
     if (!mapping) return
+    const shift = !!this.shiftHeld.get(port)
     const hit = resolveBinding(mapping, key)
+    // An encoder whose turns are bound by direction. The plain binding wins
+    // where it has an action for this layer; else the turns do.
+    const plus = mapping.bindings[turnSource(key, '+')]
+    const minus = mapping.bindings[turnSource(key, '-')]
+    if (plus || minus) {
+      const plainHere = hit && (shift ? hit.binding.shift : hit.binding.normal)
+      const turnHere = shift ? (plus?.shift ?? minus?.shift) : (plus?.normal ?? minus?.normal)
+      if (!plainHere && (turnHere || !hit)) return this.turn(port, m, key, plus ?? minus!, shift, mapping)
+    }
     if (!hit) return
     const { binding, isLsb } = hit
     const decKey = `${port}|${hit.key}`
@@ -148,10 +161,31 @@ export class MidiRouter {
       }
       return
     }
-    const action = this.shiftHeld.get(port) ? (binding.shift ?? binding.normal) : binding.normal
+    const action = shift ? (binding.shift ?? binding.normal) : binding.normal
     if (!action) return
     if (d.type === 'press' && actionDef(action)?.kind === 'hold') this.held.set(heldKey, action)
     this.run(action, d, mapping.jogSensitivity, mapping.scrubSpeed)
+  }
+
+  /** One message from an encoder bound by direction: each tick fires that
+   *  direction's action once (a hold is pressed and released). */
+  private turn(port: string, m: MidiMessage, key: SourceKey, any: Binding, shift: boolean, mapping: Mapping): void {
+    const decKey = `${port}|${key}~turn`
+    let dec = this.decoders.get(decKey)
+    if (!dec || dec.encoding !== any.encoding) {
+      dec = new Decoder(any.encoding)
+      this.decoders.set(decKey, dec)
+    }
+    const d = dec.feed(m)
+    if (!d || d.type !== 'delta') return
+    const b = mapping.bindings[turnSource(key, d.ticks > 0 ? '+' : '-')]
+    const action = b && (shift ? (b.shift ?? b.normal) : b.normal)
+    if (!action) return
+    const hold = actionDef(action)?.kind === 'hold'
+    for (let i = 0; i < Math.min(Math.abs(d.ticks), MAX_TURN_REPEAT); i++) {
+      this.run(action, { type: 'press', down: true }, mapping.jogSensitivity, mapping.scrubSpeed)
+      if (hold) this.run(action, { type: 'press', down: false }, mapping.jogSensitivity, mapping.scrubSpeed)
+    }
   }
 
   /** Forget held controls and decoder state (a controller unplugged). */
@@ -290,14 +324,21 @@ export class MidiRouter {
     if (c.port && c.port !== port) return // one controller at a time
 
     if (kind === 'button') {
-      if (m.value === 0) return
-      if (m.kind === 'note') return this.commit(c, port, key, 'button')
-      if (m.kind === 'cc' && !c.source) {
-        // Wait briefly in case a note-on follows (a touch jog sends both).
+      if (m.kind === 'note') {
+        if (m.value > 0) this.commit(c, port, key, 'button')
+        return
+      }
+      if (m.kind !== 'cc') return
+      // A CC is either a button or an ENCODER turned for this action's
+      // direction: wait and see what else it sends (and whether a note-on
+      // follows — a touch jog sends both).
+      if (!c.source) {
+        if (m.value === 0) return
         c.port = port
         c.source = key
-        c.timer = setTimeout(() => this.commit(c!, port, key, 'button'), LEARN_CC_BUTTON_MS)
+        c.timer = setTimeout(() => this.finishButton(), LEARN_CC_BUTTON_MS)
       }
+      if (key === c.source) c.samples.push(m)
       return
     }
     // A position or ticks: notes (a jog's touch sensor, a stray pad) do not count.
@@ -313,6 +354,28 @@ export class MidiRouter {
     }
     c.samples.push(m)
     if (c.samples.length >= LEARN_SAMPLES) this.finish()
+  }
+
+  /**
+   * A CC learned for a button action: a press (one message, or a press and a
+   * release to 0) binds as a button; several non-zero messages are an encoder
+   * TURNED, bound to the direction it went (decided 2026-11-03: controllers
+   * put beat jump and loop size on encoders).
+   */
+  private finishButton(): void {
+    const c = this.capture
+    if (!c || !c.port || !c.source) return
+    const vals = c.samples
+    if (vals.length < 2 || vals.some((v) => v.value === 0)) return this.commit(c, c.port, c.source, 'button')
+    const enc = detectEncoding(vals, 'jog')
+    const dec = new Decoder(enc)
+    let ticks = 0
+    for (const v of vals) {
+      const d = dec.feed(v)
+      if (d?.type === 'delta') ticks += d.ticks
+    }
+    if (ticks === 0) return this.commit(c, c.port, c.source, 'button')
+    this.commit(c, c.port, turnSource(c.source, ticks > 0 ? '+' : '-'), enc)
   }
 
   /** Commit a continuous / jog capture now (its window ran out). */
@@ -338,6 +401,7 @@ export class MidiRouter {
       patchMidi({ learned: { port, action: t.action, layer: c.layer, at: performance.now() } })
     }
     this.decoders.delete(`${port}|${source}`)
+    this.decoders.delete(`${port}|${splitSource(source).base}~turn`)
     armLearn(null)
   }
 }

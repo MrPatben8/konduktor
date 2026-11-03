@@ -13,7 +13,7 @@ import {
   type Layer,
   type Mapping,
 } from '../lib/midi/mapping'
-import { describeSource, type SourceKey } from '../lib/midi/messages'
+import { describeSource, splitSource, type SourceKey } from '../lib/midi/messages'
 import { armLearn, replaceMappings, setOnScreenLearn, updateMapping, useMidiState, type LearnTarget } from '../lib/midi/store'
 import { askConfirm } from '../lib/confirm'
 import { ContextMenu, type MenuItem } from './ContextMenu'
@@ -67,7 +67,20 @@ export function MidiSettings({ onClose }: { onClose: () => void }) {
     if (!b) return
     const r = e.currentTarget.getBoundingClientRect()
     const items: MenuItem[] = [{ heading: describeSource(src) }]
-    if (action.kind !== 'button' && action.kind !== 'hold') {
+    if (splitSource(src).dir) {
+      // An encoder turned for a button action: how it counts its clicks.
+      items.push(
+        {
+          label: 'Encoding',
+          submenu: ENCODINGS.filter((x) => x !== 'button' && x !== 'abs7' && x !== 'abs14').map((x) => ({
+            label: ENCODING_LABELS[x],
+            hint: x === b.encoding ? '✓' : undefined,
+            onClick: () => edit((m) => setBinding(m, src, { encoding: x })),
+          })),
+        },
+        { separator: true },
+      )
+    } else if (action.kind !== 'button' && action.kind !== 'hold') {
       items.push(
         {
           label: 'Encoding',
@@ -266,7 +279,7 @@ export function MidiSettings({ onClose }: { onClose: () => void }) {
                 <span className="text-text">Jog sensitivity</span>
                 <Slider
                   value={mapping.jogSensitivity}
-                  min={0.25}
+                  min={0.05}
                   max={4}
                   step={0.05}
                   reset={DEFAULT_JOG_SENSITIVITY}
@@ -293,7 +306,10 @@ export function MidiSettings({ onClose }: { onClose: () => void }) {
                 placeholder="Find an action…"
                 className="w-56 rounded-md well px-2 py-1 text-xs text-text outline-none focus:ring-1 focus:ring-accent"
               />
-              <span className="ml-auto w-36 text-[11px] font-semibold uppercase tracking-wider text-faint">Control</span>
+              <span className="min-w-0 flex-1 truncate text-[11px] text-faint" title="A button action can be an encoder turned one way: learn it by turning a few clicks in that direction (↻ / ↺).">
+                Buttons: press it, or turn an encoder a few clicks in this action's direction.
+              </span>
+              <span className="w-36 text-[11px] font-semibold uppercase tracking-wider text-faint">Control</span>
               <span className="w-36 text-[11px] font-semibold uppercase tracking-wider text-faint">With Shift</span>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-4">

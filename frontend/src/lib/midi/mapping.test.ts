@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ACTIONS, shiftDefault } from './actions'
-import { bind, bindShift, emptyMapping, resolveBinding, sanitizeMapping, sourcesFor, unbind } from './mapping'
+import { bind, bindShift, emptyMapping, resolveBinding, sanitizeMapping, setBinding, sourcesFor, unbind } from './mapping'
 
 describe('actions', () => {
   it('have unique ids', () => {
@@ -53,6 +53,14 @@ describe('mapping', () => {
     const seven = bind(emptyMapping(), 'cc:1:0', 'abs7', 'normal', 'deck.A.pitch')
     expect(resolveBinding(seven, 'cc:1:32')).toBeNull()
   })
+  it("an encoder's two directions share its encoding", () => {
+    let m = bind(emptyMapping(), 'cc:1:20+', 'rel64', 'normal', 'deck.A.sizeUp')
+    m = bind(m, 'cc:1:20-', 'relTwos', 'normal', 'deck.A.sizeDown')
+    expect(m.bindings['cc:1:20+'].encoding).toBe('relTwos')
+    m = setBinding(m, 'cc:1:20+', { encoding: 'relSignMag' })
+    expect(m.bindings['cc:1:20-'].encoding).toBe('relSignMag')
+    expect(sanitizeMapping(m)?.bindings['cc:1:20-']).toEqual({ encoding: 'relSignMag', normal: 'deck.A.sizeDown' })
+  })
   it('sanitises what prefs or a file hold', () => {
     const m = sanitizeMapping({
       version: 1,
@@ -69,5 +77,7 @@ describe('mapping', () => {
     expect(m?.jogSensitivity).toBe(10)
     expect(Object.keys(m!.bindings)).toEqual(['note:1:0'])
     expect(sanitizeMapping({ version: 2 })).toBeNull()
+    expect(sanitizeMapping({ version: 1, jogSensitivity: 0.05 })?.jogSensitivity).toBe(0.05)
+    expect(sanitizeMapping({ version: 1, jogSensitivity: 0.01 })?.jogSensitivity).toBe(0.05)
   })
 })

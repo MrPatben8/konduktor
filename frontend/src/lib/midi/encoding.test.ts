@@ -21,6 +21,9 @@ describe('messages', () => {
     expect(parseSource('note:16:127')).toEqual({ kind: 'note', channel: 16, number: 127 })
     expect(parseSource('cc:17:1')).toBeNull()
     expect(describeSource('cc:2:33')).toBe('CC 33 · Ch 2')
+    expect(describeSource('cc:1:20+')).toBe('CC 20 · Ch 1 ↻')
+    expect(parseSource('cc:1:20-')).toEqual({ kind: 'cc', channel: 1, number: 20 })
+    expect(parseSource('note:1:20+')).toBeNull() // only a control that turns has a direction
   })
 })
 

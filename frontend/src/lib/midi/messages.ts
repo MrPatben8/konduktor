@@ -42,20 +42,39 @@ export function sourceKey(m: Pick<MidiMessage, 'kind' | 'channel' | 'number'>): 
   return m.kind === 'pb' ? `pb:${m.channel}` : `${m.kind}:${m.channel}:${m.number}`
 }
 
+/**
+ * An encoder's TURN in one direction, bound to a button action (decided
+ * 2026-11-03: controllers put beat jump and loop size on encoders): the
+ * source key plus `+` (clockwise / up) or `-`. Each tick fires the action once.
+ */
+export type TurnDirection = '+' | '-'
+
+export const turnSource = (base: SourceKey, dir: TurnDirection): SourceKey => `${base}${dir}`
+
+/** The physical control of a (possibly directional) source, and its direction. */
+export function splitSource(key: SourceKey): { base: SourceKey; dir: TurnDirection | null } {
+  const last = key.at(-1)
+  return last === '+' || last === '-' ? { base: key.slice(0, -1), dir: last } : { base: key, dir: null }
+}
+
 export function parseSource(key: SourceKey): Pick<MidiMessage, 'kind' | 'channel' | 'number'> | null {
-  const [kind, ch, num] = key.split(':')
+  const { base, dir } = splitSource(key)
+  const [kind, ch, num] = base.split(':')
   const channel = Number(ch)
   if (!(channel >= 1 && channel <= 16)) return null
-  if (kind === 'pb') return { kind, channel, number: 0 }
+  if (kind === 'pb') return dir ? null : { kind, channel, number: 0 }
   const number = Number(num)
   if ((kind !== 'note' && kind !== 'cc') || !(number >= 0 && number <= 127)) return null
+  // Only a control that turns has a direction.
+  if (dir && kind !== 'cc') return null
   return { kind, channel, number }
 }
 
-/** "Note 11 · Ch 1", "CC 33 · Ch 2", "Pitch bend · Ch 1". */
+/** "Note 11 · Ch 1", "CC 33 · Ch 2", "Pitch bend · Ch 1", "CC 20 · Ch 1 ↻". */
 export function describeSource(key: SourceKey): string {
   const s = parseSource(key)
   if (!s) return key
   const what = s.kind === 'pb' ? 'Pitch bend' : s.kind === 'note' ? `Note ${s.number}` : `CC ${s.number}`
-  return `${what} · Ch ${s.channel}`
+  const dir = splitSource(key).dir
+  return `${what} · Ch ${s.channel}${dir === '+' ? ' ↻' : dir === '-' ? ' ↺' : ''}`
 }
