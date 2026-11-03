@@ -118,7 +118,7 @@ export function MixerPanel({ autoGain }: { autoGain: Record<Channel, number | nu
         </div>
         <Strip ch="B" autoGain={autoGain.B} meterRef={meterRefs.B} mirrored />
       </div>
-      <div className="flex h-6 shrink-0 items-center gap-2 px-1">
+      <div className="flex h-6 shrink-0 items-center justify-center gap-2 px-1">
         <span className="font-mono text-[11px] font-semibold text-muted">A</span>
         <Fader
           orientation="horizontal"
@@ -133,7 +133,7 @@ export function MixerPanel({ autoGain }: { autoGain: Record<Channel, number | nu
               Math.abs(v) < 0.03 ? 'centre' : v < 0 ? `toward A ${Math.round(-v * 100)}%` : `toward B ${Math.round(v * 100)}%`
             }`
           }
-          className="flex-1"
+          className="w-1/2"
         />
         <span className="font-mono text-[11px] font-semibold text-muted">B</span>
       </div>

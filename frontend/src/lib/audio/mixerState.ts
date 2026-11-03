@@ -83,7 +83,7 @@ let state: MixerState = {
   A: DEFAULT_CHANNEL,
   B: DEFAULT_CHANNEL,
   crossfader: 0,
-  sharpness: 0,
+  sharpness: 0.5,
   eqKill: false,
   fx: DEFAULT_FX,
 }

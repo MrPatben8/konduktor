@@ -115,10 +115,12 @@ export function PerformanceSettings({ onClose }: { onClose: () => void }) {
                     value={sharpness}
                     min={0}
                     max={1}
-                    defaultValue={0}
+                    defaultValue={APP_SETTING_DEFAULTS.crossfaderSharpness}
                     onChange={changeSharpness}
                     label="Crossfader curve sharpness"
-                    describe={(v) => `${Math.round(v * 100)}% sharp — double-click for smooth`}
+                    describe={(v) =>
+                      `${Math.round(v * 100)}% sharp — double-click to reset to ${Math.round(APP_SETTING_DEFAULTS.crossfaderSharpness * 100)}%`
+                    }
                     className="w-full"
                   />
                   <div className="flex justify-between text-[10px] uppercase tracking-wider text-faint">
