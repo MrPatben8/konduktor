@@ -559,7 +559,9 @@ export function useDeck({
         nStart = start + dir * len
         nEnd = nStart + len
       }
-      if (nStart < 0 || nEnd > duration) return // would leave the track
+      // Inside the track — but in performance mode a loop may sit past
+      // either edge (it loops silence there; decided 2026-11-03).
+      if (!tempoActive && (nStart < 0 || nEnd > duration)) return
       // The playhead travels with the loop, keeping its place inside it. The
       // NEW loop is set first: the engine's seek honours the loop in force, so
       // seeking first would wrap the playhead straight back into the old one.
@@ -1221,6 +1223,12 @@ export function useDeck({
   useEffect(() => {
     playbackRef.current?.setKeylock(keylock)
   }, [keylock, ready])
+  // Performance mode: a beat jump or loop move may land before the track
+  // (silence until it starts, still on the beat). Past the end a jump still
+  // stops the deck there, as the end of a track does (decided 2026-11-03).
+  useEffect(() => {
+    playbackRef.current?.setLeadIn(tempoActive)
+  }, [tempoActive, ready])
   const setPitch = (p: number) => setPitchState(Math.max(-1, Math.min(1, p)))
   /** An exact rate (SYNC), widening the range when the fader cannot reach it.
    *  Never called mid-bend: a bend releases the deck's SYNC. */

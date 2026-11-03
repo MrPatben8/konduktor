@@ -128,6 +128,57 @@ describe('DeckCore transport', () => {
   })
 })
 
+describe('DeckCore lead-in (performance mode)', () => {
+  it('a seek before the track plays silence, then the track exactly on time', () => {
+    const core = new DeckCore(SR, null)
+    const src = ramp(SR)
+    core.load(src)
+    core.setLeadIn(true)
+    const lead = 2 * QUANTUM + 37
+    core.seek(-lead / SR)
+    expect(core.positionSec).toBeCloseTo(-lead / SR, 9)
+    core.play()
+    const out = run(core, 6)
+    for (let i = 0; i < lead - 2; i++) expect(out[i]).toBeCloseTo(0, 6)
+    for (let i = lead + 2; i < out.length; i++) expect(out[i]).toBeCloseTo(src.stems[0][0][i - lead], 6)
+  })
+
+  it('without lead-in a seek stops at the start; turning it off brings the playhead back', () => {
+    const core = new DeckCore(SR, null)
+    core.load(ramp(SR))
+    core.seek(-0.5)
+    expect(core.positionSec).toBe(0)
+    core.setLeadIn(true)
+    core.seek(-0.5)
+    expect(core.positionSec).toBeCloseTo(-0.5, 9)
+    core.setLeadIn(false)
+    expect(core.positionSec).toBe(0)
+  })
+
+  it('a loop past the end loops silence and keeps playing; released, the deck stops', () => {
+    const core = new DeckCore(SR, null)
+    const len = QUANTUM * 4
+    core.load(ramp(len))
+    core.setLeadIn(true)
+    core.setLoop((len - 100) / SR, (len + 200) / SR, true)
+    core.seek((len - 100) / SR)
+    core.play()
+    const events: string[] = []
+    for (let b = 0; b < 20; b++) {
+      run(core, 1)
+      events.push(...core.events)
+    }
+    expect(events).toEqual([])
+    expect(core.playing).toBe(true)
+    core.setLoop((len - 100) / SR, (len + 200) / SR, false)
+    for (let b = 0; b < 5; b++) {
+      run(core, 1)
+      events.push(...core.events)
+    }
+    expect(events).toEqual(['ended'])
+  })
+})
+
 describe('DeckCore scratch', () => {
   it('follows the drag, then coasts back to playing speed and plays on by itself', () => {
     const core = new DeckCore(SR, null)
@@ -289,5 +340,11 @@ describe('extrapolate', () => {
   it('wraps inside an engaged loop', () => {
     const m = { pos: 9, time: 0, speed: 1, playing: true, scratching: false }
     expect(extrapolate(m, 2.5, { start: 8, end: 10, on: true }, 100)).toBeCloseTo(9.5, 9)
+  })
+  it('runs on before the track and past its end inside a loop that reaches there', () => {
+    const lead = { pos: -1, time: 0, speed: 1, playing: true, scratching: false }
+    expect(extrapolate(lead, 0.4, { start: 0, end: 0, on: false }, 100)).toBeCloseTo(-0.6, 9)
+    const out = { pos: 99.5, time: 0, speed: 1, playing: true, scratching: false }
+    expect(extrapolate(out, 1, { start: 99, end: 101, on: true }, 100)).toBeCloseTo(100.5, 9)
   })
 })

@@ -28,6 +28,7 @@ export type DeckCommand =
   | { op: 'gains'; levels: number[] }
   | { op: 'rate'; rate: number }
   | { op: 'keylock'; on: boolean }
+  | { op: 'leadIn'; on: boolean }
   | { op: 'scratchBegin'; sec: number }
   | { op: 'scratchRegrab' }
   | { op: 'scratchTarget'; sec: number }
@@ -109,6 +110,8 @@ class DeckProcessor extends AudioWorkletProcessor {
         return core.setRate(c.rate)
       case 'keylock':
         return core.setKeylock(c.on)
+      case 'leadIn':
+        return core.setLeadIn(c.on)
       case 'scratchBegin':
         return core.scratchBegin(c.sec)
       case 'scratchRegrab':

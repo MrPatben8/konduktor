@@ -9,9 +9,11 @@ import type { Deck } from './useDeck'
 
 /** mm:ss.f — tenths by default, as a CDJ does; `places` is the
  *  `timeReadoutDecimals` setting (0 drops the fraction). Truncates, never
- *  rounds, so the readout never shows a second before it has been reached. */
+ *  rounds, so the readout never shows a second before it has been reached.
+ *  Before the track (performance mode's lead-in) it counts up to it: −00:01.5. */
 function fmtTime(secs: number, places: number): string {
-  if (!isFinite(secs) || secs < 0) secs = 0
+  if (!isFinite(secs)) secs = 0
+  if (secs < 0) return `−${fmtTime(-secs, places)}`
   const scale = 10 ** places
   // The epsilon keeps e.g. 0.3 s from reading 0.299 at 3 places.
   const units = Math.floor(secs * scale + 1e-6)
@@ -109,7 +111,7 @@ export function DeckHeader({
         <span aria-hidden className="my-2 w-px bg-line" />
         <div className={cell}>
           <span className="text-[10px] tracking-[0.08em] text-faint">REMAIN</span>
-          <span className={`font-mono font-medium ${compact ? 'text-[15px]' : 'text-[17px]'}`}>−{fmtTime(Math.max(0, duration - current), timeDecimals)}</span>
+          <span className={`font-mono font-medium ${compact ? 'text-[15px]' : 'text-[17px]'}`}>−{fmtTime(Math.max(0, duration - Math.max(0, current)), timeDecimals)}</span>
         </div>
         <span aria-hidden className="my-2 w-px bg-line" />
         <div className={cell}>

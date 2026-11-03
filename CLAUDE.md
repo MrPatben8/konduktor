@@ -1395,7 +1395,14 @@ Two independent apps that talk over HTTP:
     badge, with the `autoFocusDeck` setting off); a load, Enter, a row's play button and a drop on the strip
     go to the FOCUSED deck (A outside the mode), "Load to Deck A/B" to either,
     and the table lights the focused deck's row. Entering with B empty focuses
-    B. B's `useDeck` stays MOUNTED while hidden — leaving pauses it, coming
+    B. **Past the edges** (decided 2026-11-03): in performance mode a beat
+    jump or loop move may land BEFORE the track — the engine's lead-in
+    (`setLeadIn`, up to 32 s): silence until the track starts, on the beat,
+    ELAPSED counting up from −; SYNC may align into it — and a loop may reach
+    past the END (it loops silence). A jump past the end still stops the
+    deck there, as the end of a track does. Prep mode keeps both edges hard;
+    leaving performance mode in the lead-in snaps to 0.
+    B's `useDeck` stays MOUNTED while hidden — leaving pauses it, coming
     back finds it as it was; a library switch empties both decks. Not
     persisted. **Header**: cover, title/artist · album · genre, a Read-only
     badge, the readout well (ELAPSED / REMAIN to tenths, KEY, and `BpmReadout` —

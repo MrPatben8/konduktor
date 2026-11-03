@@ -65,10 +65,11 @@ export function phaseOffset(master: DeckTempo, follower: DeckTempo, octave: numb
   return d
 }
 
-/** The follower's playhead with its beats on the master's (the smallest move). */
+/** The follower's playhead with its beats on the master's (the smallest move;
+ *  it may fall before the track — performance mode's lead-in). */
 export function alignedPosition(follower: DeckTempo, offset: number, octave: number): number {
   const g = follower.grid!
-  return Math.max(0, g.timeOfBeat(g.beatIndexAt(follower.pos) - offset / octave))
+  return g.timeOfBeat(g.beatIndexAt(follower.pos) - offset / octave)
 }
 
 /** The pitch ranges a deck offers (fraction of the tempo either way). */

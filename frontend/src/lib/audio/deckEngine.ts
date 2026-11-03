@@ -14,6 +14,9 @@ import { audioContext, loadDeckWorklet, resumeAudio } from './context'
 import type { DeckCommand, DeckInbound, DeckOutbound } from './deckProcessor.worklet'
 import { extrapolate, type Loop, type Model } from './position'
 
+/** As `deckCore`'s: the furthest a lead-in reaches before the track (s). */
+const LEAD_IN_SEC = 32
+
 export class DeckEngine {
   readonly output: GainNode
   private readonly ctx: AudioContext
@@ -22,6 +25,7 @@ export class DeckEngine {
   private m: Model = { pos: 0, time: 0, speed: 0, playing: false, scratching: false }
   private loop: Loop = { start: 0, end: 0, on: false }
   private rate = 1
+  private leadIn = false
   private _duration = 0
   private _keylockAvailable = false
   private onEnded: (() => void) | null = null
@@ -146,7 +150,8 @@ export class DeckEngine {
   }
 
   seek(t: number): void {
-    const sec = Math.max(0, Math.min(t, this._duration))
+    const end = this.loop.on ? Math.max(this._duration, this.loop.end) : this._duration
+    const sec = Math.max(this.leadIn ? -LEAD_IN_SEC : 0, Math.min(t, end))
     this.m = { ...this.m, pos: sec, time: this.ctx.currentTime }
     this.send({ op: 'seek', sec })
   }
@@ -174,6 +179,14 @@ export class DeckEngine {
     this.rate = rate
     if (this.m.playing) this.m = { ...this.m, speed: rate }
     this.send({ op: 'rate', rate })
+  }
+
+  /** Performance mode: a seek may land before the track (silence until it
+   *  starts) — and a loop may reach past its end. */
+  setLeadIn(on: boolean): void {
+    this.leadIn = on
+    if (!on && this.m.pos < 0) this.m = { ...this.m, pos: 0, time: this.ctx.currentTime }
+    this.send({ op: 'leadIn', on })
   }
 
   /** Keylock: keep the pitch while the rate changes. */

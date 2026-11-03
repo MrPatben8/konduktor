@@ -23,5 +23,6 @@ export function extrapolate(m: Model, now: number, loop: Loop, duration: number)
   if (loop.on && loop.end > loop.start && p >= loop.end && m.pos < loop.end) {
     p = loop.start + ((p - loop.start) % (loop.end - loop.start))
   }
-  return Math.min(p, duration)
+  // The end — or an engaged loop's, where it reaches past the track.
+  return Math.min(p, loop.on ? Math.max(duration, loop.end) : duration)
 }

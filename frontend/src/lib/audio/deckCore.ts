@@ -53,6 +53,8 @@ export const WARM_QUANTA = 10
 const WARM_BUDGET = 384
 /** Stem mute/solo ramp (s). */
 const GAIN_TAU = 0.004
+/** The furthest a lead-in reaches before the track (s). */
+const LEAD_IN_SEC = 32
 
 export class DeckCore {
   private stems: Float32Array[][] = []
@@ -64,6 +66,9 @@ export class DeckCore {
   private pos = 0
   private rate = 1
   private keylock = false
+  /** Performance mode: the playhead may sit BEFORE the track (silence until
+   *  it starts, on the beat) — a beat jump or loop move past the start. */
+  private leadIn = false
 
   private loopOn = false
   private loopStart = 0
@@ -174,8 +179,27 @@ export class DeckCore {
   }
 
   seek(sec: number): void {
-    this.pos = Math.max(0, Math.min(sec * this.srcRate, this.len))
+    this.pos = Math.max(this.minPos, Math.min(sec * this.srcRate, this.maxPos))
     this.needRewarm = true
+  }
+
+  setLeadIn(on: boolean): void {
+    this.leadIn = on
+    if (!on && this.pos < 0) {
+      this.pos = 0
+      this.needRewarm = true
+    }
+  }
+
+  /** How far before the track the playhead may go (with lead-in), in source
+   *  samples: far beyond any beat jump (32 beats at 60 BPM). */
+  private get minPos(): number {
+    return this.leadIn ? -LEAD_IN_SEC * this.srcRate : 0
+  }
+
+  /** The end, or an engaged loop's end where it reaches past the track. */
+  private get maxPos(): number {
+    return this.loopOn ? Math.max(this.len, this.loopEnd) : this.len
   }
 
   setLoop(startSec: number, endSec: number, enabled: boolean): void {
