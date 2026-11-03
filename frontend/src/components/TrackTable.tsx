@@ -13,6 +13,7 @@ import {
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Icon } from '../lib/icons'
 import { useCaps } from '../lib/capabilities'
+import { useMidiTargets } from '../lib/midi/targets'
 import {
   DndContext,
   PointerSensor,
@@ -542,11 +543,16 @@ export function TrackTable({
     }
     if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
     e.preventDefault()
+    moveLead(e.key === 'ArrowDown' ? 1 : -1, e.shiftKey)
+  }
+  /** Move the highlight `step` rows (Shift: extend the selection) — ↑/↓, and
+   *  a controller's browse encoder. */
+  const moveLead = (step: number, extend: boolean) => {
+    if (!selection || rows.length === 0) return
     const lead = indexOf(leadRef.current)
-    const step = e.key === 'ArrowDown' ? 1 : -1
     const next = lead < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, lead + step))
     const anchor = indexOf(anchorRef.current)
-    if (e.shiftKey && anchor >= 0) {
+    if (extend && anchor >= 0) {
       leadRef.current = rows[next].original.id
       selection.onChange(new Set(rangeIds(anchor, next)))
     } else {
@@ -554,6 +560,15 @@ export function TrackTable({
     }
     virtualizer.scrollToIndex(next)
   }
+  // A controller's browse encoder moves the highlight as ↑/↓ do, and its load
+  // buttons take the highlighted row (lib/midi).
+  useMidiTargets({
+    browse: selection && onPlay ? (ticks) => moveLead(ticks, false) : null,
+    lead: () => {
+      const i = indexOf(leadRef.current)
+      return i >= 0 && selection?.selected.has(rows[i].original.id) ? rows[i].original : null
+    },
+  })
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => keysRef.current(e)
     window.addEventListener('keydown', onKey)

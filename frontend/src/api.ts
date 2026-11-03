@@ -1140,8 +1140,12 @@ export const api = {
   // shortcuts and the browsable files are only meaningful inside that answer.
   collectionOptions: (platform?: string) =>
     getJSON<CollectionOptions>(`/api/library/options${qs({ platform })}`),
-  listDir: (path?: string, platform?: string) =>
-    getJSON<FsListing>(`/api/fs/list${qs({ path, platform })}`),
+  listDir: (path?: string, platform?: string, suffix?: string) =>
+    getJSON<FsListing>(`/api/fs/list${qs({ path, platform, suffix })}`),
+  /** A MIDI controller mapping to / from a file (lib/midi/mapping.ts). */
+  midiExport: (dir: string, name: string, mapping: unknown) =>
+    send<{ path: string }>('POST', '/api/midi/export', { dir, name, mapping }),
+  midiImport: (path: string) => getJSON<{ mapping: unknown }>(`/api/midi/import${qs({ path })}`),
   /** Folders on the machine that HOLDS the library (a remote's server),
    *  confined to its content folder — `home` is that folder. */
   libraryListDir: (path?: string) => getJSON<FsListing>(`/api/library/fs/list${qs({ path })}`),

@@ -4,6 +4,7 @@ import { api } from '../api'
 import { AppSettings } from './AppSettings'
 import { useCaps } from '../lib/capabilities'
 import { LocalLibrariesSettings } from './LocalLibrariesSettings'
+import { MidiSettings } from './MidiSettings'
 import { PerformanceSettings } from './PerformanceSettings'
 import { RemoteCacheSettings } from './RemoteCacheSettings'
 import { ShortcutsDialog } from './ShortcutsDialog'
@@ -26,6 +27,7 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
   const [showApp, setShowApp] = useState(false)
   const [showLocal, setShowLocal] = useState(false)
   const [showPerformance, setShowPerformance] = useState(false)
+  const [showMidi, setShowMidi] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   // Path remapping is a library on THIS computer's business; a remote's
   // mapping is its server's configuration.
@@ -159,6 +161,16 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
           </button>
           <button
             onClick={() => {
+              setShowMidi(true)
+              setOpen(false)
+            }}
+            className={item}
+          >
+            <span className="text-sm text-text">MIDI Controllers…</span>
+            <span className="text-[11px] text-faint">Map a controller by moving its controls</span>
+          </button>
+          <button
+            onClick={() => {
               setShowShortcuts(true)
               setOpen(false)
             }}
@@ -175,6 +187,7 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
       {showApp && <AppSettings onClose={() => setShowApp(false)} />}
       {showLocal && <LocalLibrariesSettings onClose={() => setShowLocal(false)} />}
       {showPerformance && <PerformanceSettings onClose={() => setShowPerformance(false)} />}
+      {showMidi && <MidiSettings onClose={() => setShowMidi(false)} />}
     </div>
   )
 }

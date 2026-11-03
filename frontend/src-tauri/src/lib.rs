@@ -37,6 +37,12 @@
 // runs. Cancel in the Save / Discard prompt keeps the update staged, so the
 // next ordinary quit installs it (without relaunching). A failed install is
 // written to `failed.json` for the next launch's dialog to report.
+//
+// MIDI controllers (midi.rs): WKWebView has no Web MIDI, so the shell lists
+// and opens the input ports itself and streams their messages to the page
+// (`midi_ports` / `midi_open` / `midi_close`); everything else is the page's.
+mod midi;
+
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -459,6 +465,7 @@ pub fn run() {
         .manage(Staged(Mutex::new(None)))
         .manage(Backend { status: Mutex::new(BackendStatus::Starting), generation: AtomicU64::new(0) })
         .manage(Quit { allowed: AtomicBool::new(false), acked: AtomicBool::new(false) })
+        .manage(midi::MidiInputs::default())
         .invoke_handler(tauri::generate_handler![
             backend_status,
             backend_restart,
@@ -467,7 +474,10 @@ pub fn run() {
             quit_now,
             update_download,
             update_restart,
-            update_take_failure
+            update_take_failure,
+            midi::midi_ports,
+            midi::midi_open,
+            midi::midi_close
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

@@ -41,6 +41,8 @@ import { StemReportDialog } from './components/StemReportDialog'
 import { SetPositionDialog } from './components/SetPositionDialog'
 import { Icon } from './lib/icons'
 import { usePrefsWriter } from './lib/prefs'
+import { useMidi } from './lib/midi/useMidi'
+import { midiTargets, useMidiTargets } from './lib/midi/targets'
 
 function applyFilters(tracks: Track[], f: Filters): Track[] {
   const q = f.search.trim().toLowerCase()
@@ -260,6 +262,16 @@ export default function App() {
     setToast({ id: Date.now(), kind, text, action })
   }, [])
   const onError = useCallback((msg: string) => notify('error', msg), [notify])
+
+  // MIDI controllers (lib/midi): found as they are plugged in; a controller's
+  // load buttons take the track list's highlighted row, loaded paused.
+  useMidi(notify)
+  useMidiTargets({
+    load: (deck) => {
+      const t = midiTargets.lead?.()
+      if (t) loadTrack(t, undefined, deck)
+    },
+  })
 
   // Inline single-field edit from a double-clicked table cell. Only offered when
   // the library can take an edit: passing `undefined` makes those cells inert

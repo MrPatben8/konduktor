@@ -6,6 +6,7 @@ in the environment auto-loads that file on startup (used by dev and tests).
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import __version__, exporter, exports, local_push, loudness_store, prefs
+from . import __version__, exporter, exports, local_push, loudness_store, paths, prefs
 from .app_state import STATE
 from .core import auto_hotcues as ah
 from .core import grid_detect, key_detect, loudness, structure
@@ -38,6 +39,7 @@ from .core.capabilities import Capabilities
 from .jobs import JOBS, Job, JobBusy
 from .core.pathmap import PathMapping
 from .schemas import (
+    MidiExportRequest,
     Relocation,
     RelocationApplied,
     RelocationApply,
@@ -582,13 +584,14 @@ def fs_places(platform: str | None = None) -> list[FsPlace]:
 
 
 @app.get("/api/fs/list", response_model=FsListing)
-def fs_list(path: str | None = None, platform: str | None = None) -> FsListing:
+def fs_list(path: str | None = None, platform: str | None = None, suffix: str | None = None) -> FsListing:
     """List directories and openable library files for the in-app file browser.
 
     `platform` narrows the files to that platform's own: a Traktor browse that
     also listed `master.db` would be offering a file the chosen adapter cannot
     open. A platform whose library is a directory contributes no suffixes at
-    all, so its browse shows folders only.
+    all, so its browse shows folders only. `suffix` instead lists files whose
+    NAME ends with it (a MIDI mapping's `.konduktor-midi.json`).
     """
     base = Path(path).expanduser() if path else Path.home()
     if not base.exists() or not base.is_dir():
@@ -604,7 +607,7 @@ def fs_list(path: str | None = None, platform: str | None = None) -> FsListing:
             try:
                 if entry.is_dir():
                     dirs.append(FsEntry(name=entry.name, path=str(entry)))
-                elif entry.suffix.lower() in suffixes:
+                elif entry.name.lower().endswith(suffix.lower()) if suffix else entry.suffix.lower() in suffixes:
                     files.append(FsEntry(name=entry.name, path=str(entry)))
             except OSError:
                 continue
@@ -614,6 +617,53 @@ def fs_list(path: str | None = None, platform: str | None = None) -> FsListing:
     return FsListing(
         path=str(base), parent=parent, home=str(Path.home()), dirs=dirs, files=files
     )
+
+
+# ---- MIDI controller mappings ---------------------------------------------------
+#
+# A mapping lives in userprefs (`midiMappings`, written by the UI like any pref);
+# these two only move one to and from a FILE, so mappings can be shared. The
+# content is the UI's to validate (lib/midi/mapping.sanitizeMapping): here it
+# only has to be a small JSON object of the right version.
+
+MIDI_MAPPING_SUFFIX = ".konduktor-midi.json"
+_MIDI_MAPPING_MAX_BYTES = 1_000_000
+
+
+@app.post("/api/midi/export")
+def midi_export(req: MidiExportRequest) -> dict:
+    """Write a mapping into `dir` as `<name>.konduktor-midi.json`. Never
+    overwrites: an existing file gets a `-2`, `-3`… beside it."""
+    folder = Path(req.dir).expanduser()
+    if not folder.is_dir():
+        raise HTTPException(400, f"Not a folder: {req.dir}")
+    if req.mapping.get("version") != 1:
+        raise HTTPException(400, "Not a MIDI mapping")
+    stem = "".join("_" if c in '/\\:*?"<>|' else c for c in req.name).strip(" .") or "MIDI mapping"
+    target = folder / f"{stem}{MIDI_MAPPING_SUFFIX}"
+    n = 2
+    while target.exists():
+        target = folder / f"{stem}-{n}{MIDI_MAPPING_SUFFIX}"
+        n += 1
+    paths.write_json(target, req.mapping)
+    return {"path": str(target)}
+
+
+@app.get("/api/midi/import")
+def midi_import(path: str) -> dict:
+    """Read a mapping file (size-capped; must be a version-1 JSON object)."""
+    file = Path(path).expanduser()
+    if not file.is_file():
+        raise HTTPException(404, f"No such file: {path}")
+    if file.stat().st_size > _MIDI_MAPPING_MAX_BYTES:
+        raise HTTPException(400, "That file is too large to be a MIDI mapping")
+    try:
+        data = json.loads(file.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(400, "That file is not a MIDI mapping") from None
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise HTTPException(400, "That file is not a MIDI mapping")
+    return {"mapping": data}
 
 
 # ---- export sets -------------------------------------------------------------

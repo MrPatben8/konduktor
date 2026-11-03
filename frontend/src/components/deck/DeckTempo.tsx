@@ -36,6 +36,7 @@ export function DeckTempo({ deck, master, synced, syncBlocked, onSync, onMaster,
   return (
     <div className="flex h-9 shrink-0 items-center gap-2">
       <button
+        data-midi-action={`deck.${deck.channel}.keylock`}
         onClick={() => setKeylock(!keylock)}
         disabled={!keylockAvailable}
         aria-pressed={keylock}
@@ -51,6 +52,7 @@ export function DeckTempo({ deck, master, synced, syncBlocked, onSync, onMaster,
         KEY
       </button>
       <button
+        data-midi-action={`deck.${deck.channel}.sync`}
         onClick={onSync}
         disabled={!track || (!synced && syncBlocked != null)}
         aria-pressed={synced}
@@ -79,6 +81,7 @@ export function DeckTempo({ deck, master, synced, syncBlocked, onSync, onMaster,
         }}
       />
       <Fader
+        midi={`deck.${deck.channel}.pitch`}
         orientation="horizontal"
         value={pitch}
         min={-1}

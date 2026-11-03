@@ -5,6 +5,8 @@ import { Icon } from '../lib/icons'
 import { RenameField } from './RenameField'
 
 interface Props {
+  /** The deck's MIDI action prefix (`deck.A`), for on-screen learning. */
+  midi?: string
   cues: CuePoint[]
   /** Bank size, from capabilities — not every platform has eight. */
   slotCount: number
@@ -42,6 +44,7 @@ const READONLY_LABELS: Record<string, string> = {
  * than surfacing the refusal as an error.
  */
 export function HotcueBar({
+  midi,
   cues,
   slotCount,
   slotLabel,
@@ -74,6 +77,7 @@ export function HotcueBar({
         return (
           <button
             key={slot}
+            data-midi-action={midi && `${midi}.hotcue.${slot + 1}`}
             onContextMenu={(e) => {
               e.preventDefault()
               onSlotMenu(slot, e.clientX, e.clientY)

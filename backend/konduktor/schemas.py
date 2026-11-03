@@ -818,3 +818,11 @@ class NormalizeRequest(BaseModel):
     measure: Literal["lufs", "rms"] = "lufs"
     target: float = -9.0
     ceiling: float = -1.0
+
+
+class MidiExportRequest(BaseModel):
+    """A controller mapping written to a file (`/api/midi/export`). Its shape
+    is the UI's (`lib/midi/mapping.ts`); only the version is checked here."""
+    dir: str
+    name: str
+    mapping: dict

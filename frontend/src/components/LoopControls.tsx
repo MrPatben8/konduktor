@@ -12,6 +12,9 @@ export function sizeLabel(size: number): string {
 export type LoopMode = 'beat' | 'manual'
 
 interface Props {
+  /** The deck's MIDI action prefix (`deck.A`): its controls carry
+   *  `data-midi-action` for on-screen learning (lib/midi). */
+  midi?: string
   mode: LoopMode
   onMode: (mode: LoopMode) => void
   hasGrid: boolean // beat loops and jumps are sized in beats; inert without a grid
@@ -67,6 +70,7 @@ const CLUSTER = 'well flex h-10 w-[8.5rem] shrink-0 items-center gap-0.5 rounded
  * Presentational: PrepStrip owns every piece of state and does the seeking.
  */
 export function LoopControls({
+  midi,
   mode,
   onMode,
   hasGrid,
@@ -85,6 +89,7 @@ export function LoopControls({
   onToggleLoop,
   onMove,
 }: Props) {
+  const m = (op: string) => (midi ? `${midi}.${op}` : undefined)
   const atMin = size <= LOOP_SIZES[0]
   const atMax = size >= LOOP_SIZES[LOOP_SIZES.length - 1]
   const what = loopActive ? 'Move the loop' : `Jump ${sizeLabel(size)} beat${size === 1 ? '' : 's'}`
@@ -107,6 +112,7 @@ export function LoopControls({
         <div role="group" aria-label="Loop size" className={`${CLUSTER} font-mono`}>
           <button
             onClick={onSmaller}
+            data-midi-action={m('sizeDown')}
             disabled={atMin}
             title="Halve the size (Cmd/Ctrl+↓)"
             className={`${KEY} h-[34px] w-7 text-[15px] text-muted hover:bg-ink-800 hover:text-text`}
@@ -115,6 +121,7 @@ export function LoopControls({
           </button>
           <button
             onClick={onToggleSize}
+            data-midi-action={m('sizeLoop')}
             disabled={!hasGrid || !ready}
             title={hasGrid ? `${sizeLabel(size)}-beat loop — click to switch on or off` : 'No beatgrid'}
             className={`${KEY} h-[34px] min-w-0 flex-1 px-2 text-sm font-semibold ${
@@ -125,6 +132,7 @@ export function LoopControls({
           </button>
           <button
             onClick={onBigger}
+            data-midi-action={m('sizeUp')}
             disabled={atMax}
             title="Double the size (Cmd/Ctrl+↑)"
             className={`${KEY} h-[34px] w-7 text-[15px] text-muted hover:bg-ink-800 hover:text-text`}
@@ -136,6 +144,7 @@ export function LoopControls({
         <div role="group" aria-label="Manual loop" className={`${CLUSTER} text-xs font-semibold`}>
           <button
             onClick={onLoopIn}
+            data-midi-action={m('loopIn')}
             disabled={!ready}
             aria-pressed={inArmed || manualSet}
             title={inArmed ? 'Loop in is set — now press OUT (or IN again to move it)' : 'Loop in at the playhead'}
@@ -145,6 +154,7 @@ export function LoopControls({
           </button>
           <button
             onClick={onLoopOut}
+            data-midi-action={m('loopOut')}
             disabled={!ready || (!inArmed && !manualSet)}
             aria-pressed={manualSet && !inArmed}
             title={
@@ -160,6 +170,7 @@ export function LoopControls({
           </button>
           <button
             onClick={onToggleLoop}
+            data-midi-action={m('loopToggle')}
             disabled={!canToggle}
             title={loopActive ? 'Switch the loop off' : 'Switch the loop on'}
             aria-pressed={loopActive}
@@ -173,6 +184,7 @@ export function LoopControls({
       <div role="group" aria-label="Jump or move loop" className="glass-group flex h-10 items-center rounded-xl">
         <button
           onClick={() => onMove(-1)}
+            data-midi-action={m('jumpBack')}
           disabled={!canMove}
           title={`${what} back (←)`}
           className={`${HALF} rounded-l-xl`}
@@ -181,6 +193,7 @@ export function LoopControls({
         </button>
         <button
           onClick={() => onMove(1)}
+            data-midi-action={m('jumpFwd')}
           disabled={!canMove}
           title={`${what} forward (→)`}
           className={`${HALF} rounded-r-xl`}

@@ -26,10 +26,10 @@ import { Icon, type IconName } from '../lib/icons'
  * the cache key. Passing it back up through a callback would mean an effect
  * firing on every navigation to tell the parent what it already asked for.
  */
-export function useFsListing(path: string | undefined, platform?: string, listing: Listing = 'host') {
+export function useFsListing(path: string | undefined, platform?: string, listing: Listing = 'host', suffix?: string) {
   return useQuery({
-    queryKey: ['fs', listing, path ?? '~', platform ?? null],
-    queryFn: () => (listing === 'library' ? api.libraryListDir(path) : api.listDir(path, platform)),
+    queryKey: ['fs', listing, path ?? '~', platform ?? null, suffix ?? null],
+    queryFn: () => (listing === 'library' ? api.libraryListDir(path) : api.listDir(path, platform, suffix)),
   })
 }
 
@@ -65,10 +65,12 @@ interface Props {
   footer?: ReactNode
   /** Whose folders are browsed (see `Listing`). Default: this computer's. */
   listing?: Listing
+  /** Instead of a platform's files, those whose name ends with this. */
+  suffix?: string
 }
 
-export function FileBrowser({ mode, platform, path, onNavigate, onPickFile, footer, listing: whose = 'host' }: Props) {
-  const listing = useFsListing(path, platform, whose)
+export function FileBrowser({ mode, platform, path, onNavigate, onPickFile, footer, listing: whose = 'host', suffix }: Props) {
+  const listing = useFsListing(path, platform, whose, suffix)
   const places = useQuery({
     queryKey: ['fs-places', platform ?? null],
     queryFn: () => api.places(platform),

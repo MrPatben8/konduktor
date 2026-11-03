@@ -31,4 +31,6 @@ tokio = { version = "1", features = ["time"] }   # timeout on the port handshake
 # One-click update (UpdateDialog.tsx). No `zip` feature: it only unpacks
 # v1-style zipped Windows installers (we ship the bare NSIS setup.exe), and
 # every zip 4.x it would need is yanked.
+# MIDI controller input (src/midi.rs): CoreMIDI on macOS, WinMM on Windows.
+midir = "0.11"
 tauri-plugin-updater = { version = "2.12", default-features = false, features = ["rustls-tls", "system-proxy"] }

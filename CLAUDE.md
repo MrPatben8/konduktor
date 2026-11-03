@@ -1502,6 +1502,55 @@ Two independent apps that talk over HTTP:
   Unmeasured: what Traktor leaves after "None" (Konduktor removes the attribute).
   Carried but deliberately unused until a second adapter
   exists: `slot_labels: 'letter'`, `loops: 'separate_bank'`.
+- **`lib/midi/` — MIDI controllers** (decided 2026-11-03,
+    [the discussion](.claude/discussions/discuss-midi-controllers-2026-11-03.md)):
+    MIDI only (no HID), ANY controller, mapped by LEARNING — no shipped
+    mappings — and input only (no LEDs). **Transport**: WKWebView has no Web
+    MIDI, so the shell reads ports with `midir` (`src-tauri/src/midi.rs`:
+    `midi_ports` / `midi_open` / `midi_close`; system messages ignored at the
+    driver; a sender thread per port drains its queue into ONE `Channel`
+    batch, so idle = no delay and a flood coalesces). Measured (2026-11-03,
+    `src-tauri/examples/midi_flood.rs`, a CoreMIDI virtual source): 0 drops
+    or reorders at 250-4000 msg/s, ~1 ms spread. A JS `Channel` cannot be
+    reused once its Rust side is dropped — every open makes a fresh one.
+    `transport.ts` hides that and Web MIDI (`./dev.sh` in Chrome) behind one
+    interface; `useMidi` (mounted in App) polls ports every 1.5 s (midir has
+    no hot-plug events) and keeps mappings in userprefs `midiMappings`.
+    **Model**: `messages.ts` (bytes → note / CC / pitch bend; `SourceKey`
+    `cc:1:33`), `encoding.ts` (button, abs 7/14-bit — CC n + n+32 or pitch
+    bend, a knob's centre exactly 0 — three relative schemes, and ABSOLUTE-
+    position jogs that wrap; `detectEncoding` guesses from what a control sent
+    while learning: relative REPEATS and jitters inside its zones, absolute
+    progresses), `actions.ts` (the vocabulary: deck buttons = the deck keys'
+    actions, plus pitch, jog, jog touch, fast scrub, load, SYNC, keylock,
+    loops; mixer; browse / tree; performance mode; `shiftDefault` = the
+    keyboard's Shift meaning), `mapping.ts` (per controller, keyed by SOURCE;
+    each control a normal + a FREE Shift binding; learning REPLACES an
+    action's control in that layer and fills an empty Shift layer with the
+    default). **`router.ts`**: Shift is a learned control (an unbound Shift
+    binding falls back to normal); deck B and the mixer act only in
+    performance mode; positions JUMP (no soft takeover — "the controller
+    always wins"); a held control releases where it was pressed; Learn sees
+    every message first (buttons on the first press — a CC button waits
+    250 ms for a note, since a touch jog sends both; positions after 12
+    messages or 800 ms; notes ignored for a jog; Shift held = the Shift
+    layer). Targets are registered by whoever is mounted (`targets.ts`,
+    cleanup clears only its OWN values: a new view registers before the old
+    one unmounts): PrepStrip's `DeckMidi` per deck (a hardware pitch move and
+    a jog NUDGE release SYNC), App's `load` (the table's highlighted row,
+    loaded PAUSED), TrackTable's `browse` (= ↑/↓), Sidebar's `tree` (Shift +
+    browse: All Tracks + the visible tree; a playlist opens as reached, a
+    folder opens on press). **Jog** (`useDeck`): touch = scratch through the
+    waveform-drag path, target sent straight to the worklet; no touch =
+    nudge (a per-frame bend, also in prep mode) while playing, scrub while
+    paused; scale `JOG_SEC_PER_TICK` × the mapping's sensitivity. **UI**:
+    Settings ▸ MIDI Controllers… (`MidiSettings`: per controller, Shift, jog
+    sensitivity / fast scrub, every action × Normal / Shift with Learn,
+    encoding + Reversed per binding, Import / Export as
+    `.konduktor-midi.json` through `/api/midi/import|export` — never
+    overwrites) and **Learn on screen** (`MidiLearnOverlay`: controls carry
+    `data-midi-action`; a click ARMS instead of acting). A new on-screen
+    control with a MIDI action should carry the attribute.
 - `lib/trackColumns.tsx` — single source of truth for the library table's
     columns (defs, default widths/visibility/order, the Columns-menu list, the
     inline `InlineEdit` cell, and the `TableMeta.onEditField` augmentation).
@@ -1557,7 +1606,10 @@ docker build -f server/Dockerfile -t konduktor-server .   # from the repo root
 cd frontend
 npm run dev          # dev server (proxies /api -> :8000)
 npm run build        # tsc -b && vite build — run this to typecheck
-npm run test         # vitest — unit tests for src/lib/beatgrid.ts
+npm run test         # vitest — unit tests (src/lib/**/*.test.ts)
+
+# MIDI without hardware (macOS): a virtual source flooding CC 33 on ch 1
+cd frontend/src-tauri && cargo run --example midi_flood -- <Hz> <count> <delay s>
 ```
 
 **Tests:** `cd backend && ./run_tests.sh` (runs against a temp copy of the real
@@ -1959,6 +2011,11 @@ serialization path.** It enforces:
   last-collection and path-mapping helpers lose nothing either; an unreadable
   file is moved aside, not overwritten. Against the old unlocked code it fails
   on the first trial.
+- `test_midi_mappings.py` — a MIDI mapping to and from a file: never
+  overwrites (`-2`), a name cannot leave the folder, import refuses non-JSON,
+  non-objects, other versions and oversized files, and `/api/fs/list`'s
+  `suffix` lists only mapping files. (The mapping logic itself is the
+  frontend's: `src/lib/midi/*.test.ts`.)
 - `test_exports.py` — export sets against a temp copy of the real collection.
   Pins the things that would fail SILENTLY: a live reference picks up a playlist
   edited AFTER curation; contents dedupe across playlists and loose tracks; a
@@ -2705,8 +2762,12 @@ that number and nothing else — everything derives from it:
   master, a phase meter you can drag to bend. See `lib/audio/`,
   `components/deck/`, `components/mixer/` and "Prep strip" / "Prep engine";
   [the discussion](.claude/discussions/discuss-performance-mode-2026-11-02.md).
-  Not yet: MIDI controllers (decided: later; WKWebView has no Web MIDI, so
-  through Tauri), headphone cue (decided: not needed), recording the mix.
+  Not yet: headphone cue (decided: not needed), recording the mix.
+- 🟡 **MIDI controllers** (2026-11-03) — any MIDI controller, mapped by
+  learning, for prep (deck A) and performance mode; see `lib/midi/` under
+  Architecture. Built and unit-tested; not yet checked on real hardware
+  (scratch feel, jog scale) nor on Windows. Not planned for v1: HID
+  controllers, LED output, soft takeover, deck layers.
 - ⬜ Serato adapter
 - ⬜ Bulk metadata editing; ⬜ Phase 4 — polish + optional Tauri desktop packaging
 

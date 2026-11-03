@@ -16,6 +16,10 @@ import { PlatformIcon } from '../lib/platformIcons'
 import { addTracksToPlaylist } from '../lib/addTracks'
 import { useDragPayload, usePressToDrag, useDropTarget, type DragPayload, type TracksOrFiles } from '../lib/drag'
 import { findNode, idsAfter, nodeIdsUnder, playlistIdsUnder } from '../lib/playlistTree'
+import { useMidiTargets } from '../lib/midi/targets'
+
+/** All Tracks' place in a controller's walk of the tree (no node has this id). */
+const ALL_ROW = 'konduktor:all-tracks'
 
 /**
  * Which view the main table is showing.
@@ -104,6 +108,8 @@ interface RowActions {
   /** Whether a folder is open, and opening / closing it. */
   isOpen: (node: PlaylistNode) => boolean
   setOpen: (node: PlaylistNode, open: boolean) => void
+  /** Where a controller's playlist browsing stands (lib/midi), when not on the open playlist. */
+  isCursor: (node: PlaylistNode) => boolean
   onContextMenu: (e: React.MouseEvent, node: PlaylistNode) => void
   onRename: (node: PlaylistNode, name: string, parentId: string | null) => void
   onDelete: (node: PlaylistNode) => void
@@ -300,6 +306,7 @@ function NodeRow({
       <div
         ref={dropRef}
         data-node-row
+        data-node-id={node.id}
         onPointerDown={startDrag}
         onContextMenu={(e) => actions.onContextMenu(e, node)}
         className={`group relative flex items-center gap-1 rounded-[10px] pr-1 text-sm transition-colors ${
@@ -307,7 +314,9 @@ function NodeRow({
             ? 'bg-accent-soft/40 text-text ring-1 ring-accent'
             : selected
               ? 'is-selected font-medium text-text'
-              : 'text-muted hover:bg-ink-800 hover:text-text'
+              : actions.isCursor(node)
+                ? 'bg-ink-800 text-text ring-1 ring-accent/60'
+                : 'text-muted hover:bg-ink-800 hover:text-text'
         }`}
       >
         {line && (
@@ -485,6 +494,45 @@ export function Sidebar({
   useEffect(() => setOpenOverrides({}), [library?.path, expandByDefault])
   const setFolderOpen = (id: string, open: boolean) =>
     setOpenOverrides((o) => ({ ...o, [id]: open }))
+  const isOpen = (node: PlaylistNode) => openOverrides[node.id] ?? expandByDefault
+
+  // A controller's Shift + browse walks All Tracks and the visible playlist
+  // tree (decided 2026-11-03): a playlist opens as it is reached, a folder is
+  // only highlighted (the cursor) and opens / closes on the encoder's press.
+  const [treeCursor, setTreeCursor] = useState<string | null>(null)
+  useEffect(() => setTreeCursor(null), [source])
+  const visibleRows = (): { id: string; node: PlaylistNode | null }[] => {
+    const out: { id: string; node: PlaylistNode | null }[] = [{ id: ALL_ROW, node: null }]
+    const walk = (nodes: PlaylistNode[]) => {
+      for (const n of nodes) {
+        out.push({ id: n.id, node: n })
+        if (n.kind === 'folder' && isOpen(n)) walk(n.children)
+      }
+    }
+    walk(playlists ?? [])
+    return out
+  }
+  useMidiTargets({
+    tree: {
+      step: (ticks) => {
+        const rows = visibleRows()
+        const at = treeCursor ?? (source.kind === 'all' ? ALL_ROW : source.kind === 'playlist' ? source.id : null)
+        const i = rows.findIndex((r) => r.id === at)
+        const next = rows[Math.max(0, Math.min(rows.length - 1, i < 0 ? 0 : i + ticks))]
+        if (!next) return
+        if (!next.node) onSelect({ kind: 'all' })
+        else if (next.node.kind !== 'folder' && next.node.selectable) {
+          onSelect({ kind: 'playlist', id: next.node.id, name: next.node.name })
+        }
+        setTreeCursor(next.id)
+        document.querySelector(`[data-node-id="${CSS.escape(next.id)}"]`)?.scrollIntoView({ block: 'nearest' })
+      },
+      press: () => {
+        const node = treeCursor ? findNode(playlists ?? [], treeCursor) : null
+        if (node?.kind === 'folder') setFolderOpen(node.id, !isOpen(node))
+      },
+    },
+  })
   // A folder's id — and so every id under it — may change when it is renamed
   // or moved (a platform addressing folders by path), so open state follows
   // the subtree to its new ids. Reads the tree as refetched after the edit.
@@ -631,8 +679,9 @@ export function Sidebar({
   }
 
   const actions: RowActions = {
-    isOpen: (node) => openOverrides[node.id] ?? expandByDefault,
+    isOpen,
     setOpen: (node, open) => setFolderOpen(node.id, open),
+    isCursor: (node) => treeCursor === node.id,
     onContextMenu: (e, node) => openMenu(e, nodeItems(node)),
     onRename: (node, name, parentId) => rename.mutate({ node, name, parentId }),
     onDelete: confirmDelete,
@@ -760,6 +809,7 @@ export function Sidebar({
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         <div className="shrink-0 px-2 pt-3">
           <button
+            data-node-id={ALL_ROW}
             onClick={() => onSelect({ kind: 'all' })}
             className={`flex w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-sm transition-colors ${
               source.kind === 'all'

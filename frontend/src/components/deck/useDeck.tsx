@@ -48,6 +48,15 @@ import { LOOP_SIZES, type LoopMode } from '../LoopControls'
 import type { StemLane } from '../MainWaveform'
 import { usePrefsWriter } from '../../lib/prefs'
 
+/** A controller's jog (lib/midi), at sensitivity 1: seconds of track per
+ *  tick — scratch and scrub (vinyl at 33⅓ is 1.8 s a turn, over a typical
+ *  ~500 ticks) — and the nudge's bend per tick in a frame, its limit, and the
+ *  frames without a tick before it springs back. */
+const JOG_SEC_PER_TICK = 1.8 / 500
+const JOG_NUDGE_PER_TICK = 0.004
+const JOG_NUDGE_MAX = 0.1
+const JOG_NUDGE_IDLE_FRAMES = 4
+
 export interface DeckOptions {
   /** The track loaded into this deck, if any. */
   track: Track | null
@@ -634,6 +643,81 @@ export function useDeck({
     }
   }
 
+  // ---- jog (MIDI controllers) ---------------------------------------------
+  // Touching the top SCRATCHES — the same engine path as dragging the
+  // waveform, the target sent straight to the worklet. A turn without touch
+  // NUDGES while playing (a momentary bend, as the phase meter's drag) and
+  // SCRUBS while paused; `scrub` (Shift + jog) moves fast, playing or not.
+  // Nudge and scrub are gathered per frame so a jog's flood of messages costs
+  // one render a frame. How many ticks a turn sends differs per controller,
+  // so the scale is a starting point times the mapping's sensitivity.
+  const jogRef = useRef({ touching: false, target: 0, nudge: 0, scrub: 0, raf: 0, idle: 0, bending: false })
+  const jogLatest = useRef({ seekManual, duration })
+  jogLatest.current = { seekManual, duration }
+  const flushJog = () => {
+    const j = jogRef.current
+    j.raf = 0
+    const eng = playbackRef.current
+    if (!eng) return
+    const { seekManual: seekTo, duration: dur } = jogLatest.current
+    if (j.scrub !== 0) {
+      seekTo(Math.max(0, Math.min(dur, eng.getPosition() + j.scrub)))
+      j.scrub = 0
+    }
+    if (j.nudge !== 0) {
+      setBend(1 + Math.max(-JOG_NUDGE_MAX, Math.min(JOG_NUDGE_MAX, j.nudge * JOG_NUDGE_PER_TICK)))
+      j.nudge = 0
+      j.idle = 0
+      j.bending = true
+    } else if (j.bending && ++j.idle >= JOG_NUDGE_IDLE_FRAMES) {
+      setBend(1)
+      j.bending = false
+    }
+    if (j.bending) j.raf = requestAnimationFrame(flushJog)
+  }
+  const scheduleJog = () => {
+    if (!jogRef.current.raf) jogRef.current.raf = requestAnimationFrame(flushJog)
+  }
+  useEffect(() => () => cancelAnimationFrame(jogRef.current.raf), [])
+
+  const jogTouch = (on: boolean) => {
+    const j = jogRef.current
+    const eng = playbackRef.current
+    if (on) {
+      if (!eng || !eng.ready || j.touching) return
+      j.touching = true
+      onScratchStart()
+      j.target = eng.getPosition()
+    } else if (j.touching) {
+      j.touching = false
+      onScratchEnd(j.target)
+    }
+  }
+  /** A jog turn. Returns 'nudge' when it bent a playing deck (SYNC lets go). */
+  const jogTurn = (ticks: number, sensitivity: number): 'nudge' | null => {
+    const j = jogRef.current
+    const eng = playbackRef.current
+    if (!eng || !eng.ready) return null
+    if (j.touching && engagedRef.current) {
+      j.target = Math.max(0, Math.min(duration, j.target + ticks * JOG_SEC_PER_TICK * sensitivity))
+      eng.scratchTarget(j.target)
+      return null
+    }
+    if (eng.playing) {
+      j.nudge += ticks * sensitivity
+      scheduleJog()
+      return 'nudge'
+    }
+    j.scrub += ticks * JOG_SEC_PER_TICK * sensitivity
+    scheduleJog()
+    return null
+  }
+  const scrub = (ticks: number, sensitivity: number) => {
+    if (!playbackRef.current?.ready) return
+    jogRef.current.scrub += ticks * JOG_SEC_PER_TICK * sensitivity
+    scheduleJog()
+  }
+
   // ---- loops ------------------------------------------------------------
   // Snap a time to the nearest beat when Snap is on (needs a beatgrid).
   const snapTime = (t: number) => (snap && grid ? grid.snapToBeat(t) : Math.max(0, t))
@@ -1216,7 +1300,8 @@ export function useDeck({
   // A pitch BEND: a momentary push or drag on top of the fader (the phase
   // meter's drag), 1 = none. Part of `rate`, so the readout and a follower see it.
   const [bend, setBend] = useState(1)
-  const rate = tempoActive ? (1 + pitch * pitchRange) * bend : 1
+  // A jog nudge bends the prep deck too (its pitch fader does not apply there).
+  const rate = tempoActive ? (1 + pitch * pitchRange) * bend : bend
   useEffect(() => {
     playbackRef.current?.setRate(rate)
   }, [rate, ready])
@@ -1376,6 +1461,7 @@ export function useDeck({
   }
 
   return {
+    channel,
     caps,
     track,
     origin,
@@ -1493,6 +1579,9 @@ export function useDeck({
     keylock,
     setKeylock,
     keylockAvailable,
+    jogTouch,
+    jogTurn,
+    scrub,
   }
 }
 

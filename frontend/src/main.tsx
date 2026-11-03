@@ -12,6 +12,7 @@ import { DragLayer } from './lib/drag.tsx'
 import { QuitGuard } from './components/QuitGuard.tsx'
 import { preventHistoryNavigation } from './lib/noNavigation.ts'
 import { StartupGate } from './components/StartupScreen.tsx'
+import { MidiLearnOverlay } from './components/MidiLearnOverlay.tsx'
 
 preventHistoryNavigation()
 
@@ -38,6 +39,8 @@ createRoot(document.getElementById('root')!).render(
         <ConfirmHost />
         {/* Save · Discard · Cancel when quitting with unsaved changes. */}
         <QuitGuard />
+        {/* MIDI learning by clicking controls (Settings ▸ MIDI Controllers…). */}
+        <MidiLearnOverlay />
         {/* The ghost under the cursor while dragging tracks or playlists. */}
         <DragLayer />
       </StartupGate>

@@ -88,11 +88,15 @@ export function DeckControls({ deck, stacked = false }: { deck: Deck; stacked?: 
     renamingSlot,
     renameSlot,
     tempoProps,
+    channel,
   } = deck
+  // On-screen MIDI learning (lib/midi): controls carry their action.
+  const midi = `deck.${channel}`
   const transport = (
     <>
       <button
         onClick={toggle}
+        data-midi-action={`${midi}.play`}
         disabled={!ready}
         className={
           'flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 ' +
@@ -107,6 +111,7 @@ export function DeckControls({ deck, stacked = false }: { deck: Deck; stacked?: 
         <Icon name={playing ? 'pause' : 'play'} size={16} />
       </button>
       <button
+        data-midi-action={`${midi}.cue`}
         onPointerDown={(e) => {
           e.preventDefault()
           e.currentTarget.setPointerCapture(e.pointerId)
@@ -131,6 +136,7 @@ export function DeckControls({ deck, stacked = false }: { deck: Deck; stacked?: 
   )
   const loopControls = (
     <LoopControls
+      midi={midi}
       mode={loopMode}
       onMode={setLoopMode}
       hasGrid={grid != null}
@@ -198,6 +204,7 @@ export function DeckControls({ deck, stacked = false }: { deck: Deck; stacked?: 
     />
   ) : (
     <HotcueBar
+      midi={midi}
       cues={cueData?.cues ?? []}
       slotCount={slotCount}
       slotLabel={slotLabel}

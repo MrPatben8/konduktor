@@ -133,6 +133,7 @@ export function MixerPanel({
       <div className="flex h-6 shrink-0 items-center justify-center gap-2 px-1">
         <span className="font-mono text-[11px] font-semibold text-muted">A</span>
         <Fader
+          midi="mixer.crossfader"
           orientation="horizontal"
           value={crossfader}
           min={-1}
@@ -187,6 +188,7 @@ function Strip({
   }
   const eq = (band: 'high' | 'mid' | 'low', label: string, name: string) => (
     <Knob
+      midi={`mixer.${ch}.${band}`}
       value={s[band]}
       min={-1}
       max={1}
@@ -205,6 +207,7 @@ function Strip({
     <div className={`flex items-center gap-2 self-center ${mirrored ? 'flex-row-reverse' : ''}`}>
       <div className="grid grid-cols-2 gap-x-1.5 gap-y-1.5">
         <Knob
+          midi={`mixer.${ch}.gain`}
           value={s.trim}
           min={-TRIM_RANGE_DB}
           max={TRIM_RANGE_DB}
@@ -230,6 +233,7 @@ function Strip({
       </div>
       <div className="flex flex-col items-center gap-2" style={{ width: FILTER_KNOB }}>
         <button
+          data-midi-action={`mixer.${ch}.fxNext`}
           onClick={(e) => {
             const r = e.currentTarget.getBoundingClientRect()
             setFxMenu({ x: r.left, y: r.bottom + 4 })
@@ -241,6 +245,7 @@ function Strip({
           <Icon name="chevronDown" size={9} />
         </button>
         <Knob
+          midi={`mixer.${ch}.filter`}
           value={s.color}
           min={-1}
           max={1}
@@ -258,6 +263,7 @@ function Strip({
   const fader = (
     <div className="flex flex-col items-center gap-0.5">
       <Fader
+        midi={`mixer.${ch}.fader`}
         orientation="vertical"
         value={s.fader}
         min={0}

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type Capabilities, type Track, type TrackOrigin } from '../api'
 import { useDeckKeys, type DeckKeyTargets } from '../lib/deckKeys'
+import { useMidiTargets } from '../lib/midi/targets'
+import type { DeckMidi } from '../lib/midi/router'
 import { useDropTarget, type DragPayload } from '../lib/drag'
 import { usePrefsWriter } from '../lib/prefs'
 import { mixer } from '../lib/audio/mixer'
@@ -282,6 +284,43 @@ export function PrepStrip({
     if (em == null || eo == null) return null
     return phaseOffset(theirs, mine, octaveFor(eo, em))
   }
+
+  // A controller (lib/midi): the same deck handles the keys get, plus pitch
+  // and jog. Moving the pitch fader or nudging with the jog releases SYNC, as
+  // the on-screen fader and the phase meter's bend do (decided 2026-11-03).
+  const releaseSync = (id: DeckId) => live.current.synced[id] && setSynced((s) => ({ ...s, [id]: false }))
+  const midiDeck = (id: DeckId): DeckMidi => {
+    const d = deckOf(id)
+    return {
+      ...d.shortcuts,
+      toggleSizeLoop: d.toggleSizeLoop,
+      loopIn: d.loopIn,
+      loopOut: d.loopOut,
+      toggleLoop: d.toggleLoop,
+      toggleSync: () => {
+        if (!performance) return
+        if (synced[id] || !syncBlocked(id)) toggleSync(id)
+        else onError?.(syncBlocked(id)!)
+      },
+      toggleKeylock: () => d.setKeylock(!d.keylock),
+      pitch: d.pitch,
+      setPitch: (v) => {
+        releaseSync(id)
+        d.setPitch(v)
+      },
+      jogTouch: (on) => d.jogTouch(on),
+      jogTurn: (ticks, sensitivity) => {
+        if (d.jogTurn(ticks, sensitivity) === 'nudge') releaseSync(id)
+      },
+      scrub: (ticks, sensitivity) => d.scrub(ticks, sensitivity),
+    }
+  }
+  useMidiTargets({
+    performance,
+    focused: lead,
+    decks: { A: midiDeck('A'), B: performance ? midiDeck('B') : null },
+    togglePerformance: onTogglePerformance,
+  })
 
   const keys = useRef<DeckKeyTargets>({ focused: null, other: null })
   keys.current = {

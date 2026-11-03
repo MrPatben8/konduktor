@@ -5,6 +5,7 @@ import { Icon } from '../../lib/icons'
 export function PerformanceButton({ on, onToggle }: { on: boolean; onToggle: () => void }) {
   return (
     <button
+      data-midi-action="app.performance"
       onClick={onToggle}
       aria-pressed={on}
       aria-label="Performance mode"

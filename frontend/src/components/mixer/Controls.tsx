@@ -23,6 +23,8 @@ interface KnobProps {
   describe: (v: number) => string
   color?: string
   size?: number
+  /** Its MIDI action, for on-screen learning (lib/midi). */
+  midi?: string
 }
 
 /** A point on the knob's circle at angle `deg` (0 = straight up). */
@@ -40,6 +42,7 @@ function arc(r: number, from: number, to: number, c: number): string {
 }
 
 export function Knob({
+  midi,
   value,
   min,
   max,
@@ -76,7 +79,7 @@ export function Knob({
     onChange(clamp(value - (e.deltaY / (e.shiftKey ? 2000 : 400)) * range, min, max))
   }
   return (
-    <div className="flex flex-col items-center gap-0.5" title={describe(value)}>
+    <div className="flex flex-col items-center gap-0.5" title={describe(value)} data-midi-action={midi}>
       <div
         role="slider"
         aria-label={label}
@@ -125,10 +128,12 @@ interface FaderProps {
   label: string
   describe: (v: number) => string
   className?: string
+  /** Its MIDI action, for on-screen learning (lib/midi). */
+  midi?: string
 }
 
 /** A fader: grab anywhere on it and the cap follows the pointer. */
-export function Fader({ value, min, max, defaultValue, onChange, orientation, label, describe, className = '' }: FaderProps) {
+export function Fader({ value, min, max, defaultValue, onChange, orientation, label, describe, className = '', midi }: FaderProps) {
   const vertical = orientation === 'vertical'
   const t = (clamp(value, min, max) - min) / (max - min)
   const set = (e: PointerEvent<HTMLDivElement>) => {
@@ -139,6 +144,7 @@ export function Fader({ value, min, max, defaultValue, onChange, orientation, la
   return (
     <div
       role="slider"
+      data-midi-action={midi}
       aria-label={label}
       aria-orientation={orientation}
       aria-valuemin={min}

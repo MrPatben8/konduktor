@@ -324,3 +324,31 @@ option {
 @media (prefers-reduced-motion: reduce) {
   .ambient-wash { animation: none !important; }
 }
+
+/* ---- On-screen MIDI learning (MidiLearnOverlay.tsx) --------------------- */
+/* Outlines, not borders or shadows: they sit outside the control and change
+   no layout, and the controls' own shadows (lit buttons) stay as they are. */
+body.midi-learn [data-midi-action] {
+  outline: 1px dashed color-mix(in oklab, var(--color-accent) 70%, transparent);
+  outline-offset: 2px;
+  cursor: crosshair;
+}
+body.midi-learn [data-midi-action][data-midi-mapped] {
+  outline-style: solid;
+}
+body.midi-learn [data-midi-action][data-midi-armed] {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+  animation: midi-armed 0.9s ease-in-out infinite alternate;
+}
+body.midi-learn [data-midi-action][data-midi-learned] {
+  outline: 2px solid var(--color-mint);
+  outline-offset: 3px;
+}
+@keyframes midi-armed {
+  from { outline-color: var(--color-accent); }
+  to { outline-color: color-mix(in oklab, var(--color-accent) 30%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.midi-learn [data-midi-action][data-midi-armed] { animation: none; }
+}
