@@ -64,7 +64,14 @@ function beatsLabel(b: number): string {
  * them the master meter and the limiter's light; the crossfader beneath. The
  * values live in `mixerState` and the audio in `mixer.ts`.
  */
-export function MixerPanel({ autoGain }: { autoGain: Record<Channel, number | null> }) {
+export function MixerPanel({
+  autoGain,
+  autoGainOn,
+}: {
+  autoGain: Record<Channel, number | null>
+  /** The `useAutoGain` setting: off, the gain ignores the track's. */
+  autoGainOn: boolean
+}) {
   const meterRefs = {
     A: useRef<HTMLDivElement>(null),
     B: useRef<HTMLDivElement>(null),
@@ -109,7 +116,7 @@ export function MixerPanel({ autoGain }: { autoGain: Record<Channel, number | nu
   return (
     <div className="well flex w-[26rem] shrink-0 flex-col gap-1.5 rounded-2xl px-2.5 pb-1.5 pt-2.5">
       <div className="flex min-h-0 flex-1 items-stretch gap-2">
-        <Strip ch="A" autoGain={autoGain.A} meterRef={meterRefs.A} />
+        <Strip ch="A" autoGain={autoGainOn ? autoGain.A : undefined} meterRef={meterRefs.A} />
         <div className="flex w-3 flex-col items-center gap-1" title="Master — after the limiter">
           <MeterBar fillRef={meterRefs.master} />
           <span
@@ -121,7 +128,7 @@ export function MixerPanel({ autoGain }: { autoGain: Record<Channel, number | nu
             LIM
           </span>
         </div>
-        <Strip ch="B" autoGain={autoGain.B} meterRef={meterRefs.B} mirrored />
+        <Strip ch="B" autoGain={autoGainOn ? autoGain.B : undefined} meterRef={meterRefs.B} mirrored />
       </div>
       <div className="flex h-6 shrink-0 items-center justify-center gap-2 px-1">
         <span className="font-mono text-[11px] font-semibold text-muted">A</span>
@@ -162,7 +169,8 @@ function Strip({
   mirrored = false,
 }: {
   ch: Channel
-  autoGain: number | null
+  /** The track's auto gain; null = it has none, undefined = the setting is off. */
+  autoGain: number | null | undefined
   meterRef: RefObject<HTMLDivElement | null>
   mirrored?: boolean
 }) {
@@ -207,7 +215,13 @@ function Strip({
           onChange={(v) => set({ trim: Math.abs(v) < 0.3 ? 0 : v })}
           label="Gain"
           describe={(v) =>
-            `Gain ${fmtDb(v)}${autoGain != null ? ` on the track's auto gain (${fmtDb(autoGain)})` : ' (this track has no auto gain)'}`
+            `Gain ${fmtDb(v)}${
+              autoGain === undefined
+                ? ' (auto gain off)'
+                : autoGain != null
+                  ? ` on the track's auto gain (${fmtDb(autoGain)})`
+                  : ' (this track has no auto gain)'
+            }`
           }
         />
         {eq('high', 'Hi', 'High')}

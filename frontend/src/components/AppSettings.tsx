@@ -30,6 +30,8 @@ export const APP_SETTING_DEFAULTS = {
   keylockDefault: true,
   /** Any press on a deck focuses it (else only its A/B badge). */
   autoFocusDeck: true,
+  /** A channel's gain starts at the track's auto gain (else 0 dB). */
+  useAutoGain: true,
   /** EQ full left kills the band (else -26 dB, DJM-style). */
   eqKill: false,
   /** The crossfader curve: 0 smooth (constant power) .. 1 sharp (a cut).

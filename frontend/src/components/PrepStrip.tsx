@@ -188,8 +188,10 @@ export function PrepStrip({
   useEffect(() => mixer().setActive(performance), [performance])
   const gainA = decks.A.track?.auto_gain_db ?? null
   const gainB = decks.B.track?.auto_gain_db ?? null
-  useEffect(() => mixer().setAutoGain('A', gainA ?? 0), [gainA])
-  useEffect(() => mixer().setAutoGain('B', gainB ?? 0), [gainB])
+  // The `useAutoGain` setting off: every channel starts at 0 dB.
+  const useAutoGain = useAppSetting('useAutoGain')
+  useEffect(() => mixer().setAutoGain('A', useAutoGain ? (gainA ?? 0) : 0), [gainA, useAutoGain])
+  useEffect(() => mixer().setAutoGain('B', useAutoGain ? (gainB ?? 0) : 0), [gainB, useAutoGain])
   const bpmA = (a.activeMarker?.bpm ?? 0) * a.rate
   const bpmB = (b.activeMarker?.bpm ?? 0) * b.rate
   useEffect(() => mixer().setTempo('A', bpmA), [bpmA])
@@ -355,7 +357,7 @@ export function PrepStrip({
           </>,
           'flex min-w-0 flex-1 flex-col gap-2',
         )}
-        <MixerPanel autoGain={{ A: gainA, B: gainB }} />
+        <MixerPanel autoGain={{ A: gainA, B: gainB }} autoGainOn={useAutoGain} />
         {pane(
           'B',
           <>

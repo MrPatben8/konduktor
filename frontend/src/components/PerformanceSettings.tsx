@@ -38,6 +38,7 @@ export function PerformanceSettings({ onClose }: { onClose: () => void }) {
   const perfStems = useAppSetting('perfStems')
   const keylockDefault = useAppSetting('keylockDefault')
   const autoFocusDeck = useAppSetting('autoFocusDeck')
+  const useAutoGain = useAppSetting('useAutoGain')
   const eqKill = useAppSetting('eqKill')
   const sharpnessSetting = useAppSetting('crossfaderSharpness')
   const fxFilterRange = useAppSetting('fxFilterRange')
@@ -104,6 +105,12 @@ export function PerformanceSettings({ onClose }: { onClose: () => void }) {
           </section>
           <section className="space-y-2">
             <h3 className={section}>Mixer</h3>
+            <Check
+              checked={useAutoGain}
+              onChange={(v) => void set({ useAutoGain: v })}
+              title="Use auto gain"
+              text="Off: every channel starts at 0 dB."
+            />
             <Choice
               title="EQ full left"
               value={eqKill ? 'kill' : 'cut'}
