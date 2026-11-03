@@ -42,10 +42,24 @@ describe('mapping', () => {
   it('the Shift control does nothing else', () => {
     let m = bind(emptyMapping(), 'note:1:63', 'button', 'normal', 'deck.A.play')
     m = bindShift(m, 'note:1:63')
-    expect(m.shift).toBe('note:1:63')
+    expect(m.shifts).toEqual(['note:1:63', null])
     expect(m.bindings['note:1:63']).toBeUndefined()
     m = bind(m, 'note:1:63', 'button', 'normal', 'deck.A.cue')
-    expect(m.shift).toBeNull()
+    expect(m.shifts).toEqual([null, null])
+  })
+  it('two Shift controls, each in its own slot', () => {
+    let m = bindShift(emptyMapping(), 'note:1:63')
+    m = bindShift(m, 'note:2:63', 1)
+    expect(m.shifts).toEqual(['note:1:63', 'note:2:63'])
+    // Learning one into the other slot moves it, never doubles it.
+    m = bindShift(m, 'note:1:63', 1)
+    expect(m.shifts).toEqual([null, 'note:1:63'])
+    m = bindShift(m, null, 1)
+    expect(m.shifts).toEqual([null, null])
+  })
+  it("reads the single-Shift form mappings had before", () => {
+    expect(sanitizeMapping({ version: 1, shift: 'note:1:63', bindings: {} })?.shifts).toEqual(['note:1:63', null])
+    expect(sanitizeMapping({ version: 1, shifts: ['note:1:63', 'note:1:63'] })?.shifts).toEqual(['note:1:63', null])
   })
   it('the LSB half of a 14-bit pair reaches its MSB', () => {
     const m = bind(emptyMapping(), 'cc:1:0', 'abs14', 'normal', 'deck.A.pitch')
@@ -73,7 +87,7 @@ describe('mapping', () => {
         'nonsense': { encoding: 'button', normal: 'deck.A.play' },
       },
     })
-    expect(m?.shift).toBe('note:1:63')
+    expect(m?.shifts).toEqual(['note:1:63', null])
     expect(m?.jogSensitivity).toBe(10)
     expect(Object.keys(m!.bindings)).toEqual(['note:1:0'])
     expect(sanitizeMapping({ version: 2 })).toBeNull()

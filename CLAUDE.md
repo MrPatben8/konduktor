@@ -1522,7 +1522,7 @@ Two independent apps that talk over HTTP:
     position jogs that wrap; `detectEncoding` guesses from what a control sent
     while learning: relative REPEATS and jitters inside its zones, absolute
     progresses), `actions.ts` (the vocabulary: deck buttons = the deck keys'
-    actions, plus pitch, jog, jog touch, fast scrub, load, SYNC, keylock,
+    actions, plus pitch, jog, jog touch, fast scrub, load, SYNC, MASTER, keylock,
     loops; mixer; browse / tree; performance mode; `shiftDefault` = the
     keyboard's Shift meaning), `mapping.ts` (per controller, keyed by SOURCE;
     each control a normal + a FREE Shift binding; learning REPLACES an
@@ -1535,7 +1535,9 @@ Two independent apps that talk over HTTP:
     encoder wins only where it has an action for the layer. A CC learned for
     a button waits 400 ms: one message, or any 0, = a button; several
     non-zero = a turn (so a two's-complement encoder's 127s are not a press).
-    **`router.ts`**: Shift is a learned control (an unbound Shift
+    **`router.ts`**: Shift is a learned control — up to TWO per controller
+    (`Mapping.shifts`, many have one per deck; either held = the Shift layer;
+    the old single `shift` field still loads) (an unbound Shift
     binding falls back to normal); deck B and the mixer act only in
     performance mode; positions JUMP (no soft takeover — "the controller
     always wins"); a held control releases where it was pressed; Learn sees

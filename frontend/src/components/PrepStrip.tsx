@@ -302,6 +302,10 @@ export function PrepStrip({
         if (synced[id] || !syncBlocked(id)) toggleSync(id)
         else onError?.(syncBlocked(id)!)
       },
+      // As the on-screen MASTER button: performance mode, a track loaded.
+      makeMaster: () => {
+        if (performance && d.track) makeMaster(id)
+      },
       toggleKeylock: () => d.setKeylock(!d.keylock),
       pitch: d.pitch,
       setPitch: (v) => {

@@ -34,6 +34,7 @@ function deckActions(d: DeckId): ActionDef[] {
     a('play', 'Play / pause'),
     a('cue', 'CUE', 'hold'),
     a('sync', 'SYNC'),
+    a('master', 'Tempo MASTER'),
     a('keylock', 'Keylock'),
     a('pitch', 'Pitch fader', 'continuous'),
     a('jog', 'Jog wheel', 'jog'),

@@ -62,6 +62,7 @@ export function DeckTempo({ deck, master, synced, syncBlocked, onSync, onMaster,
         SYNC
       </button>
       <button
+        data-midi-action={`deck.${deck.channel}.master`}
         onClick={onMaster}
         disabled={!track}
         aria-pressed={master}

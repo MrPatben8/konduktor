@@ -12,7 +12,7 @@ import { emptyMapping } from './mapping'
 import type { SourceKey } from './messages'
 
 /** What Learn is waiting for: an action in a layer, or the Shift control itself. */
-export type LearnTarget = { action: string; layer: Layer } | { action: 'shift' }
+export type LearnTarget = { action: string; layer: Layer } | { action: 'shift'; slot: 0 | 1 }
 
 export interface MidiState {
   /** Whether this build can read MIDI at all (desktop app, or a Web MIDI browser). */

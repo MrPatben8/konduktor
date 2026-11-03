@@ -19,8 +19,10 @@ export interface Binding {
 
 export interface Mapping {
   version: 1
-  /** The control acting as Shift (itself a learned control). */
-  shift: SourceKey | null
+  /** The controls acting as Shift (learned controls), up to two — many
+   *  controllers have one per deck. Either held = the Shift layer. Slot order
+   *  is only the editor's; a mapping from before two were allowed had `shift`. */
+  shifts: [SourceKey | null, SourceKey | null]
   bindings: Record<SourceKey, Binding>
   /** Jog: scratch / nudge / scrub sensitivity (1 = the default feel). */
   jogSensitivity: number
@@ -34,7 +36,7 @@ export const DEFAULT_JOG_SENSITIVITY = 1
 export const DEFAULT_SCRUB_SPEED = 8
 
 export function emptyMapping(): Mapping {
-  return { version: 1, shift: null, bindings: {}, jogSensitivity: DEFAULT_JOG_SENSITIVITY, scrubSpeed: DEFAULT_SCRUB_SPEED }
+  return { version: 1, shifts: [null, null], bindings: {}, jogSensitivity: DEFAULT_JOG_SENSITIVITY, scrubSpeed: DEFAULT_SCRUB_SPEED }
 }
 
 const num = (v: unknown, lo: number, hi: number, fallback: number) =>
@@ -46,7 +48,10 @@ export function sanitizeMapping(raw: unknown): Mapping | null {
   const r = raw as Record<string, unknown>
   if (r.version !== 1) return null
   const out = emptyMapping()
-  if (typeof r.shift === 'string' && parseSource(r.shift)) out.shift = r.shift
+  const shift = (v: unknown) => (typeof v === 'string' && parseSource(v) ? v : null)
+  if (Array.isArray(r.shifts)) out.shifts = [shift(r.shifts[0]), shift(r.shifts[1])]
+  else out.shifts = [shift(r.shift), null] // the single-Shift form
+  if (out.shifts[0] && out.shifts[0] === out.shifts[1]) out.shifts[1] = null
   out.jogSensitivity = num(r.jogSensitivity, 0.05, 10, DEFAULT_JOG_SENSITIVITY)
   out.scrubSpeed = num(r.scrubSpeed, 1, 64, DEFAULT_SCRUB_SPEED)
   const bindings = r.bindings && typeof r.bindings === 'object' ? (r.bindings as Record<string, unknown>) : {}
@@ -116,14 +121,25 @@ export function bind(m: Mapping, source: SourceKey, encoding: Encoding, layer: L
   const { base, dir } = splitSource(source)
   const other = dir && bindings[turnSource(base, dir === '+' ? '-' : '+')]
   if (dir && other) bindings[turnSource(base, dir === '+' ? '-' : '+')] = { ...other, encoding }
-  return { ...cleared, shift: cleared.shift === source ? null : cleared.shift, bindings }
+  return { ...cleared, shifts: withoutShift(cleared.shifts, source), bindings }
 }
 
-/** Make `source` the Shift control (it then does nothing else). */
-export function bindShift(m: Mapping, source: SourceKey): Mapping {
+const withoutShift = (s: Mapping['shifts'], source: SourceKey): Mapping['shifts'] => [
+  s[0] === source ? null : s[0],
+  s[1] === source ? null : s[1],
+]
+
+/** Whether `source` is one of the mapping's Shift controls. */
+export const isShift = (m: Mapping, source: SourceKey) => m.shifts[0] === source || m.shifts[1] === source
+
+/** Make `source` Shift control `slot` (it then does nothing else; it leaves
+ *  the other slot if it was there). `null` clears the slot. */
+export function bindShift(m: Mapping, source: SourceKey | null, slot: 0 | 1 = 0): Mapping {
   const bindings = { ...m.bindings }
-  delete bindings[source]
-  return { ...m, shift: source, bindings }
+  const shifts = source ? withoutShift(m.shifts, source) : ([...m.shifts] as Mapping['shifts'])
+  shifts[slot] = source
+  if (source) delete bindings[source]
+  return { ...m, shifts, bindings }
 }
 
 export function setBinding(m: Mapping, source: SourceKey, patch: Partial<Binding>): Mapping {

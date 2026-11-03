@@ -5,6 +5,7 @@ import { ENCODING_LABELS, ENCODINGS } from '../lib/midi/encoding'
 import {
   DEFAULT_JOG_SENSITIVITY,
   DEFAULT_SCRUB_SPEED,
+  bindShift,
   emptyMapping,
   sanitizeMapping,
   setBinding,
@@ -24,8 +25,8 @@ import { Modal } from './Modal'
 const section = 'text-[11px] font-semibold uppercase tracking-wider text-faint'
 const MAPPING_SUFFIX = '.konduktor-midi.json'
 
-const sameTarget = (a: LearnTarget | null, b: LearnTarget) =>
-  a != null && a.action === b.action && ('layer' in a ? a.layer : null) === ('layer' in b ? b.layer : null)
+const which = (t: LearnTarget) => ('layer' in t ? t.layer : t.slot)
+const sameTarget = (a: LearnTarget | null, b: LearnTarget) => a != null && a.action === b.action && which(a) === which(b)
 
 /**
  * Settings ▸ MIDI Controllers… (decided 2026-11-03): every controller is
@@ -169,7 +170,7 @@ export function MidiSettings({ onClose }: { onClose: () => void }) {
     try {
       const m = sanitizeMapping((await api.midiImport(path)).mapping)
       if (!m) throw new Error('That file is not a MIDI mapping')
-      if (Object.keys(mapping.bindings).length > 0 || mapping.shift) {
+      if (Object.keys(mapping.bindings).length > 0 || mapping.shifts.some(Boolean)) {
         const ok = await askConfirm({
           title: `Replace ${port}'s mapping?`,
           body: 'The imported mapping replaces every control learned on this controller.',
@@ -253,29 +254,41 @@ export function MidiSettings({ onClose }: { onClose: () => void }) {
               </div>
               {note && <div className={`text-xs ${note.error ? 'text-pink' : 'text-faint'}`}>{note.text}</div>}
               <div className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2">
-                <span className="text-text">Shift button</span>
-                <div className="flex items-center gap-2">
-                  {sameTarget(armed, { action: 'shift' }) ? (
-                    <button onClick={() => armLearn(null)} className="animate-pulse rounded-md bg-accent/25 px-2 py-1 text-[11px] text-text ring-1 ring-accent">
-                      Press the controller's Shift…
-                    </button>
-                  ) : mapping.shift ? (
-                    <>
-                      <span className="rounded-md bg-ink-800 px-2 py-1 font-mono text-[10.5px] text-text">{describeSource(mapping.shift)}</span>
-                      <button onClick={() => learn({ action: 'shift' })} className="text-[11px] text-faint hover:text-text">
-                        Learn again
-                      </button>
-                      <button onClick={() => edit((m) => ({ ...m, shift: null }))} className="text-[11px] text-faint hover:text-pink">
-                        Clear
-                      </button>
-                    </>
-                  ) : (
-                    <button onClick={() => learn({ action: 'shift' })} className="rounded-md px-2 py-1 text-[11px] text-faint hover:bg-ink-800 hover:text-text">
-                      Learn
-                    </button>
-                  )}
-                  <span className="text-[11px] text-faint">Hold it while moving a control to learn its Shift action.</span>
-                </div>
+                {([0, 1] as const).map((slot) => {
+                  const src = mapping.shifts[slot]
+                  const t: LearnTarget = { action: 'shift', slot }
+                  return (
+                    <div key={slot} className="contents">
+                      <span className="text-text">{slot === 0 ? 'Shift button' : 'Second Shift'}</span>
+                      <div className="flex items-center gap-2">
+                        {sameTarget(armed, t) ? (
+                          <button onClick={() => armLearn(null)} className="animate-pulse rounded-md bg-accent/25 px-2 py-1 text-[11px] text-text ring-1 ring-accent">
+                            Press the controller's Shift…
+                          </button>
+                        ) : src ? (
+                          <>
+                            <span className="rounded-md bg-ink-800 px-2 py-1 font-mono text-[10.5px] text-text">{describeSource(src)}</span>
+                            <button onClick={() => learn(t)} className="text-[11px] text-faint hover:text-text">
+                              Learn again
+                            </button>
+                            <button onClick={() => edit((m) => bindShift(m, null, slot))} className="text-[11px] text-faint hover:text-pink">
+                              Clear
+                            </button>
+                          </>
+                        ) : (
+                          <button onClick={() => learn(t)} className="rounded-md px-2 py-1 text-[11px] text-faint hover:bg-ink-800 hover:text-text">
+                            Learn
+                          </button>
+                        )}
+                        <span className="text-[11px] text-faint">
+                          {slot === 0
+                            ? 'Hold it while moving a control to learn its Shift action.'
+                            : 'Optional — many controllers have one per deck. Either one gives the Shift layer.'}
+                        </span>
+                      </div>
+                    </div>
+                  )
+                })}
                 <span className="text-text">Jog sensitivity</span>
                 <Slider
                   value={mapping.jogSensitivity}

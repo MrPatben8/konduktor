@@ -29,6 +29,7 @@ function fakeDeck(): DeckMidi & { calls: string[] } {
     loopOut: log('loopOut'),
     toggleLoop: log('toggleLoop'),
     toggleSync: log('sync'),
+    makeMaster: log('master'),
     toggleKeylock: log('keylock'),
     setPitch: log('pitch'),
     jogTouch: log('jogTouch'),
@@ -72,6 +73,14 @@ beforeEach(() => {
 })
 
 describe('router', () => {
+  it('MASTER is a mappable button on each deck', () => {
+    map((m) => bind(m, 'note:2:20', 'button', 'normal', 'deck.B.master'))
+    router.receive(PORT, [0x91, 20, 127])
+    expect(B.calls).toEqual([]) // deck B: performance mode only
+    targets.performance = true
+    router.receive(PORT, [0x91, 20, 127])
+    expect(B.calls).toEqual(['master'])
+  })
   it('runs a button on press only', () => {
     note(11, 127)
     note(11, 0)
@@ -90,6 +99,17 @@ describe('router', () => {
     note(63, 127)
     note(0, 0)
     expect(A.calls).toEqual(['slotPress 0', 'slotRelease 0'])
+  })
+  it('with two Shift buttons, either one held gives the Shift layer', () => {
+    map((m) => bindShift(bindShift(bind(m, 'note:1:0', 'button', 'normal', 'deck.A.hotcue.1'), 'note:1:63', 0), 'note:2:63', 1))
+    router.receive(PORT, [0x91, 63, 127]) // the second Shift (deck B's side)
+    note(0, 127)
+    note(63, 127) // both held…
+    router.receive(PORT, [0x91, 63, 0]) // …one let go: still shifted
+    note(0, 127)
+    note(63, 0)
+    note(0, 127)
+    expect(A.calls).toEqual(['deleteSlot 0', 'deleteSlot 0', 'slotPress 0'])
   })
   it('an unbound Shift layer falls back to the normal action', () => {
     note(63, 127)
@@ -244,8 +264,8 @@ describe('learning', () => {
     }
   })
   it('the Shift control itself', () => {
-    armLearn({ action: 'shift' })
+    armLearn({ action: 'shift', slot: 1 })
     note(70, 127)
-    expect(getMidiState().mappings[PORT].shift).toBe('note:1:70')
+    expect(getMidiState().mappings[PORT].shifts).toEqual(['note:1:63', 'note:1:70'])
   })
 })

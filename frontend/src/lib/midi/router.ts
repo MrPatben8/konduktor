@@ -14,7 +14,7 @@
 
 import { actionDef, actionDeck, performanceOnly, type ActionKind, type DeckId } from './actions'
 import { Decoder, detectEncoding, type Decoded, type Encoding, type LearnKind } from './encoding'
-import { bind, bindShift, resolveBinding, type Binding, type Layer, type Mapping } from './mapping'
+import { bind, bindShift, isShift, resolveBinding, type Binding, type Layer, type Mapping } from './mapping'
 import { parseMessage, sourceKey, splitSource, turnSource, type MidiMessage, type SourceKey } from './messages'
 import { armLearn, getMidiState, patchMidi, updateMapping, type LearnTarget } from './store'
 import type { Track } from '../../api'
@@ -29,6 +29,8 @@ export interface DeckMidi extends DeckShortcuts {
   loopOut(): void
   toggleLoop(): void
   toggleSync(): void
+  /** Make this deck the tempo master (performance mode). */
+  makeMaster(): void
   toggleKeylock(): void
   /** The pitch fader, -1..1. */
   pitch: number
@@ -90,7 +92,8 @@ interface Capture {
 }
 
 export class MidiRouter {
-  private shiftHeld = new Map<string, boolean>()
+  /** Per port, the Shift controls held now (two may be mapped). */
+  private shiftHeld = new Map<string, Set<SourceKey>>()
   private decoders = new Map<string, Decoder>()
   private held = new Map<string, string>()
   private capture: Capture | null = null
@@ -120,8 +123,11 @@ export class MidiRouter {
     const mapping = st.mappings[port]
 
     // Shift: tracked always, and never an action of its own.
-    if (mapping?.shift === key && !(st.armed?.action === 'shift')) {
-      this.shiftHeld.set(port, m.value > 0)
+    if (mapping && isShift(mapping, key) && !(st.armed?.action === 'shift')) {
+      const held = this.shiftHeld.get(port) ?? new Set<SourceKey>()
+      if (m.value > 0) held.add(key)
+      else held.delete(key)
+      this.shiftHeld.set(port, held)
       return
     }
     if (st.armed) {
@@ -129,7 +135,7 @@ export class MidiRouter {
       return
     }
     if (!mapping) return
-    const shift = !!this.shiftHeld.get(port)
+    const shift = this.isShifted(port)
     const hit = resolveBinding(mapping, key)
     // An encoder whose turns are bound by direction. The plain binding wins
     // where it has an action for this layer; else the turns do.
@@ -186,6 +192,10 @@ export class MidiRouter {
       this.run(action, { type: 'press', down: true }, mapping.jogSensitivity, mapping.scrubSpeed)
       if (hold) this.run(action, { type: 'press', down: false }, mapping.jogSensitivity, mapping.scrubSpeed)
     }
+  }
+
+  private isShifted(port: string): boolean {
+    return (this.shiftHeld.get(port)?.size ?? 0) > 0
   }
 
   /** Forget held controls and decoder state (a controller unplugged). */
@@ -253,6 +263,8 @@ export class MidiRouter {
         return deck.toggle()
       case 'sync':
         return deck.toggleSync()
+      case 'master':
+        return deck.makeMaster()
       case 'keylock':
         return deck.toggleKeylock()
       case 'jumpBack':
@@ -318,7 +330,7 @@ export class MidiRouter {
     let c = this.capture
     if (!c || c.target !== target) {
       if (c?.timer) clearTimeout(c.timer)
-      const layer: Layer = 'layer' in target ? (this.shiftHeld.get(port) ? 'shift' : target.layer) : 'normal'
+      const layer: Layer = 'layer' in target ? (this.isShifted(port) ? 'shift' : target.layer) : 'normal'
       c = this.capture = { target, kind, port: null, source: null, samples: [], layer, timer: null }
     }
     if (c.port && c.port !== port) return // one controller at a time
@@ -395,7 +407,7 @@ export class MidiRouter {
     if (this.capture !== c) return
     this.capture = null
     const t = c.target
-    if (t.action === 'shift') updateMapping(port, (m) => bindShift(m, source))
+    if ('slot' in t) updateMapping(port, (m) => bindShift(m, source, t.slot))
     else {
       updateMapping(port, (m) => bind(m, source, encoding, c.layer, t.action))
       patchMidi({ learned: { port, action: t.action, layer: c.layer, at: performance.now() } })
