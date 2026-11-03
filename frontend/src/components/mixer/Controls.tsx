@@ -56,8 +56,9 @@ export function Knob({
   const angle = -135 + ((clamp(value, min, max) - min) / range) * 270
   const start = bipolar ? -135 + ((defaultValue - min) / range) * 270 : -135
   const c = size / 2
-  const r = c - 3
-  const [px, py] = polar(r - 4, angle, c)
+  const stroke = size >= 36 ? 3.5 : 2.5
+  const r = c - stroke
+  const [px, py] = polar(r - stroke - 2, angle, c)
 
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
@@ -93,19 +94,23 @@ export function Knob({
       >
         <svg width={size} height={size}>
           <circle cx={c} cy={c} r={r} fill="rgb(0 0 0 / 0.36)" stroke="rgb(255 255 255 / 0.08)" />
-          <path d={arc(r, -135, 135, c)} fill="none" stroke="rgb(255 255 255 / 0.1)" strokeWidth={2.5} strokeLinecap="round" />
+          <path d={arc(r, -135, 135, c)} fill="none" stroke="rgb(255 255 255 / 0.1)" strokeWidth={stroke} strokeLinecap="round" />
           <path
             d={arc(r, start, angle, c)}
             fill="none"
             stroke={color}
-            strokeWidth={2.5}
+            strokeWidth={stroke}
             strokeLinecap="round"
             style={{ filter: `drop-shadow(0 0 3px ${color})` }}
           />
-          <line x1={c} y1={c} x2={px} y2={py} stroke="var(--color-text)" strokeWidth={2} strokeLinecap="round" />
+          <line x1={c} y1={c} x2={px} y2={py} stroke="var(--color-text)" strokeWidth={size >= 36 ? 2.5 : 2} strokeLinecap="round" />
         </svg>
       </div>
-      <span className="text-[8.5px] font-semibold uppercase leading-none tracking-[0.08em] text-faint">{label}</span>
+      <span
+        className={`font-semibold uppercase leading-none tracking-[0.08em] text-faint ${size >= 36 ? 'text-[9.5px]' : 'text-[8.5px]'}`}
+      >
+        {label}
+      </span>
     </div>
   )
 }

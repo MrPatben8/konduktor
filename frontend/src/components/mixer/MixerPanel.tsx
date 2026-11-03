@@ -19,6 +19,11 @@ import { Fader, Knob } from './Controls'
 const METER_FLOOR = -48
 const METER_TOP = 3
 
+/** Knob sizes (px): as large as the column allows — the EQ block is two
+ *  across, the colour knob beside it larger. */
+const EQ_KNOB = 40
+const COLOR_KNOB = 48
+
 const fmtDb = (db: number, places = 1) =>
   !isFinite(db) ? '−∞ dB' : `${db > 0 ? '+' : db < 0 ? '−' : ''}${Math.abs(db).toFixed(places)} dB`
 
@@ -80,7 +85,10 @@ export function MixerPanel({ autoGain }: { autoGain: Record<Channel, number | nu
             held[k] > -1 ? 'var(--color-pink)' : held[k] > -9 ? 'var(--color-gold)' : 'var(--color-mint)'
         }
       }
-      if (lv.limiting > 0.5) limitUntil = now + 600
+      // Only while the master carries sound: on silence, Chrome's compressor
+      // reports a phantom reduction (14 dB, decaying over ~2 s, measured just
+      // after performance mode opens) that limits nothing.
+      if (lv.limiting > 0.5 && lv.master > -60) limitUntil = now + 600
       if (limitRef.current) limitRef.current.dataset.on = String(now < limitUntil)
       raf = requestAnimationFrame(tick)
     }
@@ -94,7 +102,7 @@ export function MixerPanel({ autoGain }: { autoGain: Record<Channel, number | nu
   const sharpness = useMixer((s) => s.sharpness)
 
   return (
-    <div className="well flex w-[24rem] shrink-0 flex-col gap-1.5 rounded-2xl px-2.5 pb-1.5 pt-2.5">
+    <div className="well flex w-[26rem] shrink-0 flex-col gap-1.5 rounded-2xl px-2.5 pb-1.5 pt-2.5">
       <div className="flex min-h-0 flex-1 items-stretch gap-2">
         <Strip ch="A" autoGain={autoGain.A} meterRef={meterRefs.A} />
         <div className="flex w-3 flex-col items-center gap-1" title="Master — after the limiter">
@@ -171,51 +179,61 @@ function Strip({
       max={1}
       defaultValue={0}
       bipolar
+      size={EQ_KNOB}
       onChange={(v) => set({ [band]: Math.abs(v) < 0.03 ? 0 : v })}
       label={label}
       describe={describeEq(name)}
     />
   )
+  // GAIN (the state's `trim`: on top of the track's auto gain) and the EQ as a
+  // 2×2 block; beside it, toward the fader, the colour effect: its picker
+  // above a larger COLOR knob (decided 2026-11-03).
   const knobs = (
-    <div className="grid grid-cols-4 content-between gap-x-1.5">
-      <Knob
-        value={s.trim}
-        min={-TRIM_RANGE_DB}
-        max={TRIM_RANGE_DB}
-        defaultValue={0}
-        bipolar
-        color="var(--color-text)"
-        onChange={(v) => set({ trim: Math.abs(v) < 0.3 ? 0 : v })}
-        label="Trim"
-        describe={(v) =>
-          `Trim ${fmtDb(v)}${autoGain != null ? ` on the track's auto gain (${fmtDb(autoGain)})` : ' (this track has no auto gain)'}`
-        }
-      />
-      {eq('high', 'Hi', 'High')}
-      {eq('mid', 'Mid', 'Mid')}
-      {eq('low', 'Low', 'Low')}
-      <button
-        onClick={(e) => {
-          const r = e.currentTarget.getBoundingClientRect()
-          setFxMenu({ x: r.left, y: r.bottom + 4 })
-        }}
-        title="Which effect the COLOR knob drives"
-        className="btn-glass col-span-3 mt-0.5 flex h-6 items-center justify-center gap-0.5 self-start rounded-md text-[10px] font-semibold uppercase tracking-[0.06em] text-text"
-      >
-        {FX_LABELS[s.fx]}
-        <Icon name="chevronDown" size={11} />
-      </button>
-      <Knob
-        value={s.color}
-        min={-1}
-        max={1}
-        defaultValue={0}
-        bipolar
-        color="var(--color-gold)"
-        onChange={(v) => set({ color: Math.abs(v) < 0.02 ? 0 : v })}
-        label="Color"
-        describe={(v) => describeFx(s.fx, v, fxSettings)}
-      />
+    <div className={`flex items-center gap-2 self-center ${mirrored ? 'flex-row-reverse' : ''}`}>
+      <div className="grid grid-cols-2 gap-x-1.5 gap-y-1.5">
+        <Knob
+          value={s.trim}
+          min={-TRIM_RANGE_DB}
+          max={TRIM_RANGE_DB}
+          defaultValue={0}
+          bipolar
+          size={EQ_KNOB}
+          color="var(--color-text)"
+          onChange={(v) => set({ trim: Math.abs(v) < 0.3 ? 0 : v })}
+          label="Gain"
+          describe={(v) =>
+            `Gain ${fmtDb(v)}${autoGain != null ? ` on the track's auto gain (${fmtDb(autoGain)})` : ' (this track has no auto gain)'}`
+          }
+        />
+        {eq('high', 'Hi', 'High')}
+        {eq('mid', 'Mid', 'Mid')}
+        {eq('low', 'Low', 'Low')}
+      </div>
+      <div className="flex flex-col items-center gap-2" style={{ width: COLOR_KNOB }}>
+        <button
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect()
+            setFxMenu({ x: r.left, y: r.bottom + 4 })
+          }}
+          title={`${FX_LABELS[s.fx]} — which effect the COLOR knob drives`}
+          className="btn-glass flex h-6 w-full items-center justify-center gap-px rounded-md text-[9.5px] font-semibold uppercase tracking-[0.04em] text-text"
+        >
+          {FX_LABELS[s.fx]}
+          <Icon name="chevronDown" size={9} />
+        </button>
+        <Knob
+          value={s.color}
+          min={-1}
+          max={1}
+          defaultValue={0}
+          bipolar
+          size={COLOR_KNOB}
+          color="var(--color-gold)"
+          onChange={(v) => set({ color: Math.abs(v) < 0.02 ? 0 : v })}
+          label="Color"
+          describe={(v) => describeFx(s.fx, v, fxSettings)}
+        />
+      </div>
     </div>
   )
   const fader = (
@@ -248,9 +266,9 @@ function Strip({
         <ContextMenu
           x={fxMenu.x}
           y={fxMenu.y}
+          minWidth={0}
           onClose={() => setFxMenu(null)}
           items={[
-            { heading: `Channel ${ch} · colour effect` },
             ...FX_TYPES.map((t) => ({
               label: FX_LABELS[t],
               hint: t === s.fx ? '✓' : undefined,

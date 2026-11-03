@@ -2795,7 +2795,8 @@ The prep strip plays every track through the **Web Audio API** (a plain
   rate 1 the stretcher is bypassed.
   **The mixer** (`lib/audio/mixer.ts`, performance mode phase 4): each deck's
   engine plays into its CHANNEL (`DeckEngine.create(mixer().input(ch))`):
-  trim (the track's `auto_gain_db` + the knob, ±12 dB) → a 3-band ISOLATOR
+  GAIN (the state's `trim`: the track's `auto_gain_db` + the knob, ±12 dB) →
+  a 3-band ISOLATOR
   (LR4 crossovers at 250 Hz / 2.5 kHz, the low band through a 2.5 kHz
   all-pass, so the bands sum flat — measured 0.0000 dB; Web Audio's
   lowpass/highpass Q is in DB, Butterworth = -3.01, its allpass Q linear) →
@@ -2814,8 +2815,10 @@ The prep strip plays every track through the **Web Audio API** (a plain
   is BYPASSED (A straight through, B silent, no limiter): prep listening is
   unchanged. Controls live in `mixerState.ts` (an external store, not
   persisted; a MIDI mapping would write the same setters); the curves in
-  `mixerMath.ts` (tested). `components/mixer/`: `MixerPanel` (meters written
-  from one rAF loop, never through React state) and `Controls` (`Knob`,
+  `mixerMath.ts` (tested). `components/mixer/`: `MixerPanel` (26rem; per
+  channel a 2×2 block — GAIN HI / MID LOW, 40 px knobs — and toward the fader
+  the FX picker over a 48 px COLOR knob, mirrored on B; meters written from
+  one rAF loop, never through React state) and `Controls` (`Knob`,
   `Fader`: drag, Shift = fine, wheel, double-click resets; not focusable, so
   the deck keys never land on them). The graph itself was measured offline in
   Chrome (tones in, levels out) — flat EQ, kills, crossfader, fader, trim,

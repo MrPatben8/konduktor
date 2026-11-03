@@ -31,6 +31,8 @@ interface Props {
   y: number
   items: MenuItem[]
   onClose: () => void
+  /** The panel's minimum width (px); 0 lets a short list fit its labels. */
+  minWidth?: number
 }
 
 const SUBMENU_WIDTH = 240
@@ -40,7 +42,7 @@ const SUBMENU_MAX_HEIGHT = 288
 const MENU_MAX_HEIGHT = 400
 
 // Lightweight fixed-position menu. Closes on outside click, scroll, or Escape.
-export function ContextMenu({ x, y, items, onClose }: Props) {
+export function ContextMenu({ x, y, items, onClose, minWidth = 160 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null)
   // Read through a ref so the listeners are attached ONCE. Callers pass an
   // inline `onClose`; if the effect depended on it, a click that re-renders the
@@ -102,8 +104,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
       <MenuPanel
         items={items}
         onClose={onClose}
-        className="min-w-[160px]"
-        style={{ ...vertical, left: Math.min(x, window.innerWidth - 180) }}
+        style={{ ...vertical, minWidth, left: Math.min(x, window.innerWidth - 180) }}
       />
     </div>,
     document.body,
