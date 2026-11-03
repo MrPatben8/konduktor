@@ -25,19 +25,35 @@ describe('eqGain', () => {
 })
 
 describe('xfadeGains', () => {
-  it('smooth: constant power, -3 dB each at the centre', () => {
+  it('sharpness 0: constant power, -3 dB each at the centre', () => {
     for (const x of [-1, -0.4, 0, 0.3, 1]) {
-      const [a, b] = xfadeGains(x, 'smooth')
+      const [a, b] = xfadeGains(x, 0)
       expect(a * a + b * b).toBeCloseTo(1, 9)
     }
-    expect(gainToDb(xfadeGains(0, 'smooth')[0])).toBeCloseTo(-3.01, 2)
-    expect(xfadeGains(-1, 'smooth')).toEqual([1, expect.closeTo(0, 9)])
+    expect(gainToDb(xfadeGains(0, 0)[0])).toBeCloseTo(-3.01, 2)
+    expect(xfadeGains(-1, 0)).toEqual([1, expect.closeTo(0, 9)])
   })
-  it('sharp: both full until the last tenth', () => {
-    expect(xfadeGains(0, 'sharp')).toEqual([1, 1])
-    expect(xfadeGains(0.9, 'sharp')).toEqual([1, 1])
-    expect(xfadeGains(1, 'sharp')).toEqual([0, 1])
-    expect(xfadeGains(-0.95, 'sharp')[1]).toBeCloseTo(0.5, 9)
+  it('sharpness 1: both full until the last 4%, then a cut', () => {
+    expect(xfadeGains(0, 1)).toEqual([1, 1])
+    expect(xfadeGains(0.9, 1)).toEqual([1, 1])
+    expect(xfadeGains(1, 1)).toEqual([expect.closeTo(0, 9), 1])
+    expect(xfadeGains(-0.96, 1)[1]).toBeCloseTo(Math.SQRT1_2, 9) // halfway through its fade
+  })
+  it('in between: the centre rises from -3 dB to full, and every curve falls monotonically', () => {
+    let centre = 0
+    for (let s = 0; s <= 1; s += 0.1) {
+      const c = xfadeGains(0, s)[0]
+      expect(c).toBeGreaterThanOrEqual(centre - 1e-12)
+      centre = c
+      let prev = Infinity
+      for (let x = -1; x <= 1; x += 0.05) {
+        const [a, b] = xfadeGains(x, s)
+        expect(a).toBeLessThanOrEqual(prev + 1e-12)
+        expect(b).toBeCloseTo(xfadeGains(-x, s)[0], 9) // mirror images
+        prev = a
+      }
+    }
+    expect(xfadeGains(0, 0.6)[0]).toBe(1) // past ~0.52 the fades no longer reach the middle: no dip
   })
 })
 

@@ -49,8 +49,8 @@ function beatsLabel(b: number): string {
 /**
  * The mixer, between the decks in performance mode (decided 2026-11-02): per
  * channel TRIM (on top of the track's auto gain), HI / MID / LOW, a colour
- * effect with its own selector (its one parameter is an app setting, under
- * Performance mode in Settings), a fader and its meter; between
+ * effect with its own selector (its one parameter is an app setting, in
+ * Settings ▸ Performance mode…), a fader and its meter; between
  * them the master meter and the limiter's light; the crossfader beneath. The
  * values live in `mixerState` and the audio in `mixer.ts`.
  */
@@ -91,7 +91,7 @@ export function MixerPanel({ autoGain }: { autoGain: Record<Channel, number | nu
   }, [])
 
   const crossfader = useMixer((s) => s.crossfader)
-  const curve = useMixer((s) => s.curve)
+  const sharpness = useMixer((s) => s.sharpness)
 
   return (
     <div className="well flex w-[24rem] shrink-0 flex-col gap-1.5 rounded-2xl px-2.5 pb-1.5 pt-2.5">
@@ -121,7 +121,7 @@ export function MixerPanel({ autoGain }: { autoGain: Record<Channel, number | nu
           onChange={(v) => setMixer({ crossfader: Math.abs(v) < 0.03 ? 0 : v })}
           label="Crossfader"
           describe={(v) =>
-            `Crossfader (${curve === 'smooth' ? 'smooth' : 'sharp'} curve) — ${
+            `Crossfader (curve ${Math.round(sharpness * 100)}% sharp — Settings ▸ Performance mode…) — ${
               Math.abs(v) < 0.03 ? 'centre' : v < 0 ? `toward A ${Math.round(-v * 100)}%` : `toward B ${Math.round(v * 100)}%`
             }`
           }

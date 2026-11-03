@@ -5,7 +5,6 @@
 // mixer starts flat.
 
 import { useSyncExternalStore } from 'react'
-import type { CrossfaderCurve } from './mixerMath'
 
 export type Channel = 'A' | 'B'
 export const CHANNELS: Channel[] = ['A', 'B']
@@ -63,7 +62,8 @@ export interface MixerState {
   B: ChannelState
   /** -1 = all A, 1 = all B. */
   crossfader: number
-  curve: CrossfaderCurve
+  /** The crossfader curve, 0 (smooth) .. 1 (sharp): `mixerMath.xfadeGains`. */
+  sharpness: number
   /** EQ cuts to silence at full left (else to -26 dB). */
   eqKill: boolean
   fx: FxSettings
@@ -83,7 +83,7 @@ let state: MixerState = {
   A: DEFAULT_CHANNEL,
   B: DEFAULT_CHANNEL,
   crossfader: 0,
-  curve: 'smooth',
+  sharpness: 0,
   eqKill: false,
   fx: DEFAULT_FX,
 }
@@ -107,7 +107,7 @@ export function setChannel(ch: Channel, patch: Partial<ChannelState>): void {
   commit({ ...state, [ch]: { ...state[ch], ...patch } })
 }
 
-export function setMixer(patch: Partial<Pick<MixerState, 'crossfader' | 'curve' | 'eqKill' | 'fx'>>): void {
+export function setMixer(patch: Partial<Pick<MixerState, 'crossfader' | 'sharpness' | 'eqKill' | 'fx'>>): void {
   commit({ ...state, ...patch })
 }
 

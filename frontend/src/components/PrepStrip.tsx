@@ -118,19 +118,19 @@ export function PrepStrip({
   onEditTags,
 }: Props) {
   const view = useDeckView()
-  // Performance-mode settings (Settings ▸ Performance mode).
+  // Performance-mode settings (Settings ▸ Performance mode…).
   const perfStems = useAppSetting('perfStems')
   const keylockDefault = useAppSetting('keylockDefault')
   const eqKill = useAppSetting('eqKill')
-  const curve = useAppSetting('crossfaderCurve')
+  const sharpness = useAppSetting('crossfaderSharpness')
   const filterResonance = useAppSetting('fxFilterResonance')
   const echoBeats = useAppSetting('fxEchoBeats')
   const spaceSize = useAppSetting('fxSpaceSize')
   const noiseResonance = useAppSetting('fxNoiseResonance')
   const crushDrive = useAppSetting('fxCrushDrive')
   useEffect(() => {
-    setMixer({ eqKill, curve, fx: { filterResonance, echoBeats, spaceSize, noiseResonance, crushDrive } })
-  }, [eqKill, curve, filterResonance, echoBeats, spaceSize, noiseResonance, crushDrive])
+    setMixer({ eqKill, sharpness, fx: { filterResonance, echoBeats, spaceSize, noiseResonance, crushDrive } })
+  }, [eqKill, sharpness, filterResonance, echoBeats, spaceSize, noiseResonance, crushDrive])
   const lead: DeckId = performance ? focused : 'A'
   const playingA = useCallback((p: boolean) => onPlayingChange('A', p), [onPlayingChange])
   const playingB = useCallback((p: boolean) => onPlayingChange('B', p), [onPlayingChange])

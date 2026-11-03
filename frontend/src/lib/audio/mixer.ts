@@ -395,7 +395,7 @@ export class Mixer {
 
   private apply(): void {
     const s = getMixerState()
-    const [ga, gb] = xfadeGains(s.crossfader, s.curve)
+    const [ga, gb] = xfadeGains(s.crossfader, s.sharpness)
     this.strips.A.apply(s.A, ga, s.eqKill, s.fx)
     this.strips.B.apply(s.B, gb, s.eqKill, s.fx)
   }

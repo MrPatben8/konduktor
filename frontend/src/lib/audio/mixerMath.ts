@@ -33,20 +33,26 @@ export const TRIM_RANGE_DB = 12
 /** A channel fader (0..1) as a gain: an audio taper, -6 dB at ~0.7. */
 export const faderGain = (f: number): number => clamp(f, 0, 1) ** 2
 
-export type CrossfaderCurve = 'smooth' | 'sharp'
+/** The narrowest fade a fully sharp crossfader leaves (of its whole travel). */
+export const XF_MIN_WIDTH = 0.04
+
+/** How much of the travel a channel takes to fade out, at `sharpness` 0..1. */
+export const xfadeWidth = (sharpness: number): number => 1 - clamp(sharpness, 0, 1) * (1 - XF_MIN_WIDTH)
 
 /**
- * The crossfader (-1 = all A, 1 = all B) as the two channels' gains. Smooth is
- * constant-power: both at -3 dB in the middle, for blends. Sharp keeps both at
- * full until the last tenth of the travel, for cuts and scratching.
+ * The crossfader (-1 = all A, 1 = all B) as the two channels' gains, at a
+ * SHARPNESS from 0 to 1 (decided 2026-11-03: fully adjustable). Each channel
+ * fades on a quarter-cosine over the last `xfadeWidth` of the travel toward the
+ * other side and is at full level before it. At 0 that is the whole travel —
+ * constant power, both at -3 dB in the middle, for blends; turned up, both stay
+ * full across a widening middle (no dip), until at 1 a channel cuts over the
+ * last 4%, for cuts and scratching.
  */
-export function xfadeGains(x: number, curve: CrossfaderCurve): [number, number] {
-  x = clamp(x, -1, 1)
-  if (curve === 'smooth') {
-    const t = ((x + 1) / 2) * (Math.PI / 2)
-    return [Math.cos(t), Math.sin(t)]
-  }
-  return [x <= 0.9 ? 1 : (1 - x) / 0.1, x >= -0.9 ? 1 : (1 + x) / 0.1]
+export function xfadeGains(x: number, sharpness: number): [number, number] {
+  const t = (clamp(x, -1, 1) + 1) / 2 // 0 = all A
+  const w = xfadeWidth(sharpness)
+  const fade = (u: number) => Math.cos((Math.PI / 2) * clamp((u - (1 - w)) / w, 0, 1))
+  return [fade(t), fade(1 - t)]
 }
 
 /** The colour knob's dead centre: inside it, the effect is out of the path. */

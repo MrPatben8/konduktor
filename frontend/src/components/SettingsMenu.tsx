@@ -4,6 +4,7 @@ import { api } from '../api'
 import { AppSettings } from './AppSettings'
 import { useCaps } from '../lib/capabilities'
 import { LocalLibrariesSettings } from './LocalLibrariesSettings'
+import { PerformanceSettings } from './PerformanceSettings'
 import { RemoteCacheSettings } from './RemoteCacheSettings'
 import { ShortcutsDialog } from './ShortcutsDialog'
 import { StemsSettings } from './StemsSettings'
@@ -15,7 +16,7 @@ interface Props {
 }
 
 /** Overflow menu for low-frequency settings: the app's own (Konduktor
- * settings), path remapping, Stems and the shortcut list. The dialogs are owned
+ * settings), path remapping, Stems, Performance mode and the shortcut list. The dialogs are owned
  * here, since nothing else opens them. */
 export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
   const [open, setOpen] = useState(false)
@@ -24,6 +25,7 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
   const [showCache, setShowCache] = useState(false)
   const [showApp, setShowApp] = useState(false)
   const [showLocal, setShowLocal] = useState(false)
+  const [showPerformance, setShowPerformance] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   // Path remapping is a library on THIS computer's business; a remote's
   // mapping is its server's configuration.
@@ -147,6 +149,16 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
           </button>
           <button
             onClick={() => {
+              setShowPerformance(true)
+              setOpen(false)
+            }}
+            className={item}
+          >
+            <span className="text-sm text-text">Performance mode…</span>
+            <span className="text-[11px] text-faint">The second deck, the mixer and its effects</span>
+          </button>
+          <button
+            onClick={() => {
               setShowShortcuts(true)
               setOpen(false)
             }}
@@ -162,6 +174,7 @@ export function SettingsMenu({ onOpenPathMapping, up = false }: Props) {
       {showCache && <RemoteCacheSettings onClose={() => setShowCache(false)} />}
       {showApp && <AppSettings onClose={() => setShowApp(false)} />}
       {showLocal && <LocalLibrariesSettings onClose={() => setShowLocal(false)} />}
+      {showPerformance && <PerformanceSettings onClose={() => setShowPerformance(false)} />}
     </div>
   )
 }
