@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { beatSeconds, delayBeatsAt, eqGain, phaserBeatsAt, faderGain, filterSweep, gainToDb, xfadeGains } from './mixerMath'
+import { beatSeconds, delayBeatsAt, eqGain, sweepBeatsAt, faderGain, filterSweep, gainToDb, xfadeGains } from './mixerMath'
 
 describe('eqGain', () => {
   it('is flat at the centre, +6 dB at full right', () => {
@@ -87,14 +87,14 @@ describe('filterSweep', () => {
   })
 })
 
-describe('phaserBeatsAt', () => {
+describe('sweepBeatsAt', () => {
   it('starts at the slowest sweep and halves at each quarter of the knob', () => {
-    expect(phaserBeatsAt(4, 0.05)).toBe(4)
-    expect(phaserBeatsAt(4, 0.3)).toBe(2)
-    expect(phaserBeatsAt(4, 0.6)).toBe(1)
-    expect(phaserBeatsAt(4, 0.8)).toBe(0.5)
-    expect(phaserBeatsAt(4, 1)).toBe(0.5)
-    expect(phaserBeatsAt(8, 1)).toBe(1)
+    expect(sweepBeatsAt(4, 0.05)).toBe(4)
+    expect(sweepBeatsAt(4, 0.3)).toBe(2)
+    expect(sweepBeatsAt(4, 0.6)).toBe(1)
+    expect(sweepBeatsAt(4, 0.8)).toBe(0.5)
+    expect(sweepBeatsAt(4, 1)).toBe(0.5)
+    expect(sweepBeatsAt(8, 1)).toBe(1)
   })
 })
 

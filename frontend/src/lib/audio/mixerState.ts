@@ -16,14 +16,14 @@ export const CHANNELS: Channel[] = ['A', 'B']
  * here rides with it, its amount growing with the knob. `filter` is the filter
  * alone.
  */
-export const FX_TYPES = ['filter', 'reverb', 'delay', 'crusher', 'phaser'] as const
+export const FX_TYPES = ['filter', 'reverb', 'delay', 'crusher', 'flanger'] as const
 export type FxType = (typeof FX_TYPES)[number]
 export const FX_LABELS: Record<FxType, string> = {
   filter: 'Filter',
   reverb: 'Reverb',
   delay: 'Delay',
   crusher: 'Bit crusher',
-  phaser: 'Phaser',
+  flanger: 'Flanger',
 }
 /** For the channel's narrow picker. */
 export const FX_SHORT: Record<FxType, string> = {
@@ -31,7 +31,7 @@ export const FX_SHORT: Record<FxType, string> = {
   reverb: 'Reverb',
   delay: 'Delay',
   crusher: 'Crush',
-  phaser: 'Phaser',
+  flanger: 'Flange',
 }
 
 /**
@@ -54,9 +54,9 @@ export interface FxSettings {
   delayBeats: number
   /** Bit crusher drive, 1..4. */
   crusherDrive: number
-  /** The phaser's SLOWEST sweep, in beats of the deck's tempo — near the
-   *  centre; it halves as the knob opens (`phaserBeatsAt`). */
-  phaserBeats: number
+  /** The flanger's SLOWEST sweep, in beats of the deck's tempo — near the
+   *  centre; it halves as the knob opens (`sweepBeatsAt`). */
+  flangerBeats: number
 }
 
 export const DEFAULT_FX: FxSettings = {
@@ -66,7 +66,7 @@ export const DEFAULT_FX: FxSettings = {
   reverbSize: 2,
   delayBeats: 0.25,
   crusherDrive: 2,
-  phaserBeats: 4,
+  flangerBeats: 4,
 }
 
 /** The filter's range under `type`: one setting for the Filter alone (Full by

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { mixer } from '../../lib/audio/mixer'
-import { delayBeatsAt, faderGain, filterSweep, eqGain, gainToDb, phaserBeatsAt, REVERB_GROWTH, TRIM_RANGE_DB, EQ_CUT_DB } from '../../lib/audio/mixerMath'
+import { delayBeatsAt, faderGain, filterSweep, eqGain, gainToDb, REVERB_GROWTH, sweepBeatsAt, TRIM_RANGE_DB, EQ_CUT_DB } from '../../lib/audio/mixerMath'
 import {
   FX_LABELS,
   FX_SHORT,
@@ -45,8 +45,8 @@ function describeFx(fx: FxType, c: number, set: FxSettings): string {
       return `Delay ${a} (${beatsLabel(delayBeatsAt(set.delayBeats, Math.abs(c)))}) + ${filter}`
     case 'crusher':
       return `Bit crusher ${a} (drive ×${set.crusherDrive}) + ${filter}`
-    case 'phaser':
-      return `Phaser ${a} (a sweep every ${beatsLabel(phaserBeatsAt(set.phaserBeats, Math.abs(c)))}) + ${filter}`
+    case 'flanger':
+      return `Flanger ${a} (a sweep every ${beatsLabel(sweepBeatsAt(set.flangerBeats, Math.abs(c)))}) + ${filter}`
   }
 }
 

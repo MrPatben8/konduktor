@@ -130,14 +130,14 @@ export function PrepStrip({
   const reverbSize = useAppSetting('fxReverbSize')
   const delayBeats = useAppSetting('fxDelayBeats')
   const crusherDrive = useAppSetting('fxCrusherDrive')
-  const phaserBeats = useAppSetting('fxPhaserBeats')
+  const flangerBeats = useAppSetting('fxFlangerBeats')
   useEffect(() => {
     setMixer({
       eqKill,
       sharpness,
-      fx: { filterRange, effectRange, filterResonance, reverbSize, delayBeats, crusherDrive, phaserBeats },
+      fx: { filterRange, effectRange, filterResonance, reverbSize, delayBeats, crusherDrive, flangerBeats },
     })
-  }, [eqKill, sharpness, filterRange, effectRange, filterResonance, reverbSize, delayBeats, crusherDrive, phaserBeats])
+  }, [eqKill, sharpness, filterRange, effectRange, filterResonance, reverbSize, delayBeats, crusherDrive, flangerBeats])
   const lead: DeckId = performance ? focused : 'A'
   const playingA = useCallback((p: boolean) => onPlayingChange('A', p), [onPlayingChange])
   const playingB = useCallback((p: boolean) => onPlayingChange('B', p), [onPlayingChange])

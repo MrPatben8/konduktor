@@ -45,7 +45,7 @@ export function PerformanceSettings({ onClose }: { onClose: () => void }) {
   const fxReverbSize = useAppSetting('fxReverbSize')
   const fxDelayBeats = useAppSetting('fxDelayBeats')
   const fxCrusherDrive = useAppSetting('fxCrusherDrive')
-  const fxPhaserBeats = useAppSetting('fxPhaserBeats')
+  const fxFlangerBeats = useAppSetting('fxFlangerBeats')
   const [error, setError] = useState<string | null>(null)
 
   // The curve moves with the slider at once — mixer included, so it can be
@@ -151,7 +151,7 @@ export function PerformanceSettings({ onClose }: { onClose: () => void }) {
             <span className="block text-xs text-faint">
               Each channel's FILTER knob filters — low-pass to the left, high-pass to the right — and
               the effect picked above it rides along, growing as the knob turns: the reverb blends into
-              one three times as long, the delay gets longer and the phaser faster (each up to ×8)
+              one three times as long, the delay gets longer and the flanger faster (each up to ×8)
               from the settings below. These apply to both channels.
             </span>
             <Choice
@@ -206,8 +206,8 @@ export function PerformanceSettings({ onClose }: { onClose: () => void }) {
               onChange={(v) => void set({ fxCrusherDrive: Number(v) })}
             />
             <Choice
-              title="Phaser sweep (slowest)"
-              value={String(fxPhaserBeats)}
+              title="Flanger sweep (slowest)"
+              value={String(fxFlangerBeats)}
               options={[
                 ['1', 'Every beat'],
                 ['2', 'Every 2 beats'],
@@ -215,7 +215,7 @@ export function PerformanceSettings({ onClose }: { onClose: () => void }) {
                 ['8', 'Every 8 beats'],
                 ['16', 'Every 16 beats'],
               ]}
-              onChange={(v) => void set({ fxPhaserBeats: Number(v) })}
+              onChange={(v) => void set({ fxFlangerBeats: Number(v) })}
             />
           </section>
           {error && <div className="text-xs text-pink">{error}</div>}

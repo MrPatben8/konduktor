@@ -96,9 +96,9 @@ export function filterSweep(
  */
 export const knobStep = (a: number): number => Math.min(3, Math.floor(clamp(a, 0, 1) * 4))
 
-/** The phaser's sweep (beats): `slowest` (the setting), then ½, ¼, ⅛ of it —
+/** The flanger's sweep (beats): `slowest` (the setting), then ½, ¼, ⅛ of it —
  *  faster as the filter opens. */
-export const phaserBeatsAt = (slowest: number, a: number): number => slowest / 2 ** knobStep(a)
+export const sweepBeatsAt = (slowest: number, a: number): number => slowest / 2 ** knobStep(a)
 
 /** The delay's length (beats): `shortest` (the setting), then ×2, ×4, ×8 —
  *  longer as the filter opens. */
@@ -109,7 +109,7 @@ export const delayBeatsAt = (shortest: number, a: number): number => shortest * 
 export const REVERB_GROWTH = 3
 
 /** Seconds for `beats` at `bpm` (120 when the tempo is unknown) — the delay's
- *  length, the phaser's sweep. */
+ *  length, the flanger's sweep. */
 export function beatSeconds(beats: number, bpm: number): number {
   return (beats * 60) / (bpm > 0 ? bpm : 120)
 }

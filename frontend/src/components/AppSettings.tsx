@@ -42,7 +42,7 @@ export const APP_SETTING_DEFAULTS = {
   fxReverbSize: 2,
   fxDelayBeats: 0.25,
   fxCrusherDrive: 2,
-  fxPhaserBeats: 4,
+  fxFlangerBeats: 4,
 }
 
 type AppSettingKey = keyof typeof APP_SETTING_DEFAULTS

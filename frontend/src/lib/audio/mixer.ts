@@ -31,7 +31,7 @@ import {
   delayBeatsAt,
   faderGain,
   filterSweep,
-  phaserBeatsAt,
+  sweepBeatsAt,
   REVERB_GROWTH,
   FX_CENTRE,
   TRIM_RANGE_DB,
@@ -46,6 +46,10 @@ const LIMIT_RATIO = 20
 /** The compressor's automatic make-up gain (Web Audio spec: the inverse of its
  *  gain at 0 dBFS, to the power 0.6), in dB. */
 const MAKEUP_DB = -0.6 * (LIMIT_DB + (0 - LIMIT_DB) / LIMIT_RATIO)
+
+/** The flanger's delay sweeps between these (s). */
+const FLANGE_MIN = 0.0007
+const FLANGE_MAX = 0.007
 
 /** The longest delay (s): 8 × a 1-beat setting at 120 BPM. */
 const MAX_DELAY_S = 4
@@ -112,10 +116,10 @@ function crushCurve(bits: number): Float32Array<ArrayBuffer> {
  * the musical range under an effect (`rangeFor`) — and the channel's
  * chosen effect rides with it, fed the FILTERED signal, its amount growing
  * with the knob — and the more filter, the longer the reverb and delay and
- * the faster the phaser: Reverb and Delay are sends whose tails ring out
+ * the faster the flanger: Reverb and Delay are sends whose tails ring out
  * after the knob returns (echo- and wash-outs); Bit crusher replaces the
- * filtered signal with a crushed copy; Phaser mixes it with a beat-synced
- * sweeping all-pass chain, faster as the knob opens (`phaserBeatsAt`).
+ * filtered signal with a crushed copy; Flanger mixes it with a few-ms delay
+ * swept by a beat-synced LFO, with feedback.
  * `filter` is the filter alone. Everything is built
  * once and switched by gains, so a change never clicks. Each effect's one
  * parameter is an app setting (`FxSettings`).
@@ -149,9 +153,11 @@ class FilterFx {
   private readonly shaper: WaveShaperNode
   private readonly crushWet: GainNode
   private crushBits = -1
-  // Phaser: all-pass stages swept by one LFO.
+  // Flanger: a few-ms delay swept by one LFO, with feedback.
   private readonly lfo: OscillatorNode
-  private readonly phaserWet: GainNode
+  private readonly flange: DelayNode
+  private readonly flangeFeedback: GainNode
+  private readonly flangerWet: GainNode
 
   constructor(ctx: AudioContext) {
     this.ctx = ctx
@@ -192,21 +198,22 @@ class FilterFx {
     this.crushWet.gain.value = 0
     this.filter.connect(this.crushDrive).connect(this.shaper).connect(this.crushWet).connect(this.output)
 
-    // Four all-pass stages an octave apart, each swept ±60% around its centre.
+    // A delay swept between FLANGE_MIN and FLANGE_MAX by the LFO, fed back
+    // into itself; mixed with the filtered music its comb notches sweep.
     this.lfo = ctx.createOscillator()
     this.lfo.frequency.value = 0.5
-    this.phaserWet = ctx.createGain()
-    this.phaserWet.gain.value = 0
-    let stage: AudioNode = this.filter
-    for (const centre of [350, 700, 1400, 2800]) {
-      const ap = biquad(ctx, 'allpass', centre, 0.6)
-      const depth = ctx.createGain()
-      depth.gain.value = centre * 0.6
-      this.lfo.connect(depth).connect(ap.frequency)
-      stage.connect(ap)
-      stage = ap
-    }
-    stage.connect(this.phaserWet).connect(this.output)
+    this.flange = ctx.createDelay(0.05)
+    this.flange.delayTime.value = (FLANGE_MIN + FLANGE_MAX) / 2
+    const depth = ctx.createGain()
+    depth.gain.value = (FLANGE_MAX - FLANGE_MIN) / 2
+    this.lfo.connect(depth).connect(this.flange.delayTime)
+    this.flangeFeedback = ctx.createGain()
+    this.flangeFeedback.gain.value = 0
+    this.flangerWet = ctx.createGain()
+    this.flangerWet.gain.value = 0
+    this.filter.connect(this.flange)
+    this.flange.connect(this.flangeFeedback).connect(this.flange)
+    this.flange.connect(this.flangerWet).connect(this.output)
     this.lfo.start()
   }
 
@@ -232,14 +239,16 @@ class FilterFx {
     ramp(this.dry.gain, 1 - take, ctx)
 
     // How much of the filtered music stays: all of it, but half under the
-    // phaser (whose notches come from mixing the two) and none under the
+    // flanger (whose notches come from mixing the two) and none under the
     // crusher (which replaces it).
-    const phasing = type === 'phaser' && on
-    const mix = phasing ? Math.min(1, a / 0.25) : 0
+    const flanging = type === 'flanger' && on
+    const mix = flanging ? Math.min(1, a / 0.25) : 0
     const crushing = type === 'crusher' && on
     ramp(this.filtered.gain, crushing ? 0 : take * (1 - 0.5 * mix), ctx)
-    ramp(this.phaserWet.gain, take * 0.5 * mix, ctx)
-    if (type === 'phaser') ramp(this.lfo.frequency, 1 / beatSeconds(phaserBeatsAt(fx.phaserBeats, a), bpm), ctx, 0.05)
+    ramp(this.flangerWet.gain, take * 0.5 * mix, ctx)
+    // The sweep speeds up and the feedback (the "jet") deepens as it opens.
+    ramp(this.flangeFeedback.gain, flanging ? 0.3 + 0.5 * a : 0, ctx, 0.05)
+    if (type === 'flanger') ramp(this.lfo.frequency, 1 / beatSeconds(sweepBeatsAt(fx.flangerBeats, a), bpm), ctx, 0.05)
 
     // Reverb: the send grows with the knob, and moves from the short reverb
     // into the long one — the more filter, the longer the tail.
