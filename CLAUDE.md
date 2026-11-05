@@ -2882,7 +2882,9 @@ The prep strip plays every track through the **Web Audio API** (a plain
   (LR4 crossovers at 250 Hz / 2.5 kHz, the low band through a 2.5 kHz
   all-pass, so the bands sum flat — measured 0.0000 dB; Web Audio's
   lowpass/highpass Q is in DB, Butterworth = -3.01, its allpass Q linear) →
-  FILTER FX (`FilterFx`, decided 2026-11-03 after Traktor's mixer: the
+  fader → FILTER FX, POST-fader (decided 2026-11-05: pulling the fader down
+  stops feeding the reverb / delay and their tails ring out rather than
+  being cut with it) (`FilterFx`, decided 2026-11-03 after Traktor's mixer: the
   FILTER knob always filters — 4-pole, low-pass left / high-pass right, over
   a RANGE: FULL (to 20 Hz / 20 kHz: a 100 Hz bass -56 dB at full left,
   measured; one 12 dB stage left it at -28), MUSICAL (150 Hz / 8 kHz) or
@@ -2906,14 +2908,14 @@ The prep strip plays every track through the **Web Audio API** (a plain
   knob, -54 at 60%). Resonance fades over the last stretch of the sweep (no
   boom at 20 Hz). Each effect's one parameter is an APP SETTING, not a knob —
   `mixerState.fx`; all built once and switched by gains) →
-  fader → crossfader (`xfadeGains(x, sharpness)`: each channel fades on a
+  crossfader (`xfadeGains(x, sharpness)`: each channel fades on a
   quarter-cosine over the last `xfadeWidth` of the travel — the whole of it
   at 0, constant power, -3 dB in the middle; 4% at 1, a cut; no dip in the
   middle above ~0.52) → bus → limiter
   (DynamicsCompressor at -1.5 dBFS 20:1 — Web Audio adds an automatic
   MAKE-UP gain, +0.57 dB at -1/20:1, which let two loud decks peak at +0.3
   dBFS until a gain after it took it back off) → speakers. Channel meters are
-  after the fader, before the crossfader. OUTSIDE performance mode the mixer
+  after the fader and FX, before the crossfader. OUTSIDE performance mode the mixer
   is BYPASSED (A straight through, B silent, no limiter): prep listening is
   unchanged. Controls live in `mixerState.ts` (an external store, not
   persisted; a MIDI mapping would write the same setters); the curves in

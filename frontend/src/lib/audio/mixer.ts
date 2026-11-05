@@ -1,8 +1,11 @@
 // The mixer's audio graph (performance mode, decided 2026-11-02). Both decks
 // play into it; it follows the controls in `mixerState.ts`.
 //
-//   deck → gain → 3-band isolator → filter FX → fader ─┬→ crossfader → bus
+//   deck → gain → 3-band isolator → fader → filter FX ─┬→ crossfader → bus
 //                                                       └→ meter
+//
+// The filter FX is POST-fader, so pulling the fader down stops feeding the
+// reverb / delay and their tails ring out instead of being cut with it.
 //   bus → limiter → master meter → speakers
 //
 // GAIN (`trim` in the state) starts at the track's own auto gain (the DJ app's, `Track.auto_gain_db`;
@@ -329,16 +332,16 @@ class Strip {
     mlB.connect(this.bands[1]).connect(eqOut)
     mhB.connect(this.bands[2]).connect(eqOut)
 
-    this.fx = new FilterFx(ctx)
-    eqOut.connect(this.fx.input)
     this.fader = ctx.createGain()
-    this.fx.output.connect(this.fader)
+    eqOut.connect(this.fader)
+    this.fx = new FilterFx(ctx)
+    this.fader.connect(this.fx.input)
     this.meter = ctx.createAnalyser()
     this.meter.fftSize = 512
-    this.fader.connect(this.meter)
+    this.fx.output.connect(this.meter)
     this.xfade = ctx.createGain()
     this.wetGate = ctx.createGain()
-    this.fader.connect(this.xfade).connect(this.wetGate).connect(bus)
+    this.fx.output.connect(this.xfade).connect(this.wetGate).connect(bus)
     this.dryGate = ctx.createGain()
     this.input.connect(this.dryGate).connect(bus)
   }
@@ -362,7 +365,7 @@ class Strip {
 }
 
 export interface MixerLevels {
-  /** Peak dBFS: each channel after its fader, and the master after the limiter. */
+  /** Peak dBFS: each channel after its fader and FX, and the master after the limiter. */
   A: number
   B: number
   master: number

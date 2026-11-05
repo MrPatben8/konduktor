@@ -278,7 +278,7 @@ function Strip({
     </div>
   )
   const meter = (
-    <div className="flex flex-col pb-3" title={`Channel ${ch} level (after its fader)`}>
+    <div className="flex flex-col pb-3" title={`Channel ${ch} level (after its fader and FX)`}>
       <MeterBar fillRef={meterRef} />
     </div>
   )
