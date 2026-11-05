@@ -1552,8 +1552,10 @@ Two independent apps that talk over HTTP:
     browse: All Tracks + the visible tree; a playlist opens as reached, a
     folder opens on press). **Jog** (`useDeck`): touch = scratch through the
     waveform-drag path, target sent straight to the worklet; no touch =
-    nudge (a per-frame bend, also in prep mode) while playing, scrub while
-    paused; scale `JOG_SEC_PER_TICK` × the mapping's sensitivity. **UI**:
+    nudge (a per-frame bend, also in prep mode) while playing; while paused
+    a turn SCRATCHES too (decided 2026-11-05: grabbed on the first tick,
+    released `JOG_SCRATCH_IDLE_MS` after the last, so a jog without a touch
+    sensor still cues by ear); fast scrub stays a seek; scale `JOG_SEC_PER_TICK` × the mapping's sensitivity. **UI**:
     Settings ▸ MIDI Controllers… (`MidiSettings`: per controller, Shift, jog
     sensitivity / fast scrub, every action × Normal / Shift with Learn,
     encoding + Reversed per binding, Import / Export as

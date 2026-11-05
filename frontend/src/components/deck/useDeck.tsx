@@ -56,6 +56,8 @@ const JOG_SEC_PER_TICK = 1.8 / 500
 const JOG_NUDGE_PER_TICK = 0.004
 const JOG_NUDGE_MAX = 0.1
 const JOG_NUDGE_IDLE_FRAMES = 4
+/** A paused deck's untouched jog scratches; this long without a tick lets go. */
+const JOG_SCRATCH_IDLE_MS = 120
 
 export interface DeckOptions {
   /** The track loaded into this deck, if any. */
@@ -647,11 +649,24 @@ export function useDeck({
   // Touching the top SCRATCHES — the same engine path as dragging the
   // waveform, the target sent straight to the worklet. A turn without touch
   // NUDGES while playing (a momentary bend, as the phase meter's drag) and
-  // SCRUBS while paused; `scrub` (Shift + jog) moves fast, playing or not.
+  // SCRATCHES while paused too — the platter grabbed on the first tick and let
+  // go `JOG_SCRATCH_IDLE_MS` after the last, so a jog without a touch sensor
+  // still cues by ear; `scrub` (Shift + jog) moves fast, playing or not.
   // Nudge and scrub are gathered per frame so a jog's flood of messages costs
   // one render a frame. How many ticks a turn sends differs per controller,
   // so the scale is a starting point times the mapping's sensitivity.
-  const jogRef = useRef({ touching: false, target: 0, nudge: 0, scrub: 0, raf: 0, idle: 0, bending: false })
+  const jogRef = useRef({
+    touching: false,
+    /** Scratching from an untouched turn on a paused deck (released when idle). */
+    turning: false,
+    turnTimer: 0,
+    target: 0,
+    nudge: 0,
+    scrub: 0,
+    raf: 0,
+    idle: 0,
+    bending: false,
+  })
   const jogLatest = useRef({ seekManual, duration })
   jogLatest.current = { seekManual, duration }
   const flushJog = () => {
@@ -678,13 +693,26 @@ export function useDeck({
   const scheduleJog = () => {
     if (!jogRef.current.raf) jogRef.current.raf = requestAnimationFrame(flushJog)
   }
-  useEffect(() => () => cancelAnimationFrame(jogRef.current.raf), [])
+  useEffect(
+    () => () => {
+      cancelAnimationFrame(jogRef.current.raf)
+      clearTimeout(jogRef.current.turnTimer)
+    },
+    [],
+  )
+  /** Hand a turn-scratch over to a touch (or end it), without releasing it. */
+  const endTurn = () => {
+    const j = jogRef.current
+    clearTimeout(j.turnTimer)
+    j.turning = false
+  }
 
   const jogTouch = (on: boolean) => {
     const j = jogRef.current
     const eng = playbackRef.current
     if (on) {
       if (!eng || !eng.ready || j.touching) return
+      endTurn()
       j.touching = true
       onScratchStart()
       j.target = eng.getPosition()
@@ -708,8 +736,22 @@ export function useDeck({
       scheduleJog()
       return 'nudge'
     }
-    j.scrub += ticks * JOG_SEC_PER_TICK * sensitivity
-    scheduleJog()
+    // Paused (or coasting from a scratch): grab the platter and scratch.
+    if (!j.turning || !engagedRef.current) {
+      onScratchStart()
+      if (!engagedRef.current) return null
+      j.turning = true
+      j.target = eng.getPosition()
+    }
+    j.target = Math.max(0, Math.min(duration, j.target + ticks * JOG_SEC_PER_TICK * sensitivity))
+    eng.scratchTarget(j.target)
+    clearTimeout(j.turnTimer)
+    j.turnTimer = window.setTimeout(() => {
+      j.turning = false
+      // Let go as a touch release does (a deck that was playing plays on);
+      // nothing if something else ended the scratch meanwhile.
+      if (!j.touching && engagedRef.current) playbackRef.current?.scratchRelease(wasPlayingRef.current)
+    }, JOG_SCRATCH_IDLE_MS)
     return null
   }
   const scrub = (ticks: number, sensitivity: number) => {
