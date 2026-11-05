@@ -203,6 +203,26 @@ describe('DeckCore scratch', () => {
     expect(core.positionSec - before).toBeCloseTo((10 * QUANTUM) / SR, 6)
   })
 
+  it('a re-grab that arrives after the coast settled grabs afresh (and echoes its id)', () => {
+    const core = new DeckCore(SR, null)
+    core.load(ramp(SR * 4))
+    core.scratchBegin(1, 7)
+    core.scratchTarget(1.1)
+    run(core, 50)
+    core.scratchRelease(false)
+    for (let b = 0; b < 3000 && core.scratching; b++) run(core, 1)
+    expect(core.scratching).toBe(false)
+    expect(core.scratchId).toBe(7)
+    // The caller has not heard scratchDone yet and thinks it is still coasting.
+    const p = core.positionSec
+    core.scratchRegrab(p, 8)
+    expect(core.scratching).toBe(true)
+    expect(core.scratchId).toBe(8)
+    core.scratchTarget(p + 0.2)
+    run(core, 200)
+    expect(core.positionSec).toBeGreaterThan(p + 0.15)
+  })
+
   it('a release without resume settles paused', () => {
     const core = new DeckCore(SR, null)
     core.load(ramp(SR * 4))
@@ -213,6 +233,94 @@ describe('DeckCore scratch', () => {
     for (let b = 0; b < 3000 && core.scratching; b++) run(core, 1)
     expect(core.scratching).toBe(false)
     expect(core.playing).toBe(false)
+  })
+})
+
+describe('DeckCore scratch sound', () => {
+  const tone = (freq: number): DeckSource => {
+    const ch = sine(freq, 20)
+    return { stems: [[ch]], length: ch.length, sampleRate: SR }
+  }
+  /** Drag at `speed`, the hand's position arriving after each of `gaps`
+   *  (blocks, cycled) — as a mouse or a jog delivers it, in steps. Returns
+   *  the speed after every block and the output. */
+  function drag(core: DeckCore, speed: number, gaps: number[], blocks: number) {
+    const start = core.positionSec
+    const speeds: number[] = []
+    const out = new Float32Array(blocks * QUANTUM)
+    const l = new Float32Array(QUANTUM)
+    const r = new Float32Array(QUANTUM)
+    let next = gaps[0]
+    for (let b = 0, g = 0; b < blocks; b++) {
+      if (b === next) {
+        core.scratchTarget(start + (speed * b * QUANTUM) / SR)
+        next += gaps[++g % gaps.length]
+      }
+      core.render(l, r)
+      out.set(l, b * QUANTUM)
+      speeds.push(core.speed)
+    }
+    return { speeds, out }
+  }
+  const worst = (xs: number[], ref: number) => Math.max(...xs.map((x) => Math.abs(x - ref)))
+  const maxStep = (x: Float32Array) => {
+    let m = 0
+    for (let i = 1; i < x.length; i++) m = Math.max(m, Math.abs(x[i] - x[i - 1]))
+    return m
+  }
+
+  it('a steady hand moving in mouse-rate steps plays at a steady speed', () => {
+    const core = new DeckCore(SR, null)
+    core.load(tone(440))
+    core.scratchBegin(1)
+    const { speeds } = drag(core, 1, [6], 700) // a position every 17 ms
+    expect(worst(speeds.slice(200), 1)).toBeLessThan(0.03)
+  })
+
+  it('and in jittery bursts, as a busy main thread delivers a jog', () => {
+    const core = new DeckCore(SR, null)
+    core.load(tone(440))
+    core.scratchBegin(1)
+    const { speeds } = drag(core, 1, [1, 1, 4, 1, 7, 2, 1, 3, 5, 1], 700)
+    expect(worst(speeds.slice(200), 1)).toBeLessThan(0.1)
+  })
+
+  it('stopping the hand fades out — no click at rest', () => {
+    const core = new DeckCore(SR, null)
+    core.load(tone(440))
+    core.scratchBegin(1)
+    const moving = drag(core, 1, [6], 200)
+    const resting = run(core, 100)
+    // A 0.5 amplitude 440 Hz sine at 1x moves at most 0.031 a sample.
+    expect(maxStep(moving.out)).toBeLessThan(0.05)
+    expect(maxStep(resting)).toBeLessThan(0.05)
+    expect(Math.max(...resting.slice(-QUANTUM).map(Math.abs))).toBeLessThan(1e-3)
+  })
+
+  it('grabbing a playing deck neither jumps nor clicks, whatever position the caller had', () => {
+    const core = new DeckCore(SR, null)
+    core.load(tone(440))
+    core.play()
+    const before = run(core, 20)
+    const p = core.positionSec
+    core.scratchBegin(p + 0.04) // a stale main-thread estimate
+    core.scratchTarget(p + 0.04) // the hand has not moved
+    const after = run(core, 20)
+    expect(Math.abs(core.positionSec - p)).toBeLessThan(0.01)
+    const joined = new Float32Array(before.length + after.length)
+    joined.set(before)
+    joined.set(after, before.length)
+    expect(maxStep(joined)).toBeLessThan(0.05)
+  })
+
+  it('a fast scratch does not fold highs back down as noise', () => {
+    const core = new DeckCore(SR, null)
+    core.load(tone(15000))
+    core.scratchBegin(1)
+    const { out } = drag(core, 3, [1], 300) // 3x: 45 kHz, far past Nyquist
+    const tail = out.slice(150 * QUANTUM)
+    const rms = Math.sqrt(tail.reduce((a, x) => a + x * x, 0) / tail.length)
+    expect(rms).toBeLessThan(0.05) // the tone itself is 0.35 RMS
   })
 })
 

@@ -2855,9 +2855,21 @@ The prep strip plays every track through the **Web Audio API** (a plain
   performance mode; [the discussion](.claude/discussions/discuss-performance-mode-2026-11-02.md)).
   `deckCore.ts` renders a deck block by block: transport, seamless loops, the
   stems in lockstep (ONE position for all), mute/solo as ramped gains,
-  varispeed (cubic interpolation) and scratch (the old ScriptProcessor's
-  drag/inertia feel; a release coasts and the deck PLAYS ON BY ITSELF, so there
-  is no gap). `deckProcessor.worklet.ts` wraps it (`?worker&url`, bundled
+  varispeed (cubic interpolation) and scratch (a release coasts and the deck
+  PLAYS ON BY ITSELF, so there is no gap). **Scratch is rebuilt for sound**
+  (2026-11-05): the hand's position arrives in STEPS (mouse ~60 Hz, a jog up
+  to one per block, bunched by the main thread), and chasing each step with a
+  one-pole made the speed swing ±67-83% at that rate — buzzing, with a click
+  each time it caught up (a hard mute at rest). Now the steps are joined into
+  a line played `handDelay` behind the newest (adapted to their spacing,
+  6-30 ms), followed by a critically damped spring (`SCRATCH_HZ` 45), so the
+  speed is continuous; volume follows speed; above 1x the source is averaged
+  over the span each frame covers (anti-aliasing); targets are RELATIVE to
+  the position given at the grab (`scratchBegin` / `scratchRegrab(sec)`), so a
+  stale main-thread position cannot jump it, and grabbing a playing deck
+  brakes from its speed. Measured (`deckCore.test.ts` "scratch sound"): speed
+  ripple 0 for even steps, 3% for jittery bursts; lag 13.5 ms (a jog every
+  block) to ~30 ms (mouse). `deckProcessor.worklet.ts` wraps it (`?worker&url`, bundled
   self-contained); `deckEngine.ts` is the main thread's handle, with the old
   PlaybackEngine's surface: commands are async, so it answers from a model
   (last report + context clock, `position.ts`) that each command updates at

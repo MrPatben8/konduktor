@@ -34,7 +34,8 @@ interface Props {
   secPerView: number
   onZoomChange: (secPerView: number) => void
   onSeek: (t: number) => void
-  onScratchStart: () => void
+  /** Grab at `from` (s): later moves are relative to it. */
+  onScratchStart: (from: number) => void
   onScratchMove: (t: number) => void
   onScratchEnd: (t: number) => void
   /** A stem track: one lane per stem instead of the three-band mix view. */
@@ -236,11 +237,15 @@ export function MainWaveform({
     const rect = e.currentTarget.getBoundingClientRect()
     const dx = e.clientX - d.startX
     if (!d.moved && Math.abs(dx) > DRAG_THRESHOLD) {
+      // Measure from HERE and NOW: a playing deck has moved on since the
+      // press, and the threshold's pixels would be a jump.
       d.moved = true
-      onScratchStart()
+      d.startX = e.clientX
+      d.startTime = currentTime
+      onScratchStart(currentTime)
     }
     if (d.moved) {
-      const t = Math.min(duration, Math.max(0, d.startTime - (dx / rect.width) * secPerView))
+      const t = Math.min(duration, Math.max(0, d.startTime - ((e.clientX - d.startX) / rect.width) * secPerView))
       d.lastT = t
       onScratchMove(t)
     }

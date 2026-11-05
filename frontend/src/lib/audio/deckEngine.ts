@@ -30,6 +30,8 @@ export class DeckEngine {
   private _keylockAvailable = false
   private onEnded: (() => void) | null = null
   private onScratchDone: ((playing: boolean) => void) | null = null
+  /** The latest grab's id: a scratchDone for an earlier one is superseded. */
+  private scratchSeq = 0
 
   /** The worklet module loads asynchronously, once per app. `destination` is
    *  where the deck plays into: its mixer channel. */
@@ -57,6 +59,20 @@ export class DeckEngine {
       console.warn(msg.message)
       return
     }
+    if (msg.type === 'event' && msg.event === 'scratchDone') {
+      // NOT filtered by generation: a command sent while the coast settled (a
+      // pitch fader's trickle of rate changes) would drop it, leaving the deck
+      // "scratching" for good — every later grab a re-grab the audio thread
+      // ignores. Only a newer grab supersedes it.
+      if (msg.scratch !== this.scratchSeq) return
+      const current = msg.gen === this.gen
+      const playing = current ? msg.playing : this.m.playing
+      this.m = current
+        ? { ...this.m, pos: msg.pos, time: this.ctx.currentTime, speed: playing ? this.rate : 0, playing, scratching: false }
+        : { ...this.m, scratching: false }
+      this.onScratchDone?.(playing)
+      return
+    }
     if (msg.gen !== this.gen) return // a report from before the latest command
     if (msg.type === 'state') {
       this._keylockAvailable = msg.keylockAvailable
@@ -64,8 +80,7 @@ export class DeckEngine {
       return
     }
     this.m = { ...this.m, pos: msg.pos, time: this.ctx.currentTime, speed: msg.playing ? this.rate : 0, playing: msg.playing, scratching: false }
-    if (msg.event === 'ended') this.onEnded?.()
-    else this.onScratchDone?.(msg.playing)
+    this.onEnded?.()
   }
 
   private send(cmd: DeckCommand, positional = true): void {
@@ -199,12 +214,13 @@ export class DeckEngine {
   scratchBegin(sec: number): void {
     resumeAudio()
     this.m = { pos: sec, time: this.ctx.currentTime, speed: 0, playing: false, scratching: true }
-    this.send({ op: 'scratchBegin', sec })
+    this.send({ op: 'scratchBegin', sec, id: ++this.scratchSeq })
   }
 
-  /** Re-grab while the platter is still coasting. */
-  scratchRegrab(): void {
-    this.send({ op: 'scratchRegrab' }, false)
+  /** Re-grab while the platter is still coasting; later targets move
+   *  relative to `sec`. */
+  scratchRegrab(sec: number): void {
+    this.send({ op: 'scratchRegrab', sec, id: ++this.scratchSeq }, false)
   }
 
   scratchTarget(sec: number): void {

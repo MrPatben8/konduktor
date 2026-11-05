@@ -29,8 +29,8 @@ export type DeckCommand =
   | { op: 'rate'; rate: number }
   | { op: 'keylock'; on: boolean }
   | { op: 'leadIn'; on: boolean }
-  | { op: 'scratchBegin'; sec: number }
-  | { op: 'scratchRegrab' }
+  | { op: 'scratchBegin'; sec: number; id: number }
+  | { op: 'scratchRegrab'; sec: number; id: number }
   | { op: 'scratchTarget'; sec: number }
   | { op: 'scratchRelease'; resume: boolean }
 
@@ -54,7 +54,15 @@ export interface DeckReport {
 
 export type DeckOutbound =
   | DeckReport
-  | { type: 'event'; event: 'ended' | 'scratchDone'; gen: number; pos: number; playing: boolean }
+  | {
+      type: 'event'
+      event: 'ended' | 'scratchDone'
+      gen: number
+      /** The grab (`scratchBegin` / `scratchRegrab` id) a scratchDone ends. */
+      scratch: number
+      pos: number
+      playing: boolean
+    }
   | { type: 'error'; message: string }
 
 class DeckProcessor extends AudioWorkletProcessor {
@@ -113,9 +121,9 @@ class DeckProcessor extends AudioWorkletProcessor {
       case 'leadIn':
         return core.setLeadIn(c.on)
       case 'scratchBegin':
-        return core.scratchBegin(c.sec)
+        return core.scratchBegin(c.sec, c.id)
       case 'scratchRegrab':
-        return core.scratchRegrab()
+        return core.scratchRegrab(c.sec, c.id)
       case 'scratchTarget':
         return core.scratchTarget(c.sec)
       case 'scratchRelease':
@@ -148,6 +156,7 @@ class DeckProcessor extends AudioWorkletProcessor {
         type: 'event',
         event,
         gen: this.gen,
+        scratch: this.core.scratchId,
         pos: this.core.positionSec,
         playing: this.core.playing,
       })

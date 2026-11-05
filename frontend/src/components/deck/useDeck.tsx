@@ -614,18 +614,23 @@ export function useDeck({
     scratchRafRef.current = requestAnimationFrame(tick)
   }
 
-  const onScratchStart = () => {
+  /** Grab the platter. Later targets are RELATIVE to `from` (default: the
+   *  engine's position), which is returned — so a caller measuring its moves
+   *  from a slightly stale position cannot make the deck jump. */
+  const onScratchStart = (from?: number): number | null => {
     const eng = playbackRef.current
-    if (!eng || !eng.ready) return
+    if (!eng || !eng.ready) return null
+    const ref = from ?? eng.getPosition()
     if (engagedRef.current) {
-      eng.scratchRegrab() // re-grab while coasting
-      return
+      eng.scratchRegrab(ref) // re-grab while coasting
+      return ref
     }
     wasPlayingRef.current = eng.playing
     if (eng.playing) setPlaying(false)
-    eng.scratchBegin(eng.getPosition())
+    eng.scratchBegin(ref)
     engagedRef.current = true
     runScratchRaf()
+    return ref
   }
 
   const onScratchMove = (t: number) => {
@@ -713,9 +718,10 @@ export function useDeck({
     if (on) {
       if (!eng || !eng.ready || j.touching) return
       endTurn()
+      const ref = onScratchStart()
+      if (ref == null) return
       j.touching = true
-      onScratchStart()
-      j.target = eng.getPosition()
+      j.target = ref
     } else if (j.touching) {
       j.touching = false
       onScratchEnd(j.target)
@@ -738,10 +744,10 @@ export function useDeck({
     }
     // Paused (or coasting from a scratch): grab the platter and scratch.
     if (!j.turning || !engagedRef.current) {
-      onScratchStart()
-      if (!engagedRef.current) return null
+      const ref = onScratchStart()
+      if (ref == null) return null
       j.turning = true
-      j.target = eng.getPosition()
+      j.target = ref
     }
     j.target = Math.max(0, Math.min(duration, j.target + ticks * JOG_SEC_PER_TICK * sensitivity))
     eng.scratchTarget(j.target)

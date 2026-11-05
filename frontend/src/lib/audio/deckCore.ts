@@ -40,11 +40,33 @@ export type DeckEvent = 'ended' | 'scratchDone'
 type Mode = 'stopped' | 'playing' | 'drag' | 'inertia'
 type StretchState = 'off' | 'warming' | 'on'
 
-// Scratch feel — the values the ScriptProcessor scratch engine was tuned with.
-const GLIDE = 400 // samples: how tightly position chases the target while dragging
+// Scratch. The hand's position arrives in STEPS (a mouse move, a jog message:
+// 60 Hz to 1 kHz, bunched by the main thread), and chasing each step made the
+// speed lurch at that rate — a buzzing, distorted scratch with a click each
+// time it caught up. So the steps are first joined into a line, played a
+// little BEHIND the newest (`delay`, adapted to how far apart they arrive), and
+// the platter follows that line through a critically damped spring: its speed
+// is continuous. Volume follows speed (no hard mute at rest), and above 1x the
+// source is averaged over the span each output frame covers (anti-aliasing).
 const RATE_CAP = 12 // max source samples per output frame (pitch ceiling)
 const INERTIA_FRICTION = 0.9998 // per-frame easing toward the target velocity (~0.4 s)
 const SETTLE_EPS = 0.02 // |velocity - target| below this = settled
+/** The platter's spring (Hz): higher follows the hand tighter, lower smooths more. */
+const SCRATCH_HZ = 45
+/** Hand-line delay (s): at least a block or two, at most this. */
+const HAND_DELAY_MIN = 0.006
+const HAND_DELAY_MAX = 0.03
+const HAND_DELAY_START = 0.012
+/** Two hand positions further apart than this (s) = the hand paused. */
+const HAND_PAUSE = 0.06
+/** How fast the delay may change: 3% of playing time (inaudible). */
+const HAND_DELAY_SLEW = 0.03
+/** Speed (source samples per frame) at which a scratch is at full volume. */
+const SCRATCH_FULL_SPEED = 0.05
+/** The volume's follow time (s). */
+const SCRATCH_ENV_TAU = 0.003
+/** Hand positions kept (a 1 kHz jog over the longest delay is ~30). */
+const HAND_POINTS = 256
 
 /** Blocks of varispeed while the stretchers prime (~29 ms at 44.1 kHz). */
 export const WARM_QUANTA = 10
@@ -84,10 +106,31 @@ export class DeckCore {
   private gainBuf: Float32Array[] = []
 
   // Scratch (source samples, and source samples per output frame).
-  private target = 0
   private velocity = 0
   private targetVelocity = 0
   private resume = false
+  /** The caller's id for the current grab, echoed with its scratchDone. */
+  scratchId = 0
+  /** Output frames rendered so far: the hand positions' clock. */
+  private clock = 0
+  /** The hand's positions (clock frame, source sample), oldest first, a ring. */
+  private readonly handT = new Float64Array(HAND_POINTS)
+  private readonly handX = new Float64Array(HAND_POINTS)
+  private handHead = 0
+  private handLen = 0
+  /** Was the newest hand point sent (not a hold point added here)? */
+  private handLastReal = false
+  /** How far behind the clock the hand line is played (frames). */
+  private handDelay: number
+  /** Recent largest gap between hand positions (frames). */
+  private handGap = 0
+  /** The core's playhead minus the caller's position at the grab (samples):
+   *  targets are relative, so a stale main-thread position cannot jump it. */
+  private handOffset = 0
+  /** Scratch volume, following speed. */
+  private env = 0
+  private readonly springW: number
+  private readonly envCoef: number
 
   // Keylock.
   private stretchers: Stretcher[] = []
@@ -119,6 +162,9 @@ export class DeckCore {
     this.ctxRate = ctxRate
     this.rb = rb
     this.gainCoef = Math.exp(-1 / (GAIN_TAU * ctxRate))
+    this.springW = (2 * Math.PI * SCRATCH_HZ) / ctxRate
+    this.envCoef = 1 - Math.exp(-1 / (SCRATCH_ENV_TAU * ctxRate))
+    this.handDelay = HAND_DELAY_START * ctxRate
   }
 
   // ---- state -----------------------------------------------------------
@@ -238,24 +284,94 @@ export class DeckCore {
     this.keylock = on
   }
 
-  scratchBegin(sec: number): void {
+  /** Grab the platter. `sec` is where the CALLER thinks the playhead is: later
+   *  targets move relative to it. Grabbing a playing deck starts from its own
+   *  speed, so the stop is a quick brake rather than a click. */
+  scratchBegin(sec: number, id = this.scratchId + 1): void {
     if (!this.len) return
+    this.scratchId = id
+    const p = sec * this.srcRate
+    if (this.mode === 'playing') {
+      this.velocity = this.step
+      this.env = 1
+    } else if (!this.scratching) {
+      this.velocity = 0
+      this.env = 0
+    }
+    // The caller's position is an estimate; trust our own unless far off.
+    if (Math.abs(p - this.pos) > 0.25 * this.srcRate || this.pos < 0) {
+      this.pos = Math.max(0, Math.min(p, this.len - 1))
+    }
     this.mode = 'drag'
-    this.pos = Math.max(0, Math.min(sec * this.srcRate, this.len - 1))
-    this.target = this.pos
-    this.velocity = 0
     this.sState = 'off'
+    this.grabHand(p)
   }
 
-  /** Re-grab while the platter is still coasting: resume dragging from here. */
-  scratchRegrab(): void {
-    if (!this.scratching) return
+  /** Re-grab while the platter is still coasting: resume dragging from here.
+   *  If the coast has already settled (its scratchDone still on its way to
+   *  the caller), this is a fresh grab — ignoring it would leave the caller
+   *  dragging a deck that no longer listens. */
+  scratchRegrab(sec?: number, id = this.scratchId + 1): void {
+    if (!this.len) return
+    if (!this.scratching) {
+      this.scratchBegin(sec ?? this.positionSec, id)
+      return
+    }
+    this.scratchId = id
     this.mode = 'drag'
-    this.target = this.pos
+    this.grabHand(sec == null ? this.pos : sec * this.srcRate)
   }
 
   scratchTarget(sec: number): void {
-    this.target = Math.max(0, Math.min(this.len - 1, sec * this.srcRate))
+    if (!this.handLen) return
+    const x = Math.max(0, Math.min(this.len - 1, sec * this.srcRate + this.handOffset))
+    const now = this.clock
+    const last = (this.handHead + this.handLen - 1) % HAND_POINTS
+    const lt = this.handT[last]
+    // Several in one block: the newest wins (they share an arrival time).
+    if (now <= lt) {
+      this.handX[last] = x
+      return
+    }
+    const gap = now - lt
+    if (this.handLastReal && gap < HAND_PAUSE * this.ctxRate) this.handGap = Math.max(gap, this.handGap * 0.97)
+    // The line already reached the last point and is holding it: start the
+    // move from where it is now, so the step is spread over the delay.
+    if (lt < now - this.handDelay) this.pushHand(now - this.handDelay, this.handX[last])
+    this.pushHand(now, x)
+    this.handLastReal = true
+  }
+
+  private grabHand(callerPos: number): void {
+    this.handOffset = this.pos - callerPos
+    this.handHead = 0
+    this.handLen = 0
+    this.handGap = 0
+    this.pushHand(this.clock - this.handDelay, this.pos)
+    this.handLastReal = false
+  }
+
+  private pushHand(t: number, x: number): void {
+    if (this.handLen === HAND_POINTS) {
+      this.handHead = (this.handHead + 1) % HAND_POINTS
+      this.handLen--
+    }
+    const i = (this.handHead + this.handLen) % HAND_POINTS
+    this.handT[i] = t
+    this.handX[i] = x
+    this.handLen++
+  }
+
+  /** The hand line at clock frame `t` (points before it are dropped). */
+  private handAt(t: number): number {
+    while (this.handLen > 1 && this.handT[(this.handHead + 1) % HAND_POINTS] <= t) {
+      this.handHead = (this.handHead + 1) % HAND_POINTS
+      this.handLen--
+    }
+    const a = this.handHead
+    if (this.handLen < 2 || t <= this.handT[a]) return this.handX[a]
+    const b = (a + 1) % HAND_POINTS
+    return this.handX[a] + ((this.handX[b] - this.handX[a]) * (t - this.handT[a])) / (this.handT[b] - this.handT[a])
   }
 
   /** Release the platter: coast toward playing speed (resume) or a stop. The
@@ -279,6 +395,8 @@ export class DeckCore {
   /** Render one block into `outL` / `outR` (QUANTUM frames). */
   render(outL: Float32Array, outR: Float32Array): void {
     const n = outL.length
+    const base = this.clock
+    this.clock += n
     this.events.length = 0
     if (!this.len || this.mode === 'stopped') {
       outL.fill(0)
@@ -288,7 +406,7 @@ export class DeckCore {
     }
     this.advanceGains(n)
     if (this.scratching) {
-      this.renderScratch(outL, outR, n)
+      this.renderScratch(outL, outR, n, base)
       return
     }
 
@@ -404,27 +522,13 @@ export class DeckCore {
     }
   }
 
-  private renderScratch(outL: Float32Array, outR: Float32Array, n: number): void {
+  private renderScratch(outL: Float32Array, outR: Float32Array, n: number, base: number): void {
+    const w = this.springW
+    const w2 = w * w
+    const sr = this.ctxRate
+    const wantDelay = Math.max(HAND_DELAY_MIN * sr, Math.min(HAND_DELAY_MAX * sr, this.handGap * 1.2 + QUANTUM))
     for (let i = 0; i < n; i++) {
-      if (this.mode === 'drag') {
-        const diff = this.target - this.pos
-        if (Math.abs(diff) < 1) {
-          // Hand at rest on the platter: no movement, no sound.
-          this.velocity = 0
-          outL[i] = 0
-          outR[i] = 0
-          continue
-        }
-        let step = diff / GLIDE
-        if (step > RATE_CAP) step = RATE_CAP
-        else if (step < -RATE_CAP) step = -RATE_CAP
-        this.pos += step
-        this.velocity = this.velocity * 0.9 + step * 0.1 // smoothed, for release momentum
-      } else if (this.mode === 'inertia') {
-        this.velocity = this.targetVelocity + (this.velocity - this.targetVelocity) * INERTIA_FRICTION
-        this.pos += this.velocity
-        if (Math.abs(this.velocity - this.targetVelocity) < SETTLE_EPS) this.settle()
-      } else {
+      if (!this.scratching) {
         // Settled mid-block: the rest of it plays (or stays silent) normally.
         if (this.mode === 'playing') {
           this.frame(this.pos, i, false, outL, outR)
@@ -434,6 +538,31 @@ export class DeckCore {
           outR[i] = 0
         }
         continue
+      }
+      // Read, then advance — as the playing path does, so a grab or a settle
+      // neither skips nor repeats a sample.
+      const speed = Math.abs(this.velocity)
+      this.env += ((speed >= SCRATCH_FULL_SPEED ? 1 : speed / SCRATCH_FULL_SPEED) - this.env) * this.envCoef
+      this.scratchFrame(this.pos, this.velocity, i, outL, outR)
+      outL[i] *= this.env
+      outR[i] *= this.env
+      if (this.mode === 'drag') {
+        const d = wantDelay - this.handDelay
+        this.handDelay += d > HAND_DELAY_SLEW ? HAND_DELAY_SLEW : d < -HAND_DELAY_SLEW ? -HAND_DELAY_SLEW : d
+        const target = this.handAt(base + i - this.handDelay)
+        // Critically damped spring (semi-implicit Euler: stable at this w).
+        let v = this.velocity + w2 * (target - this.pos) - 2 * w * this.velocity
+        if (v > RATE_CAP) v = RATE_CAP
+        else if (v < -RATE_CAP) v = -RATE_CAP
+        this.velocity = v
+        this.pos += v
+      } else {
+        this.velocity = this.targetVelocity + (this.velocity - this.targetVelocity) * INERTIA_FRICTION
+        if (!this.resume && Math.abs(this.velocity) < SETTLE_EPS) this.velocity = 0
+        this.pos += this.velocity
+        if (this.resume && Math.abs(this.velocity - this.targetVelocity) < SETTLE_EPS) this.settle()
+        // A paused release stops once it has faded out.
+        else if (!this.resume && this.velocity === 0 && this.env < 1e-3) this.settle()
       }
       // Clamp to the track; hitting an edge kills momentum.
       if (this.pos < 0) {
@@ -445,8 +574,52 @@ export class DeckCore {
         this.velocity = 0
         if (this.mode === 'inertia') this.settle()
       }
-      this.frame(this.pos, i, false, outL, outR)
     }
+  }
+
+  /** Mix every stem at p for a platter moving v samples a frame: above 1x,
+   *  the span it covered is averaged (blended in from 1x to 2x), so highs
+   *  played past the Nyquist frequency do not fold back down as noise. */
+  private scratchFrame(p: number, v: number, i: number, outL: Float32Array, outR: Float32Array): void {
+    const av = Math.abs(v)
+    const box = av <= 1 ? 0 : av >= 2 ? 1 : av - 1
+    if (box === 0) {
+      this.frame(p, i, false, outL, outR)
+      return
+    }
+    const a = v > 0 ? p - v : p
+    const k = Math.ceil(av)
+    let l = 0
+    let r = 0
+    for (let s = 0; s < this.stems.length; s++) {
+      const g = this.gainBuf[s][i]
+      if (g < 1e-5) continue
+      const chs = this.stems[s]
+      const c0 = chs[0]
+      const c1 = chs.length > 1 ? chs[1] : null
+      const sl = this.span(c0, a, av, k)
+      const vl = box < 1 ? (1 - box) * this.read(c0, p, false) + box * sl : sl
+      l += vl * g
+      if (c1) {
+        const sr = this.span(c1, a, av, k)
+        r += (box < 1 ? (1 - box) * this.read(c1, p, false) + box * sr : sr) * g
+      } else r += vl * g
+    }
+    outL[i] = l
+    outR[i] = r
+  }
+
+  /** Mean of `ch` over [a, a + len] (trapezoid over k linear-read steps). */
+  private span(ch: Float32Array, a: number, len: number, k: number): number {
+    let sum = 0
+    for (let j = 0; j <= k; j++) {
+      const q = a + (len * j) / k
+      const qi = Math.floor(q)
+      const f = q - qi
+      const x = this.at(ch, qi, false) * (1 - f) + this.at(ch, qi + 1, false) * f
+      sum += j === 0 || j === k ? 0.5 * x : x
+    }
+    return sum / k
   }
 
   private settle(): void {
